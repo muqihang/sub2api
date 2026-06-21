@@ -556,6 +556,31 @@ func TestClaudeCodeBridgeCacheAuditRowFiltersUnsafeCacheControlLocations(t *test
 	require.NotContains(t, string(raw), "prompt_cache_key_location_value")
 }
 
+func TestClaudeCodeBridgeDeepSeekFallbackCacheAuditRowDoesNotClaimAnthropicKV(t *testing.T) {
+	summary := ClaudeCodeBridgeAuditSummary{
+		Provider:               "deepseek",
+		Route:                  "deepseek_bridge",
+		ClientType:             "claude_code_bridge_deepseek",
+		PreferredProtocol:      "openai_chat_completions",
+		SelectedProtocol:       "openai_chat_completions",
+		FallbackProtocol:       "openai_chat_completions",
+		FallbackReason:         "anthropic_cache_fixture_failed",
+		FallbackUsed:           true,
+		ProviderCacheMechanism: "none",
+		UpstreamPathKind:       "/v1/chat/completions",
+		CacheReadTokens:        7,
+		CacheMissTokens:        4,
+	}
+
+	row := summary.CacheAuditRow()
+
+	require.Equal(t, "none", row.ProviderCacheMechanism)
+	require.False(t, row.CacheControlProviderIgnored)
+	require.Empty(t, row.CacheUsageFields)
+	require.Equal(t, "openai_chat_completions", row.SelectedProtocol)
+	require.Equal(t, "/v1/chat/completions", row.UpstreamPathKind)
+}
+
 func TestCP6BridgeStreamMapsProviderFixtureReasoningUsageCacheAndErrors(t *testing.T) {
 	request := map[string]any{
 		"model":         "deepseek-v4-pro",
@@ -752,4 +777,42 @@ func TestClaudeCodeBridgeAnthropicRewriteConvertsStableStringContentForDeepSeekC
 	require.JSONEq(t, `{"type":"ephemeral"}`, gjson.GetBytes(rewritten, "messages.1.content.0.cache_control").Raw)
 	require.Equal(t, "latest turn must stay a string", gjson.GetBytes(rewritten, "messages.2.content").String())
 	require.False(t, gjson.GetBytes(rewritten, "messages.2.content.0.cache_control").Exists())
+}
+
+func TestClaudeCodeBridgeStablePrefixHMACIgnoresLatestTurnButTracksStablePrefix(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY", "stable-prefix-unit-test-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY_ID", "stable-prefix-v1")
+	decision := ClaudeCodeBridgeRouteDecision{
+		ModelID:           "claude-code-bridge-deepseek-v4-pro",
+		UpstreamModel:     "deepseek-v4-pro",
+		Provider:          "deepseek",
+		Route:             "deepseek_bridge",
+		ClientType:        "claude_code_bridge_deepseek",
+		CredentialScope:   "bridge_pool",
+		PreferredProtocol: "anthropic_messages",
+	}
+	bodyA := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","system":"stable system","tools":[{"name":"Agent","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"stable history"},{"role":"user","content":"latest A must not affect cache audit"}],"stream":true}`)
+	bodyB := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","system":"stable system","tools":[{"name":"Agent","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"stable history"},{"role":"user","content":"latest B must not affect cache audit"}],"stream":true}`)
+	bodyChangedHistory := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","system":"stable system","tools":[{"name":"Agent","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"changed stable history"},{"role":"user","content":"latest A must not affect cache audit"}],"stream":true}`)
+	bodyChangedTool := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","system":"stable system","tools":[{"name":"Agent","description":"changed stable tool","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"stable history"},{"role":"user","content":"latest A must not affect cache audit"}],"stream":true}`)
+
+	hmacA, bucketA := claudeCodeBridgeStablePrefixAudit(decision, bodyA)
+	hmacB, bucketB := claudeCodeBridgeStablePrefixAudit(decision, bodyB)
+	hmacChangedHistory, _ := claudeCodeBridgeStablePrefixAudit(decision, bodyChangedHistory)
+	hmacChangedTool, _ := claudeCodeBridgeStablePrefixAudit(decision, bodyChangedTool)
+
+	require.NotEmpty(t, hmacA)
+	require.Equal(t, hmacA, hmacB)
+	require.Equal(t, bucketA, bucketB)
+	require.NotEqual(t, hmacA, hmacChangedHistory)
+	require.NotEqual(t, hmacA, hmacChangedTool)
+	row := buildClaudeCodeBridgeAuditSummaryWithRequest(
+		decision,
+		ClaudeCodeBridgeProviderFixture{},
+		buildClaudeCodeBridgeAnthropicRequestAudit(decision, bodyA, "https://api.deepseek.com/anthropic/v1/messages"),
+	).CacheAuditRow()
+	raw, err := json.Marshal(row)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "latest A")
+	require.NotContains(t, string(raw), "stable history")
 }

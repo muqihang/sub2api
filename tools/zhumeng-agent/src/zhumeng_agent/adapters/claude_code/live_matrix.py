@@ -786,6 +786,8 @@ def _deepseek_bridge_cache_audit_row_issues(raw_row: Mapping[str, object], *, pa
         issues.append("DeepSeek bridge cache audit row must prove anthropic_messages selected protocol")
     if str(raw_row.get("fallback_protocol") or "").strip() not in {"", "openai_chat_completions", "openai_compatible_chat"}:
         issues.append("DeepSeek bridge cache audit row has wrong fallback protocol")
+    if raw_row.get("fallback_used") is not False or str(raw_row.get("fallback_reason") or "").strip():
+        issues.append("DeepSeek bridge cache audit row must not use fallback for KV cache evidence")
     if path not in {"/anthropic/v1/messages", "/v1/messages"}:
         issues.append("DeepSeek bridge cache audit row has wrong path kind")
     if str(raw_row.get("provider_cache_mechanism") or "").strip() != "deepseek_prefix_kv":

@@ -434,6 +434,7 @@ def build_provider_catalog_env(
         "models": catalog_models,
     }
     openai_bridge_live = any(model.startswith("claude-code-bridge-gpt-") for model in live_set)
+    deepseek_bridge_live = any("deepseek" in model for model in live_set)
     env = {
         "SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON": json.dumps(catalog, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
         "SUB2API_CLAUDE_CODE_ROUTE_HINT_CATALOG_VERSION": catalog_version,
@@ -448,7 +449,8 @@ def build_provider_catalog_env(
         "SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED": "true" if openai_bridge_live else "false",
         "SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_CHAT_COMPLETIONS_FALLBACK_ENABLED": "true" if openai_bridge_live else "false",
         "SUB2API_CLAUDE_CODE_BRIDGE_ANTHROPIC_LIVE_ENABLED": "true" if any("deepseek" in model or "glm" in model or "kimi" in model for model in live_set) else "false",
-        "SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED": "true" if any("deepseek" in model for model in live_set) else "false",
+        "SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED": "true" if deepseek_bridge_live else "false",
+        "SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED": "true" if deepseek_bridge_live and not deepseek_anthropic_fixture_green else "false",
         "SUB2API_CLAUDE_CODE_BRIDGE_AGNES_LIVE_ENABLED": "true" if any("agnes" in model for model in live_set) else "false",
         "SUB2API_CLAUDE_CODE_NATIVE_FORMAL_POOL_MODELS": ",".join(_NATIVE_MODELS),
         "SUB2API_CLAUDE_CODE_NATIVE_REMOTE_SUB2API_ACCOUNT_NAMES": _NATIVE_REMOTE_SUB2API_ACCOUNT_NAMES,

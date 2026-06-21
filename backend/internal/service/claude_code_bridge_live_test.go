@@ -500,6 +500,7 @@ func TestCP6DeepSeekAnthropicLivePreservesToolUseToolResultPairing(t *testing.T)
 func TestCP6DeepSeekOpenAICompatibleFallbackPostsChatCompletionsAndMapsSSE(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
 	var gotPath string
@@ -560,16 +561,39 @@ func TestCP6DeepSeekOpenAICompatibleFallbackPostsChatCompletionsAndMapsSSE(t *te
 	require.True(t, result.Audit.FallbackUsed)
 	require.Equal(t, "anthropic_cache_fixture_failed", result.Audit.FallbackReason)
 	require.Equal(t, "/v1/chat/completions", result.Audit.UpstreamPathKind)
-	require.Equal(t, "deepseek_prefix_kv", result.Audit.ProviderCacheMechanism)
+	require.Equal(t, "none", result.Audit.ProviderCacheMechanism)
 	require.False(t, result.Audit.CacheControlPresent)
-	require.True(t, result.Audit.CacheControlProviderIgnored)
+	require.False(t, result.Audit.CacheControlProviderIgnored)
 	require.Equal(t, 7, result.Audit.CacheReadTokens)
 	require.Equal(t, 4, result.Audit.CacheMissTokens)
+}
+
+func TestCP6DeepSeekOpenAICompatibleFallbackRequiresExplicitBackendGate(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	decision := cp6LiveDeepSeekDecision("http://127.0.0.1:9/anthropic")
+	decision.PreferredProtocol = "openai_chat_completions"
+	decision.AnthropicBaseURL = ""
+	decision.OpenAIBaseURL = "http://127.0.0.1:9"
+	decision.FallbackProtocol = "openai_chat_completions"
+	decision.FallbackReason = "anthropic_cache_fixture_failed"
+	decision.SupportsCacheAudit = true
+	decision.SupportsReasoningMapping = true
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"fallback"}],"stream":true}`)
+
+	require.False(t, ClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLiveEligible(decision))
+	_, err := ExecuteClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLive(context.Background(), http.DefaultClient, decision, body, ClaudeCodeBridgeDeepSeekAPIKeyFromEnv())
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "explicitly enabled")
 }
 
 func TestCP6DeepSeekOpenAICompatibleFallbackReasoningOnlyDoesNotFinalizeAsVisibleText(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -602,6 +626,7 @@ func TestCP6DeepSeekOpenAICompatibleFallbackReasoningOnlyDoesNotFinalizeAsVisibl
 func TestCP6DeepSeekOpenAICompatibleFallbackFailsClosedWithoutFixtureReasonOrWithNativeFormalPool(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
 	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"fallback"}],"stream":true}`)
@@ -672,6 +697,7 @@ func cp6LiveDeepSeekDecision(baseURL string) ClaudeCodeBridgeRouteDecision {
 func TestCP6DeepSeekOpenAICompatibleFallbackRejectsDeferredToolSearchBeforeUpstreamDispatch(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
 	upstreamCalled := false
@@ -701,6 +727,7 @@ func TestCP6DeepSeekOpenAICompatibleFallbackRejectsDeferredToolSearchBeforeUpstr
 func TestCP6DeepSeekOpenAICompatibleFallbackPreservesToolUseToolResultPairing(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
 	var chatBody string

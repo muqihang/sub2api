@@ -69,7 +69,7 @@ func ClaudeCodeBridgeOpenAILiveEligible(decision ClaudeCodeBridgeRouteDecision) 
 }
 
 func ClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLiveEligible(decision ClaudeCodeBridgeRouteDecision) bool {
-	return ClaudeCodeBridgeAnthropicLiveConfigured() && ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() && ClaudeCodeBridgeDeepSeekAPIKeyFromEnv() != "" && ClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackDecisionValid(decision) == nil && claudeCodeBridgeOpenAIUnsafeLabBaseURLAllowed(decision)
+	return claudeCodeBridgeDeepSeekOpenAICompatibleFallbackExplicitlyEnabled() && ClaudeCodeBridgeAnthropicLiveConfigured() && ClaudeCodeBridgeAnthropicLiveLabBillingBypassEnabled() && ClaudeCodeBridgeDeepSeekAPIKeyFromEnv() != "" && ClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackDecisionValid(decision) == nil && claudeCodeBridgeOpenAIUnsafeLabBaseURLAllowed(decision)
 }
 
 func ClaudeCodeBridgeOpenAILiveDecisionValid(decision ClaudeCodeBridgeRouteDecision) error {
@@ -605,6 +605,9 @@ func ExecuteClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLive(ctx context.Con
 }
 
 func StreamClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLive(ctx context.Context, httpClient *http.Client, decision ClaudeCodeBridgeRouteDecision, body []byte, apiKey string, dst io.Writer) (ClaudeCodeBridgeOpenAILiveStreamResult, error) {
+	if !claudeCodeBridgeDeepSeekOpenAICompatibleFallbackExplicitlyEnabled() {
+		return ClaudeCodeBridgeOpenAILiveStreamResult{}, fmt.Errorf("claude code DeepSeek OpenAI-compatible fallback live request is not explicitly enabled")
+	}
 	if !ClaudeCodeBridgeAnthropicLiveConfigured() {
 		return ClaudeCodeBridgeOpenAILiveStreamResult{}, fmt.Errorf("claude code DeepSeek OpenAI-compatible fallback live request is not enabled")
 	}
@@ -671,6 +674,10 @@ func buildClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackURL(decision ClaudeCod
 	return buildOpenAIChatCompletionsURL(decision.OpenAIBaseURL)
 }
 
+func claudeCodeBridgeDeepSeekOpenAICompatibleFallbackExplicitlyEnabled() bool {
+	return claudeCodeBridgeEnvEnabled("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED")
+}
+
 func ClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackDecisionValid(decision ClaudeCodeBridgeRouteDecision) error {
 	if strings.TrimSpace(decision.Provider) != "deepseek" || strings.TrimSpace(decision.Route) != "deepseek_bridge" || strings.TrimSpace(decision.ClientType) != "claude_code_bridge_deepseek" {
 		return fmt.Errorf("claude code DeepSeek OpenAI-compatible fallback only supports deepseek bridge")
@@ -726,10 +733,7 @@ func buildClaudeCodeBridgeOpenAIChatFallbackRequestAudit(decision ClaudeCodeBrid
 		audit.SelectedProtocol = strings.TrimSpace(decision.PreferredProtocol)
 	}
 	audit.CacheControlPresent = len(audit.CacheControlLocations) > 0
-	if strings.TrimSpace(decision.Provider) == "deepseek" {
-		audit.ProviderCacheMechanism = "deepseek_prefix_kv"
-		audit.CacheControlProviderIgnored = true
-	}
+	audit.ProviderCacheMechanism = "none"
 	audit.StablePrefixHMAC, audit.StablePrefixTokenBucket = claudeCodeBridgeStablePrefixAudit(decision, originalBody)
 	return audit
 }

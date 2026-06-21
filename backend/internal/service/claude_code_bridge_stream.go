@@ -484,8 +484,10 @@ func (summary ClaudeCodeBridgeAuditSummary) CacheAuditRow() ClaudeCodeBridgeCach
 	sort.Strings(row.CacheControlLocations)
 	switch row.Provider {
 	case "deepseek":
-		row.CacheUsageFields = []string{"prompt_cache_hit_tokens", "prompt_cache_miss_tokens"}
-		row.CacheControlProviderIgnored = true
+		if row.ProviderCacheMechanism == "deepseek_prefix_kv" && row.SelectedProtocol == "anthropic_messages" {
+			row.CacheUsageFields = []string{"prompt_cache_hit_tokens", "prompt_cache_miss_tokens"}
+			row.CacheControlProviderIgnored = true
+		}
 	case "openai":
 		row.CacheUsageFields = []string{"usage.prompt_tokens_details.cached_tokens"}
 		row.CachedTokens = row.CacheReadTokens

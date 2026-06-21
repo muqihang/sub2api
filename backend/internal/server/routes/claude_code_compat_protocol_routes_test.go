@@ -513,6 +513,7 @@ func TestCP6DeepSeekLiveOpenAICompatibleFallbackForwardsToChatCompletionsWhenFix
 	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6DeepSeekBridgeFallbackRouteCatalogJSONWithOpenAIBaseURL(upstream.URL))
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
 	configureCP6RouteHintEnv(t)
@@ -550,6 +551,44 @@ func TestCP6DeepSeekLiveOpenAICompatibleFallbackForwardsToChatCompletionsWhenFix
 	require.Contains(t, rec.Body.String(), `"cache_read_input_tokens":5`)
 	require.NotContains(t, rec.Body.String(), "bridge skeleton")
 	require.NotContains(t, rec.Body.String(), "fallback route must reach provider")
+}
+
+func TestCP6DeepSeekLiveOpenAICompatibleFallbackWithoutExplicitGateFailsClosedBeforeProvider(t *testing.T) {
+	var upstreamHits atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON", cp6DeepSeekBridgeFallbackRouteCatalogJSONWithOpenAIBaseURL(upstream.URL))
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	configureCP6RouteHintEnv(t)
+	router := newAnthropicCompatProtocolRouteRouter()
+	body := `{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"fallback gate disabled must not reach provider"}],"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-sub2api-client-type", "claude_code_bridge_deepseek")
+	req.Header.Set("x-sub2api-route", "deepseek_bridge")
+	req.Header.Set("x-sub2api-route-catalog-version", "cp5-route-catalog")
+	signCP6BridgeRouteHintHeaders(t, req, body, map[string]any{
+		"model_id":             "claude-code-bridge-deepseek-v4-pro",
+		"provider":             "deepseek",
+		"route":                "deepseek_bridge",
+		"client_type":          "claude_code_bridge_deepseek",
+		"nonce":                "cp6-deepseek-openai-fallback-gate-disabled",
+		"live_request_allowed": true,
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Equal(t, int64(0), upstreamHits.Load())
+	require.NotContains(t, rec.Body.String(), "fallback gate disabled must not reach provider")
+	require.NotContains(t, rec.Body.String(), "event: message_start")
 }
 
 func TestClaudeCodeBridgeDeepSeekLiveRejectsNativeAttestationHeadersBeforeProvider(t *testing.T) {

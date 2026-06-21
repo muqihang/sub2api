@@ -279,6 +279,7 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
             self.assertEqual(["high", "max"], entry["reasoning_effort_levels"])
         self.assertEqual("true", env["SUB2API_CLAUDE_CODE_BRIDGE_ANTHROPIC_LIVE_ENABLED"])
         self.assertEqual("true", env["SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED"])
+        self.assertEqual("false", env["SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED"])
 
     def test_apply_sql_creates_dedicated_deepseek_anthropic_runtime_account_from_codex_key(self):
         from tools.claude_code_runtime_canary_config import build_apply_sql
@@ -309,6 +310,20 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
         self.assertEqual("openai_chat_completions", entry["fallback_protocol"])
         self.assertEqual("anthropic_cache_fixture_failed", entry["fallback_reason"])
         self.assertNotIn("anthropic_base_url", entry)
+        self.assertEqual("true", env["SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED"])
+
+
+    def test_deepseek_openai_fallback_gate_stays_closed_without_deepseek_live_model(self):
+        from tools.claude_code_runtime_canary_config import build_provider_catalog_env
+
+        env = build_provider_catalog_env(
+            "http://127.0.0.1:3017",
+            runtime_target="http://127.0.0.1:8080",
+            live_bridge_models=("claude-code-bridge-gpt-5.5",),
+            deepseek_anthropic_fixture_green=False,
+        )
+
+        self.assertEqual("false", env["SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED"])
 
 
     def test_glm_and_kimi_catalog_also_prefer_anthropic_messages_without_openai_fallback_by_default(self):
