@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import hashlib
 import subprocess
+import shutil
 import sys
 from types import SimpleNamespace
 
@@ -12,7 +13,7 @@ from aiohttp.test_utils import TestClient, TestServer
 import zhumeng_agent.cli as cli
 from zhumeng_agent.adapters.codex.model_picker import ModelPickerPatchError
 from zhumeng_agent.adapters.claude_code.launcher import _bridge_model_capabilities_json, build_bridge_effort_ui_probe_metadata
-from zhumeng_agent.adapters.claude_code.runtime_installer import EFFORT_CAPABILITY_HOOK_NEEDLE, EFFORT_CAPABILITY_HOOK_REPLACEMENT
+from zhumeng_agent.adapters.claude_code.runtime_installer import EFFORT_CAPABILITY_HOOK_NEEDLE, EFFORT_CAPABILITY_HOOK_REPLACEMENT, EXACT_EFFORT_LEVEL_UI_PATCH_POINT
 from zhumeng_agent.cli import main
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -2626,6 +2627,445 @@ def test_zhumeng_claude_entrypoint_maps_to_claude_code_start(monkeypatch):
     ]
 
 
+
+def test_claude_code_preflight_writes_local_decision_freeze_without_live(capsys, tmp_path: Path):
+    runtime_root = tmp_path / "runtime-root"
+    state_root = tmp_path / "state-root"
+    executable = tmp_path / "managed" / "claude"
+    patches = {
+        "runtime": "claude-code",
+        "upstream_version": "2.1.177",
+        "patch_points": [
+            "runtime_manifest",
+            "hash_lock",
+            "isolated_config",
+            "guard_env",
+            "agent_model_schema",
+            "effort_capability_hook",
+            "exact_effort_level_ui_patch",
+        ],
+        "live_bridge_models_enabled": True,
+        "live_bridge_model_allowlist": [
+            "claude-code-bridge-gpt-5.5",
+            "claude-code-bridge-deepseek-v4-pro",
+        ],
+        "live_bridge_model_catalog": {
+            "claude-code-bridge-gpt-5.5": {
+                "provider": "openai",
+                "route": "openai_bridge",
+                "client_type": "claude_code_bridge_openai",
+                "live_enabled": True,
+                "formal_pool_eligible": False,
+            },
+            "claude-code-bridge-deepseek-v4-pro": {
+                "provider": "deepseek",
+                "route": "deepseek_bridge",
+                "client_type": "claude_code_bridge_deepseek",
+                "live_enabled": True,
+                "formal_pool_eligible": False,
+            },
+        },
+        "bridge_provider_release_statuses": {
+            "openai": "fixture-pass-only",
+            "deepseek": "fixture-pass-only",
+        },
+        "effort_capability_patch": {
+            "status": "patched",
+            "supported_models_exact": True,
+            "probe_schema_version": "claude-code-2.1.177-bridge-effort-ui-probe-v1",
+            "capabilities_hash": "sha256:" + "4" * 64,
+        },
+    }
+    _, runtime_hash, overlay_hash = write_fake_claude_runtime(
+        runtime_root,
+        executable,
+        payload=EFFORT_CAPABILITY_HOOK_REPLACEMENT,
+        patches=patches,
+        upstream_version="2.1.177",
+    )
+    patch_path = runtime_root / "claude-code" / "2.1.177" / "patches.json"
+    patch_payload = json.loads(patch_path.read_text(encoding="utf-8"))
+    patch_payload["patch_points"] = sorted(set(patch_payload.get("patch_points", [])) | {"effort_capability_hook", EXACT_EFFORT_LEVEL_UI_PATCH_POINT})
+    patch_payload["effort_capability_patch"].update({
+        "env": "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON",
+        "schema": "exact_effort_levels_v1",
+        "ui_probe": "claude_code_2_1_177_model_picker_exact_effort_levels",
+        "patch_point": EXACT_EFFORT_LEVEL_UI_PATCH_POINT,
+        "hook": "exact_effort_levels_ui",
+        "exact_effort_levels_supported": True,
+        "boolean_only_hook_rejected": False,
+        "probe_status": "pass",
+        "runtime_hash": runtime_hash,
+        "live_bridge_models": ["claude-code-bridge-gpt-5.5", "claude-code-bridge-deepseek-v4-pro"],
+        "capabilities_hash": cli.bridge_effort_capabilities_hash(cli._bridge_model_capabilities_json(("claude-code-bridge-gpt-5.5", "claude-code-bridge-deepseek-v4-pro"))),
+    })
+    patch_path.write_text(json.dumps(patch_payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    manifest_path = runtime_root / "claude-code" / "2.1.177" / "manifest.json"
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_payload["patch_points"] = sorted(set(manifest_payload.get("patch_points", [])) | {"effort_capability_hook", EXACT_EFFORT_LEVEL_UI_PATCH_POINT})
+    manifest_path.write_text(json.dumps(manifest_payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    lock_path = runtime_root / "claude-code" / "2.1.177" / "hash.lock"
+    lock_payload = json.loads(lock_path.read_text(encoding="utf-8"))
+    lock_payload["manifest_hash"] = "sha256:" + hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    lock_payload["locked_files"] = {
+        "manifest.json": lock_payload["manifest_hash"],
+        "patches.json": "sha256:" + hashlib.sha256(patch_path.read_bytes()).hexdigest(),
+    }
+    lock_path.write_text(json.dumps(lock_payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    state_root.mkdir(parents=True)
+    (state_root / "state.json").write_text(
+        json.dumps(
+            {
+                "gateway_base_url": "http://127.0.0.1:3017",
+                "claude_code_capability_profile": {
+                    "profile_id": "toolsearch-ready",
+                    "claude_code_version_family": "2.1.x",
+                    "tool_search_mode": "true",
+                    "tool_search_healthcheck_passed": True,
+                    "control_plane_policy_version": "cp-v1",
+                    "server_shape_healthcheck_version": "shape-v1",
+                },
+                "claude_code_toolsearch_doctor_context": {
+                    "model": "claude-sonnet-4-6",
+                    "has_mcp_deferred_tools": True,
+                    "has_pending_mcp_server": False,
+                    "disallowed_tools": [],
+                    "model_supports_tool_reference": True,
+                },
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    evidence = Path(__file__).parent / "fixtures" / "claude_code_cp8" / "live_matrix_pass.json"
+    out_root = tmp_path / "artifacts"
+
+    exit_code = main([
+        "claude-code",
+        "preflight",
+        "--runtime-root",
+        str(runtime_root),
+        "--state-root",
+        str(state_root),
+        "--project-cwd",
+        str(tmp_path),
+        "--run-id",
+        "cp18-local",
+        "--evidence",
+        str(evidence),
+        "--output-root",
+        str(out_root),
+    ])
+
+    assert exit_code == 0
+    data = parse_output(capsys)
+    assert data["command"] == "claude-code preflight"
+    assert data["status"] == "pass"
+    assert data["phase"] == "local-runtime-verification"
+    assert data["touches_3017"] is False
+    assert data["touches_3012"] is False
+    assert data["runtime"]["version"] == "2.1.177"
+    assert data["runtime"]["runtime_hash"] == runtime_hash
+    assert data["runtime"]["overlay_hash"] == overlay_hash
+    assert data["catalog_hash"].startswith("sha256:")
+    assert data["toolsearch"]["env_value"] == "true"
+    assert data["effort_ui"]["probe_schema_version"] == "claude-code-2.1.177-bridge-effort-ui-probe-v1"
+    assert data["cp8_local_matrix"]["status"] == "pass"
+    manifest_artifact = out_root / "cp18-local" / "preflight" / "run-manifest.json"
+    assert manifest_artifact.exists()
+    manifest_payload = json.loads(manifest_artifact.read_text(encoding="utf-8"))
+    assert manifest_payload["run_id"] == "cp18-local"
+    assert manifest_payload["runtime_hash"] == runtime_hash
+    assert manifest_payload["overlay_hash"] == overlay_hash
+    assert manifest_payload["catalog_hash"] == data["catalog_hash"]
+    assert "live-matrix" in manifest_payload["evidence_subdirs"]
+    artifact = out_root / "cp18-local" / "preflight" / "decision-freeze.json"
+    assert artifact.exists()
+    artifact_payload = json.loads(artifact.read_text(encoding="utf-8"))
+    assert artifact_payload["schema_version"] == "claude-code-l8-local-preflight-decision-freeze-v1"
+    assert artifact_payload["run_id"] == "cp18-local"
+    assert artifact_payload["runtime_hash"] == runtime_hash
+    assert artifact_payload["overlay_hash"] == overlay_hash
+    assert artifact_payload["catalog_hash"] == data["catalog_hash"]
+    assert artifact_payload["provider_scope"]["l8_live_targets"] == ["claude_native", "openai", "deepseek"]
+    assert artifact_payload["decisions"]["deepseek_cache_control_policy"] == "provider_ignored_audit_only"
+    dumped = json.dumps(artifact_payload, sort_keys=True)
+    assert "Authorization" not in dumped
+    assert "raw_body" not in dumped
+    assert "prompt_cache_key" not in dumped
+
+
+def test_claude_code_preflight_fails_closed_when_cp8_evidence_has_sensitive_artifact(capsys, tmp_path: Path):
+    runtime_root = tmp_path / "runtime-root"
+    executable = tmp_path / "managed" / "claude"
+    write_fake_claude_runtime(runtime_root, executable, upstream_version="2.1.177")
+    state_root = tmp_path / "state-root"
+    state_root.mkdir(parents=True)
+    (state_root / "state.json").write_text(json.dumps({"gateway_base_url": "http://127.0.0.1:3017"}), encoding="utf-8")
+    fixture_root = tmp_path / "cp8"
+    shutil.copytree(Path(__file__).parent / "fixtures" / "claude_code_cp8", fixture_root)
+    artifact = fixture_root / "artifacts" / "cache_account_audit.json"
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    payload["raw_body"] = "must not pass"
+    artifact.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    matrix = json.loads((fixture_root / "live_matrix_pass.json").read_text(encoding="utf-8"))
+    for scenario in matrix["scenarios"].values():
+        for ref in scenario.get("artifact_refs", []):
+            if ref.get("path") == "artifacts/cache_account_audit.json":
+                ref["sha256"] = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
+    evidence = fixture_root / "live_matrix_pass.json"
+    evidence.write_text(json.dumps(matrix, sort_keys=True), encoding="utf-8")
+
+    exit_code = main([
+        "claude-code",
+        "preflight",
+        "--runtime-root",
+        str(runtime_root),
+        "--state-root",
+        str(state_root),
+        "--project-cwd",
+        str(tmp_path),
+        "--run-id",
+        "cp18-bad",
+        "--evidence",
+        str(evidence),
+        "--output-root",
+        str(tmp_path / "artifacts"),
+    ])
+
+    assert exit_code == 1
+    data = parse_output(capsys)
+    assert data["command"] == "claude-code preflight"
+    assert data["status"] == "fail"
+    assert "sensitive_evidence_scan" in data["failed"]
+    assert not (tmp_path / "artifacts" / "cp18-bad" / "preflight" / "decision-freeze.json").exists()
+
+
+def test_claude_code_preflight_rejects_sensitive_cp8_payload_even_if_matrix_would_pass(capsys, tmp_path: Path):
+    runtime_root = tmp_path / "runtime-root"
+    executable = tmp_path / "managed" / "claude"
+    write_fake_claude_runtime(runtime_root, executable, upstream_version="2.1.177")
+    state_root = tmp_path / "state-root"
+    state_root.mkdir(parents=True)
+    (state_root / "state.json").write_text(json.dumps({"gateway_base_url": "http://127.0.0.1:3017"}), encoding="utf-8")
+    fixture_root = tmp_path / "cp8"
+    shutil.copytree(Path(__file__).parent / "fixtures" / "claude_code_cp8", fixture_root)
+    evidence = fixture_root / "live_matrix_pass.json"
+    matrix = json.loads(evidence.read_text(encoding="utf-8"))
+    matrix["diagnostic"] = {"authorization": "Bearer must-not-pass"}
+    matrix["scenarios"]["workflow"]["raw_request"] = "must not pass"
+    evidence.write_text(json.dumps(matrix, sort_keys=True), encoding="utf-8")
+
+    exit_code = main([
+        "claude-code",
+        "preflight",
+        "--runtime-root",
+        str(runtime_root),
+        "--state-root",
+        str(state_root),
+        "--project-cwd",
+        str(tmp_path),
+        "--run-id",
+        "cp18-sensitive-payload",
+        "--evidence",
+        str(evidence),
+        "--output-root",
+        str(tmp_path / "artifacts"),
+    ])
+
+    assert exit_code == 1
+    data = parse_output(capsys)
+    assert data["command"] == "claude-code preflight"
+    assert data["status"] == "fail"
+    assert "sensitive_evidence_scan" in data["failed"]
+    assert not (tmp_path / "artifacts" / "cp18-sensitive-payload" / "preflight" / "decision-freeze.json").exists()
+
+
+def test_claude_code_preflight_rejects_sensitive_non_cache_artifact_even_if_ref_claims_clean(capsys, tmp_path: Path):
+    runtime_root = tmp_path / "runtime-root"
+    executable = tmp_path / "managed" / "claude"
+    write_fake_claude_runtime(runtime_root, executable, upstream_version="2.1.177")
+    state_root = tmp_path / "state-root"
+    state_root.mkdir(parents=True)
+    (state_root / "state.json").write_text(json.dumps({"gateway_base_url": "http://127.0.0.1:3017"}), encoding="utf-8")
+    fixture_root = tmp_path / "cp8"
+    shutil.copytree(Path(__file__).parent / "fixtures" / "claude_code_cp8", fixture_root)
+    artifact = fixture_root / "artifacts" / "workflow_sensitive.json"
+    artifact.write_text(json.dumps({"response_headers": {"authorization": "Bearer must-not-pass"}}, sort_keys=True), encoding="utf-8")
+    evidence = fixture_root / "live_matrix_pass.json"
+    matrix = json.loads(evidence.read_text(encoding="utf-8"))
+    matrix["scenarios"]["workflow"].setdefault("artifact_refs", []).append({
+        "path": "artifacts/workflow_sensitive.json",
+        "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        "sensitive_scan_clean": True,
+    })
+    evidence.write_text(json.dumps(matrix, sort_keys=True), encoding="utf-8")
+
+    exit_code = main([
+        "claude-code",
+        "preflight",
+        "--runtime-root",
+        str(runtime_root),
+        "--state-root",
+        str(state_root),
+        "--project-cwd",
+        str(tmp_path),
+        "--run-id",
+        "cp18-sensitive-artifact",
+        "--evidence",
+        str(evidence),
+        "--output-root",
+        str(tmp_path / "artifacts"),
+    ])
+
+    assert exit_code == 1
+    data = parse_output(capsys)
+    assert data["status"] == "fail"
+    assert "sensitive_evidence_scan" in data["failed"]
+    assert not (tmp_path / "artifacts" / "cp18-sensitive-artifact" / "preflight" / "decision-freeze.json").exists()
+
+
+def test_claude_code_preflight_rejects_malformed_or_drifted_catalog_hash(capsys, tmp_path: Path, monkeypatch):
+    runtime_root = tmp_path / "runtime-root"
+    executable = tmp_path / "managed" / "claude"
+    write_fake_claude_runtime(runtime_root, executable, upstream_version="2.1.177")
+    state_root = tmp_path / "state-root"
+    state_root.mkdir(parents=True)
+    (state_root / "state.json").write_text(json.dumps({"gateway_base_url": "http://127.0.0.1:3017"}), encoding="utf-8")
+    evidence = Path(__file__).parent / "fixtures" / "claude_code_cp8" / "live_matrix_pass.json"
+    out_root = tmp_path / "artifacts"
+
+    monkeypatch.setenv("ZHUMENG_CLAUDE_CATALOG_HASH", "not-a-sha")
+    assert main([
+        "claude-code", "preflight", "--runtime-root", str(runtime_root), "--state-root", str(state_root),
+        "--project-cwd", str(tmp_path), "--run-id", "cp18-bad-catalog", "--evidence", str(evidence),
+        "--output-root", str(out_root),
+    ]) == 1
+    malformed = parse_output(capsys)
+    assert malformed["status"] == "not_configured"
+    assert "catalog_hash" in malformed["message"]
+    assert not (out_root / "cp18-bad-catalog" / "preflight" / "decision-freeze.json").exists()
+
+    monkeypatch.setenv("ZHUMENG_CLAUDE_CATALOG_HASH", "sha256:" + "0" * 64)
+    assert main([
+        "claude-code", "preflight", "--runtime-root", str(runtime_root), "--state-root", str(state_root),
+        "--project-cwd", str(tmp_path), "--run-id", "cp18-drift-catalog", "--evidence", str(evidence),
+        "--output-root", str(out_root),
+    ]) == 1
+    drift = parse_output(capsys)
+    assert drift["status"] == "not_configured"
+    assert "catalog_hash" in drift["message"]
+    assert not (out_root / "cp18-drift-catalog" / "preflight" / "decision-freeze.json").exists()
+
+
+def test_claude_code_preflight_catalog_hash_includes_expanded_provider_scope(capsys, tmp_path: Path, monkeypatch):
+    runtime_root = tmp_path / "runtime-root"
+    executable = tmp_path / "managed" / "claude"
+    patches = {
+        "live_bridge_models_enabled": True,
+        "live_bridge_model_allowlist": ["claude-code-bridge-glm-5.2-1m", "claude-code-bridge-kimi-k2.7-code"],
+        "bridge_provider_release_statuses": {"zai_glm": "strict-live-pass", "kimi": "strict-live-pass"},
+        "bridge_live_expanded_providers": ["zai_glm", "kimi"],
+        "bridge_runtime_account_providers": ["zai_glm", "kimi"],
+        "live_bridge_model_catalog": {
+            "claude-code-bridge-glm-5.2-1m": {
+                "provider": "zai_glm",
+                "route": "zai_glm_bridge",
+                "client_type": "claude_code_bridge_zai_glm",
+                "live_enabled": True,
+                "formal_pool_eligible": False,
+            },
+            "claude-code-bridge-kimi-k2.7-code": {
+                "provider": "kimi",
+                "route": "kimi_bridge",
+                "client_type": "claude_code_bridge_kimi",
+                "live_enabled": True,
+                "formal_pool_eligible": False,
+            },
+        },
+    }
+    write_fake_claude_runtime(runtime_root, executable, patches=patches, upstream_version="2.1.175")
+    state_root = tmp_path / "state-root"
+    state_root.mkdir(parents=True)
+    (state_root / "state.json").write_text(json.dumps({"gateway_base_url": "http://127.0.0.1:3017"}), encoding="utf-8")
+    evidence = Path(__file__).parent / "fixtures" / "claude_code_cp8" / "live_matrix_pass.json"
+    calls: list[dict[str, object]] = []
+
+    def fake_route_catalog_hash(catalog_version: str, **kwargs):
+        calls.append({"catalog_version": catalog_version, **kwargs})
+        return "sha256:" + "6" * 64
+
+    monkeypatch.setattr(cli, "route_catalog_content_hash_for_cp8_live", fake_route_catalog_hash)
+
+    assert main([
+        "claude-code", "preflight", "--runtime-root", str(runtime_root), "--state-root", str(state_root),
+        "--project-cwd", str(tmp_path), "--run-id", "cp18-expanded", "--evidence", str(evidence),
+        "--output-root", str(tmp_path / "artifacts"),
+    ]) == 0
+    data = parse_output(capsys)
+    assert data["catalog_hash"] == "sha256:" + "6" * 64
+    assert calls == [{
+        "catalog_version": "cp4-cli-fixture-v1",
+        "bridge_live_models": ("claude-code-bridge-glm-5.2-1m", "claude-code-bridge-kimi-k2.7-code"),
+        "bridge_provider_release_statuses": {"kimi": "strict-live-pass", "zai_glm": "strict-live-pass"},
+        "bridge_live_expanded_providers": ("kimi", "zai_glm"),
+    }]
+
+
+def test_claude_code_preflight_rejects_sensitive_provider_level_artifact_ref(capsys, tmp_path: Path):
+    runtime_root = tmp_path / "runtime-root"
+    executable = tmp_path / "managed" / "claude"
+    write_fake_claude_runtime(runtime_root, executable, upstream_version="2.1.177")
+    state_root = tmp_path / "state-root"
+    state_root.mkdir(parents=True)
+    (state_root / "state.json").write_text(json.dumps({"gateway_base_url": "http://127.0.0.1:3017"}), encoding="utf-8")
+    fixture_root = tmp_path / "cp8"
+    shutil.copytree(Path(__file__).parent / "fixtures" / "claude_code_cp8", fixture_root)
+    artifact = fixture_root / "artifacts" / "provider_sensitive.json"
+    artifact.write_text(json.dumps({"headers": {"authorization": "Bearer must-not-pass"}}, sort_keys=True), encoding="utf-8")
+    evidence = fixture_root / "live_matrix_pass.json"
+    matrix = json.loads(evidence.read_text(encoding="utf-8"))
+    matrix["live_provenance"] = {
+        "mode": "external_provider_live_matrix",
+        "credential_backed": True,
+        "loopback_only": False,
+        "run_id": "cp18-provider-artifact",
+        "providers": {
+            "openai": {
+                "provider": "openai",
+                "route": "openai_bridge",
+                "client_type": "claude_code_bridge_openai",
+                "model": "gpt-5.5",
+                "request_model": "gpt-5.5",
+                "endpoint": "https://api.openai.com/v1/responses",
+                "status": 200,
+                "request_id": "provider-artifact-openai",
+                "live_provider_verified": True,
+                "credential_scope": "bridge_pool",
+                "artifact_refs": [{
+                    "path": "artifacts/provider_sensitive.json",
+                    "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    "sensitive_scan_clean": True,
+                }],
+            }
+        },
+    }
+    evidence.write_text(json.dumps(matrix, sort_keys=True), encoding="utf-8")
+
+    exit_code = main([
+        "claude-code", "preflight", "--runtime-root", str(runtime_root), "--state-root", str(state_root),
+        "--project-cwd", str(tmp_path), "--run-id", "cp18-provider-artifact", "--evidence", str(evidence),
+        "--output-root", str(tmp_path / "artifacts"),
+    ])
+
+    assert exit_code == 1
+    data = parse_output(capsys)
+    assert data["status"] == "fail"
+    assert "sensitive_evidence_scan" in data["failed"]
+    assert any("provider_sensitive" in issue for issue in data["issues"])
+    assert not (tmp_path / "artifacts" / "cp18-provider-artifact" / "preflight" / "decision-freeze.json").exists()
+
 def test_claude_code_live_matrix_cli_fails_closed_for_invalid_evidence(capsys, tmp_path: Path):
     evidence = tmp_path / "bad-live-matrix.json"
     evidence.write_text(json.dumps({"checkpoint": "CP8", "schema_version": "stale"}), encoding="utf-8")
@@ -2762,7 +3202,7 @@ def test_claude_code_live_matrix_cli_collects_sub2api_gateway_provenance(capsys,
     monkeypatch.setattr(cli, "collect_cp8_sub2api_gateway_live_provenance", fake_collect_cp8_sub2api_gateway_live_provenance, raising=False)
     monkeypatch.setattr(cli, "default_state_store", lambda: SimpleNamespace(read=lambda: {}), raising=False)
     monkeypatch.setattr(cli, "resolve_active_managed_runtime", lambda runtime_root: (_ for _ in ()).throw(cli.RuntimeInstallerError("not installed")), raising=False)
-    monkeypatch.setattr(cli, "route_catalog_content_hash_for_cp8_live", lambda version, bridge_live_models=(): "sha256:" + "e" * 64, raising=False)
+    monkeypatch.setattr(cli, "route_catalog_content_hash_for_cp8_live", lambda version, bridge_live_models=(), **kwargs: "sha256:" + "e" * 64, raising=False)
     monkeypatch.setenv("SUB2API_CP8_LIVE_BASE_URL", "http://127.0.0.1:3012")
     monkeypatch.setenv("SUB2API_CP8_LIVE_GATEWAY_TOKEN", "sub2api-env-token")
 
@@ -2836,7 +3276,7 @@ def test_claude_code_live_matrix_cli_collects_sub2api_from_managed_state(capsys,
         overlay_hash="sha256:" + "c" * 64,
     ), raising=False)
     monkeypatch.setattr(cli, "collect_cp8_sub2api_gateway_live_provenance", fake_collect_cp8_sub2api_gateway_live_provenance, raising=False)
-    monkeypatch.setattr(cli, "route_catalog_content_hash_for_cp8_live", lambda version, bridge_live_models=(): "sha256:" + "e" * 64, raising=False)
+    monkeypatch.setattr(cli, "route_catalog_content_hash_for_cp8_live", lambda version, bridge_live_models=(), **kwargs: "sha256:" + "e" * 64, raising=False)
     for key in (
         "SUB2API_CP8_LIVE_BASE_URL",
         "SUB2API_BASE_URL",
@@ -2930,7 +3370,7 @@ def test_claude_code_live_matrix_cli_derives_route_catalog_hash_not_model_catalo
         overlay_hash="sha256:" + "c" * 64,
         patches={"live_bridge_models_enabled": True, "bridge_live_models": ["gpt-5.5", "deepseek-v4-pro"]},
     ), raising=False)
-    monkeypatch.setattr(cli, "route_catalog_content_hash_for_cp8_live", lambda version, bridge_live_models=(): expected_route_hash, raising=False)
+    monkeypatch.setattr(cli, "route_catalog_content_hash_for_cp8_live", lambda version, bridge_live_models=(), **kwargs: expected_route_hash, raising=False)
     monkeypatch.setattr(cli, "collect_cp8_sub2api_gateway_live_provenance", fake_collect_cp8_sub2api_gateway_live_provenance, raising=False)
     for key in ("ZHUMENG_CLAUDE_CATALOG_HASH", "SUB2API_CLAUDE_CODE_CATALOG_HASH"):
         monkeypatch.delenv(key, raising=False)
@@ -3062,7 +3502,7 @@ def test_claude_code_live_matrix_cli_does_not_use_managed_jwt_as_sub2api_gateway
 
     monkeypatch.setattr(cli, "default_state_store", lambda: FakeStateStore(), raising=False)
     monkeypatch.setattr(cli, "resolve_active_managed_runtime", lambda runtime_root: (_ for _ in ()).throw(cli.RuntimeInstallerError("not installed")), raising=False)
-    monkeypatch.setattr(cli, "route_catalog_content_hash_for_cp8_live", lambda version, bridge_live_models=(): "sha256:" + "e" * 64, raising=False)
+    monkeypatch.setattr(cli, "route_catalog_content_hash_for_cp8_live", lambda version, bridge_live_models=(), **kwargs: "sha256:" + "e" * 64, raising=False)
     monkeypatch.setattr(cli, "collect_cp8_sub2api_gateway_live_provenance", fake_collect_cp8_sub2api_gateway_live_provenance, raising=False)
     for key in (
         "SUB2API_CP8_LIVE_BASE_URL",
