@@ -310,6 +310,41 @@ class CliControlPlaneGuardTest(unittest.TestCase):
         self.assertIn('model_discovery_overlay', summary_dump)
         self.assertNotIn('local-token-that-must-not-leak', summary_dump)
 
+
+    def test_model_discovery_overlay_uses_matrix_classification_for_safe_intent(self):
+        captured = {}
+
+        def fake_build_control_plane_intent(**kwargs):
+            captured.update(kwargs)
+            return {"intent": "ok"}
+
+        with tempfile.TemporaryDirectory() as td:
+            listen_port = _free_port()
+            forwarder = RedactingForwarder(GuardConfig(
+                listen_host='127.0.0.1',
+                listen_port=listen_port,
+                upstream_base='http://127.0.0.1:18080',
+                sub2api_auth='sk-sub2api-dedicated-claude-code-key',
+                summary_path=Path(td) / 'summary.jsonl',
+                native_attestation_secret='native-attestation-test-secret',
+                route_hint_secret=_ROUTE_HINT_SECRET,
+                route_hint_catalog=_ROUTE_HINT_CATALOG,
+                route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+            ))
+            forwarder.start_background()
+            try:
+                with unittest.mock.patch('tools.cli_control_plane_guard.build_control_plane_intent', side_effect=fake_build_control_plane_intent):
+                    request = urllib.request.Request(
+                        f'http://127.0.0.1:{listen_port}/v1/models?limit=1000',
+                        method='GET',
+                    )
+                    with urllib.request.urlopen(request, timeout=5) as resp:
+                        self.assertEqual(resp.status, 200)
+            finally:
+                forwarder.stop()
+
+        self.assertEqual(captured['classification'], 'model_capabilities_stubbed')
+
     def test_root_dir_is_current_repo_root(self):
         self.assertEqual(Path(root_dir()).resolve(), Path(__file__).resolve().parents[2])
 

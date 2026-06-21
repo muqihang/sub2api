@@ -126,6 +126,7 @@ _DEFAULT_POLICY_DICT = {
                 {"method": "GET", "path": "/api/claude_code/team_memory"},
                 {"method": "GET", "path": "/api/claude_code/model_capabilities"},
                 {"method": "GET", "path": "/api/claude_code/growthbook"},
+                {"method": "GET", "path_regex": r"/api/oauth/organizations/[^/]+/referral/eligibility"},
             ],
             "action": "quarantine_block",
         },

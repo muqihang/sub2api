@@ -2198,7 +2198,7 @@ def _decision_classification(decision: PolicyDecision) -> str:
         return "telemetry_or_eval_suppressed"
     if decision.action == "stub_json":
         if decision.reason == "model_discovery_overlay":
-            return "model_discovery_overlay_stubbed"
+            return "model_capabilities_stubbed"
         if "bootstrap_settings" in decision.reason:
             return "bootstrap_settings_or_feature_flag_stubbed"
         return "mcp_or_registry_stubbed"
