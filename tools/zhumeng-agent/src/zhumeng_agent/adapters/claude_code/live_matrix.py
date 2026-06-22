@@ -178,6 +178,8 @@ _PROVIDER_RELEASE_SENSITIVE_RE = re.compile(
     re.IGNORECASE,
 )
 _INLINE_TEXT_KEY_RE = re.compile(r"(?:^|[\s,{\[])[\"']?([A-Za-z][A-Za-z0-9_./ -]{0,80})[\"']?\s*[:=]", re.MULTILINE)
+_CP8_SAFE_LABEL_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
+_CP8_SAFE_REL_ARTIFACT_RE = re.compile(r"^[A-Za-z0-9_./-]{1,240}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -965,6 +967,8 @@ def _strict_live_scenario_artifact_verified_providers(
         model = str(payload.get("model") or "").strip()
         endpoint = str(payload.get("endpoint") or "").strip()
         upstream_request_id = str(payload.get("upstream_request_id") or "").strip()
+        artifact_route = str(payload.get("route") or "").strip()
+        artifact_client_type = str(payload.get("client_type") or "").strip()
         if not (
             payload.get("schema_version") == "cp8-live-scenario-evidence-v1"
             and payload.get("checkpoint") == "CP8"
@@ -974,8 +978,7 @@ def _strict_live_scenario_artifact_verified_providers(
             and payload.get("live_provider_verified") is True
             and payload.get("raw_sensitive_stored") is False
             and payload.get("loopback") is False
-            and str(payload.get("route") or "") == route
-            and str(payload.get("client_type") or "") == client_type
+            and _strict_live_scenario_provider_route(provider, artifact_route, artifact_client_type)
             and provider in required_providers
             and _strict_live_model_allowed(provider, model)
             and upstream_request_id
@@ -987,8 +990,17 @@ def _strict_live_scenario_artifact_verified_providers(
             proof_request_id = str(proof.get("upstream_request_id") or "").strip()
             proof_endpoint = str(proof.get("endpoint") or "").strip()
             proof_model = str(proof.get("model") or "").strip()
+            proof_route = str(proof.get("route") or "").strip()
+            proof_client_type = str(proof.get("client_type") or "").strip()
             proof_refs = tuple(str(item).strip() for item in proof.get("artifact_paths") or () if str(item).strip())
-            if proof_request_id == upstream_request_id and proof_endpoint == endpoint and proof_model == model and bool(set(provider_refs).intersection(proof_refs)):
+            if (
+                proof_request_id == upstream_request_id
+                and proof_endpoint == endpoint
+                and proof_model == model
+                and (not proof_route or proof_route == artifact_route)
+                and (not proof_client_type or proof_client_type == artifact_client_type)
+                and bool(set(provider_refs).intersection(proof_refs))
+            ):
                 verified.add(provider)
                 break
     return frozenset(verified)
@@ -1153,6 +1165,14 @@ def _sub2api_gateway_provider_route(provider: str, route: str, client_type: str)
         "deepseek": ("deepseek_bridge", "claude_code_bridge_deepseek"),
     }.get(provider)
     return bool(expected and (route, client_type) == expected)
+
+
+def _strict_live_scenario_provider_route(provider: str, route: str, client_type: str) -> bool:
+    return _sub2api_gateway_provider_route(
+        str(provider or "").strip(),
+        str(route or "").strip(),
+        str(client_type or "").strip(),
+    )
 
 
 def _validate_sub2api_gateway_base_url(base_url: str) -> str:
@@ -1543,13 +1563,14 @@ def write_cp8_live_scenario_evidence(
     scenario = str(scenario or "").strip()
     if not run_id or scenario not in REQUIRED_CP8_SCENARIOS:
         raise CP8LiveMatrixError("CP8 live scenario evidence requires valid run_id and scenario")
-    root = Path(output_root).expanduser()
-    artifacts_dir = root / "artifacts"
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    route = _cp8_safe_label(str(route or "").strip(), "CP8 live scenario route")
+    client_type = _cp8_safe_label(str(client_type or "").strip(), "CP8 live scenario client_type")
     raw = evidence or {}
     provider = str(raw.get("provider") or "").strip()
     if provider and provider not in set(_STRICT_LIVE_SCENARIO_PROVIDERS.get(scenario, ())):
         raise CP8LiveMatrixError("CP8 live scenario evidence provider is not required for scenario")
+    if provider and not _strict_live_scenario_provider_route(provider, route, client_type):
+        raise CP8LiveMatrixError("CP8 live scenario evidence route/client_type must match provider")
     artifact_payload = {
         "schema_version": "cp8-live-scenario-evidence-v1",
         "checkpoint": "CP8",
@@ -1559,31 +1580,102 @@ def write_cp8_live_scenario_evidence(
         "live_provider_verified": raw.get("live_provider_verified") is True,
         "raw_sensitive_stored": False,
         "loopback": raw.get("loopback") is True if "loopback" in raw else False,
-        "route": str(route or ""),
-        "client_type": str(client_type or ""),
+        "route": route,
+        "client_type": client_type,
     }
-    for key in ("provider", "endpoint", "upstream_request_id"):
-        value = raw.get(key)
-        if isinstance(value, str) and value.strip() and not _SENSITIVE_ARTIFACT_RE.search(value):
-            artifact_payload[key] = value.strip()
+    if provider:
+        artifact_payload["provider"] = provider
+    endpoint = _cp8_safe_endpoint(raw.get("endpoint"))
+    if endpoint:
+        artifact_payload["endpoint"] = endpoint
+    upstream_request_id = _cp8_safe_optional_label(raw.get("upstream_request_id"), "CP8 live scenario upstream_request_id")
+    if upstream_request_id:
+        artifact_payload["upstream_request_id"] = upstream_request_id
     model = raw.get("model")
     if isinstance(model, str) and _strict_live_model_allowed(provider, model):
         artifact_payload["model"] = model.strip()
     refs = raw.get("provider_provenance_refs")
-    if isinstance(refs, list) and all(isinstance(item, str) and item.strip() and ".." not in Path(item).parts and not item.startswith("/") for item in refs):
-        artifact_payload["provider_provenance_refs"] = sorted({item.strip() for item in refs})
+    if refs is not None:
+        artifact_payload["provider_provenance_refs"] = _cp8_safe_provider_provenance_refs(refs)
     for key in ("summary", "notes", "artifact_summary", "safe_evidence_summary"):
         value = raw.get(key)
-        if isinstance(value, str) and value.strip() and not _SENSITIVE_ARTIFACT_RE.search(value):
-            artifact_payload[key] = value[:4000]
+        if isinstance(value, str) and value.strip():
+            text = value.strip()[:4000]
+            if _SENSITIVE_ARTIFACT_RE.search(text) or _sensitive_inline_text_issue(text, path=key):
+                raise CP8LiveMatrixError(f"CP8 live scenario evidence {key} contains sensitive material")
+            artifact_payload[key] = text
+    issue = _sensitive_inline_evidence_issue(artifact_payload, path="scenario_evidence")
+    if issue:
+        raise CP8LiveMatrixError("sensitive inline CP8 live scenario evidence is not allowed: " + issue)
+    artifact_text = json.dumps(artifact_payload, ensure_ascii=True, sort_keys=True, indent=2)
+    text_issue = _sensitive_inline_text_issue(artifact_text, path="scenario_evidence")
+    if text_issue:
+        raise CP8LiveMatrixError("sensitive inline CP8 live scenario evidence is not allowed: " + text_issue)
+    root = Path(output_root).expanduser()
+    artifacts_dir = root / "artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
     suffix = "_" + provider if provider else ""
     artifact = artifacts_dir / f"scenario_{scenario}{suffix}.json"
-    artifact.write_text(json.dumps(artifact_payload, ensure_ascii=True, sort_keys=True, indent=2), encoding="utf-8")
+    artifact.write_text(artifact_text, encoding="utf-8")
     return {
         "path": f"artifacts/{artifact.name}",
         "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
         "sensitive_scan_clean": True,
     }
+
+
+def _cp8_safe_label(value: str, label: str) -> str:
+    value = str(value or "").strip()
+    if not value or not _CP8_SAFE_LABEL_RE.fullmatch(value) or _SENSITIVE_ARTIFACT_RE.search(value):
+        raise CP8LiveMatrixError(f"{label} must be a safe non-sensitive label")
+    normalized = _normalize_inline_evidence_key(value)
+    if _sensitive_inline_key(normalized) or _PROVIDER_RELEASE_SENSITIVE_RE.search(value) or _PROVIDER_RELEASE_SENSITIVE_RE.search(normalized):
+        raise CP8LiveMatrixError(f"{label} must be a safe non-sensitive label")
+    return value
+
+
+def _cp8_safe_optional_label(value: object, label: str) -> str:
+    if value is None:
+        return ""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return _cp8_safe_label(text, label)
+
+
+def _cp8_safe_endpoint(value: object) -> str:
+    endpoint = str(value or "").strip()
+    if not endpoint:
+        return ""
+    if _SENSITIVE_ARTIFACT_RE.search(endpoint):
+        raise CP8LiveMatrixError("CP8 live scenario endpoint contains sensitive material")
+    parsed = urlparse(endpoint)
+    if parsed.username or parsed.password or parsed.params or parsed.query or parsed.fragment:
+        raise CP8LiveMatrixError("CP8 live scenario endpoint must not contain credentials/query/fragment")
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise CP8LiveMatrixError("CP8 live scenario endpoint must be a safe URL")
+    return endpoint.rstrip("/")
+
+
+def _cp8_safe_provider_provenance_refs(value: object) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise CP8LiveMatrixError("CP8 live scenario provider provenance refs are required")
+    refs: set[str] = set()
+    for item in value:
+        ref = str(item or "").strip()
+        if (
+            not isinstance(item, str)
+            or not ref
+            or not ref.startswith("artifacts/")
+            or ref.startswith("/")
+            or ".." in Path(ref).parts
+            or not _CP8_SAFE_REL_ARTIFACT_RE.fullmatch(ref)
+            or _SENSITIVE_ARTIFACT_RE.search(ref)
+            or _sensitive_inline_text_issue(ref, path="provider_provenance_ref")
+        ):
+            raise CP8LiveMatrixError("CP8 live scenario provider provenance refs must be safe artifacts/ relative paths")
+        refs.add(ref)
+    return sorted(refs)
 
 
 def collect_cp8_sub2api_gateway_live_provenance(

@@ -3252,6 +3252,82 @@ def test_claude_code_live_matrix_cli_write_scenario_evidence_requires_safe_requi
     assert data["status"] == "not_configured"
     assert "requires --run-id, --output-root, --scenario, --route, and --client-type" in data["message"]
 
+    assert main([
+        "claude-code",
+        "live-matrix",
+        "--write-scenario-evidence",
+        "--run-id",
+        "cp8-cli-scenario",
+        "--output-root",
+        str(tmp_path),
+        "--scenario",
+        "manual_provider_switch",
+        "--route",
+        "   ",
+        "--client-type",
+        "claude_code_bridge_deepseek",
+    ]) == 1
+    whitespace = parse_output(capsys)
+    assert whitespace["command"] == "claude-code live-matrix write-scenario-evidence"
+    assert whitespace["status"] == "not_configured"
+    assert "requires --run-id, --output-root, --scenario, --route, and --client-type" in whitespace["message"]
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    (
+        ("--route", "Bearer_sk_live_secret"),
+        ("--client-type", "api_key_leak"),
+        ("--provider-provenance-ref", "artifacts/Bearer_sk_live_secret.json"),
+        ("--provider-provenance-ref", "../provider_deepseek.json"),
+        ("--provider-provenance-ref", "provider_deepseek.json"),
+    ),
+)
+def test_claude_code_live_matrix_cli_write_scenario_evidence_rejects_sensitive_or_unsafe_fields(
+    capsys,
+    tmp_path: Path,
+    flag: str,
+    value: str,
+):
+    argv = [
+        "claude-code",
+        "live-matrix",
+        "--write-scenario-evidence",
+        "--run-id",
+        "cp8-cli-scenario",
+        "--output-root",
+        str(tmp_path),
+        "--scenario",
+        "manual_provider_switch",
+        "--route",
+        "deepseek_bridge",
+        "--client-type",
+        "claude_code_bridge_deepseek",
+        "--provider",
+        "deepseek",
+        "--model",
+        "deepseek-v4-pro",
+        "--endpoint",
+        "https://api.deepseek.com/anthropic/v1/messages",
+        "--upstream-request-id",
+        "req_deepseek_live",
+        "--provider-provenance-ref",
+        "artifacts/deepseek_live_provenance.json",
+    ]
+    if flag in {"--route", "--client-type"}:
+        index = argv.index(flag)
+        argv[index + 1] = value
+    else:
+        argv.extend([flag, value])
+
+    assert main(argv) == 1
+    data = parse_output(capsys)
+
+    assert data["command"] == "claude-code live-matrix"
+    assert data["status"] == "not_configured"
+    assert "sensitive" in data["message"] or "provider provenance" in data["message"] or "safe" in data["message"]
+    assert not (tmp_path / "artifacts" / "scenario_manual_provider_switch_deepseek.json").exists()
+
 
 def test_claude_code_live_matrix_cli_collects_provider_provenance(capsys, tmp_path: Path, monkeypatch):
     calls: list[dict[str, object]] = []

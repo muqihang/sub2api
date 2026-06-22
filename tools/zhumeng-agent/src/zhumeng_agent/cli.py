@@ -933,6 +933,12 @@ def _cp8_live_scenario_evidence_payload(args: argparse.Namespace) -> dict[str, o
     return payload
 
 
+def _cp8_required_arg(args: argparse.Namespace, name: str) -> str:
+    value = str(getattr(args, name, "") or "").strip()
+    setattr(args, name, value)
+    return value
+
+
 def setup_managed_client(client_name: str, code: str, server: str) -> dict[str, object]:
     if client_name != "codex":
         raise ValueError(f"unsupported client: {client_name}")
@@ -2176,7 +2182,13 @@ def handle_claude_code_runtime_command(args: argparse.Namespace) -> int:
                     "promotes_scenario_live_flags": False,
                 })
             if getattr(args, "write_scenario_evidence", False):
-                if not args.run_id or args.output_root is None or not args.scenario or not args.route or not args.client_type:
+                if (
+                    not _cp8_required_arg(args, "run_id")
+                    or args.output_root is None
+                    or not _cp8_required_arg(args, "scenario")
+                    or not _cp8_required_arg(args, "route")
+                    or not _cp8_required_arg(args, "client_type")
+                ):
                     return emit_failed({
                         "command": "claude-code live-matrix write-scenario-evidence",
                         "status": "not_configured",

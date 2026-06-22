@@ -84,6 +84,14 @@ def _provider_model(provider: str) -> str:
     }[provider]
 
 
+def _provider_route_client(provider: str) -> tuple[str, str]:
+    return {
+        "claude": ("claude_code_native", "claude_code_native"),
+        "openai": ("openai_bridge", "claude_code_bridge_openai"),
+        "deepseek": ("deepseek_bridge", "claude_code_bridge_deepseek"),
+    }[provider]
+
+
 def _default_provider_release_classification(*, strict_live: bool = False) -> dict[str, dict[str, str]]:
     core_status = "strict-live-pass" if strict_live else "fixture-pass-only"
     core_reason = "strict_live_evidence_verified" if strict_live else "strict_live_evidence_pending"
@@ -194,6 +202,7 @@ def _add_sub2api_strict_live_scenario_artifacts(payload: dict[str, object], root
         for provider in _scenario_providers(name):
             provider_ref, _endpoint, request_id = _provider_live_artifact(root, provider)
             endpoint = _sub2api_endpoint(provider)
+            route, client_type = _provider_route_client(provider)
             artifact = artifacts_dir / f"scenario_{name}_{provider}.json"
             artifact.write_text(
                 json.dumps(
@@ -206,8 +215,8 @@ def _add_sub2api_strict_live_scenario_artifacts(payload: dict[str, object], root
                         "live_provider_verified": True,
                         "raw_sensitive_stored": False,
                         "loopback": False,
-                        "route": scenario.get("route", ""),
-                        "client_type": scenario.get("client_type", ""),
+                        "route": route,
+                        "client_type": client_type,
                         "provider": provider,
                         "model": _provider_model(provider),
                         "endpoint": endpoint,
@@ -384,6 +393,7 @@ def _add_strict_live_scenario_artifacts(payload: dict[str, object], root: Path, 
             refs.append(_cache_account_ref(root, scenario, strict_live=True))
         for provider in _scenario_providers(name):
             provider_ref, endpoint, request_id = _provider_live_artifact(root, provider)
+            route, client_type = _provider_route_client(provider)
             artifact = artifacts_dir / f"scenario_{name}_{provider}.json"
             artifact.write_text(
                 json.dumps(
@@ -396,8 +406,8 @@ def _add_strict_live_scenario_artifacts(payload: dict[str, object], root: Path, 
                         "live_provider_verified": True,
                         "raw_sensitive_stored": False,
                         "loopback": False,
-                        "route": scenario.get("route", ""),
-                        "client_type": scenario.get("client_type", ""),
+                        "route": route,
+                        "client_type": client_type,
                         "provider": provider,
                         "model": _provider_model(provider),
                         "endpoint": endpoint,
@@ -2335,6 +2345,49 @@ def test_cp8_strict_live_accepts_sub2api_gateway_provenance_only_in_sub2api_mode
     assert "live_provenance" in forged_result.failed
 
 
+def test_cp8_strict_live_accepts_multi_provider_scenario_artifacts_with_provider_specific_routes(tmp_path: Path):
+    from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_sub2api_gateway_live_provenance  # noqa: PLC0415
+
+    run_id = "cp8-provider-specific-scenario-routes"
+    provenance = collect_cp8_sub2api_gateway_live_provenance(
+        run_id=run_id,
+        output_root=tmp_path,
+        base_url="http://127.0.0.1:3012",
+        gateway_token="sub2api-gateway-token",
+        native_attestation_secret="native-attestation-secret",
+        route_hint_secret="route-hint-secret",
+        runtime_hash="sha256:" + "1" * 64,
+        overlay_hash="sha256:" + "2" * 64,
+        catalog_hash="sha256:" + "3" * 64,
+        catalog_version="cp8-live-catalog",
+        transport=lambda provider, endpoint, request: {"status": 200, "request_id": f"req_{provider}_sub2api"},
+    )
+    payload = _fixture("live_matrix_pass.json")
+    payload["mode"] = "external_provider_live_matrix"
+    payload["live_provenance"] = provenance
+    for scenario in payload["scenarios"].values():
+        scenario["live_provider_verified"] = True
+    _add_sub2api_strict_live_scenario_artifacts(payload, tmp_path, run_id)
+    manual_refs = payload["scenarios"]["manual_provider_switch"]["artifact_refs"]
+    assert len(manual_refs) == 3
+    routes_by_provider = {
+        json.loads((tmp_path / ref["path"]).read_text(encoding="utf-8"))["provider"]: (
+            json.loads((tmp_path / ref["path"]).read_text(encoding="utf-8"))["route"],
+            json.loads((tmp_path / ref["path"]).read_text(encoding="utf-8"))["client_type"],
+        )
+        for ref in manual_refs
+    }
+    assert routes_by_provider == {
+        provider: _provider_route_client(provider)
+        for provider in ("claude", "openai", "deepseek")
+    }
+
+    result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=tmp_path)
+
+    assert result.status == "pass"
+    assert result.release_gate == "external_live_passed"
+
+
 def test_cp8_strict_live_rejects_sub2api_mode_with_official_provider_endpoints(tmp_path: Path):
     payload = _fixture("live_matrix_pass.json")
     payload["mode"] = "external_provider_live_matrix"
@@ -2691,12 +2744,13 @@ def test_cp8_live_scenario_evidence_writer_creates_hashable_strict_artifact(tmp_
         ("openai", "https://api.openai.com/v1/responses"),
         ("deepseek", "https://api.deepseek.com/anthropic/v1/messages"),
     ):
+        route, client_type = _provider_route_client(provider)
         ref = write_cp8_live_scenario_evidence(
             output_root=tmp_path,
             run_id="cp8-scenario-writer",
             scenario="manual_provider_switch",
-            route=scenario.get("route", ""),
-            client_type=scenario.get("client_type", ""),
+            route=route,
+            client_type=client_type,
             evidence={
                 "status": "pass",
                 "live_provider_verified": True,
@@ -2767,3 +2821,46 @@ def test_cp8_live_scenario_evidence_writer_creates_hashable_strict_artifact(tmp_
 
     result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=tmp_path)
     assert result.status == "pass"
+
+
+@pytest.mark.parametrize(
+    ("route", "client_type", "refs", "summary"),
+    (
+        ("Bearer_sk_live_secret", "claude_code_bridge_deepseek", ["artifacts/provider_deepseek.json"], "safe summary"),
+        ("deepseek_bridge", "api_key_leak", ["artifacts/provider_deepseek.json"], "safe summary"),
+        ("deepseek_bridge", "claude_code_bridge_deepseek", ["artifacts/Bearer_sk_live_secret.json"], "safe summary"),
+        ("deepseek_bridge", "claude_code_bridge_deepseek", ["/tmp/provider_deepseek.json"], "safe summary"),
+        ("deepseek_bridge", "claude_code_bridge_deepseek", ["artifacts/../provider_deepseek.json"], "safe summary"),
+        ("deepseek_bridge", "claude_code_bridge_deepseek", ["provider_deepseek.json"], "safe summary"),
+        ("deepseek_bridge", "claude_code_bridge_deepseek", ["artifacts/provider_deepseek.json"], "raw_body: should fail"),
+    ),
+)
+def test_cp8_live_scenario_evidence_writer_rejects_unsafe_fields_before_claiming_scan_clean(
+    tmp_path: Path,
+    route: str,
+    client_type: str,
+    refs: list[str],
+    summary: str,
+):
+    from zhumeng_agent.adapters.claude_code.live_matrix import write_cp8_live_scenario_evidence  # noqa: PLC0415
+
+    with pytest.raises(CP8LiveMatrixError, match="safe|sensitive|provider provenance"):
+        write_cp8_live_scenario_evidence(
+            output_root=tmp_path,
+            run_id="cp8-scenario-writer-unsafe",
+            scenario="manual_provider_switch",
+            route=route,
+            client_type=client_type,
+            evidence={
+                "status": "pass",
+                "live_provider_verified": True,
+                "provider": "deepseek",
+                "model": "deepseek-v4-pro",
+                "endpoint": "https://api.deepseek.com/anthropic/v1/messages",
+                "upstream_request_id": "req_deepseek",
+                "provider_provenance_refs": refs,
+                "safe_evidence_summary": summary,
+            },
+        )
+
+    assert not (tmp_path / "artifacts" / "scenario_manual_provider_switch_deepseek.json").exists()

@@ -266,10 +266,18 @@ The external live matrix flow no longer requires operators to hand-write every `
 
 When `--provider` is supplied, the writer emits `artifacts/scenario_<scenario>_<provider>.json`; this is the required pattern for multi-provider strict-live scenarios so each provider binding can be verified independently.
 
+CP32 review follow-up tightened the verifier and writer contract:
+
+- Multi-provider strict-live scenario artifacts are verified against the artifact's own provider-specific route/client pair (`claude_code_native`/`claude_code_native`, `openai_bridge`/`claude_code_bridge_openai`, or `deepseek_bridge`/`claude_code_bridge_deepseek`) instead of a single top-level scenario route/client placeholder.
+- The writer now fails closed before writing when required labels are whitespace, route/client/provider-provenance refs contain sensitive-looking markers, provenance refs are not safe `artifacts/...` relative paths, or safe summaries contain raw/prompt/body/header/token-style material.
+- `sensitive_scan_clean=true` is only returned after the composed artifact payload passes the same inline/text sensitive scan used by the verifier.
+
 Local CP32 evidence:
 
 - `test_claude_code_live_matrix_cli_writes_scenario_evidence` verifies safe CLI scenario artifact generation.
 - `test_claude_code_live_matrix_cli_write_scenario_evidence_requires_safe_required_fields` verifies required-field fail-closed behavior.
+- `test_cp8_strict_live_accepts_multi_provider_scenario_artifacts_with_provider_specific_routes` verifies provider-specific route/client strict-live binding.
+- `test_cp8_live_scenario_evidence_writer_rejects_unsafe_fields_before_claiming_scan_clean` and `test_claude_code_live_matrix_cli_write_scenario_evidence_rejects_sensitive_or_unsafe_fields` verify fail-closed writer/CLI sensitive-scan behavior.
 
 Current release statement after CP32: **operator CP8 evidence collection has safe CLI support for provenance and scenario artifact writing, but real live scenario execution and external artifact verification are still required before `external_live_passed` can be claimed**.
 
@@ -340,7 +348,7 @@ PYTHONPATH=.:tools/zhumeng-agent/src tools/zhumeng-agent/.venv/bin/python -m zhu
   --endpoint "${SUB2API_CP8_LIVE_BASE_URL:-http://127.0.0.1:3012}/v1/messages" \
   --upstream-request-id "<sanitized upstream or gateway request id>" \
   --provider-provenance-ref "artifacts/deepseek_sub2api_live_provenance.json" \
-  --safe-evidence-summary "safe summary only; no prompt/body/header/token material"
+  --safe-evidence-summary "safe summary only"
 ```
 
 The scenario artifacts must use schema `cp8-live-scenario-evidence-v1`, must reference the same `run_id`, must contain provider/model/endpoint/upstream request id bindings, must point to provider provenance artifact refs, and must not contain raw prompt/body/header/token/payload/secret material. Multi-provider scenarios such as `manual_provider_switch`, `interruption`, and `cache_account_audit` need one safe scenario artifact per required provider.
