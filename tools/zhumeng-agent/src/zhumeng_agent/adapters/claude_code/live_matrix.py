@@ -184,6 +184,11 @@ _CP8_USER_TEXT_SENSITIVE_RE = re.compile(
     r"(authorization|bearer|api\s*[_-]?\s*key|cookie|raw\s*[_./-]?\s*(?:body|prompt|request|response|payload|header|headers)|prompt|body|header|headers|payload|request|response|client\s*[_-]?\s*secret|password|secret|access\s*[_-]?\s*token|refresh\s*[_-]?\s*token|session\s*[_-]?\s*token|(?:^|[^a-z0-9])token(?:$|[^a-z0-9]))",
     re.IGNORECASE,
 )
+_CP8_GENERIC_ARTIFACT_SENSITIVE_RE = re.compile(
+    r"(authorization|bearer|api\s*[_ -]?\s*key|cookie|raw\s*[_./ -]?\s*(?:body|prompt|request|response|payload|header|headers)|prompt\s*[_./ -]?\s*cache\s*[_./ -]?\s*key(?:$|[^a-z0-9])|client\s*[_ -]?\s*secret|password|secret|access\s*[_ -]?\s*token|refresh\s*[_ -]?\s*token|session\s*[_ -]?\s*token|(?:^|[^a-z0-9])token(?:$|[^a-z0-9]))",
+    re.IGNORECASE,
+)
+_CP8_GENERIC_ARTIFACT_SENSITIVE_KEYS = frozenset({"prompt_cache_key", "raw_header", "raw_headers"})
 _CP8_SCENARIO_ARTIFACT_PROTOCOL_KEYS = frozenset({
     "schema_version",
     "checkpoint",
@@ -1290,10 +1295,13 @@ def _strict_live_provider_artifact_payloads(
         if root not in (path, *path.parents) or not path.exists() or not path.is_file():
             continue
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            text = path.read_text(encoding="utf-8")
+            payload = json.loads(text)
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             continue
         if not isinstance(payload, Mapping):
+            continue
+        if _artifact_sensitive_scan_issue(text):
             continue
         expected_endpoint = str(endpoint or "").strip()
         host = (urlparse(expected_endpoint).hostname or "").lower()
@@ -1729,12 +1737,122 @@ def _artifact_sensitive_scan_issue(text: str) -> bool:
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
-        return False
+        return _artifact_jsonl_sensitive_scan_issue(text)
+    return _artifact_payload_sensitive_scan_issue(payload)
+
+
+def _artifact_jsonl_sensitive_scan_issue(text: str) -> bool:
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if _artifact_payload_sensitive_scan_issue(payload):
+            return True
+    return False
+
+
+def _artifact_payload_sensitive_scan_issue(payload: object) -> bool:
     if _sensitive_inline_evidence_issue(payload, path="artifact"):
         return True
     if isinstance(payload, Mapping) and payload.get("schema_version") == "cp8-live-scenario-evidence-v1":
         return bool(_cp8_live_scenario_payload_sensitive_issue(payload))
+    if isinstance(payload, Mapping) and payload.get("schema_version") == "cp8-live-provider-provenance-v1":
+        return bool(_cp8_live_provider_payload_sensitive_issue(payload))
+    if _cp8_generic_payload_sensitive_issue(payload):
+        return True
     return False
+
+
+def _cp8_generic_payload_sensitive_issue(value: object) -> bool:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if _cp8_generic_artifact_text_sensitive_issue(str(key), key=True):
+                return True
+            if _cp8_generic_payload_sensitive_issue(child):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_cp8_generic_payload_sensitive_issue(child) for child in value)
+    if isinstance(value, str):
+        return _cp8_generic_artifact_text_sensitive_issue(value)
+    return False
+
+
+def _cp8_generic_artifact_text_sensitive_issue(value: str, *, key: bool = False) -> bool:
+    value = str(value or "")
+    normalized = _normalize_inline_evidence_key(value)
+    if key and (_sensitive_inline_key(normalized) or normalized in _CP8_GENERIC_ARTIFACT_SENSITIVE_KEYS):
+        return True
+    if key:
+        return bool(_SENSITIVE_ARTIFACT_RE.search(value))
+    return bool(
+        _SENSITIVE_ARTIFACT_RE.search(value)
+        or _CP8_GENERIC_ARTIFACT_SENSITIVE_RE.search(value)
+        or _CP8_GENERIC_ARTIFACT_SENSITIVE_RE.search(normalized)
+    )
+
+
+def _cp8_live_provider_payload_sensitive_issue(value: object, *, path: str = "provider_provenance") -> str:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            key_text = str(key)
+            normalized = _normalize_inline_evidence_key(key_text)
+            if key_text in {
+                "schema_version",
+                "checkpoint",
+                "run_id",
+                "provider",
+                "request_model",
+                "credential_scope",
+                "host",
+                "route",
+                "client_type",
+                "upstream_request_id",
+            }:
+                try:
+                    _cp8_safe_label(str(child or ""), key_text)
+                except CP8LiveMatrixError:
+                    return path + "." + key_text
+                continue
+            if key_text == "model":
+                provider = str(value.get("provider") or "").strip()
+                model = str(child or "").strip()
+                if not (provider and _strict_live_model_allowed(provider, model)):
+                    return path + "." + key_text
+                continue
+            if key_text == "endpoint":
+                try:
+                    _cp8_safe_endpoint(child)
+                except CP8LiveMatrixError:
+                    return path + "." + key_text
+                continue
+            if key_text in {"external_live_verified", "loopback", "sub2api_gateway_verified"}:
+                if not isinstance(child, bool):
+                    return path + "." + key_text
+                continue
+            if key_text == "response_status":
+                if _int(child) <= 0:
+                    return path + "." + key_text
+                continue
+            if _sensitive_inline_key(normalized) or _cp8_generic_artifact_text_sensitive_issue(key_text, key=True):
+                return path + "." + key_text
+            child_issue = _cp8_live_provider_payload_sensitive_issue(child, path=path + "." + key_text)
+            if child_issue:
+                return child_issue
+        return ""
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            child_issue = _cp8_live_provider_payload_sensitive_issue(child, path=f"{path}[{index}]")
+            if child_issue:
+                return child_issue
+        return ""
+    if isinstance(value, str) and _cp8_generic_artifact_text_sensitive_issue(value):
+        return path
+    return ""
 
 
 def _cp8_live_scenario_payload_sensitive_issue(value: object, *, path: str = "scenario_evidence") -> str:

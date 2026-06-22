@@ -3123,3 +3123,202 @@ def test_cp8_live_scenario_evidence_writer_and_verifier_accept_deepseek_1m_model
     result = verify_cp8_live_matrix(matrix, strict_live=True, evidence_root=tmp_path)
 
     assert result.status == "pass"
+
+
+def test_cp8_artifact_ref_scan_rejects_sensitive_string_values_in_extra_artifacts(tmp_path: Path):
+    fixture_root = tmp_path / "cp8"
+    shutil.copytree(FIXTURE_DIR, fixture_root)
+    payload = json.loads((fixture_root / "live_matrix_pass.json").read_text(encoding="utf-8"))
+    extra = fixture_root / "cp8-extra.json"
+    extra.write_text(
+        json.dumps(
+            {
+                "schema_version": "cp8-extra-v1",
+                "safe_note": "raw_prompt redacted",
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    payload["scenarios"]["gpt_bridge"]["artifact_refs"].append({
+        "path": extra.name,
+        "sha256": "sha256:" + hashlib.sha256(extra.read_bytes()).hexdigest(),
+        "sensitive_scan_clean": True,
+    })
+
+    result = verify_cp8_live_matrix(payload, evidence_root=fixture_root)
+
+    assert result.status == "fail"
+    assert "gpt_bridge" in result.failed
+    assert any("artifact contains sensitive marker" in issue for issue in result.scenario_results["gpt_bridge"].issues)
+
+
+def test_cp8_artifact_ref_scan_rejects_sensitive_string_values_in_extra_jsonl_artifacts(tmp_path: Path):
+    fixture_root = tmp_path / "cp8"
+    shutil.copytree(FIXTURE_DIR, fixture_root)
+    payload = json.loads((fixture_root / "live_matrix_pass.json").read_text(encoding="utf-8"))
+    extra = fixture_root / "cp8-extra.jsonl"
+    extra.write_text(
+        "\n".join(
+            (
+                json.dumps({"schema_version": "cp8-extra-v1", "safe_note": "ok"}, ensure_ascii=True, sort_keys=True),
+                json.dumps({"schema_version": "cp8-extra-v1", "safe_note": "raw_prompt redacted"}, ensure_ascii=True, sort_keys=True),
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    payload["scenarios"]["gpt_bridge"]["artifact_refs"].append({
+        "path": extra.name,
+        "sha256": "sha256:" + hashlib.sha256(extra.read_bytes()).hexdigest(),
+        "sensitive_scan_clean": True,
+    })
+
+    result = verify_cp8_live_matrix(payload, evidence_root=fixture_root)
+
+    assert result.status == "fail"
+    assert "gpt_bridge" in result.failed
+    assert any("artifact contains sensitive marker" in issue for issue in result.scenario_results["gpt_bridge"].issues)
+
+
+def test_cp8_artifact_ref_scan_rejects_sensitive_keys_in_extra_jsonl_artifacts(tmp_path: Path):
+    fixture_root = tmp_path / "cp8"
+    shutil.copytree(FIXTURE_DIR, fixture_root)
+    payload = json.loads((fixture_root / "live_matrix_pass.json").read_text(encoding="utf-8"))
+    extra = fixture_root / "cp8-extra.jsonl"
+    extra.write_text(
+        "\n".join(
+            (
+                json.dumps({"schema_version": "cp8-extra-v1", "safe_note": "ok"}, ensure_ascii=True, sort_keys=True),
+                json.dumps({"schema_version": "cp8-extra-v1", "raw_header": "redacted"}, ensure_ascii=True, sort_keys=True),
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    payload["scenarios"]["gpt_bridge"]["artifact_refs"].append({
+        "path": extra.name,
+        "sha256": "sha256:" + hashlib.sha256(extra.read_bytes()).hexdigest(),
+        "sensitive_scan_clean": True,
+    })
+
+    result = verify_cp8_live_matrix(payload, evidence_root=fixture_root)
+
+    assert result.status == "fail"
+    assert "gpt_bridge" in result.failed
+    assert any("artifact contains sensitive marker" in issue for issue in result.scenario_results["gpt_bridge"].issues)
+
+
+def test_cp8_strict_live_rejects_provider_provenance_artifact_with_sensitive_extra_value(tmp_path: Path):
+    payload = _fixture("live_matrix_pass.json")
+    payload["mode"] = "external_provider_live_matrix"
+    run_id = "cp8-provider-sensitive-extra"
+    payload["live_provenance"] = {
+        "credential_backed": True,
+        "loopback_only": False,
+        "run_id": run_id,
+        "providers": {},
+    }
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    for provider, scope, endpoint in (
+        ("claude", "formal_pool", "https://api.anthropic.com/v1/messages"),
+        ("openai", "bridge_pool", "https://api.openai.com/v1/responses"),
+        ("deepseek", "bridge_pool", "https://api.deepseek.com/anthropic/v1/messages"),
+    ):
+        proof = {
+            "schema_version": "cp8-live-provider-provenance-v1",
+            "checkpoint": "CP8",
+            "run_id": run_id,
+            "provider": provider,
+            "model": _provider_model(provider),
+            "credential_scope": scope,
+            "endpoint": endpoint,
+            "host": endpoint.split("/")[2],
+            "external_live_verified": True,
+            "loopback": False,
+            "response_status": 200,
+            "upstream_request_id": f"req_{provider}",
+        }
+        if provider == "deepseek":
+            proof["safe_note"] = "raw_prompt redacted"
+        artifact = artifacts_dir / f"provider_{provider}.json"
+        artifact.write_text(json.dumps(proof, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+        payload["live_provenance"]["providers"][provider] = {
+            "credential_scope": scope,
+            "live_provider_verified": True,
+            "endpoint": endpoint,
+            "model": _provider_model(provider),
+            "artifact_refs": [{
+                "path": f"artifacts/provider_{provider}.json",
+                "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                "sensitive_scan_clean": True,
+            }],
+        }
+    for scenario in payload["scenarios"].values():
+        scenario["live_provider_verified"] = True
+    _add_strict_live_scenario_artifacts(payload, tmp_path, run_id)
+    _mark_core_provider_release_strict_live(payload)
+
+    result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=tmp_path)
+
+    assert result.status == "fail"
+    assert "live_provenance" in result.failed
+
+
+def test_cp8_strict_live_rejects_provider_provenance_artifact_with_sensitive_extra_key(tmp_path: Path):
+    payload = _fixture("live_matrix_pass.json")
+    payload["mode"] = "external_provider_live_matrix"
+    run_id = "cp8-provider-sensitive-extra-key"
+    payload["live_provenance"] = {
+        "credential_backed": True,
+        "loopback_only": False,
+        "run_id": run_id,
+        "providers": {},
+    }
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    for provider, scope, endpoint in (
+        ("claude", "formal_pool", "https://api.anthropic.com/v1/messages"),
+        ("openai", "bridge_pool", "https://api.openai.com/v1/responses"),
+        ("deepseek", "bridge_pool", "https://api.deepseek.com/anthropic/v1/messages"),
+    ):
+        proof = {
+            "schema_version": "cp8-live-provider-provenance-v1",
+            "checkpoint": "CP8",
+            "run_id": run_id,
+            "provider": provider,
+            "model": _provider_model(provider),
+            "credential_scope": scope,
+            "endpoint": endpoint,
+            "host": endpoint.split("/")[2],
+            "external_live_verified": True,
+            "loopback": False,
+            "response_status": 200,
+            "upstream_request_id": f"req_{provider}",
+        }
+        if provider == "deepseek":
+            proof["raw_header"] = "redacted"
+        artifact = artifacts_dir / f"provider_{provider}.json"
+        artifact.write_text(json.dumps(proof, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+        payload["live_provenance"]["providers"][provider] = {
+            "credential_scope": scope,
+            "live_provider_verified": True,
+            "endpoint": endpoint,
+            "model": _provider_model(provider),
+            "artifact_refs": [{
+                "path": f"artifacts/provider_{provider}.json",
+                "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                "sensitive_scan_clean": True,
+            }],
+        }
+    for scenario in payload["scenarios"].values():
+        scenario["live_provider_verified"] = True
+    _add_strict_live_scenario_artifacts(payload, tmp_path, run_id)
+    _mark_core_provider_release_strict_live(payload)
+
+    result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=tmp_path)
+
+    assert result.status == "fail"
+    assert "live_provenance" in result.failed
