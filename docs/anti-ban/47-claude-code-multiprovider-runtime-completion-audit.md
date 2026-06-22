@@ -378,3 +378,27 @@ Success criteria: CLI output reports `release_gate=external_live_passed`. Any lo
 ## Known limitation before external release
 
 Without the external live evidence above, the branch should be described as **local implementation complete and strict-live verifier ready**, not as **external provider live matrix passed**. This is a credential/artifact availability boundary, not a local code gap.
+
+
+## 2026-06-22 CP33 CP8 artifact sensitive-scan hardening and DeepSeek Anthropic-first re-audit
+
+Commit `5069be36f` (`fix: harden cp8 artifact sensitive scan`) closes the latest CP8 evidence-safety review gap. The verifier now treats generic JSON and JSONL artifacts as structured data and recursively scans string values instead of trusting file type or top-level shape alone. It also rejects sensitive marker keys such as `raw_header`, `raw_headers`, and `prompt_cache_key`, and provider provenance artifacts must pass their own sensitive scan before they can count as strict-live proof. Known CP8 protocol/cache artifacts keep their allowed protocol-field handling to avoid false positives while still rejecting raw prompt/body/header/token-style material.
+
+Local CP33 evidence before this documentation update:
+
+- CP8 live matrix suite: `130 passed`.
+- Python targeted bundle: `338 passed` across CLI, launcher, ToolSearch profile, provider probe, CP8 live matrix, and transcript-boundary tests.
+- Go targeted baseline remains `ok` for `./internal/service`, `./internal/server/routes`, and `./internal/pkg/apicompat` with the `ClaudeCode|AnthropicCompat|CP6|CP8|PromptCache|ToolUse|Effort|RouteTrust` selector.
+- 3017 readiness for `artifacts/claude-code-runtime/3017-claude-code-runtime-cp28.env` and active managed runtime hash `sha256:aa1e920563a2d32a6b96f7f2700a2c8f69d09bb4f2b1118974dd08a1484919b4` still reports `ready=true`.
+- 3017 health remains `{"status":"ok"}`.
+- Non-interactive managed runtime preflight still returns `2.1.177 (Claude Code)`.
+
+After the user explicitly re-emphasized that DeepSeek and similar bridge models should be treated as Anthropic-compatible rather than as `chat/completions` targets, the current implementation was re-audited against that product intent. The local code and 3017 readiness remain aligned:
+
+- DeepSeek bridge catalog/readiness keeps live DeepSeek models on `preferred_protocol=anthropic_messages`; current readiness output reports `deepseek_protocols: anthropic_messages` and `deepseek_cache_evidence_eligible: true`.
+- The Anthropic-compatible live path requires the DeepSeek route/client pair (`deepseek_bridge` / `claude_code_bridge_deepseek`), `PreferredProtocol=anthropic_messages`, a non-empty Anthropic base URL, and verified text/tool/streaming/usage/error capabilities before upstream dispatch.
+- The live Anthropic-compatible backend path posts to the provider Messages endpoint derived from the provider-route Anthropic base URL. For DeepSeek, the canary catalog's provider-route base is `https://api.deepseek.com/anthropic`, producing the Anthropic-compatible `/v1/messages` shape instead of an OpenAI chat-completions shape. This is a backend/provider routing descriptor and not permission for the Claude Code Runtime to bypass the loopback guard/Sub2API path or directly probe official providers.
+- The OpenAI-compatible DeepSeek fallback remains explicit and degraded-only: it requires `SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_OPENAI_FALLBACK_ENABLED`, a fixture-backed `anthropic_*_fixture_failed` fallback reason, and a catalog `preferred_protocol=openai_chat_completions`. The active CP28 3017 env has the fallback gate present and disabled, so fallback cannot hijack the L8 DeepSeek path.
+- DeepSeek cache evidence is still provider-truthful: `cache_control` is not treated as the cache mechanism because DeepSeek's [Anthropic API compatibility](https://api-docs.deepseek.com/guides/anthropic_api) marks those fields as ignored. The accepted evidence path follows DeepSeek [Context Caching](https://api-docs.deepseek.com/guides/kv_cache): `provider_cache_mechanism=deepseek_prefix_kv`, `selected_protocol=anthropic_messages`, stable-prefix HMAC/token bucket, and response usage counters `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`.
+
+Current release statement after CP33: **local implementation, verifier safety, and 3017 readiness remain ready for operator L8 live scenario collection; DeepSeek is Anthropic-compatible-first, with chat-completions fallback disabled in canary and excluded from strict cache evidence**. Still do not claim `external_live_passed` until real external CP8 scenario/provider artifacts are collected and verified.
