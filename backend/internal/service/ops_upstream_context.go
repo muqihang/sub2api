@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 	"time"
 
@@ -151,8 +152,70 @@ type OpsUpstreamErrorEvent struct {
 	// Kind: http_error | request_error | retry_exhausted | failover
 	Kind string `json:"kind,omitempty"`
 
+	RuntimeGuardBucket   string `json:"runtime_guard_bucket,omitempty"`
+	RuntimeGuardCategory string `json:"runtime_guard_category,omitempty"`
+	RuntimeGuardMetric   string `json:"runtime_guard_metric,omitempty"`
+	RuntimeGuardAction   string `json:"runtime_guard_action,omitempty"`
+	UpstreamCalled       *bool  `json:"upstream_called,omitempty"`
+	RawBodyLogged        *bool  `json:"raw_body_logged,omitempty"`
+	TextHash             string `json:"text_hash,omitempty"`
+	SanitizedSummary     string `json:"sanitized_summary,omitempty"`
+
 	Message string `json:"message,omitempty"`
 	Detail  string `json:"detail,omitempty"`
+}
+
+func AppendOpsOpenAIRuntimeGuardLocalEvent(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	rawMeta, ok := c.Get(OpenAIRuntimeGuardMetadataKey)
+	if !ok {
+		return
+	}
+	meta, ok := rawMeta.(OpenAIRuntimeGuardMetadata)
+	if !ok {
+		if ptr, ptrOK := rawMeta.(*OpenAIRuntimeGuardMetadata); ptrOK && ptr != nil {
+			meta = *ptr
+			ok = true
+		}
+	}
+	action := strings.TrimSpace(meta.Action)
+	switch action {
+	case "repair", "block", "learned_block":
+	default:
+		return
+	}
+	if !ok || strings.TrimSpace(meta.Category) == "" || strings.TrimSpace(meta.Metric) == "" {
+		return
+	}
+	upstreamCalled := false
+	rawBodyLogged := false
+	detailMap := map[string]any{
+		"field": meta.Field,
+		"path":  meta.Path,
+		"status": func() int {
+			if meta.Status > 0 {
+				return meta.Status
+			}
+			return 0
+		}(),
+	}
+	detail, _ := json.Marshal(detailMap)
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		Platform:             PlatformOpenAI,
+		Kind:                 "local_runtime_guard",
+		RuntimeGuardBucket:   "local_runtime_guard",
+		RuntimeGuardCategory: strings.TrimSpace(meta.Category),
+		RuntimeGuardMetric:   strings.TrimSpace(meta.Metric),
+		RuntimeGuardAction:   action,
+		UpstreamCalled:       &upstreamCalled,
+		RawBodyLogged:        &rawBodyLogged,
+		TextHash:             safeOpenAIRuntimeGuardMetadataValue(meta.TextHash),
+		SanitizedSummary:     truncateString(sanitizeOpenAIRuntimeGuardMessage(meta.SanitizedSummary), 512),
+		Message:              strings.TrimSpace(meta.Category),
+		Detail:               string(detail),
+	})
 }
 
 func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
@@ -169,8 +232,27 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	ev.UpstreamURL = strings.TrimSpace(ev.UpstreamURL)
 	ev.Message = strings.TrimSpace(ev.Message)
 	ev.Detail = strings.TrimSpace(ev.Detail)
-	if ev.Message != "" {
+	if ev.Message != "" && ev.Platform != PlatformOpenAI && ev.RuntimeGuardBucket == "" {
 		ev.Message = sanitizeUpstreamErrorMessage(ev.Message)
+	}
+	if ev.Platform == PlatformOpenAI || ev.RuntimeGuardBucket != "" {
+		if ev.RuntimeGuardBucket == "" {
+			classification := ClassifyOpenAIRuntimeGuardUpstreamError(ev.UpstreamStatusCode, nil, []byte(firstNonBlankString(ev.Detail, ev.UpstreamResponseBody)), ev.Message)
+			if classification.Bucket != "" {
+				ev.RuntimeGuardBucket = classification.Bucket
+				ev.RuntimeGuardCategory = classification.Category
+				ev.RuntimeGuardMetric = classification.Metric
+				ev.RuntimeGuardAction = classification.Action
+			}
+		}
+		if ev.RuntimeGuardBucket != "" {
+			ev.Message = sanitizeOpenAIRuntimeGuardMessage(ev.Message)
+			ev.Detail = sanitizeOpsUpstreamRuntimeGuardPayload(ev.Detail)
+			ev.UpstreamResponseBody = sanitizeOpsUpstreamRuntimeGuardPayload(ev.UpstreamResponseBody)
+			setOpsUpstreamError(c, ev.UpstreamStatusCode, ev.Message, firstNonBlankString(ev.Detail, ev.UpstreamResponseBody))
+		} else if ev.Message != "" {
+			ev.Message = sanitizeUpstreamErrorMessage(ev.Message)
+		}
 	}
 
 	var existing []*OpsUpstreamErrorEvent
@@ -255,4 +337,19 @@ func safeUpstreamURL(rawURL string) string {
 		rawURL = rawURL[:idx]
 	}
 	return rawURL
+}
+
+var (
+	encryptedContentJSONRegex = regexp.MustCompile(`(?i)("encrypted_content"\s*:\s*")[^"]*(")`)
+	promptJSONRegex           = regexp.MustCompile(`(?i)("(?:prompt|input|instructions|messages)"\s*:\s*")[^"]*(")`)
+)
+
+func sanitizeOpsUpstreamRuntimeGuardPayload(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	raw = redactOpenAIRuntimeGuardOpaquePayloadMarkers(raw)
+	raw = sanitizeUpstreamErrorMessage(raw)
+	return truncateString(raw, 2048)
 }

@@ -169,16 +169,16 @@ func TestWSResponseCreate_EmptyTypeFrameUntouched(t *testing.T) {
 
 // TestBuildOpenAIFastPolicyBlockedWSEvent_HasEventIDAndCode is the B1
 // regression: the rendered Realtime error event must carry a non-empty
-// event_id (so clients can correlate the rejection) and a stable error.code
-// ("policy_violation"). The HTTP-side equivalent is the 403 permission_error
-// JSON body emitted by writeOpenAIFastPolicyBlockedResponse.
+// event_id (so clients can correlate the rejection) and stable runtime guard
+// error.code/category fields matching the HTTP JSON response.
 func TestBuildOpenAIFastPolicyBlockedWSEvent_HasEventIDAndCode(t *testing.T) {
 	bytes := buildOpenAIFastPolicyBlockedWSEvent(&OpenAIFastBlockedError{Message: "blocked because reasons"})
 	require.NotNil(t, bytes)
 
 	require.Equal(t, "error", gjson.GetBytes(bytes, "type").String())
 	require.Equal(t, "invalid_request_error", gjson.GetBytes(bytes, "error.type").String())
-	require.Equal(t, "policy_violation", gjson.GetBytes(bytes, "error.code").String())
+	require.Equal(t, "local_policy_block", gjson.GetBytes(bytes, "error.code").String())
+	require.Equal(t, "capability.local_policy_block", gjson.GetBytes(bytes, "error.category").String())
 	require.Equal(t, "blocked because reasons", gjson.GetBytes(bytes, "error.message").String())
 
 	eventID := gjson.GetBytes(bytes, "event_id").String()
@@ -577,8 +577,9 @@ func TestWSResponseCreate_IngressBlockSendsErrorEventAndSkipsUpstream(t *testing
 	require.NoError(t, readErr, "first read must succeed and return the error event before any close frame")
 	require.Equal(t, "error", gjson.GetBytes(event, "type").String())
 	require.Equal(t, "invalid_request_error", gjson.GetBytes(event, "error.type").String())
-	// B1 regression: event_id + error.code must be populated.
-	require.Equal(t, "policy_violation", gjson.GetBytes(event, "error.code").String())
+	// B1 regression: event_id + structured runtime guard code/category must be populated.
+	require.Equal(t, "local_policy_block", gjson.GetBytes(event, "error.code").String())
+	require.Equal(t, "capability.local_policy_block", gjson.GetBytes(event, "error.category").String())
 	require.NotEmpty(t, gjson.GetBytes(event, "event_id").String(), "event_id must be present so clients can correlate")
 	require.Contains(t, gjson.GetBytes(event, "error.message").String(), "ws priority blocked for testing")
 

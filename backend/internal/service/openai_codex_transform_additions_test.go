@@ -64,3 +64,72 @@ func TestDefaultCodexSynthInstructionsModelAware(t *testing.T) {
 	require.True(t, strings.Contains(defaultCodexSynthInstructions("gpt-5.2"), "You are GPT-5.2 running in the Codex CLI"))
 	require.True(t, strings.Contains(defaultCodexSynthInstructions("gpt-5.1"), "You are GPT-5.1 running in the Codex CLI"))
 }
+
+func TestCodexOAuthTransformFlattensFunctionToolWrapper(t *testing.T) {
+	body := map[string]any{
+		"model": "gpt-5.4",
+		"tools": []any{
+			map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name":        "run_check",
+					"description": "Run a safe local check.",
+					"parameters":  map[string]any{"type": "object"},
+				},
+			},
+		},
+		"input": "run it",
+	}
+
+	result := applyCodexOAuthTransform(body, true, false)
+
+	require.True(t, result.Modified)
+	tools, ok := body["tools"].([]any)
+	require.True(t, ok)
+	tool, ok := tools[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "function", tool["type"])
+	require.Equal(t, "run_check", tool["name"])
+	require.NotContains(t, tool, "function")
+}
+
+func TestCodexOAuthTransformRemovesFunctionToolWrapperWhenNameAlreadyFlat(t *testing.T) {
+	body := map[string]any{
+		"model": "gpt-5.4",
+		"tools": []any{
+			map[string]any{
+				"type": "function",
+				"name": "run_check",
+				"function": map[string]any{
+					"name":       "run_check",
+					"parameters": map[string]any{"type": "object"},
+				},
+			},
+		},
+		"input": "run it",
+	}
+
+	result := applyCodexOAuthTransform(body, true, false)
+
+	require.True(t, result.Modified)
+	tools := body["tools"].([]any)
+	tool := tools[0].(map[string]any)
+	require.Equal(t, "run_check", tool["name"])
+	require.NotContains(t, tool, "function")
+}
+
+func TestCodexOAuthTransformPreservesFunctionCallArgumentsString(t *testing.T) {
+	body := map[string]any{
+		"model": "gpt-5.4",
+		"input": []any{
+			map[string]any{"type": "function_call", "call_id": "call_safe", "name": "run_check", "arguments": `{"target":"workspace"}`},
+		},
+	}
+
+	_ = applyCodexOAuthTransform(body, true, false)
+
+	input := body["input"].([]any)
+	call := input[0].(map[string]any)
+	require.IsType(t, "", call["arguments"])
+	require.Equal(t, `{"target":"workspace"}`, call["arguments"])
+}

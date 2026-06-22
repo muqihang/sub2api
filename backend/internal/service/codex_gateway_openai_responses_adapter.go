@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,14 @@ type codexGatewayOpenAIResponsesAdapter struct {
 	gateway *OpenAIGatewayService
 }
 
+func openAINativeResponsesResolvedModelFromBody(account *Account, body []byte) string {
+	requestedModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if requestedModel == "" {
+		return ""
+	}
+	return openAIAccountRuntimeGuardResolvedUpstreamModel(account, requestedModel)
+}
+
 func (a *codexGatewayOpenAIResponsesAdapter) Complete(ctx context.Context, account *Account, req CodexGatewayProviderRequest) (CodexGatewayDeepSeekAdapterResult, error) {
 	if a == nil || a.gateway == nil {
 		return CodexGatewayDeepSeekAdapterResult{}, fmt.Errorf("codex gateway openai adapter is not configured")
@@ -26,12 +35,21 @@ func (a *codexGatewayOpenAIResponsesAdapter) Complete(ctx context.Context, accou
 	if err != nil {
 		return CodexGatewayDeepSeekAdapterResult{}, err
 	}
-	codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai", req.Request.Headers, body)
+	upstreamModel := openAINativeResponsesResolvedModelFromBody(account, body)
 	resp, err := a.gateway.DoNativeResponsesRequest(ctx, account, req.Request.Headers, body, false)
 	if err != nil {
+		var runtimeBlocked *OpenAIRuntimeGuardBlockedError
+		if errors.As(err, &runtimeBlocked) {
+			return CodexGatewayDeepSeekAdapterResult{}, &codexGatewayLocalServiceResponseError{
+				Response: codexGatewayOpenAIRuntimeGuardServiceResponse(runtimeBlocked),
+				Err:      err,
+			}
+		}
+		codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai", req.Request.Headers, body)
 		return CodexGatewayDeepSeekAdapterResult{}, codexGatewayOpenAIRequestFailoverError(err)
 	}
 	defer resp.Body.Close()
+	codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai", req.Request.Headers, body)
 
 	body, err = io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
@@ -46,7 +64,7 @@ func (a *codexGatewayOpenAIResponsesAdapter) Complete(ctx context.Context, accou
 	if resp.StatusCode >= 400 {
 		msg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 		if a.gateway.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, msg, body) {
-			a.gateway.handleFailoverSideEffectsWithBody(ctx, resp.StatusCode, resp.Header, body, account)
+			a.gateway.handleFailoverSideEffectsWithBody(ctx, resp.StatusCode, resp.Header, body, account, upstreamModel, "responses")
 			return CodexGatewayDeepSeekAdapterResult{}, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: append([]byte(nil), body...)}
 		}
 		return CodexGatewayDeepSeekAdapterResult{ServiceResponse: serviceResp}, nil
@@ -94,12 +112,29 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 	if err != nil {
 		return CodexGatewayProviderResult{}, err
 	}
-	codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai", req.Request.Headers, body)
+	upstreamModel := openAINativeResponsesResolvedModelFromBody(account, body)
 	resp, err := a.gateway.DoNativeResponsesRequest(ctx, account, req.Request.Headers, body, true)
 	if err != nil {
+		var runtimeBlocked *OpenAIRuntimeGuardBlockedError
+		if errors.As(err, &runtimeBlocked) {
+			serviceResp := codexGatewayOpenAIRuntimeGuardServiceResponse(runtimeBlocked)
+			errType := strings.TrimSpace(gjson.GetBytes(serviceResp.Body, "error.type").String())
+			errCode := strings.TrimSpace(gjson.GetBytes(serviceResp.Body, "error.code").String())
+			errCategory := strings.TrimSpace(gjson.GetBytes(serviceResp.Body, "error.category").String())
+			message := strings.TrimSpace(gjson.GetBytes(serviceResp.Body, "error.message").String())
+			if err := writeCodexGatewayStreamFailureWithRawFields(req.Request.StreamWriter, "", errType, errCode, errCategory, message); err != nil {
+				return CodexGatewayProviderResult{}, err
+			}
+			if req.Request.Flush != nil {
+				req.Request.Flush()
+			}
+			return CodexGatewayProviderResult{}, errCodexGatewayRuntimeGuardStreamHandled
+		}
+		codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai", req.Request.Headers, body)
 		return CodexGatewayProviderResult{}, codexGatewayOpenAIRequestFailoverError(err)
 	}
 	defer resp.Body.Close()
+	codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai", req.Request.Headers, body)
 	codexGatewayCaptureUpstreamResponse(req.CaptureTrace, resp.Header, resp.StatusCode, nil)
 
 	if resp.StatusCode >= 400 {
@@ -110,7 +145,7 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 		codexGatewayCaptureUpstreamResponse(req.CaptureTrace, resp.Header, resp.StatusCode, body)
 		msg := strings.TrimSpace(extractUpstreamErrorMessage(body))
 		if a.gateway.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, msg, body) {
-			a.gateway.handleFailoverSideEffectsWithBody(ctx, resp.StatusCode, resp.Header, body, account)
+			a.gateway.handleFailoverSideEffectsWithBody(ctx, resp.StatusCode, resp.Header, body, account, upstreamModel, "responses")
 			return CodexGatewayProviderResult{}, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: append([]byte(nil), body...)}
 		}
 		mapped := codexGatewayDeepSeekMapErrorBody(resp.StatusCode, body)
@@ -311,6 +346,34 @@ func (a *codexGatewayOpenAIResponsesAdapter) Stream(ctx context.Context, account
 		}
 	}
 	return result, nil
+}
+
+func codexGatewayOpenAIRuntimeGuardServiceResponse(blocked *OpenAIRuntimeGuardBlockedError) CodexGatewayServiceResponse {
+	status := http.StatusBadRequest
+	body := []byte(`{"error":{"type":"invalid_request_error","code":"local_policy_block","category":"capability.local_policy_block","message":"Unsupported reasoning_effort value"}}`)
+	if blocked != nil {
+		if blocked.StatusCode > 0 {
+			status = blocked.StatusCode
+		}
+		if len(blocked.Payload) > 0 {
+			body = append([]byte(nil), blocked.Payload...)
+		}
+	}
+	if strings.TrimSpace(gjson.GetBytes(body, "error.code").String()) == "" {
+		if patched, err := sjson.SetBytes(body, "error.code", string(OpenAIRuntimeGuardErrorCodeLocalPolicyBlock)); err == nil {
+			body = patched
+		}
+	}
+	if strings.TrimSpace(gjson.GetBytes(body, "error.category").String()) == "" {
+		if patched, err := sjson.SetBytes(body, "error.category", openAIRuntimeGuardCapabilityCategoryLocalPolicyBlock); err == nil {
+			body = patched
+		}
+	}
+	return CodexGatewayServiceResponse{
+		StatusCode: status,
+		Headers:    http.Header{"Content-Type": []string{"application/json; charset=utf-8"}},
+		Body:       body,
+	}
 }
 
 func codexGatewayOpenAIRequestFailoverError(err error) error {

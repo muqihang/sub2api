@@ -345,6 +345,7 @@ func TestOpenAIGatewayService_SelectAccountByPreviousResponseID_CapabilityMismat
 		"text-embedding-3-small",
 		nil,
 		OpenAIEndpointCapabilityEmbeddings,
+		"",
 		false,
 	)
 	require.NoError(t, err)

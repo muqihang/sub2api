@@ -117,6 +117,19 @@ func wrapUsageRecordTaskContext(parent context.Context, task service.UsageRecord
 	}
 }
 
+func isOpenAIRuntimeGuardLocalBlock(err error) bool {
+	var blocked *service.OpenAIRuntimeGuardBlockedError
+	if errors.As(err, &blocked) {
+		return true
+	}
+	var selectionErr *service.OpenAIRuntimeGuardSelectionError
+	if errors.As(err, &selectionErr) {
+		return true
+	}
+	var fastBlocked *service.OpenAIFastBlockedError
+	return errors.As(err, &fastBlocked)
+}
+
 // NewOpenAIGatewayHandler creates a new OpenAIGatewayHandler.
 //
 // The constructor intentionally keeps a flexible dependency tail because older
@@ -768,6 +781,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "compact_not_supported", "No available OpenAI accounts support /responses/compact", streamStarted)
 					return
 				}
+				if h.handleOpenAISelectionError(c, err, streamStarted, "Service temporarily unavailable") {
+					return
+				}
 				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable", streamStarted)
 				return
 			}
@@ -880,6 +896,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						zap.Int("max_switches", maxAccountSwitches),
 					)
 					continue
+				}
+				if isOpenAIRuntimeGuardLocalBlock(err) {
+					reqLog.Warn("openai.runtime_guard_blocked", zap.Int64("account_id", account.ID), zap.Error(err))
+					return
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 				if h.handleOpenAIEgressPolicyError(c, err, streamStarted, false) {
@@ -1304,6 +1324,10 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 						zap.Int64("account_id", account.ID),
 						zap.Error(err),
 					)
+					return
+				}
+				if isOpenAIRuntimeGuardLocalBlock(err) {
+					reqLog.Warn("openai_messages.runtime_guard_blocked", zap.Int64("account_id", account.ID), zap.Error(err))
 					return
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
@@ -1885,6 +1909,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				zap.Error(err),
 				zap.Int("excluded_account_count", len(failedAccountIDs)),
 			)
+			var selectionErr *service.OpenAIRuntimeGuardSelectionError
+			if errors.As(err, &selectionErr) && selectionErr != nil {
+				writeOpenAISelectionErrorWS(ctx, wsConn, h.openAIWSWriteTimeout(), selectionErr)
+				closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.OpenAIRuntimeGuardSelectionWSReason(selectionErr))
+				return
+			}
 			if lastFailoverErr != nil {
 				closeOpenAIWSFailoverExhausted(wsConn, lastFailoverErr)
 			} else {
@@ -1932,6 +1962,39 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		if err := h.gatewayService.BindStickySession(ctx, apiKey.GroupID, sessionHash, account.ID); err != nil {
 			reqLog.Warn("openai.websocket_bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		}
+
+		// Apply channel mapping and OAuth Runtime Guard before acquiring the
+		// upstream access token, so invalid/unknown reasoning_effort never reaches
+		// the OAuth WS upstream from the direct ingress entrypoint.
+		wsFirstMessage := firstMessage
+		if channelMappingWS.Mapped {
+			wsFirstMessage = h.gatewayService.ReplaceModelInBody(firstMessage, channelMappingWS.MappedModel)
+		}
+		// 切组/会话失配防护：previous_response_id 未在当前分组命中粘连账号（StickyPreviousHit=false），
+		// 说明该会话链不属于本次调度到的账号，原样转发会触发上游会话链鉴权失败（“鉴权失败，请检查 API Key”）。
+		// 故剥离首包里的 previous_response_id，改用首包内 input 重建上下文；带 function_call_output 的
+		// 工具续链无法重建，保持原样。仅作用于首轮首包，后续 turn 的续链由 WS 转发层既有逻辑处理。
+		if previousResponseID != "" && !scheduleDecision.StickyPreviousHit &&
+			!service.ValidateFunctionCallOutputContextBytes(wsFirstMessage).HasFunctionCallOutput {
+			wsFirstMessage = service.RemovePreviousResponseIDFromBody(wsFirstMessage)
+			reqLog.Debug("openai.websocket_previous_response_id_stripped_cross_group",
+				zap.Int64("account_id", account.ID),
+				zap.String("schedule_layer", scheduleDecision.Layer),
+			)
+		}
+		guardedFirstMessage, runtimeBlocked, runtimeErr := h.gatewayService.ApplyOpenAIRuntimeGuardToWSResponseCreatePayload(account, wsFirstMessage)
+		if runtimeErr != nil {
+			reqLog.Warn("openai.websocket_runtime_guard_failed", zap.Int64("account_id", account.ID), zap.Error(runtimeErr))
+			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "invalid websocket request payload")
+			return
+		}
+		if runtimeBlocked != nil {
+			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalPolicyDenied)
+			h.gatewayService.WriteOpenAIRuntimeGuardBlockedWSEvent(ctx, wsConn, runtimeBlocked)
+			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.OpenAIRuntimeGuardBlockedWSReason(runtimeBlocked))
+			return
+		}
+		wsFirstMessage = guardedFirstMessage
 
 		token, _, err := h.gatewayService.GetAccessToken(ctx, account)
 		if err != nil {
@@ -2049,24 +2112,6 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			},
 		}
 
-		// 应用渠道模型映射到 WebSocket 首条消息
-		wsFirstMessage := firstMessage
-		if channelMappingWS.Mapped {
-			wsFirstMessage = h.gatewayService.ReplaceModelInBody(firstMessage, channelMappingWS.MappedModel)
-		}
-		// 切组/会话失配防护：previous_response_id 未在当前分组命中粘连账号（StickyPreviousHit=false），
-		// 说明该会话链不属于本次调度到的账号，原样转发会触发上游会话链鉴权失败（“鉴权失败，请检查 API Key”）。
-		// 故剥离首包里的 previous_response_id，改用首包内 input 重建上下文；带 function_call_output 的
-		// 工具续链无法重建，保持原样。仅作用于首轮首包，后续 turn 的续链由 WS 转发层既有逻辑处理。
-		if previousResponseID != "" && !scheduleDecision.StickyPreviousHit &&
-			!service.ValidateFunctionCallOutputContextBytes(wsFirstMessage).HasFunctionCallOutput {
-			wsFirstMessage = service.RemovePreviousResponseIDFromBody(wsFirstMessage)
-			reqLog.Debug("openai.websocket_previous_response_id_stripped_cross_group",
-				zap.Int64("account_id", account.ID),
-				zap.String("schedule_layer", scheduleDecision.Layer),
-			)
-		}
-
 		// WebSocket 首包可能很大，hash 必须在 hooks 外算成字符串，避免 AfterTurn 闭包保活请求体。
 		requestPayloadHash = service.HashUsageRequestPayload(wsFirstMessage)
 
@@ -2097,6 +2142,23 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					return
 				}
 				continue
+			}
+
+			if isOpenAIRuntimeGuardLocalBlock(err) {
+				closeStatus, closeReason := summarizeWSCloseErrorForLog(err)
+				reqLog.Warn("openai.websocket_runtime_guard_blocked",
+					zap.Int64("account_id", account.ID),
+					zap.Error(err),
+					zap.String("close_status", closeStatus),
+					zap.String("close_reason", closeReason),
+				)
+				var closeErr *service.OpenAIWSClientCloseError
+				if errors.As(err, &closeErr) {
+					closeOpenAIClientWS(wsConn, closeErr.StatusCode(), closeErr.Reason())
+				} else {
+					closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "local policy block")
+				}
+				return
 			}
 
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
@@ -2373,6 +2435,50 @@ func (h *OpenAIGatewayHandler) mapUpstreamError(statusCode int) (int, string, st
 	}
 }
 
+func (h *OpenAIGatewayHandler) handleOpenAISelectionError(c *gin.Context, err error, streamStarted bool, fallbackMessage string) bool {
+	var selectionErr *service.OpenAIRuntimeGuardSelectionError
+	if !errors.As(err, &selectionErr) || selectionErr == nil {
+		return false
+	}
+	message := strings.TrimSpace(selectionErr.Message)
+	if message == "" {
+		message = strings.TrimSpace(fallbackMessage)
+	}
+	if message == "" {
+		message = "No available compatible accounts"
+	}
+	h.handleStreamingAwareErrorWithCodeCategory(
+		c,
+		http.StatusServiceUnavailable,
+		"api_error",
+		string(selectionErr.Code),
+		selectionErr.Category,
+		message,
+		streamStarted,
+	)
+	return true
+}
+
+func (h *OpenAIGatewayHandler) handleStreamingAwareErrorWithCodeCategory(c *gin.Context, status int, errType, code, category, message string, streamStarted bool) {
+	if streamStarted {
+		if inboundIsResponses(c) {
+			if writeResponsesFailedSSEWithCodeCategory(c, errType, code, category, message) {
+				return
+			}
+		}
+		flusher, ok := c.Writer.(http.Flusher)
+		if ok {
+			errorEvent := "event: error\ndata: " + `{"error":{"type":` + strconv.Quote(errType) + `,"code":` + strconv.Quote(code) + `,"category":` + strconv.Quote(category) + `,"message":` + strconv.Quote(message) + `}}` + "\n\n"
+			if _, err := fmt.Fprint(c.Writer, errorEvent); err != nil {
+				_ = c.Error(err)
+			}
+			flusher.Flush()
+		}
+		return
+	}
+	h.errorResponseWithCodeCategory(c, status, errType, code, category, message)
+}
+
 // handleStreamingAwareError handles errors that may occur after streaming has started
 func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
 	if streamStarted {
@@ -2476,6 +2582,20 @@ func (h *OpenAIGatewayHandler) errorResponse(c *gin.Context, status int, errType
 	})
 }
 
+func (h *OpenAIGatewayHandler) errorResponseWithCodeCategory(c *gin.Context, status int, errType, code, category, message string) {
+	errorObj := gin.H{
+		"type":    errType,
+		"message": message,
+	}
+	if strings.TrimSpace(code) != "" {
+		errorObj["code"] = strings.TrimSpace(code)
+	}
+	if strings.TrimSpace(category) != "" {
+		errorObj["category"] = strings.TrimSpace(category)
+	}
+	c.JSON(status, gin.H{"error": errorObj})
+}
+
 func setOpenAIClientTransportHTTP(c *gin.Context) {
 	service.SetOpenAIClientTransport(c, service.OpenAIClientTransportHTTP)
 }
@@ -2508,6 +2628,26 @@ func isOpenAIWSUpgradeRequest(r *http.Request) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(strings.TrimSpace(r.Header.Get("Connection"))), "upgrade")
+}
+
+func (h *OpenAIGatewayHandler) openAIWSWriteTimeout() time.Duration {
+	if h != nil && h.cfg != nil && h.cfg.Gateway.OpenAIWS.WriteTimeoutSeconds > 0 {
+		return time.Duration(h.cfg.Gateway.OpenAIWS.WriteTimeoutSeconds) * time.Second
+	}
+	return 3 * time.Second
+}
+
+func writeOpenAISelectionErrorWS(ctx context.Context, conn *coderws.Conn, timeout time.Duration, selectionErr *service.OpenAIRuntimeGuardSelectionError) {
+	if conn == nil || selectionErr == nil {
+		return
+	}
+	eventBytes := service.BuildOpenAIRuntimeGuardSelectionWSEvent(selectionErr)
+	if eventBytes == nil {
+		return
+	}
+	writeCtx, cancel := context.WithTimeout(ctx, timeout)
+	_ = conn.Write(writeCtx, coderws.MessageText, eventBytes)
+	cancel()
 }
 
 func closeOpenAIClientWS(conn *coderws.Conn, status coderws.StatusCode, reason string) {

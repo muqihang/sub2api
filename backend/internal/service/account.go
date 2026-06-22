@@ -1245,14 +1245,19 @@ func (a *Account) openAIEndpointCapabilitySet() (map[string]bool, bool) {
 }
 
 func (a *Account) SupportsOpenAIImageCapability(capability OpenAIImagesCapability) bool {
-	if !a.IsOpenAI() {
+	if a == nil || !a.IsOpenAI() {
 		return false
 	}
-	switch capability {
-	case OpenAIImagesCapabilityBasic, OpenAIImagesCapabilityNative:
-		return a.Type == AccountTypeOAuth || a.Type == AccountTypeAPIKey
-	default:
+	if capability == "" {
 		return true
+	}
+	switch a.Type {
+	case AccountTypeAPIKey:
+		return capability == OpenAIImagesCapabilityBasic || capability == OpenAIImagesCapabilityNative
+	case AccountTypeOAuth:
+		return openAIOAuthAccountSupportsImageCapability(a, capability)
+	default:
+		return false
 	}
 }
 

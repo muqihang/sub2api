@@ -134,6 +134,10 @@ func (e *CodexGatewayProviderExecutor) Complete(ctx context.Context, req CodexGa
 			codexGatewayRecordUsageBestEffort(ctx, e.usageRecorder, req, account, result.ProviderResult, false, startedAt)
 			return &result.ServiceResponse, nil
 		}
+		var localResp *codexGatewayLocalServiceResponseError
+		if errors.As(err, &localResp) && localResp != nil {
+			return &localResp.Response, localResp
+		}
 		var failoverErr *UpstreamFailoverError
 		if errors.As(err, &failoverErr) {
 			codexGatewayCaptureProviderFailover(req, attempt, failoverErr)
@@ -454,12 +458,16 @@ func (e *CodexGatewayProviderExecutor) executeOpenAIHostedWebSearchWithModel(ctx
 		if err != nil {
 			return "", true, err
 		}
-		codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai_hosted_web_search", http.Header{}, body)
 		resp, err := e.openaiGateway.DoNativeResponsesRequest(ctx, account, http.Header{}, body, false)
 		if err != nil {
+			var runtimeBlocked *OpenAIRuntimeGuardBlockedError
+			if !errors.As(err, &runtimeBlocked) {
+				codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai_hosted_web_search", http.Header{}, body)
+			}
 			excluded[account.ID] = struct{}{}
 			continue
 		}
+		codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai_hosted_web_search", http.Header{}, body)
 		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		resp.Body.Close()
 		if readErr != nil {
@@ -515,12 +523,16 @@ func (e *CodexGatewayProviderExecutor) executeOpenAIHostedImageVisionWithModel(c
 		if err != nil {
 			return "", true, err
 		}
-		codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai_hosted_image_vision", http.Header{}, body)
 		resp, err := e.openaiGateway.DoNativeResponsesRequest(ctx, account, http.Header{}, body, false)
 		if err != nil {
+			var runtimeBlocked *OpenAIRuntimeGuardBlockedError
+			if !errors.As(err, &runtimeBlocked) {
+				codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai_hosted_image_vision", http.Header{}, body)
+			}
 			excluded[account.ID] = struct{}{}
 			continue
 		}
+		codexGatewayCaptureUpstreamRequest(req.CaptureTrace, "openai_hosted_image_vision", http.Header{}, body)
 		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		resp.Body.Close()
 		if readErr != nil {
@@ -1046,18 +1058,26 @@ func (s *codexGatewayStreamRecorder) Flush() {
 }
 
 func writeCodexGatewayStreamFailure(w io.Writer, responseID string, errType, errCode, message string) error {
+	return writeCodexGatewayStreamFailureWithRawFields(w, responseID, errType, errCode, "", message)
+}
+
+func writeCodexGatewayStreamFailureWithRawFields(w io.Writer, responseID string, errType, errCode, errCategory, message string) error {
 	writer := NewCodexGatewayResponseEventWriter(w)
+	rawFields := map[string]json.RawMessage{
+		"type": json.RawMessage(fmt.Sprintf("%q", strings.TrimSpace(errType))),
+	}
+	if strings.TrimSpace(errCategory) != "" {
+		rawFields["category"] = json.RawMessage(fmt.Sprintf("%q", strings.TrimSpace(errCategory)))
+	}
 	return writer.WriteResponseFailed(CodexGatewayResponse{
 		ID:     strings.TrimSpace(responseID),
 		Object: "response",
 		Status: "failed",
 		Output: []json.RawMessage{},
 		Error: &CodexGatewayResponseError{
-			Code:    strings.TrimSpace(errCode),
-			Message: strings.TrimSpace(message),
-			RawFields: map[string]json.RawMessage{
-				"type": json.RawMessage(fmt.Sprintf("%q", strings.TrimSpace(errType))),
-			},
+			Code:      strings.TrimSpace(errCode),
+			Message:   strings.TrimSpace(message),
+			RawFields: rawFields,
 		},
 	})
 }

@@ -176,6 +176,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			)
 			if len(failedAccountIDs) == 0 {
 				markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
+				if h.handleOpenAISelectionError(c, err, streamStarted, "No available compatible accounts") {
+					return
+				}
 				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available compatible accounts", streamStarted)
 				return
 			}
@@ -292,6 +295,13 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 						zap.Int("max_switches", maxAccountSwitches),
 					)
 					continue
+				}
+				if isOpenAIRuntimeGuardLocalBlock(err) {
+					reqLog.Warn("openai.images.runtime_guard_local_blocked",
+						zap.Int64("account_id", account.ID),
+						zap.Error(err),
+					)
+					return
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 				upstreamErrorAlreadyCommunicated := openAIForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)

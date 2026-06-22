@@ -22,6 +22,7 @@ type openAITokenCacheStub struct {
 	getErr           error
 	setErr           error
 	deleteErr        error
+	deleteCalled     int32
 	lockAcquired     bool
 	lockErr          error
 	releaseLockErr   error
@@ -61,6 +62,7 @@ func (s *openAITokenCacheStub) SetAccessToken(ctx context.Context, cacheKey stri
 }
 
 func (s *openAITokenCacheStub) DeleteAccessToken(ctx context.Context, cacheKey string) error {
+	atomic.AddInt32(&s.deleteCalled, 1)
 	if s.deleteErr != nil {
 		return s.deleteErr
 	}
@@ -1053,6 +1055,79 @@ func TestOpenAITokenProvider_RuntimeMetrics_LockAcquireFailure(t *testing.T) {
 	metrics := provider.SnapshotRuntimeMetrics()
 	require.GreaterOrEqual(t, metrics.LockAcquireFailure, int64(1))
 	require.GreaterOrEqual(t, metrics.RefreshRequests, int64(1))
+}
+
+func TestOpenAITokenProvider_Real_RefreshErrorFailsClosedAndBlocks(t *testing.T) {
+	cache := newOpenAITokenCacheStub()
+	repo := &rateLimitAccountRepoStub{}
+	expiresAt := time.Now().Add(time.Minute).UTC().Format(time.RFC3339)
+	account := &Account{
+		ID:       211,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token":  "stale-token",
+			"refresh_token": "refresh-token",
+			"expires_at":    expiresAt,
+		},
+	}
+	repo.account = account
+	cacheKey := OpenAITokenCacheKey(account)
+	cache.tokens[cacheKey] = "stale-cached-token"
+	cache.getErr = errors.New("force cache miss")
+	executor := &refreshAPIExecutorStub{needsRefresh: true, err: errors.New("invalid_grant: refresh token revoked")}
+	provider := NewOpenAITokenProvider(repo, cache, nil)
+	provider.SetRefreshAPI(NewOAuthRefreshAPI(repo, cache), executor)
+	blocker := &runtimeBlockRecorder{}
+	provider.SetAccountRuntimeBlocker(blocker)
+
+	token, err := provider.GetAccessToken(context.Background(), account)
+
+	require.Error(t, err)
+	require.Empty(t, token)
+	require.Equal(t, 1, executor.refreshCalls)
+	require.Equal(t, int32(1), atomic.LoadInt32(&cache.deleteCalled), "stale cached access token must be removed")
+	require.Equal(t, 1, repo.setErrorCalls, "terminal refresh failure should mark account for relogin")
+	require.Equal(t, 1, repo.updateExtraCalls)
+	require.Equal(t, OpenAIAuthStateTerminal, repo.lastExtra["openai_auth_state"])
+	require.Len(t, blocker.accounts, 1)
+	require.Equal(t, account.ID, blocker.accounts[0].ID)
+	require.Equal(t, "openai_refresh_terminal", blocker.reasons[0])
+}
+
+func TestOpenAITokenProvider_Real_RetryableRefreshErrorFailsClosedWithShortCooldown(t *testing.T) {
+	cache := newOpenAITokenCacheStub()
+	repo := &rateLimitAccountRepoStub{}
+	expiresAt := time.Now().Add(time.Minute).UTC().Format(time.RFC3339)
+	account := &Account{
+		ID:       212,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token":  "stale-token",
+			"refresh_token": "refresh-token",
+			"expires_at":    expiresAt,
+		},
+	}
+	repo.account = account
+	cache.getErr = errors.New("force cache miss")
+	executor := &refreshAPIExecutorStub{needsRefresh: true, err: errors.New("oauth refresh failed: upstream timeout")}
+	provider := NewOpenAITokenProvider(repo, cache, nil)
+	provider.SetRefreshAPI(NewOAuthRefreshAPI(repo, cache), executor)
+	blocker := &runtimeBlockRecorder{}
+	provider.SetAccountRuntimeBlocker(blocker)
+
+	token, err := provider.GetAccessToken(context.Background(), account)
+
+	require.Error(t, err)
+	require.Empty(t, token)
+	require.Equal(t, 0, repo.setErrorCalls, "retryable refresh failures should not permanently disable the account")
+	require.Equal(t, 1, repo.tempCalls, "retryable refresh failures should short-cooldown scheduling")
+	require.Equal(t, OpenAIAuthStateCooling, repo.lastExtra["openai_auth_state"])
+	require.Equal(t, int32(1), atomic.LoadInt32(&cache.deleteCalled))
+	require.Len(t, blocker.accounts, 1)
+	require.Equal(t, "openai_refresh_retryable", blocker.reasons[0])
+	require.WithinDuration(t, time.Now().Add(openAIRuntimeGuardLearnedBlockTemporaryTTL), blocker.until[0], 2*time.Second)
 }
 
 func TestOpenAITokenProvider_NoRefreshTokenExpired_DisablesAccount(t *testing.T) {

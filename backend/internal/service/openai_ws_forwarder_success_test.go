@@ -1758,12 +1758,13 @@ func (d *openAIWSCaptureDialer) DialCount() int {
 }
 
 type openAIWSCaptureConn struct {
-	mu         sync.Mutex
-	readDelays []time.Duration
-	events     [][]byte
-	lastWrite  map[string]any
-	writes     []map[string]any
-	closed     bool
+	mu             sync.Mutex
+	readDelays     []time.Duration
+	events         [][]byte
+	blockWhenEmpty bool
+	lastWrite      map[string]any
+	writes         []map[string]any
+	closed         bool
 }
 
 func (c *openAIWSCaptureConn) WriteJSON(ctx context.Context, value any) error {
@@ -1803,8 +1804,13 @@ func (c *openAIWSCaptureConn) ReadMessage(ctx context.Context) ([]byte, error) {
 		return nil, errOpenAIWSConnClosed
 	}
 	if len(c.events) == 0 {
+		blockWhenEmpty := c.blockWhenEmpty
 		c.mu.Unlock()
-		return nil, io.EOF
+		if !blockWhenEmpty {
+			return nil, io.EOF
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}
 	delay := time.Duration(0)
 	if len(c.readDelays) > 0 {

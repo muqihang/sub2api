@@ -2475,7 +2475,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				return nil, wrapOpenAIWSFallback(fallbackReason, errors.New(errMsg))
 			}
 			statusCode := openAIWSErrorHTTPStatusFromRaw(errCodeRaw, errTypeRaw)
-			setOpsUpstreamError(c, statusCode, errMsg, "")
+			appendOpenAIWSRuntimeGuardOpsError(c, account, statusCode, message, errMsg, lease.HandshakeHeaders())
 			if reqStream && !clientDisconnected {
 				flushBufferedStreamEvents("error_event")
 				emitStreamMessage(message, true)
@@ -2776,6 +2776,24 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", sanitizeErr)
 		}
 		normalized = sanitizedPayload
+		guardModel := strings.TrimSpace(gjson.GetBytes(normalized, "model").String())
+		if guardModel == "" {
+			guardModel = ingressSessionOriginalModel
+		}
+		guardApplied, runtimeBlocked, runtimeErr := s.applyOpenAIRuntimeGuardToWSResponseCreatePayloadWithModel(ctx, account, normalized, guardModel)
+		if runtimeErr != nil {
+			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", runtimeErr)
+		}
+		if runtimeBlocked != nil {
+			MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+			writeOpenAIRuntimeGuardBlockedWSEvent(ctx, clientConn, s.openAIWSWriteTimeout(), runtimeBlocked)
+			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(
+				coderws.StatusPolicyViolation,
+				openAIRuntimeGuardBlockedWSReason(runtimeBlocked),
+				runtimeBlocked,
+			)
+		}
+		normalized = guardApplied
 
 		values := gjson.GetManyBytes(normalized, "model", "prompt_cache_key", "previous_response_id")
 		originalModel := strings.TrimSpace(values[0].String())
@@ -2871,6 +2889,19 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		imageIntent := IsImageGenerationIntent(openAIResponsesEndpoint, originalModel, normalized)
 		if imageIntent && !imageGenerationAllowed {
 			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, ImageGenerationPermissionMessage(), nil)
+		}
+		imageCapability := OpenAIImagesCapability("")
+		if imageIntent {
+			imageCapability = OpenAIImagesCapabilityBasic
+		}
+		if selectionErr := openAIAccountRuntimeGuardSelectionErrorForUpstream(account, originalModel, upstreamModel, imageCapability); selectionErr != nil {
+			MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+			writeOpenAIRuntimeGuardSelectionWSEvent(ctx, clientConn, s.openAIWSWriteTimeout(), selectionErr)
+			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(
+				coderws.StatusPolicyViolation,
+				OpenAIRuntimeGuardSelectionWSReason(selectionErr),
+				selectionErr,
+			)
 		}
 		imageBillingModel := ""
 		imageSizeTier := ""
@@ -4498,7 +4529,7 @@ func (s *OpenAIGatewayService) SelectAccountByPreviousResponseID(
 	excludedIDs map[int64]struct{},
 	requireCompact bool,
 ) (*AccountSelectionResult, error) {
-	return s.selectAccountByPreviousResponseIDForCapability(ctx, groupID, previousResponseID, requestedModel, excludedIDs, "", requireCompact)
+	return s.selectAccountByPreviousResponseIDForCapability(ctx, groupID, previousResponseID, requestedModel, excludedIDs, "", "", requireCompact)
 }
 
 func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
@@ -4508,6 +4539,7 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 	requestedModel string,
 	excludedIDs map[int64]struct{},
 	requiredCapability OpenAIEndpointCapability,
+	requiredImageCapability OpenAIImagesCapability,
 	requireCompact bool,
 ) (*AccountSelectionResult, error) {
 	if s == nil {
@@ -4584,6 +4616,12 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 		return nil, nil
 	}
 	if !account.SupportsOpenAIEndpointCapability(requiredCapability) {
+		return nil, nil
+	}
+	if !openAIAccountSupportsRuntimeGuardCapability(account, requestedModel, requiredImageCapability) {
+		return nil, nil
+	}
+	if !account.SupportsOpenAIImageCapability(requiredImageCapability) {
 		return nil, nil
 	}
 	if requireCompact && openAICompactSupportTier(account) == 0 {
@@ -4672,6 +4710,35 @@ func isOpenAIWSRateLimitError(codeRaw, errTypeRaw, msgRaw string) bool {
 	return false
 }
 
+func appendOpenAIWSRuntimeGuardOpsError(c *gin.Context, account *Account, statusCode int, payload []byte, message string, headers http.Header) {
+	safeMessage := sanitizeUpstreamErrorMessage(strings.TrimSpace(message))
+	classification := ClassifyOpenAIRuntimeGuardUpstreamError(statusCode, headers, payload, safeMessage)
+	if classification.Bucket == "" {
+		setOpsUpstreamError(c, statusCode, safeMessage, "")
+		return
+	}
+	detail := sanitizeOpsUpstreamRuntimeGuardPayload(string(payload))
+	setOpsUpstreamError(c, statusCode, safeMessage, detail)
+	event := OpsUpstreamErrorEvent{
+		Platform:             PlatformOpenAI,
+		UpstreamStatusCode:   statusCode,
+		Kind:                 "websocket_error",
+		Message:              safeMessage,
+		Detail:               detail,
+		UpstreamResponseBody: detail,
+		RuntimeGuardBucket:   classification.Bucket,
+		RuntimeGuardCategory: classification.Category,
+		RuntimeGuardMetric:   classification.Metric,
+		RuntimeGuardAction:   classification.Action,
+	}
+	if account != nil {
+		event.AccountID = account.ID
+		event.AccountName = account.Name
+		event.Platform = account.Platform
+	}
+	appendOpsUpstreamError(c, event)
+}
+
 func (s *OpenAIGatewayService) persistOpenAIWSRateLimitSignal(ctx context.Context, account *Account, headers http.Header, responseBody []byte, codeRaw, errTypeRaw, msgRaw string) {
 	if s == nil || s.rateLimitService == nil || account == nil || account.Platform != PlatformOpenAI {
 		return
@@ -4679,7 +4746,7 @@ func (s *OpenAIGatewayService) persistOpenAIWSRateLimitSignal(ctx context.Contex
 	if !isOpenAIWSRateLimitError(codeRaw, errTypeRaw, msgRaw) {
 		return
 	}
-	s.handleOpenAIAccountUpstreamError(ctx, account, http.StatusTooManyRequests, headers, responseBody)
+	s.handleOpenAIAccountUpstreamError(ctx, account, http.StatusTooManyRequests, headers, responseBody, "", "websocket")
 }
 
 func classifyOpenAIWSErrorEventFromRaw(codeRaw, errTypeRaw, msgRaw string) (string, bool) {

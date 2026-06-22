@@ -244,7 +244,7 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		}
 		// 其他 400 错误（如参数问题）不处理，不禁用账号
 	case 401:
-		openai401Code := extractUpstreamErrorCode(responseBody)
+		openai401Code := classifyOpenAIUpstreamAuth401ErrorCode(responseBody)
 		if account.Platform == PlatformOpenAI && isTerminalOpenAIAuthErrorCode(openai401Code) {
 			msg := "Token revoked (401): account authentication permanently revoked"
 			if upstreamMsg != "" {

@@ -519,6 +519,75 @@ func TestCodexGatewayProviderExecutor_ExecuteOpenAIHostedWebSearch_TriesNextSear
 	require.Equal(t, 2, selectionCalls)
 }
 
+func TestCodexGatewayProviderExecutor_OpenAIHostedWebSearchRuntimeGuardLocalBlockNotCapturedAsUpstream(t *testing.T) {
+	baseDir := t.TempDir()
+	capture := NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{
+		Enabled:                  true,
+		BaseDir:                  baseDir,
+		HashKeyFile:              filepath.Join(baseDir, ".key"),
+		CaptureSuccessSampleRate: 1,
+	})
+	defer capture.Close()
+	trace := capture.StartTrace(context.Background(), CodexGatewayCaptureTraceMeta{TraceID: "hosted_search_runtime_guard_local_block", Provider: "openai", Model: "gpt-5.4-mini"})
+	require.NotNil(t, trace)
+
+	oldPersona := &Account{
+		ID:          5151,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token":       "oauth-token",
+			"chatgpt_account_id": "chatgpt-acc",
+		},
+		Extra: map[string]any{
+			"openai_gateway_canonical_version":    "2.1.146",
+			"openai_gateway_canonical_user_agent": "codex_cli_rs/2.1.146",
+			"openai_responses_write_capable":      true,
+		},
+	}
+	selectionCalls := 0
+	executor := newCodexGatewayProviderExecutorForTest()
+	executor.accountSelector = &codexGatewayProviderExecutorSelectorStub{
+		selectFn: func(_ context.Context, _ *int64, _ string, requestedModel string, excludedIDs map[int64]struct{}) (*Account, error) {
+			selectionCalls++
+			if selectionCalls == 1 {
+				require.Equal(t, "gpt-5.4-mini", requestedModel)
+				require.Empty(t, excludedIDs)
+				return oldPersona, nil
+			}
+			return nil, ErrNoAvailableAccounts
+		},
+	}
+	executor.openaiGateway = &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: &codexGatewayProviderExecutorHTTPUpstreamStub{},
+	}
+
+	_, err := executor.executeOpenAIHostedWebSearch(context.Background(), CodexGatewayProviderRequest{
+		SessionKey:   "user_session",
+		CaptureTrace: trace,
+		Model: CodexGatewayModel{
+			Slug:          "deepseek-v4-pro",
+			Provider:      "deepseek",
+			UpstreamModel: "deepseek-v4-pro",
+		},
+	}, "latest news")
+
+	require.Error(t, err)
+	require.GreaterOrEqual(t, selectionCalls, 2)
+	capture.FinishTrace(trace, CodexGatewayCaptureFinishSummary{Status: "blocked"})
+	require.NoError(t, capture.Close())
+
+	traceDir := filepath.Join(baseDir, time.Now().Format("2006-01-02"), "hosted_search_runtime_guard_local_block")
+	for _, name := range []string{"upstream_request.shape.json", "upstream_requests.events.jsonl", "upstream_response.shape.json"} {
+		_, statErr := os.Stat(filepath.Join(traceDir, name))
+		require.True(t, os.IsNotExist(statErr), "%s must not be written for local runtime guard blocks", name)
+	}
+}
+
 func TestCodexGatewayOpenAIHostedWebSearchOutput_ReconstructsTextFromSSE(t *testing.T) {
 	body := []byte("" +
 		"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"in_progress\",\"output\":[]}}\n\n" +

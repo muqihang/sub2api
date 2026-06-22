@@ -546,10 +546,24 @@ func (s *OpenAIGatewayService) ForwardImages(
 	if parsed == nil {
 		return nil, fmt.Errorf("parsed images request is required")
 	}
+	moderationBody := parsed.ModerationBody()
+	if len(moderationBody) == 0 {
+		moderationBody = body
+	}
+	if blocked := s.applyOpenAIRuntimeGuardContentSafetyToHTTP(c, account, ContentModerationProtocolOpenAIImages, moderationBody); blocked != nil {
+		return nil, blocked
+	}
 	switch account.Type {
 	case AccountTypeAPIKey:
 		return s.forwardOpenAIImagesAPIKey(ctx, c, account, body, parsed, channelMappedModel)
 	case AccountTypeOAuth:
+		model := strings.TrimSpace(parsed.Model)
+		if mapped := strings.TrimSpace(channelMappedModel); mapped != "" {
+			model = mapped
+		}
+		if blocked := s.blockOpenAIRuntimeGuardLearnedRequest(c, account, model, "images"); blocked != nil {
+			return nil, blocked
+		}
 		return s.forwardOpenAIImagesOAuth(ctx, c, account, parsed, channelMappedModel)
 	default:
 		return nil, fmt.Errorf("unsupported account type: %s", account.Type)
@@ -607,18 +621,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		if isOpenAIEgressPolicyError(err) {
 			return nil, err
 		}
-		safeErr := sanitizeUpstreamErrorMessage(err.Error())
-		setOpsUpstreamError(c, 0, safeErr, "")
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-			Platform:           account.Platform,
-			AccountID:          account.ID,
-			AccountName:        account.Name,
-			UpstreamStatusCode: 0,
-			UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
-			Kind:               "request_error",
-			Message:            safeErr,
-		})
-		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 	}
 	if resp.StatusCode >= 400 {
 		respBody := s.readUpstreamErrorBody(resp)

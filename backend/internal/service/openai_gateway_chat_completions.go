@@ -61,6 +61,13 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	promptCacheKey string,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	contentSafetyProtocol := ContentModerationProtocolOpenAIChat
+	if !gjson.GetBytes(body, "messages").Exists() && gjson.GetBytes(body, "input").Exists() {
+		contentSafetyProtocol = ContentModerationProtocolOpenAIResponses
+	}
+	if blocked := applyOpenAIRuntimeGuardContentSafetyToHTTP(c, account, contentSafetyProtocol, body); blocked != nil {
+		return nil, blocked
+	}
 	// 入口分流：APIKey 账号 + 强制或已探测确认上游不支持 Responses，走 CC 直转。
 	// 自动模式下标记缺失（未探测）按"现状即证据"原则继续走下方原 Responses 转换路径。
 	if account.Type == AccountTypeAPIKey && !openai_compat.ShouldUseResponsesAPI(account.Extra) {
@@ -81,6 +88,11 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	// derive a stable seed from the final upstream model family.
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	if account.Type == AccountTypeOAuth {
+		if blocked := s.blockOpenAIRuntimeGuardLearnedRequest(c, account, upstreamModel, "chat_completions"); blocked != nil {
+			return nil, blocked
+		}
+	}
 
 	promptCacheKey = strings.TrimSpace(promptCacheKey)
 	compatPromptCacheInjected := false
@@ -191,6 +203,14 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		if err != nil {
 			return nil, fmt.Errorf("remarshal after codex transform: %w", err)
 		}
+		guardedBody, guardErr := s.applyOpenAIOAuthRuntimeGuardPreflightToHTTP(c, account, upstreamModel, "chat_completions", ContentModerationProtocolOpenAIResponses, responsesBody, false)
+		if guardErr != nil {
+			return nil, guardErr
+		}
+		responsesBody = guardedBody
+		if effort := strings.TrimSpace(gjson.GetBytes(responsesBody, "reasoning.effort").String()); effort != "" {
+			responsesReq.Reasoning = &apicompat.ResponsesReasoning{Effort: effort}
+		}
 	}
 	if account.Type == AccountTypeAPIKey {
 		var reqBody map[string]any
@@ -232,8 +252,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	if policyErr != nil {
 		var blocked *OpenAIFastBlockedError
 		if errors.As(policyErr, &blocked) {
-			MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
-			writeChatCompletionsError(c, http.StatusForbidden, "permission_error", blocked.Message)
+			writeOpenAIFastPolicyBlockedResponse(c, blocked)
 		}
 		return nil, policyErr
 	}
@@ -264,18 +283,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		if isOpenAIEgressPolicyError(err) {
 			return nil, err
 		}
-		safeErr := sanitizeUpstreamErrorMessage(err.Error())
-		setOpsUpstreamError(c, 0, safeErr, "")
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-			Platform:           account.Platform,
-			AccountID:          account.ID,
-			AccountName:        account.Name,
-			UpstreamStatusCode: 0,
-			Kind:               "request_error",
-			Message:            safeErr,
-		})
-		writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
-		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -316,7 +324,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 				Message:            upstreamMsg,
 				Detail:             upstreamDetail,
 			})
-			s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
+			s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel, "chat_completions")
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,

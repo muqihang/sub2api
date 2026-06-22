@@ -362,6 +362,37 @@ func TestCodexGatewayOpenAIResponsesAdapter_CompleteRequestErrorFailsOver(t *tes
 	require.NotContains(t, string(failoverErr.ResponseBody), "api.5566676.xyz")
 }
 
+func TestCodexGatewayOpenAIResponsesAdapter_CompleteFailoverLearnsResolvedResponsesModel(t *testing.T) {
+	adapter, _ := newCodexGatewayNativeResponsesAdapterForTest(&http.Response{
+		StatusCode: http.StatusForbidden,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"unsupported model/profile/channel for ChatGPT OAuth account","type":"invalid_request_error"}}`)),
+	}, nil)
+	account := &Account{
+		ID:          202,
+		Name:        "openai-oauth-native-failover-learning",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token":       "oauth-token",
+			"chatgpt_account_id": "chatgpt-acc",
+			"model_mapping":      map[string]any{"alias-gpt": "gpt-5.4"},
+		},
+	}
+
+	_, err := adapter.Complete(context.Background(), account, CodexGatewayProviderRequest{
+		Request: CodexGatewayResponsesRequest{Body: []byte(`{"model":"alias-gpt","stream":false,"input":"hi"}`)},
+		Model:   CodexGatewayModel{Slug: "alias-gpt", Provider: "openai", UpstreamModel: "gpt-5.4"},
+	})
+
+	require.Error(t, err)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	_, blocked := adapter.gateway.IsOpenAIRuntimeGuardLearnedBlocked(openAIRuntimeGuardLearnedBlockScopeForAccount(account, "gpt-5.4", "responses"))
+	require.True(t, blocked, "native Responses failover learning must be scoped to resolved model and responses endpoint")
+}
+
 func TestCodexGatewayOpenAIResponsesAdapter_StreamFailoverAppliesRateLimitSideEffects(t *testing.T) {
 	account := newCodexGatewayOpenAIAccountForTest("http://openai.local")
 	repo := &openAIGatewayCoreRepoStub{

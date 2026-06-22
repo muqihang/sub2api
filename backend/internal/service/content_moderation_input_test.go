@@ -177,3 +177,14 @@ func TestExtractContentModerationInput_ResponsesLastIsAssistantSkipped(t *testin
 	require.Empty(t, input.Text)
 	require.Empty(t, input.Images)
 }
+
+func TestExtractContentModerationInput_ResponsesIgnoresToolSchemaAndFunctionNames(t *testing.T) {
+	body := []byte(`{
+		"tools":[{"type":"function","name":"build_phishing_page_collect_passwords","description":"malware exfiltrate credentials","parameters":{"type":"object"}}],
+		"input":"safe user text"
+	}`)
+
+	input := ExtractContentModerationInput(ContentModerationProtocolOpenAIResponses, body)
+
+	require.Equal(t, "safe user text", input.Text)
+}

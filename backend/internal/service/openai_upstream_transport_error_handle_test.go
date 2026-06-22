@@ -71,22 +71,32 @@ func TestHandleOpenAIUpstreamTransportError_PersistentEvictsAndFailsOver(t *test
 }
 
 // A transient blip should fail over but must NOT evict the account.
-func TestHandleOpenAIUpstreamTransportError_TransientFailsOverWithoutEviction(t *testing.T) {
+func TestHandleOpenAIUpstreamTransportError_TransientFailsOverWithShortRuntimeCooldown(t *testing.T) {
 	repo := &openaiTransportAccountRepoStub{}
 	svc := &OpenAIGatewayService{accountRepo: repo}
 	account := &Account{ID: 99, Name: "flaky", Platform: PlatformOpenAI}
 	c, rec := newOpenAITransportErrTestContext()
 
+	before := time.Now()
 	err := svc.handleOpenAIUpstreamTransportError(context.Background(), c, account,
 		errors.New(`Post "https://chatgpt.com/...": context deadline exceeded (Client.Timeout exceeded while awaiting headers)`), false)
+	after := time.Now()
 
 	var fo *UpstreamFailoverError
 	require.True(t, errors.As(err, &fo), "transient error must return *UpstreamFailoverError")
 	require.Equal(t, http.StatusBadGateway, fo.StatusCode)
 
-	// Transient → do NOT evict.
+	// Transient → no persistent temp-unschedule, but immediate short runtime cooldown.
 	require.Empty(t, repo.tempUnschedCalls)
-	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
+	value, ok := svc.openaiAccountRuntimeBlockUntil.Load(account.ID)
+	require.True(t, ok)
+	until, ok := value.(time.Time)
+	require.True(t, ok)
+	require.True(t, until.After(before.Add(openAIRuntimeGuardLearnedBlockTemporaryTTL-time.Second)))
+	require.True(t, until.Before(after.Add(openAIRuntimeGuardLearnedBlockTemporaryTTL+time.Second)))
+	svc.openaiAccountRuntimeBlockUntil.Store(account.ID, time.Now().Add(-time.Millisecond))
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account), "expired transient cooldown should allow probing again")
 	require.Equal(t, 0, rec.Body.Len())
 }
 

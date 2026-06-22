@@ -280,6 +280,7 @@ func ProvideOpenAIGatewayService(
 	settingService *SettingService,
 	entityRegistryRepo EntityRegistryRepository,
 	entityRateLimitService *EntityRateLimitService,
+	contentModerationService *ContentModerationService,
 ) *OpenAIGatewayService {
 	return NewOpenAIGatewayService(
 		accountRepo,
@@ -305,6 +306,7 @@ func ProvideOpenAIGatewayService(
 		settingService,
 		entityRegistryRepo,
 		entityRateLimitService,
+		NewContentModerationOpenAIContentSafetyProvider(contentModerationService),
 	)
 }
 

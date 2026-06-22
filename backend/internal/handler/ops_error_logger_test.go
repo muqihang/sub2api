@@ -1,10 +1,13 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -972,4 +975,72 @@ func TestGetOpsAPIKeyPrefersPrimaryContextKey(t *testing.T) {
 	got := getOpsAPIKey(c)
 	require.NotNil(t, got)
 	require.Equal(t, int64(1), got.ID, "已鉴权请求应优先使用正式 api key")
+}
+
+func TestOpsErrorLoggerMiddleware_ConsumesLocalRuntimeGuardMetadata(t *testing.T) {
+	resetOpsErrorLoggerStateForTest(t)
+	gin.SetMode(gin.TestMode)
+
+	repo := &opsErrorLoggerLocalGuardRepo{}
+	ops := service.NewOpsService(repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	r := gin.New()
+	r.POST("/v1/responses", OpsErrorLoggerMiddleware(ops), func(c *gin.Context) {
+		c.Set(service.OpenAIRuntimeGuardMetadataKey, service.OpenAIRuntimeGuardMetadata{
+			Action:           "block",
+			Category:         "reasoning.unknown_effort",
+			Metric:           "openai_runtime_guard.blocked.reasoning_effort",
+			Field:            "reasoning_effort",
+			Path:             "reasoning_effort",
+			TextHash:         "hash-ops",
+			SanitizedSummary: "blocked locally",
+		})
+		service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalPolicyDenied)
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"type": "invalid_request_error", "message": "blocked"}})
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+
+	require.Eventually(t, func() bool { return repo.last() != nil }, 2*time.Second, 20*time.Millisecond)
+	entry := repo.last()
+	require.NotNil(t, entry.UpstreamErrorsJSON)
+	serialized := *entry.UpstreamErrorsJSON
+	require.Contains(t, serialized, `"kind":"local_runtime_guard"`)
+	require.Contains(t, serialized, `"runtime_guard_action":"block"`)
+	require.Contains(t, serialized, `"runtime_guard_category":"reasoning.unknown_effort"`)
+	require.Contains(t, serialized, `"upstream_called":false`)
+	require.Contains(t, serialized, `"raw_body_logged":false`)
+	require.NotContains(t, strings.ToLower(serialized), "token")
+	require.NotContains(t, strings.ToLower(serialized), "cookie")
+}
+
+type opsErrorLoggerLocalGuardRepo struct {
+	service.OpsRepository
+	mu       sync.Mutex
+	captured []*service.OpsInsertErrorLogInput
+}
+
+func (r *opsErrorLoggerLocalGuardRepo) InsertErrorLog(_ context.Context, input *service.OpsInsertErrorLogInput) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.captured = append(r.captured, input)
+	return int64(len(r.captured)), nil
+}
+
+func (r *opsErrorLoggerLocalGuardRepo) BatchInsertErrorLogs(_ context.Context, inputs []*service.OpsInsertErrorLogInput) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.captured = append(r.captured, inputs...)
+	return int64(len(r.captured)), nil
+}
+
+func (r *opsErrorLoggerLocalGuardRepo) last() *service.OpsInsertErrorLogInput {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.captured) == 0 {
+		return nil
+	}
+	return r.captured[len(r.captured)-1]
 }

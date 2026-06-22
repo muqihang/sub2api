@@ -554,6 +554,7 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 			return
 		}
 
+		service.AppendOpsOpenAIRuntimeGuardLocalEvent(c)
 		status := c.Writer.Status()
 		if status < 400 {
 			// Even when the client request succeeds, we still want to persist upstream error attempts

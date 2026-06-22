@@ -32,6 +32,25 @@ func isOpenAIAccount(account *Account) bool {
 }
 
 func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, requestedModel ...string) bool {
+	modelHint := ""
+	endpointHint := ""
+	if len(requestedModel) > 0 {
+		modelHint = requestedModel[0]
+	}
+	if len(requestedModel) > 1 {
+		endpointHint = requestedModel[1]
+	}
+	if endpointHint == "" {
+		endpointHint = openAIRuntimeGuardEndpointFromModelHint(modelHint)
+	}
+	classification := ClassifyOpenAIRuntimeGuardUpstreamError(statusCode, headers, responseBody, "")
+	if classification.Bucket == OpenAIRuntimeGuardBucketTemporaryNetwork && classification.TTL > 0 {
+		s.BlockAccountScheduling(account, time.Now().Add(classification.TTL), "temporary_network")
+	}
+	if classification.Bucket != "" {
+		s.RecordOpenAIRuntimeGuardLearnedBlock(openAIRuntimeGuardLearnedBlockScopeForAccount(account, modelHint, endpointHint), classification)
+	}
+
 	stateCtx, cancel := openAIAccountStateContext(ctx)
 	defer cancel()
 
