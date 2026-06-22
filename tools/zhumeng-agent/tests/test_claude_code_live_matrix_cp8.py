@@ -2869,3 +2869,136 @@ def test_cp8_live_scenario_evidence_writer_rejects_unsafe_fields_before_claiming
         )
 
     assert not (tmp_path / "artifacts" / "scenario_manual_provider_switch_deepseek.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("mutator", "expected_issue"),
+    (
+        (
+            lambda artifact_payload: artifact_payload["provider_provenance_refs"].append("artifacts/raw_prompt.json"),
+            "provider binding",
+        ),
+        (
+            lambda artifact_payload: artifact_payload.update({"safe_evidence_summary": "raw_prompt redacted"}),
+            "provider binding",
+        ),
+        (
+            lambda artifact_payload: artifact_payload.update({"safe_note": "raw_header redacted"}),
+            "artifact contains sensitive marker",
+        ),
+    ),
+)
+def test_cp8_strict_live_rejects_sensitive_handwritten_scenario_artifact_fields(
+    tmp_path: Path,
+    mutator,
+    expected_issue: str,
+):
+    payload = _fixture("live_matrix_pass.json")
+    payload["mode"] = "external_provider_live_matrix"
+    run_id = "cp8-handwritten-sensitive-scenario"
+    payload["live_provenance"] = {
+        "credential_backed": True,
+        "loopback_only": False,
+        "run_id": run_id,
+        "providers": {},
+    }
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    for provider, scope, endpoint in (
+        ("claude", "formal_pool", "https://api.anthropic.com/v1/messages"),
+        ("openai", "bridge_pool", "https://api.openai.com/v1/responses"),
+        ("deepseek", "bridge_pool", "https://api.deepseek.com/anthropic/v1/messages"),
+    ):
+        provider_artifact = artifacts_dir / f"provider_{provider}.json"
+        provider_artifact.write_text(json.dumps({
+            "schema_version": "cp8-live-provider-provenance-v1",
+            "checkpoint": "CP8",
+            "run_id": run_id,
+            "provider": provider,
+            "model": _provider_model(provider),
+            "credential_scope": scope,
+            "endpoint": endpoint,
+            "host": endpoint.split("/")[2],
+            "external_live_verified": True,
+            "loopback": False,
+            "response_status": 200,
+            "upstream_request_id": f"req_{provider}",
+        }, sort_keys=True), encoding="utf-8")
+        payload["live_provenance"]["providers"][provider] = {
+            "credential_scope": scope,
+            "live_provider_verified": True,
+            "endpoint": endpoint,
+            "model": _provider_model(provider),
+            "artifact_refs": [{
+                "path": f"artifacts/provider_{provider}.json",
+                "sha256": "sha256:" + hashlib.sha256(provider_artifact.read_bytes()).hexdigest(),
+                "sensitive_scan_clean": True,
+            }],
+        }
+    for name, item in payload["scenarios"].items():
+        item["live_provider_verified"] = True
+        if name != "manual_provider_switch":
+            item["artifact_refs"] = []
+    _add_strict_live_scenario_artifacts({
+        "scenarios": {k: v for k, v in payload["scenarios"].items() if k != "manual_provider_switch"}
+    }, tmp_path, run_id)
+    manual_refs = []
+    for provider, endpoint in (
+        ("claude", "https://api.anthropic.com/v1/messages"),
+        ("openai", "https://api.openai.com/v1/responses"),
+        ("deepseek", "https://api.deepseek.com/anthropic/v1/messages"),
+    ):
+        route, client_type = _provider_route_client(provider)
+        artifact_payload = {
+            "schema_version": "cp8-live-scenario-evidence-v1",
+            "checkpoint": "CP8",
+            "run_id": run_id,
+            "scenario": "manual_provider_switch",
+            "status": "pass",
+            "live_provider_verified": True,
+            "raw_sensitive_stored": False,
+            "loopback": False,
+            "route": route,
+            "client_type": client_type,
+            "provider": provider,
+            "model": _provider_model(provider),
+            "endpoint": endpoint,
+            "upstream_request_id": f"req_{provider}",
+            "provider_provenance_refs": [f"artifacts/provider_{provider}.json"],
+        }
+        if provider == "deepseek":
+            mutator(artifact_payload)
+        artifact = artifacts_dir / f"scenario_manual_provider_switch_{provider}.json"
+        artifact.write_text(json.dumps(artifact_payload, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+        manual_refs.append({
+            "path": f"artifacts/{artifact.name}",
+            "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+            "sensitive_scan_clean": True,
+        })
+    payload["scenarios"]["manual_provider_switch"]["artifact_refs"] = manual_refs
+    _mark_core_provider_release_strict_live(payload)
+
+    result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=tmp_path)
+
+    assert result.status == "fail"
+    assert "manual_provider_switch" in result.failed
+    assert any(expected_issue in issue for issue in result.scenario_results["manual_provider_switch"].issues)
+
+
+def test_cp8_live_scenario_evidence_writer_rejects_providerless_sensitive_route_labels(tmp_path: Path):
+    from zhumeng_agent.adapters.claude_code.live_matrix import write_cp8_live_scenario_evidence  # noqa: PLC0415
+
+    with pytest.raises(CP8LiveMatrixError, match="safe|sensitive"):
+        write_cp8_live_scenario_evidence(
+            output_root=tmp_path,
+            run_id="cp8-providerless-sensitive-route",
+            scenario="manual_provider_switch",
+            route="raw_header",
+            client_type="claude_code_bridge_deepseek",
+            evidence={
+                "status": "pass",
+                "live_provider_verified": True,
+            },
+        )
+
+    assert not (tmp_path / "artifacts" / "scenario_manual_provider_switch.json").exists()
