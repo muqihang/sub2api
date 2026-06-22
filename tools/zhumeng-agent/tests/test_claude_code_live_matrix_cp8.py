@@ -2886,6 +2886,14 @@ def test_cp8_live_scenario_evidence_writer_rejects_unsafe_fields_before_claiming
             lambda artifact_payload: artifact_payload.update({"safe_note": "raw_header redacted"}),
             "artifact contains sensitive marker",
         ),
+        (
+            lambda artifact_payload: artifact_payload.update({"safe_evidence_summary": {"safe": "raw_prompt redacted"}}),
+            "artifact contains sensitive marker",
+        ),
+        (
+            lambda artifact_payload: artifact_payload.update({"notes": ["raw_header redacted"]}),
+            "artifact contains sensitive marker",
+        ),
     ),
 )
 def test_cp8_strict_live_rejects_sensitive_handwritten_scenario_artifact_fields(
@@ -3002,3 +3010,116 @@ def test_cp8_live_scenario_evidence_writer_rejects_providerless_sensitive_route_
         )
 
     assert not (tmp_path / "artifacts" / "scenario_manual_provider_switch.json").exists()
+
+
+def test_cp8_live_scenario_evidence_writer_and_verifier_accept_deepseek_1m_model(tmp_path: Path):
+    from zhumeng_agent.adapters.claude_code.live_matrix import write_cp8_live_scenario_evidence  # noqa: PLC0415
+
+    ref = write_cp8_live_scenario_evidence(
+        output_root=tmp_path,
+        run_id="cp8-scenario-1m",
+        scenario="long_context",
+        route="deepseek_bridge",
+        client_type="claude_code_bridge_deepseek",
+        evidence={
+            "status": "pass",
+            "live_provider_verified": True,
+            "raw_sensitive_stored": False,
+            "loopback": False,
+            "provider": "deepseek",
+            "model": "deepseek-v4-pro[1m]",
+            "endpoint": "https://api.deepseek.com/anthropic/v1/messages",
+            "upstream_request_id": "req_deepseek_1m",
+            "provider_provenance_refs": ["artifacts/provider_deepseek.json"],
+            "safe_evidence_summary": "safe summary only",
+        },
+    )
+    artifact = tmp_path / ref["path"]
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    assert payload["model"] == "deepseek-v4-pro[1m]"
+
+    matrix = _fixture("live_matrix_pass.json")
+    matrix["mode"] = "external_provider_live_matrix"
+    run_id = "cp8-scenario-1m"
+    matrix["live_provenance"] = {
+        "credential_backed": True,
+        "loopback_only": False,
+        "run_id": run_id,
+        "providers": {},
+    }
+    provider_artifact = tmp_path / "artifacts" / "provider_deepseek.json"
+    provider_artifact.write_text(json.dumps({
+        "schema_version": "cp8-live-provider-provenance-v1",
+        "checkpoint": "CP8",
+        "run_id": run_id,
+        "provider": "deepseek",
+        "model": "deepseek-v4-pro[1m]",
+        "credential_scope": "bridge_pool",
+        "endpoint": "https://api.deepseek.com/anthropic/v1/messages",
+        "host": "api.deepseek.com",
+        "external_live_verified": True,
+        "loopback": False,
+        "response_status": 200,
+        "upstream_request_id": "req_deepseek_1m",
+    }, sort_keys=True), encoding="utf-8")
+    for provider, scope, endpoint in (
+        ("claude", "formal_pool", "https://api.anthropic.com/v1/messages"),
+        ("openai", "bridge_pool", "https://api.openai.com/v1/responses"),
+        ("deepseek", "bridge_pool", "https://api.deepseek.com/anthropic/v1/messages"),
+    ):
+        if provider == "deepseek":
+            model = "deepseek-v4-pro[1m]"
+            artifact_path = provider_artifact
+            request_id = "req_deepseek_1m"
+        else:
+            model = _provider_model(provider)
+            artifact_path = tmp_path / "artifacts" / f"provider_{provider}.json"
+            request_id = f"req_{provider}"
+            artifact_path.write_text(json.dumps({
+                "schema_version": "cp8-live-provider-provenance-v1",
+                "checkpoint": "CP8",
+                "run_id": run_id,
+                "provider": provider,
+                "model": model,
+                "credential_scope": scope,
+                "endpoint": endpoint,
+                "host": endpoint.split("/")[2],
+                "external_live_verified": True,
+                "loopback": False,
+                "response_status": 200,
+                "upstream_request_id": request_id,
+            }, sort_keys=True), encoding="utf-8")
+        matrix["live_provenance"]["providers"][provider] = {
+            "credential_scope": scope,
+            "live_provider_verified": True,
+            "endpoint": endpoint,
+            "model": model,
+            "artifact_refs": [{
+                "path": f"artifacts/{artifact_path.name}",
+                "sha256": "sha256:" + hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
+                "sensitive_scan_clean": True,
+            }],
+        }
+    for name, item in matrix["scenarios"].items():
+        item["live_provider_verified"] = True
+        if name == "long_context":
+            item["artifact_refs"] = [ref]
+    _add_strict_live_scenario_artifacts({
+        "scenarios": {k: v for k, v in matrix["scenarios"].items() if k != "long_context"}
+    }, tmp_path, run_id)
+    for scenario in matrix["scenarios"].values():
+        for scenario_ref in scenario.get("artifact_refs", []):
+            path = str(scenario_ref.get("path") or "")
+            if not path.endswith("_deepseek.json"):
+                continue
+            scenario_artifact = tmp_path / path
+            scenario_payload = json.loads(scenario_artifact.read_text(encoding="utf-8"))
+            scenario_payload["model"] = "deepseek-v4-pro[1m]"
+            scenario_payload["upstream_request_id"] = "req_deepseek_1m"
+            scenario_artifact.write_text(json.dumps(scenario_payload, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+            scenario_ref["sha256"] = "sha256:" + hashlib.sha256(scenario_artifact.read_bytes()).hexdigest()
+    _mark_core_provider_release_strict_live(matrix)
+
+    result = verify_cp8_live_matrix(matrix, strict_live=True, evidence_root=tmp_path)
+
+    assert result.status == "pass"

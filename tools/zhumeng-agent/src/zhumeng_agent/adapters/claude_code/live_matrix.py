@@ -1637,6 +1637,9 @@ def write_cp8_live_scenario_evidence(
     issue = _sensitive_inline_evidence_issue(artifact_payload, path="scenario_evidence")
     if issue:
         raise CP8LiveMatrixError("sensitive inline CP8 live scenario evidence is not allowed: " + issue)
+    issue = _cp8_live_scenario_payload_sensitive_issue(artifact_payload)
+    if issue:
+        raise CP8LiveMatrixError("sensitive inline CP8 live scenario evidence is not allowed: " + issue)
     artifact_text = json.dumps(artifact_payload, ensure_ascii=True, sort_keys=True, indent=2)
     text_issue = _sensitive_inline_text_issue(artifact_text, path="scenario_evidence")
     if text_issue:
@@ -1739,10 +1742,16 @@ def _cp8_live_scenario_payload_sensitive_issue(value: object, *, path: str = "sc
         for key, child in value.items():
             key_text = str(key)
             normalized = _normalize_inline_evidence_key(key_text)
-            if key_text in {"schema_version", "checkpoint", "run_id", "scenario", "status", "provider", "model"}:
+            if key_text in {"schema_version", "checkpoint", "run_id", "scenario", "status", "provider"}:
                 try:
                     _cp8_safe_label(str(child or ""), key_text)
                 except CP8LiveMatrixError:
+                    return path + "." + key_text
+                continue
+            if key_text == "model":
+                provider = str(value.get("provider") or "").strip()
+                model = str(child or "").strip()
+                if not (provider and _strict_live_model_allowed(provider, model)):
                     return path + "." + key_text
                 continue
             if key_text in {"route", "client_type", "upstream_request_id"}:
@@ -1772,9 +1781,11 @@ def _cp8_live_scenario_payload_sensitive_issue(value: object, *, path: str = "sc
                     return path + "." + key_text
                 continue
             if key_text in {"summary", "notes", "artifact_summary", "safe_evidence_summary"}:
-                if isinstance(child, str) and _cp8_user_text_sensitive_issue(child):
+                if not isinstance(child, str):
                     return path + "." + key_text
-                if _sensitive_inline_text_issue(str(child or ""), path=path + "." + key_text):
+                if _cp8_user_text_sensitive_issue(child):
+                    return path + "." + key_text
+                if _sensitive_inline_text_issue(child, path=path + "." + key_text):
                     return path + "." + key_text
                 continue
             if (
