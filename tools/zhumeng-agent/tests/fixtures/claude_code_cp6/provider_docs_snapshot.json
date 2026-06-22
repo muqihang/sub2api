@@ -45,8 +45,8 @@
         "enabled_by_default": true,
         "hit_rule": "full_prefix_cache_unit_match",
         "usage_fields": [
-          "prompt_cache_hit_tokens",
-          "prompt_cache_miss_tokens"
+          "cache_read_input_tokens",
+          "cache_creation_input_tokens"
         ]
       },
       "live_runtime_verified": false,

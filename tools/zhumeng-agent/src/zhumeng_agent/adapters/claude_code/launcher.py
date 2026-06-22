@@ -215,6 +215,9 @@ def run_managed_claude_code(
             profile=launch_plan.profile,
             will_start_process=True,
         )
+        warning = _managed_exact_effort_stale_process_warning(project_cwd=project_cwd or repo_root)
+        if warning:
+            print(warning, file=sys.stderr)
         runner = process_runner or _default_process_runner
         returncode = int(runner(
             launch_plan.command,
@@ -231,6 +234,47 @@ def run_managed_claude_code(
 
 def _default_process_runner(command: list[str], *, env: Mapping[str, str], cwd: str | None) -> int:
     return subprocess.call(command, env=dict(env), cwd=cwd)
+
+
+def _managed_exact_effort_stale_process_warning(
+    *,
+    project_cwd: Path | str | None,
+    ps_runner: Callable[[], str] | None = None,
+) -> str | None:
+    try:
+        output = ps_runner() if ps_runner is not None else subprocess.check_output(
+            ["ps", "-axo", "pid=,cwd=,comm="],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return None
+    project = str(Path(project_cwd).expanduser().resolve(strict=False)) if project_cwd else ""
+    stale_count = 0
+    for line in str(output or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+        pid, cwd, command = parts
+        executable_name = Path(command).name
+        if executable_name not in {"claude", "claude-code"}:
+            continue
+        cwd_resolved = str(Path(cwd).expanduser().resolve(strict=False))
+        if project and cwd_resolved == project:
+            continue
+        if not pid.isdigit():
+            continue
+        stale_count += 1
+    if stale_count == 0:
+        return None
+    return (
+        f"Detected {stale_count} existing Claude Code process(es) outside this managed worktree "
+        "without managed exact-effort env proof. Restart the interactive Claude Code via "
+        "zhumeng-agent launcher before checking /model effort UI."
+    )
 
 
 def _apply_toolsearch_capability_profile(
@@ -505,12 +549,57 @@ def _write_provider_profile_resolver_artifact(
         "background_resolution_matrix": background_matrix,
     }
     profile_path.write_text(json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
-    return {
+    env = {
         "ZHUMENG_CLAUDE_PROVIDER_PROFILE_RESOLVER": "enabled",
         "ZHUMENG_CLAUDE_PROVIDER_PROFILE_PATH": str(profile_path),
         _MODEL_CAPABILITIES_ENV_NAME: _bridge_model_capabilities_json(tuple(bridge_live_models)),
         "ZCCEL": _bridge_exact_effort_levels_json(tuple(bridge_live_models)),
     }
+    _write_exact_effort_env_proof_artifact(
+        overlay_dir=overlay_dir,
+        runtime_hash=runtime_hash,
+        overlay_hash=overlay_hash,
+        bridge_live_models=bridge_live_models,
+        env=env,
+    )
+    return env
+
+
+def _write_exact_effort_env_proof_artifact(
+    *,
+    overlay_dir: Path,
+    runtime_hash: str,
+    overlay_hash: str,
+    bridge_live_models: tuple[str, ...],
+    env: Mapping[str, str],
+) -> Path:
+    exact_levels_raw = env.get("ZCCEL", "")
+    capabilities_raw = env.get(_MODEL_CAPABILITIES_ENV_NAME, "")
+    try:
+        exact_levels = json.loads(exact_levels_raw or "{}")
+    except json.JSONDecodeError:
+        exact_levels = {}
+    if not isinstance(exact_levels, dict):
+        exact_levels = {}
+    proof = {
+        "schema_version": "claude-code-bridge-effort-env-proof-v1",
+        "exact_levels_env": "ZCCEL",
+        "capabilities_env": _MODEL_CAPABILITIES_ENV_NAME,
+        "exact_levels_env_present": bool(exact_levels_raw),
+        "capabilities_env_present": bool(capabilities_raw),
+        "runtime_hash": runtime_hash,
+        "overlay_hash": overlay_hash,
+        "bridge_live_models": list(bridge_live_models),
+        "capabilities_hash": bridge_effort_capabilities_hash(capabilities_raw),
+        "models": {
+            str(model_id): [str(level) for level in levels]
+            for model_id, levels in sorted(exact_levels.items())
+            if isinstance(model_id, str) and isinstance(levels, list)
+        },
+    }
+    proof_path = overlay_dir / "exact-effort-env-proof.json"
+    proof_path.write_text(json.dumps(proof, ensure_ascii=True, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    return proof_path
 
 
 def _bridge_exact_effort_levels_json(bridge_live_models: tuple[str, ...] = ()) -> str:

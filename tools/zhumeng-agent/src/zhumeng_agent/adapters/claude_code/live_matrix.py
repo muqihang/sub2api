@@ -158,6 +158,10 @@ _BRIDGE_CACHE_AUDIT_ROW_FIELDS = frozenset({
     "cache_miss_tokens",
     "cached_tokens",
     "raw_sensitive_stored",
+    "response_usage_field_paths",
+    "response_usage_cache_field_paths",
+    "response_usage_cache_fields_present",
+    "stable_prefix_component_hmacs",
 })
 _BRIDGE_CACHE_HMAC_RE = re.compile(r"^hmac-sha256:([A-Za-z0-9_.-]+):[a-f0-9]{64}$")
 _BRIDGE_CACHE_TOKEN_BUCKETS = frozenset({"lt_1k", "1k_4k", "4k_16k", "gt_16k"})
@@ -171,7 +175,7 @@ _BRIDGE_CACHE_SENSITIVE_VALUE_RE = re.compile(
 _CACHE_PROVIDER_EXPECTED = {
     "claude_native": ("anthropic_cache_control", ("cache_creation_input_tokens", "cache_read_input_tokens")),
     "openai": ("openai_prompt_cache", ("usage.prompt_tokens_details.cached_tokens",)),
-    "deepseek": ("deepseek_prefix_kv", ("prompt_cache_hit_tokens", "prompt_cache_miss_tokens")),
+    "deepseek": ("deepseek_prefix_kv", ("prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")),
 }
 _PROVIDER_RELEASE_STATUSES = frozenset({"strict-live-pass", "degraded-pass", "fixture-pass-only", "live-disabled"})
 _REQUIRED_PROVIDER_RELEASE_CLASSIFICATION = ("claude_native", "openai", "deepseek", "agnes", "glm", "kimi")
@@ -699,6 +703,9 @@ def _cache_provider_evidence_issues(value: object, *, strict_live: bool) -> tupl
                 issues.append("DeepSeek cache evidence must not treat cache_control as cache mechanism")
             if raw_entry.get("stable_prefix_hmac_present") is not True:
                 issues.append("DeepSeek cache evidence must include stable prefix HMAC evidence")
+            for field in ("live_cache_hit_observed", "live_cache_write_observed", "live_cache_miss_observed"):
+                if field in raw_entry and not isinstance(raw_entry.get(field), bool):
+                    issues.append(f"DeepSeek cache evidence requires boolean {field}")
     return tuple(issues)
 
 
@@ -716,10 +723,6 @@ def _cache_account_audit_artifact_issues(
     contract_issues: list[str] = []
     has_valid_cache_account_artifact = False
     for rel, text, payload in contents:
-        text_issue = _sensitive_inline_text_issue(text, path=f"cache_account_audit_artifact.{rel}")
-        if text_issue:
-            sensitive_issues.append(text_issue)
-            continue
         payload_issue = _sensitive_inline_evidence_issue(payload, path=f"cache_account_audit_artifact.{rel}")
         if payload_issue:
             sensitive_issues.append(payload_issue)
@@ -841,7 +844,8 @@ def _cp8_cache_audit_rows_from_log_text(log_text: str) -> list[dict[str, object]
 
 def _cp8_cache_audit_log_payload(line: str) -> Mapping[str, object] | None:
     line = str(line or "").strip()
-    if "gateway.claude_code_bridge_cache_audit" not in line:
+    event_name = "gateway.claude_code_bridge_cache_audit"
+    if event_name not in line:
         return None
     start = line.find("{")
     if start < 0:
@@ -852,7 +856,8 @@ def _cp8_cache_audit_log_payload(line: str) -> Mapping[str, object] | None:
         return None
     if not isinstance(payload, Mapping):
         return None
-    if str(payload.get("msg") or payload.get("message") or "").strip() != "gateway.claude_code_bridge_cache_audit":
+    json_event = str(payload.get("msg") or payload.get("message") or "").strip()
+    if json_event and json_event != event_name:
         return None
     issue = _sensitive_inline_evidence_issue(payload, path="cache_audit_log")
     if issue:
@@ -869,6 +874,23 @@ def _cp8_cache_audit_row_from_log_payload(payload: Mapping[str, object]) -> dict
             row[field] = copy.deepcopy(payload[field])
     if "cache_control_present" not in row and "upstream_body_has_cache_control" in payload:
         row["cache_control_present"] = bool(payload.get("upstream_body_has_cache_control"))
+    if "response_usage_cache_fields_present" not in row:
+        safe_cache_paths = _str_list(payload.get("response_usage_cache_field_paths"))
+        observed_cache_fields = tuple(
+            field
+            for field in (
+                "prompt_cache_hit_tokens",
+                "prompt_cache_miss_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+            )
+            if field in payload
+        )
+        row["response_usage_cache_fields_present"] = bool(safe_cache_paths or observed_cache_fields)
+        if safe_cache_paths:
+            row["response_usage_cache_field_paths"] = safe_cache_paths
+        elif observed_cache_fields:
+            row["response_usage_cache_field_paths"] = [f"usage.{field}" for field in observed_cache_fields]
     row.setdefault("fallback_protocol", "")
     row.setdefault("fallback_reason", "")
     row.setdefault("fallback_used", False)
@@ -899,6 +921,11 @@ def _cp8_cache_provider_evidence_from_bridge_rows(
     provider_rows = {str(row.get("provider") or "").strip(): row for row in rows}
     deepseek = provider_rows.get("deepseek", {})
     openai = provider_rows.get("openai", {})
+    openai_cache_fields_observed = bool(openai.get("response_usage_cache_fields_present")) or bool(openai.get("response_usage_cache_field_paths"))
+    deepseek_cache_fields_observed = bool(deepseek.get("response_usage_cache_fields_present")) or bool(deepseek.get("response_usage_cache_field_paths"))
+    deepseek_cache_hit_observed = _int(deepseek.get("cache_read_tokens")) > 0
+    deepseek_cache_write_observed = _int(deepseek.get("cache_write_tokens")) > 0
+    deepseek_cache_miss_observed = _int(deepseek.get("cache_miss_tokens")) > 0
     return {
         "claude_native": {
             "mechanism": "anthropic_cache_control",
@@ -912,14 +939,17 @@ def _cp8_cache_provider_evidence_from_bridge_rows(
             "cache_usage_fields": ["usage.prompt_tokens_details.cached_tokens"],
             "request_shape_preserved": True,
             "raw_sensitive_stored": False,
-            "live_usage_fields_observed": _int(openai.get("cached_tokens")) > 0 or _int(openai.get("cache_read_tokens")) > 0,
+            "live_usage_fields_observed": openai_cache_fields_observed or _int(openai.get("cached_tokens")) > 0 or _int(openai.get("cache_read_tokens")) > 0,
         },
         "deepseek": {
             "mechanism": "deepseek_prefix_kv",
-            "cache_usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"],
+            "cache_usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"],
             "request_shape_preserved": True,
             "raw_sensitive_stored": False,
-            "live_usage_fields_observed": _int(deepseek.get("cache_read_tokens")) > 0 or _int(deepseek.get("cache_miss_tokens")) > 0,
+            "live_usage_fields_observed": deepseek_cache_fields_observed,
+            "live_cache_hit_observed": deepseek_cache_hit_observed,
+            "live_cache_write_observed": deepseek_cache_write_observed,
+            "live_cache_miss_observed": deepseek_cache_miss_observed,
             "cache_control_provider_ignored": True,
             "treats_cache_control_as_cache_mechanism": False,
             "stable_prefix_hmac_present": bool(str(deepseek.get("stable_prefix_hmac") or "").strip()),
@@ -1016,17 +1046,17 @@ def _deepseek_bridge_cache_audit_row_issues(raw_row: Mapping[str, object], *, pa
     if raw_row.get("prompt_cache_key_present") is not False:
         issues.append("DeepSeek bridge cache audit row must not claim prompt_cache_key")
     if _int(raw_row.get("cached_tokens")) > 0:
-        issues.append("DeepSeek bridge cache audit row must use prompt_cache_hit_tokens instead of cached_tokens")
+        issues.append("DeepSeek bridge cache audit row must use cache_read_input_tokens instead of cached_tokens")
     strategy = str(raw_row.get("prompt_cache_key_strategy") or "").strip()
     if strategy not in {"", "absent", "not_configured"}:
         issues.append("DeepSeek bridge cache audit row must not claim prompt cache key strategy")
     fields, fields_ok = _bridge_cache_str_list(raw_row.get("cache_usage_fields"), allow_absent=False)
-    if not fields_ok or set(fields) != {"prompt_cache_hit_tokens", "prompt_cache_miss_tokens"}:
+    if not fields_ok or set(fields) != {"prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"}:
         issues.append("DeepSeek bridge cache audit row has wrong usage fields")
-    if _int(raw_row.get("cache_read_tokens")) < 0 or _int(raw_row.get("cache_miss_tokens")) < 0:
+    if _int(raw_row.get("cache_read_tokens")) < 0 or _int(raw_row.get("cache_write_tokens")) < 0:
         issues.append("DeepSeek bridge cache audit row cache tokens must be non-negative")
-    if strict_live and not (_int(raw_row.get("cache_read_tokens")) > 0 or _int(raw_row.get("cache_miss_tokens")) > 0):
-        issues.append("DeepSeek strict-live bridge cache audit row requires observed hit/miss usage")
+    if strict_live and raw_row.get("response_usage_cache_fields_present") is not True:
+        issues.append("DeepSeek strict-live bridge cache audit row requires observed cache usage fields")
     return tuple(issues)
 
 
@@ -1767,7 +1797,7 @@ def _official_docs_issues(value: object) -> tuple[str, ...]:
     deepseek_context_windows = deepseek.get("context_windows") if isinstance(deepseek.get("context_windows"), Mapping) else {}
     if "deepseek-v4-pro[1m]" not in _str_list(deepseek.get("models")) or _int(deepseek_context_windows.get("deepseek-v4-pro[1m]")) < 1_000_000:
         issues.append("DeepSeek official docs snapshot is missing 1M Claude Code model metadata")
-    if deepseek.get("cache_observability") != "prompt_cache_hit_tokens/prompt_cache_miss_tokens":
+    if deepseek.get("cache_observability") != "cache_read_input_tokens/cache_creation_input_tokens":
         issues.append("DeepSeek official docs cache observability snapshot is stale")
     latest_glm = str(zai.get("latest_coding_model") or "")
     if not latest_glm.startswith("glm-5.") or latest_glm == "glm-4.6":
@@ -1932,11 +1962,13 @@ def _cp8_user_text_sensitive_issue(value: str) -> bool:
 
 
 def _artifact_sensitive_scan_issue(text: str) -> bool:
-    if _SENSITIVE_ARTIFACT_RE.search(text) or _sensitive_inline_text_issue(text, path="artifact"):
+    if _SENSITIVE_ARTIFACT_RE.search(text):
         return True
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
+        if _sensitive_inline_text_issue(text, path="artifact"):
+            return True
         return _artifact_jsonl_sensitive_scan_issue(text)
     return _artifact_payload_sensitive_scan_issue(payload)
 

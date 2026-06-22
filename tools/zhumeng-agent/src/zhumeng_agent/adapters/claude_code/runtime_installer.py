@@ -28,7 +28,8 @@ EFFORT_CAPABILITY_ENV_VAR = "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON"
 AGENT_MODEL_SCHEMA_ENUM_NEEDLE = b'k.enum(["sonnet","opus","haiku","fable"]).optional()'
 AGENT_MODEL_SCHEMA_STRING_PATCH = b"k.string().min(1).max(128).optional()               "
 EFFORT_CAPABILITY_HOOK_NEEDLE = b'var QP5,us;var oK6=L(()=>{c7();V7();QP5=[{modelEnvVar:"ANTHROPIC_DEFAULT_FABLE_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_DEFAULT_OPUS_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_DEFAULT_SONNET_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_DEFAULT_HAIKU_MODEL",capabilitiesEnvVar:"ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES"},{modelEnvVar:"ANTHROPIC_CUSTOM_MODEL_OPTION",capabilitiesEnvVar:"ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES"}],us=V6((H,_)=>{if(OO())return;let q=H.toLowerCase();for(let K of QP5){let O=process.env[K.modelEnvVar],T=process.env[K.capabilitiesEnvVar];if(!O||T===void 0)continue;if(q!==O.toLowerCase())continue;return T.toLowerCase().split(",").map((z)=>z.trim()).includes(_)}return},(H,_)=>`${H.toLowerCase()}:${_}`)});'
-EFFORT_CAPABILITY_HOOK_REPLACEMENT_BASE = b'var QP5,us,ZCE;var oK6=L(()=>{c7();V7();QP5=["FABLE","OPUS","SONNET","HAIKU"].map(H=>["ANTHROPIC_DEFAULT_"+H+"_MODEL","ANTHROPIC_DEFAULT_"+H+"_MODEL_SUPPORTED_CAPABILITIES"]),QP5.push(["ANTHROPIC_CUSTOM_MODEL_OPTION","ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES"]),ZCE=(H)=>{let q=String(H||"").toLowerCase();if(!q.startsWith("claude-code-bridge-"))return;try{return JSON.parse(process.env.ZCCEL||"{}")[q]}catch{}},us=V6((H,_)=>{let q=H.toLowerCase(),J=process.env.ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON,M;if(q.startsWith("claude-code-bridge-")&&J)try{M=JSON.parse(J)[q];if(M&&M[_]!=null)return!!M[_]}catch{}if(OO())return;for(let K of QP5){let O=process.env[K[0]],T=process.env[K[1]];if(O&&T!==void 0&&q===O.toLowerCase())return T.toLowerCase().split(",").map((z)=>z.trim()).includes(_)}},(H,_)=>H.toLowerCase()+":"+_)});'
+LEGACY_EFFORT_CAPABILITY_HOOK_REPLACEMENT_BASE = b'var QP5,us,ZCE;var oK6=L(()=>{c7();V7();QP5=["FABLE","OPUS","SONNET","HAIKU"].map(H=>["ANTHROPIC_DEFAULT_"+H+"_MODEL","ANTHROPIC_DEFAULT_"+H+"_MODEL_SUPPORTED_CAPABILITIES"]),QP5.push(["ANTHROPIC_CUSTOM_MODEL_OPTION","ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES"]),ZCE=(H)=>{let q=String(H||"").toLowerCase();if(!q.startsWith("claude-code-bridge-"))return;try{return JSON.parse(process.env.ZCCEL||"{}")[q]}catch{}},us=V6((H,_)=>{let q=H.toLowerCase(),J=process.env.ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON,M;if(q.startsWith("claude-code-bridge-")&&J)try{M=JSON.parse(J)[q];if(M&&M[_]!=null)return!!M[_]}catch{}if(OO())return;for(let K of QP5){let O=process.env[K[0]],T=process.env[K[1]];if(O&&T!==void 0&&q===O.toLowerCase())return T.toLowerCase().split(",").map((z)=>z.trim()).includes(_)}},(H,_)=>H.toLowerCase()+":"+_)});'
+EFFORT_CAPABILITY_HOOK_REPLACEMENT_BASE = b'var QP5,us,ZCE;var oK6=L(()=>{c7();V7();QP5=["FABLE","OPUS","SONNET","HAIKU"].map(H=>["ANTHROPIC_DEFAULT_"+H+"_MODEL","ANTHROPIC_DEFAULT_"+H+"_MODEL_SUPPORTED_CAPABILITIES"]),QP5.push(["ANTHROPIC_CUSTOM_MODEL_OPTION","ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES"]),ZCE=(H)=>{let q=String(H||"").toLowerCase(),M;try{M=JSON.parse(process.env.ZCCEL||"{}")}catch{}return M?.[q]??M?.["claude-code-bridge-"+q]},us=V6((H,_)=>{let q=H.toLowerCase(),J=process.env.ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON,M;if(q.startsWith("claude-code-bridge-")&&J)try{M=JSON.parse(J)[q];if(M&&M[_]!=null)return!!M[_]}catch{}if(OO())return;for(let K of QP5){let O=process.env[K[0]],T=process.env[K[1]];if(O&&T!==void 0&&q===O.toLowerCase())return T.toLowerCase().split(",").map((z)=>z.trim()).includes(_)}},(H,_)=>H.toLowerCase()+":"+_)});'
 EFFORT_CAPABILITY_HOOK_SLACK_BYTES = len(EFFORT_CAPABILITY_HOOK_NEEDLE) - len(EFFORT_CAPABILITY_HOOK_REPLACEMENT_BASE)
 EXACT_EFFORT_LEVEL_UI_PATCH_MIN_EXTRA_BYTES = 96
 EXACT_EFFORT_LEVEL_UI_NEEDLE = b'function eX4(H){if(Qm(H)){let O=hO_+3,T=17,z=[...IDq,{value:"ultracode",label:"ultracode",color:"violet-ripple"}],$=O+Math.floor(4),Y=[...bDq,$-hO_];return{levels:z,width:O+17,trianglePositions:[...rX4,O+Math.floor(8.5)],labelStarts:oX4(z,Y),spacers:Y,trackChars:"\\u2500".repeat(hO_+1)+"\\u2506"+"\\u2500".repeat(18),accentStart:hO_+2,sublabel:{text:"xhigh + workflows",start:O}}}return{levels:IDq,width:hO_,trianglePositions:rX4,labelStarts:oX4(IDq,bDq),spacers:bDq,trackChars:"\\u2500".repeat(hO_)}}'
@@ -38,6 +39,7 @@ EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT_BASE = b'function Qs(H,_){if(!zP(H))ret
 EXACT_EFFORT_LEVEL_UI_REPLACEMENT = EXACT_EFFORT_LEVEL_UI_REPLACEMENT_BASE + (b" " * (len(EXACT_EFFORT_LEVEL_UI_NEEDLE) - len(EXACT_EFFORT_LEVEL_UI_REPLACEMENT_BASE)))
 EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT = EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT_BASE + (b" " * (len(EXACT_EFFORT_EFFECTIVE_CLAMP_NEEDLE) - len(EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT_BASE)))
 EFFORT_CAPABILITY_HOOK_REPLACEMENT = EFFORT_CAPABILITY_HOOK_REPLACEMENT_BASE + (b" " * (len(EFFORT_CAPABILITY_HOOK_NEEDLE) - len(EFFORT_CAPABILITY_HOOK_REPLACEMENT_BASE)))
+LEGACY_EFFORT_CAPABILITY_HOOK_REPLACEMENT = LEGACY_EFFORT_CAPABILITY_HOOK_REPLACEMENT_BASE + (b" " * (len(EFFORT_CAPABILITY_HOOK_NEEDLE) - len(LEGACY_EFFORT_CAPABILITY_HOOK_REPLACEMENT_BASE)))
 GLOBAL_CLAUDE_BINARY_PATHS = frozenset({
     Path("/opt/homebrew/bin/claude"),
     Path("/usr/local/bin/claude"),
@@ -350,11 +352,16 @@ def apply_managed_runtime_effort_capability_patch(runtime_root: Path, executable
         raise RuntimeInstallerError("managed Claude Code runtime executable is missing")
     data = executable_path.read_bytes()
     changed = False
+    legacy_capability_patched = LEGACY_EFFORT_CAPABILITY_HOOK_REPLACEMENT.rstrip() in data
     capability_patched = EFFORT_CAPABILITY_HOOK_REPLACEMENT.rstrip() in data
     exact_ui_patched = EXACT_EFFORT_LEVEL_UI_REPLACEMENT.rstrip() in data
     effective_clamp_patched = EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT.rstrip() in data
     if EFFORT_CAPABILITY_HOOK_NEEDLE in data:
         data = data.replace(EFFORT_CAPABILITY_HOOK_NEEDLE, EFFORT_CAPABILITY_HOOK_REPLACEMENT, 1)
+        capability_patched = True
+        changed = True
+    elif legacy_capability_patched:
+        data = data.replace(LEGACY_EFFORT_CAPABILITY_HOOK_REPLACEMENT, EFFORT_CAPABILITY_HOOK_REPLACEMENT, 1)
         capability_patched = True
         changed = True
     elif not capability_patched:

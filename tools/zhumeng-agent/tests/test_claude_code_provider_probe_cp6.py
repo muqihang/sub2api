@@ -100,7 +100,7 @@ def test_cp6_codex_gateway_no_regression_evidence_is_bound_to_existing_fixtures(
 
     deepseek = evidence["providers"]["deepseek"]
     assert deepseek["preferred_bridge_protocol"] == "anthropic_messages"
-    assert deepseek["cache_usage_fields"] == ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"]
+    assert deepseek["cache_usage_fields"] == ["cache_read_input_tokens", "cache_creation_input_tokens"]
     assert deepseek["reasoning_cleaning"] == "foreign_reasoning_never_native_replay"
     assert {"function_tool_call_stream", "tool_search_call_output_request"}.issubset(set(deepseek["golden_fixtures"]))
 

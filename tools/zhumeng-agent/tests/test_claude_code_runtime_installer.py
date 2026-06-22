@@ -407,6 +407,18 @@ def test_runtime_installer_exact_effort_ui_patch_reads_levels_without_lazy_capab
     assert b"xhigh + workflows" in replacement
 
 
+
+def test_runtime_installer_exact_effort_patch_requires_zccel_env_for_bridge_levels():
+    replacement = EXACT_EFFORT_LEVEL_UI_REPLACEMENT.rstrip()
+    assert b"ZCE(H)" in replacement
+    assert b"ZHUMENG_CLAUDE_PROVIDER_PROFILE_PATH" not in replacement
+    assert b"IDq.filter" in replacement
+    from zhumeng_agent.adapters.claude_code.runtime_installer import EFFORT_CAPABILITY_HOOK_REPLACEMENT  # noqa: PLC0415
+
+    capability_hook = EFFORT_CAPABILITY_HOOK_REPLACEMENT.rstrip()
+    assert b'M?.["claude-code-bridge-"+q]' in capability_hook
+
+
 def test_runtime_installer_exact_effort_effective_clamp_patch_clamps_status_line():
     assert EXACT_EFFORT_EFFECTIVE_CLAMP_PATCH_POINT == "exact_effort_effective_clamp_patch"
     assert len(EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT) == len(EXACT_EFFORT_EFFECTIVE_CLAMP_NEEDLE)
@@ -443,21 +455,25 @@ function e16(){ return 'high'; }
 function syH(){ return undefined; }
 function oyH(model){ return model === 'claude-code-bridge-deepseek-v4-pro' || model === 'claude-code-bridge-glm-5.2-1m'; }
 function KMH(model){ return model === 'claude-code-bridge-gpt-5.5' || model === 'claude-opus-4-8'; }
-const ZCE=(H)=>{let q=String(H||'').toLowerCase();if(!q.startsWith('claude-code-bridge-'))return;try{return JSON.parse(process.env.ZCCEL||'{}')[q]}catch{}};
+const ZCE=(H)=>{let q=String(H||'').toLowerCase(),M;try{M=JSON.parse(process.env.ZCCEL||'{}')}catch{}return M?.[q]??M?.['claude-code-bridge-'+q]};
 function eX4(H){let q=ZCE(H),K=q?IDq.filter(O=>q.includes(O.value)):IDq,Y=q?bDq.slice(0,K.length-1):bDq,L=oX4(K,Y),T=q?L:rX4,W=hO_,R='─',S=R.repeat(hO_),A;if(!q&&Qm(H)){let O=hO_+3;K=[...IDq,{value:'ultracode',label:'ultracode',color:'violet-ripple'}],Y=[...bDq,7],T=[...rX4,O+8],L=oX4(K,Y),W=O+17,S=R.repeat(hO_+1)+'┆'+R.repeat(18),A={accentStart:hO_+2,sublabel:{text:'xhigh + workflows',start:O}}}return{levels:K,width:W,trianglePositions:T,labelStarts:L,spacers:Y,trackChars:S,...A}}
 function Qs(H,_){if(!zP(H))return;let q=tyH(H),K=e16(H),O=syH();if(O===null)return q?K:void 0;let T=O??(q?K:void 0)??_??K,J=ZCE?.(H);return J?.length?J.includes(T)?T:J.includes('high')?'high':J[0]:T==='max'&&!oyH(H)||T==='xhigh'&&!KMH(H)?'high':T}
 function values(model){ return eX4(model).levels.map((level)=>level.value); }
 const checks = [
   [JSON.stringify(values('claude-code-bridge-deepseek-v4-pro')), JSON.stringify(['high','max']), 'deepseek visible levels'],
+  [JSON.stringify(values('deepseek-v4-pro')), JSON.stringify(['high','max']), 'deepseek upstream visible levels'],
   [JSON.stringify(values('claude-code-bridge-gpt-5.5')), JSON.stringify(['low','medium','high','xhigh']), 'gpt visible levels'],
+  [JSON.stringify(values('gpt-5.5')), JSON.stringify(['low','medium','high','xhigh']), 'gpt upstream visible levels'],
   [JSON.stringify(values('claude-code-bridge-agnes-2.0-flash')), JSON.stringify(['low','medium','high','xhigh','max']), 'agnes no exact levels falls back to stock non-Qm'],
   [JSON.stringify(values('claude-code-bridge-kimi-k2.7-code')), JSON.stringify(['low','medium','high','xhigh','max']), 'kimi no exact levels falls back to stock non-Qm'],
   [JSON.stringify(values('claude-opus-4-8').slice(-1)), JSON.stringify(['ultracode']), 'native Qm keeps ultracode'],
   [eX4('claude-opus-4-8').sublabel && eX4('claude-opus-4-8').sublabel.text, 'xhigh + workflows', 'native Qm sublabel'],
   [String(eX4('claude-opus-4-8').accentStart), '12', 'native Qm accentStart'],
   [Qs('claude-code-bridge-deepseek-v4-pro', 'medium'), 'high', 'deepseek medium clamps to high'],
+  [Qs('deepseek-v4-pro', 'medium'), 'high', 'deepseek upstream medium clamps to high'],
   [Qs('claude-code-bridge-deepseek-v4-pro', 'max'), 'max', 'deepseek max preserved'],
   [Qs('claude-code-bridge-gpt-5.5', 'max'), 'high', 'gpt max clamps to high'],
+  [Qs('gpt-5.5', 'max'), 'high', 'gpt upstream max clamps to high'],
   [Qs('claude-code-bridge-gpt-5.5', 'xhigh'), 'xhigh', 'gpt xhigh preserved'],
   [Qs('claude-opus-4-8', 'xhigh'), 'xhigh', 'native xhigh preserved'],
 ];
@@ -546,6 +562,36 @@ def test_runtime_installer_effort_capability_patch_is_idempotent(tmp_path: Path)
 
     assert patch_result["status"] == "already_patched"
     assert patch_result["runtime_hash_after"] == patch_result["runtime_hash_before"]
+
+
+def test_runtime_installer_effort_capability_patch_migrates_legacy_zccel_bridge_only_hook(tmp_path: Path):
+    from zhumeng_agent.adapters.claude_code import runtime_installer as installer  # noqa: PLC0415
+
+    runtime_root = tmp_path / ".zhumeng" / "runtimes"
+    executable = tmp_path / "managed-bin" / "claude"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(
+        b"prefix "
+        + installer.LEGACY_EFFORT_CAPABILITY_HOOK_REPLACEMENT
+        + b" middle "
+        + installer.EXACT_EFFORT_LEVEL_UI_REPLACEMENT
+        + b" tail "
+        + installer.EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT
+        + b" suffix"
+    )
+    plan = build_managed_runtime_install_plan(
+        executable=executable,
+        runtime_root=runtime_root,
+        runner=VersionRunner("Claude Code v2.1.177"),
+    )
+    write_managed_runtime_artifacts(plan)
+
+    patch_result = apply_managed_runtime_effort_capability_patch(runtime_root, plan.executable, approved=True)
+
+    assert patch_result["status"] == "patched"
+    patched = plan.executable.read_bytes()
+    assert installer.LEGACY_EFFORT_CAPABILITY_HOOK_REPLACEMENT.rstrip() not in patched
+    assert installer.EFFORT_CAPABILITY_HOOK_REPLACEMENT.rstrip() in patched
 
 
 def test_runtime_installer_effort_capability_patch_rejects_partial_marker(tmp_path: Path):

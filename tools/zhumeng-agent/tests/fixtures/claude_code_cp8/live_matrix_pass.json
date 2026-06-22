@@ -7,7 +7,7 @@
     "observations": {
       "deepseek": {
         "anthropic_base_url": "https://api.deepseek.com/anthropic",
-        "cache_observability": "prompt_cache_hit_tokens/prompt_cache_miss_tokens",
+        "cache_observability": "cache_read_input_tokens/cache_creation_input_tokens",
         "context_windows": {
           "deepseek-v4-flash": 1000000,
           "deepseek-v4-pro": 1000000,
@@ -102,7 +102,7 @@
         {
           "path": "artifacts/cache_account_audit.json",
           "sensitive_scan_clean": true,
-          "sha256": "sha256:2081d05ecba59660feef35359e54d654100f1534b263b5177e0663d24b2738b8"
+          "sha256": "sha256:2eb030f74f38d53bea73643354f739038681f3baa0623dd640c0c7981ead839b"
         }
       ],
       "audit_summary_only": true,
@@ -121,9 +121,14 @@
           "cache_control_provider_ignored": true,
           "cache_usage_fields": [
             "prompt_cache_hit_tokens",
-            "prompt_cache_miss_tokens"
+            "prompt_cache_miss_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens"
           ],
-          "live_usage_fields_observed": false,
+          "live_cache_hit_observed": true,
+          "live_cache_miss_observed": false,
+          "live_cache_write_observed": true,
+          "live_usage_fields_observed": true,
           "mechanism": "deepseek_prefix_kv",
           "raw_sensitive_stored": false,
           "request_shape_preserved": true,
@@ -140,7 +145,7 @@
           "request_shape_preserved": true
         }
       },
-      "deepseek_cache_observability": "prompt_cache_hit_tokens/prompt_cache_miss_tokens",
+      "deepseek_cache_observability": "cache_read_input_tokens/cache_creation_input_tokens",
       "live_provider_verified": false,
       "raw_sensitive_stored": false,
       "safe_summary_hash_stable": true,
@@ -204,7 +209,7 @@
         }
       ],
       "bridge_request_count": 3,
-      "cache_observability": "prompt_cache_hit_tokens/prompt_cache_miss_tokens",
+      "cache_observability": "cache_read_input_tokens/cache_creation_input_tokens",
       "client_type": "claude_code_bridge_deepseek",
       "fallback_protocol": "openai_chat_completions",
       "fallback_reason": "",
@@ -267,7 +272,7 @@
         {
           "path": "artifacts/cache_account_audit.json",
           "sensitive_scan_clean": true,
-          "sha256": "sha256:2081d05ecba59660feef35359e54d654100f1534b263b5177e0663d24b2738b8"
+          "sha256": "sha256:2eb030f74f38d53bea73643354f739038681f3baa0623dd640c0c7981ead839b"
         }
       ],
       "cache_prefix_stable": true,

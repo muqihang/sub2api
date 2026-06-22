@@ -1301,6 +1301,7 @@ func TestGatewayService_ParseSSEUsagePassthrough_DeepSeekPromptCacheFields(t *te
 
 	require.Equal(t, 20, usage.InputTokens)
 	require.Equal(t, 7, usage.CacheReadInputTokens, "DeepSeek Anthropic prompt_cache_hit_tokens 应折算为 cache_read_tokens")
+	require.Equal(t, 13, usage.CacheCreationInputTokens, "DeepSeek Anthropic prompt_cache_miss_tokens 应折算为 cache_creation_input_tokens")
 	require.NotNil(t, usage.ProviderUsageExtra)
 	require.Equal(t, float64(7), usage.ProviderUsageExtra["prompt_cache_hit_tokens"])
 	require.Equal(t, float64(13), usage.ProviderUsageExtra["prompt_cache_miss_tokens"])
@@ -1314,9 +1315,97 @@ func TestParseClaudeUsageFromResponseBody_DeepSeekPromptCacheFields(t *testing.T
 	require.Equal(t, 20, got.InputTokens)
 	require.Equal(t, 3, got.OutputTokens)
 	require.Equal(t, 7, got.CacheReadInputTokens)
+	require.Equal(t, 13, got.CacheCreationInputTokens)
 	require.NotNil(t, got.ProviderUsageExtra)
 	require.Equal(t, float64(7), got.ProviderUsageExtra["prompt_cache_hit_tokens"])
 	require.Equal(t, float64(13), got.ProviderUsageExtra["prompt_cache_miss_tokens"])
+}
+
+func TestGatewayService_AnthropicPassthroughCacheUsageAudit(t *testing.T) {
+	t.Run("anthropic style zero fields are present", func(t *testing.T) {
+		usageNode := gjson.Parse(`{"cache_read_input_tokens":0,"cache_creation_input_tokens":0}`)
+		var obs AnthropicPassthroughCacheUsageObservation
+
+		observeAnthropicPassthroughCacheUsage("message.usage", usageNode, &obs)
+		audit := anthropicPassthroughCacheUsageAudit(&Account{ID: 42}, "deepseek-v4-pro", &ClaudeUsage{}, obs)
+
+		require.True(t, audit["anthropic_cache_read_input_tokens_present"].(bool))
+		require.True(t, audit["anthropic_cache_creation_input_tokens_present"].(bool))
+		require.False(t, audit["provider_prompt_cache_hit_tokens_present"].(bool))
+		require.False(t, audit["provider_prompt_cache_miss_tokens_present"].(bool))
+		require.Equal(t, 0, audit["cache_read_input_tokens"])
+		require.Equal(t, 0, audit["cache_creation_input_tokens"])
+		require.ElementsMatch(t, []string{"message.usage.cache_read_input_tokens", "message.usage.cache_creation_input_tokens"}, audit["cache_usage_field_paths"])
+	})
+
+	t.Run("cache fields absent stays absent", func(t *testing.T) {
+		usageNode := gjson.Parse(`{"input_tokens":20}`)
+		var obs AnthropicPassthroughCacheUsageObservation
+
+		observeAnthropicPassthroughCacheUsage("message.usage", usageNode, &obs)
+		audit := anthropicPassthroughCacheUsageAudit(&Account{ID: 42}, "deepseek-v4-pro", &ClaudeUsage{}, obs)
+
+		require.False(t, audit["anthropic_cache_read_input_tokens_present"].(bool))
+		require.False(t, audit["anthropic_cache_creation_input_tokens_present"].(bool))
+		require.False(t, audit["provider_prompt_cache_hit_tokens_present"].(bool))
+		require.False(t, audit["provider_prompt_cache_miss_tokens_present"].(bool))
+		require.Empty(t, audit["cache_usage_field_paths"])
+	})
+
+	t.Run("official deepseek zero fields are present", func(t *testing.T) {
+		usageNode := gjson.Parse(`{"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":0}`)
+		var obs AnthropicPassthroughCacheUsageObservation
+
+		observeAnthropicPassthroughCacheUsage("usage", usageNode, &obs)
+		audit := anthropicPassthroughCacheUsageAudit(&Account{ID: 42}, "deepseek-v4-pro", &ClaudeUsage{}, obs)
+
+		require.False(t, audit["anthropic_cache_read_input_tokens_present"].(bool))
+		require.False(t, audit["anthropic_cache_creation_input_tokens_present"].(bool))
+		require.True(t, audit["provider_prompt_cache_hit_tokens_present"].(bool))
+		require.True(t, audit["provider_prompt_cache_miss_tokens_present"].(bool))
+		require.Equal(t, 0, audit["provider_prompt_cache_hit_tokens"])
+		require.Equal(t, 0, audit["provider_prompt_cache_miss_tokens"])
+		require.ElementsMatch(t, []string{"usage.prompt_cache_hit_tokens", "usage.prompt_cache_miss_tokens"}, audit["cache_usage_field_paths"])
+	})
+
+	t.Run("official miss does not prove anthropic creation field", func(t *testing.T) {
+		usageNode := gjson.Parse(`{"prompt_cache_hit_tokens":7,"prompt_cache_miss_tokens":13}`)
+		var obs AnthropicPassthroughCacheUsageObservation
+
+		observeAnthropicPassthroughCacheUsage("usage", usageNode, &obs)
+		audit := anthropicPassthroughCacheUsageAudit(&Account{ID: 42}, "deepseek-v4-pro", &ClaudeUsage{CacheCreationInputTokens: 13}, obs)
+
+		require.False(t, audit["anthropic_cache_creation_input_tokens_present"].(bool))
+		require.True(t, audit["provider_prompt_cache_miss_tokens_present"].(bool))
+		require.Equal(t, 13, audit["provider_prompt_cache_miss_tokens"])
+		require.Equal(t, 0, audit["cache_creation_input_tokens"])
+		require.ElementsMatch(t, []string{"usage.prompt_cache_hit_tokens", "usage.prompt_cache_miss_tokens"}, audit["cache_usage_field_paths"])
+	})
+}
+
+func TestGatewayService_AnthropicPassthroughCacheUsageLogFieldsAreSafe(t *testing.T) {
+	usageNode := gjson.Parse(`{"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":0}`)
+	usage := &ClaudeUsage{}
+	var obs AnthropicPassthroughCacheUsageObservation
+	observeAnthropicPassthroughCacheUsage("usage", usageNode, &obs)
+	usage.ProviderUsageExtra = map[string]any{
+		"anthropic_passthrough_cache_usage": anthropicPassthroughCacheUsageAudit(&Account{ID: 7}, "deepseek-v4-pro", usage, obs),
+	}
+
+	fields := anthropicPassthroughCacheUsageLogFields(&Account{ID: 7}, "deepseek-v4-pro", usage)
+
+	require.Equal(t, int64(7), fields["account_id"])
+	require.Equal(t, "deepseek-v4-pro", fields["model"])
+	require.True(t, fields["provider_prompt_cache_hit_tokens_present"].(bool))
+	require.True(t, fields["provider_prompt_cache_miss_tokens_present"].(bool))
+	require.Equal(t, 0, fields["provider_prompt_cache_hit_tokens"])
+	require.Equal(t, 0, fields["provider_prompt_cache_miss_tokens"])
+	dumped, err := json.Marshal(fields)
+	require.NoError(t, err)
+	require.NotContains(t, string(dumped), "Authorization")
+	require.NotContains(t, string(dumped), "Bearer")
+	require.NotContains(t, string(dumped), "raw")
+	require.NotContains(t, string(dumped), "prompt text")
 }
 
 func TestGatewayService_AnthropicAPIKeyPassthrough_StreamingErrTooLong(t *testing.T) {

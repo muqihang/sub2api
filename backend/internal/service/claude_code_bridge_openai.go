@@ -270,7 +270,7 @@ func buildClaudeCodeBridgeOpenAIResponsesRequestAudit(decision ClaudeCodeBridgeR
 	case "agnes":
 		audit.ProviderCacheMechanism = "openai_responses_compatible_cache_unverified"
 	}
-	audit.StablePrefixHMAC, audit.StablePrefixTokenBucket = claudeCodeBridgeStablePrefixAudit(decision, upstreamBody)
+	audit.StablePrefixHMAC, audit.StablePrefixTokenBucket, audit.StablePrefixComponentHMACs = claudeCodeBridgeStablePrefixAudit(decision, upstreamBody)
 	return audit
 }
 
@@ -734,7 +734,7 @@ func buildClaudeCodeBridgeOpenAIChatFallbackRequestAudit(decision ClaudeCodeBrid
 	}
 	audit.CacheControlPresent = len(audit.CacheControlLocations) > 0
 	audit.ProviderCacheMechanism = "none"
-	audit.StablePrefixHMAC, audit.StablePrefixTokenBucket = claudeCodeBridgeStablePrefixAudit(decision, originalBody)
+	audit.StablePrefixHMAC, audit.StablePrefixTokenBucket, audit.StablePrefixComponentHMACs = claudeCodeBridgeStablePrefixAudit(decision, originalBody)
 	return audit
 }
 
@@ -813,7 +813,7 @@ func copyClaudeCodeChatCompletionsAsAnthropicSSE(dst io.Writer, src io.Reader, m
 		chunk = sanitizeClaudeCodeDeepSeekChatCompletionsChunk(chunk)
 		if chunk.Usage != nil {
 			usagePayload, _ := json.Marshal(chunk.Usage)
-			collectClaudeCodeBridgeProviderUsageNode(gjson.ParseBytes(usagePayload), &fixture)
+			collectClaudeCodeBridgeProviderUsageNode("usage", gjson.ParseBytes(usagePayload), &fixture)
 		}
 		for _, choice := range chunk.Choices {
 			if choice.FinishReason != nil && strings.TrimSpace(*choice.FinishReason) != "" {

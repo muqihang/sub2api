@@ -45,7 +45,7 @@ def test_checkpoint0_decision_freeze_records_default_l8_scope_without_secrets(tm
     assert decision["deepseek_prefix_kv_policy"] == {
         "preferred_protocol": "anthropic_messages",
         "cache_mechanism": "deepseek_prefix_kv",
-        "usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"],
+        "usage_fields": ["cache_read_input_tokens", "cache_creation_input_tokens"],
         "requires_stable_prefix_hmac": True,
     }
     assert decision["deepseek_cache_control_policy"]["treat_cache_control_as_cache_mechanism"] is False

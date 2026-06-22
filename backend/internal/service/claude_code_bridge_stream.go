@@ -100,6 +100,8 @@ type ClaudeCodeBridgeAuditSummary struct {
 	CacheReadTokens             int      `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens            int      `json:"cache_write_tokens,omitempty"`
 	CacheMissTokens             int      `json:"cache_miss_tokens,omitempty"`
+	ResponseUsageFieldPaths     []string `json:"response_usage_field_paths,omitempty"`
+	StablePrefixComponentHMACs  []string `json:"stable_prefix_component_hmacs,omitempty"`
 }
 
 // ClaudeCodeBridgeCacheAuditRow is the safe, artifact-friendly subset of the
@@ -107,31 +109,35 @@ type ClaudeCodeBridgeAuditSummary struct {
 // provider cache counters, and scoped HMAC metadata; never raw prompts, request
 // bodies, headers, response text, API keys, or prompt_cache_key values.
 type ClaudeCodeBridgeCacheAuditRow struct {
-	SchemaVersion               string   `json:"schema_version"`
-	Provider                    string   `json:"provider"`
-	Route                       string   `json:"route"`
-	ClientType                  string   `json:"client_type"`
-	ModelID                     string   `json:"model_id,omitempty"`
-	PreferredProtocol           string   `json:"preferred_protocol,omitempty"`
-	SelectedProtocol            string   `json:"selected_protocol"`
-	FallbackProtocol            string   `json:"fallback_protocol,omitempty"`
-	FallbackReason              string   `json:"fallback_reason,omitempty"`
-	FallbackUsed                bool     `json:"fallback_used"`
-	ProviderCacheMechanism      string   `json:"provider_cache_mechanism"`
-	UpstreamPathKind            string   `json:"upstream_path_kind"`
-	StablePrefixHMAC            string   `json:"stable_prefix_hmac,omitempty"`
-	StablePrefixTokenBucket     string   `json:"stable_prefix_token_bucket,omitempty"`
-	CacheControlPresent         bool     `json:"cache_control_present"`
-	CacheControlLocations       []string `json:"cache_control_locations,omitempty"`
-	CacheControlProviderIgnored bool     `json:"cache_control_provider_ignored"`
-	PromptCacheKeyPresent       bool     `json:"prompt_cache_key_present"`
-	PromptCacheKeyStrategy      string   `json:"prompt_cache_key_strategy,omitempty"`
-	CacheUsageFields            []string `json:"cache_usage_fields"`
-	CacheReadTokens             int      `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens            int      `json:"cache_write_tokens,omitempty"`
-	CacheMissTokens             int      `json:"cache_miss_tokens,omitempty"`
-	CachedTokens                int      `json:"cached_tokens,omitempty"`
-	RawSensitiveStored          bool     `json:"raw_sensitive_stored"`
+	SchemaVersion                   string   `json:"schema_version"`
+	Provider                        string   `json:"provider"`
+	Route                           string   `json:"route"`
+	ClientType                      string   `json:"client_type"`
+	ModelID                         string   `json:"model_id,omitempty"`
+	PreferredProtocol               string   `json:"preferred_protocol,omitempty"`
+	SelectedProtocol                string   `json:"selected_protocol"`
+	FallbackProtocol                string   `json:"fallback_protocol,omitempty"`
+	FallbackReason                  string   `json:"fallback_reason,omitempty"`
+	FallbackUsed                    bool     `json:"fallback_used"`
+	ProviderCacheMechanism          string   `json:"provider_cache_mechanism"`
+	UpstreamPathKind                string   `json:"upstream_path_kind"`
+	StablePrefixHMAC                string   `json:"stable_prefix_hmac,omitempty"`
+	StablePrefixTokenBucket         string   `json:"stable_prefix_token_bucket,omitempty"`
+	CacheControlPresent             bool     `json:"cache_control_present"`
+	CacheControlLocations           []string `json:"cache_control_locations,omitempty"`
+	CacheControlProviderIgnored     bool     `json:"cache_control_provider_ignored"`
+	PromptCacheKeyPresent           bool     `json:"prompt_cache_key_present"`
+	PromptCacheKeyStrategy          string   `json:"prompt_cache_key_strategy,omitempty"`
+	CacheUsageFields                []string `json:"cache_usage_fields"`
+	CacheReadTokens                 int      `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens                int      `json:"cache_write_tokens,omitempty"`
+	CacheMissTokens                 int      `json:"cache_miss_tokens,omitempty"`
+	CachedTokens                    int      `json:"cached_tokens,omitempty"`
+	ResponseUsageFieldPaths         []string `json:"response_usage_field_paths,omitempty"`
+	ResponseUsageCacheFieldPaths    []string `json:"response_usage_cache_field_paths,omitempty"`
+	ResponseUsageCacheFieldsPresent bool     `json:"response_usage_cache_fields_present"`
+	StablePrefixComponentHMACs      []string `json:"stable_prefix_component_hmacs,omitempty"`
+	RawSensitiveStored              bool     `json:"raw_sensitive_stored"`
 }
 
 type ClaudeCodeBridgeStreamResult struct {
@@ -163,6 +169,7 @@ type claudeCodeBridgeRequestAudit struct {
 	PromptCacheKeyPresent       bool
 	StablePrefixHMAC            string
 	StablePrefixTokenBucket     string
+	StablePrefixComponentHMACs  []string
 }
 
 type claudeCodeBridgeAuditSummaryContextKey struct{}
@@ -373,6 +380,7 @@ type ClaudeCodeBridgeProviderFixture struct {
 	CacheReadTokens  int
 	CacheWriteTokens int
 	CacheMissTokens  int
+	UsageFieldPaths  []string
 	StopReason       string
 	ErrorType        string
 	ErrorMessage     string
@@ -453,6 +461,8 @@ func buildClaudeCodeBridgeAuditSummaryWithRequest(decision ClaudeCodeBridgeRoute
 		CacheReadTokens:             fixture.CacheReadTokens,
 		CacheWriteTokens:            fixture.CacheWriteTokens,
 		CacheMissTokens:             fixture.CacheMissTokens,
+		ResponseUsageFieldPaths:     safeClaudeCodeBridgeUsageFieldPaths(fixture.UsageFieldPaths),
+		StablePrefixComponentHMACs:  safeClaudeCodeBridgeComponentHMACs(requestAudit.StablePrefixComponentHMACs),
 	}
 }
 
@@ -479,13 +489,17 @@ func (summary ClaudeCodeBridgeAuditSummary) CacheAuditRow() ClaudeCodeBridgeCach
 		CacheReadTokens:             nonNegativeClaudeCodeBridgeAuditInt(summary.CacheReadTokens),
 		CacheWriteTokens:            nonNegativeClaudeCodeBridgeAuditInt(summary.CacheWriteTokens),
 		CacheMissTokens:             nonNegativeClaudeCodeBridgeAuditInt(summary.CacheMissTokens),
+		ResponseUsageFieldPaths:     safeClaudeCodeBridgeUsageFieldPaths(summary.ResponseUsageFieldPaths),
+		StablePrefixComponentHMACs:  safeClaudeCodeBridgeComponentHMACs(summary.StablePrefixComponentHMACs),
 		RawSensitiveStored:          false,
 	}
+	row.ResponseUsageCacheFieldPaths = claudeCodeBridgeUsageCacheFieldPaths(row.ResponseUsageFieldPaths)
+	row.ResponseUsageCacheFieldsPresent = len(row.ResponseUsageCacheFieldPaths) > 0
 	sort.Strings(row.CacheControlLocations)
 	switch row.Provider {
 	case "deepseek":
 		if row.ProviderCacheMechanism == "deepseek_prefix_kv" && row.SelectedProtocol == "anthropic_messages" {
-			row.CacheUsageFields = []string{"prompt_cache_hit_tokens", "prompt_cache_miss_tokens"}
+			row.CacheUsageFields = []string{"prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"}
 			row.CacheControlProviderIgnored = true
 		}
 	case "openai":
@@ -507,6 +521,125 @@ func nonNegativeClaudeCodeBridgeAuditInt(value int) int {
 		return 0
 	}
 	return value
+}
+
+func safeClaudeCodeBridgeUsageFieldPaths(values []string) []string {
+	allowedPrefixes := []string{"message.usage.", "usage.", "response.usage."}
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || len(value) > 160 {
+			continue
+		}
+		allowedPrefix := false
+		for _, prefix := range allowedPrefixes {
+			if strings.HasPrefix(value, prefix) {
+				allowedPrefix = true
+				break
+			}
+		}
+		if !allowedPrefix {
+			continue
+		}
+		safe := true
+		for _, r := range value {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '.' {
+				continue
+			}
+			safe = false
+			break
+		}
+		if safe {
+			seen[value] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for value := range seen {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func claudeCodeBridgeUsageCacheFieldPaths(values []string) []string {
+	seen := map[string]struct{}{}
+	for _, value := range safeClaudeCodeBridgeUsageFieldPaths(values) {
+		field := value
+		if idx := strings.LastIndex(field, "."); idx >= 0 {
+			field = field[idx+1:]
+		}
+		switch field {
+		case "cache_read_input_tokens", "cache_creation_input_tokens", "cached_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens":
+			seen[value] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for value := range seen {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func safeClaudeCodeBridgeComponentHMACs(values []string) []string {
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if len(value) > 160 {
+			continue
+		}
+		parts := strings.Split(value, ":")
+		if len(parts) != 4 || parts[1] != "hmac-sha256" || len(parts[3]) != 64 {
+			continue
+		}
+		if !safeClaudeCodeBridgeComponentName(parts[0]) {
+			continue
+		}
+		if safeClaudeCodeNativeLabel(parts[2]) != parts[2] {
+			continue
+		}
+		safe := true
+		for _, r := range parts[3] {
+			if (r >= 'a' && r <= 'f') || (r >= '0' && r <= '9') {
+				continue
+			}
+			safe = false
+			break
+		}
+		if safe {
+			seen[value] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for value := range seen {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func safeClaudeCodeBridgeComponentName(value string) bool {
+	if value == "model" || value == "system" || value == "tools" || value == "messages" || value == "input" || value == "instructions" {
+		return true
+	}
+	base, index, ok := strings.Cut(value, ".")
+	if !ok {
+		return false
+	}
+	switch base {
+	case "system", "tools", "messages", "input":
+	default:
+		return false
+	}
+	if index == "" || len(index) > 4 {
+		return false
+	}
+	for _, r := range index {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func safeClaudeCodeBridgeCacheControlLocations(values []string) []string {
@@ -545,7 +678,7 @@ func buildClaudeCodeBridgeAnthropicRequestAudit(decision ClaudeCodeBridgeRouteDe
 	}
 	out.CacheControlLocations = claudeCodeBridgeCacheControlLocations(upstreamBody)
 	out.CacheControlPresent = len(out.CacheControlLocations) > 0
-	out.StablePrefixHMAC, out.StablePrefixTokenBucket = claudeCodeBridgeStablePrefixAudit(decision, upstreamBody)
+	out.StablePrefixHMAC, out.StablePrefixTokenBucket, out.StablePrefixComponentHMACs = claudeCodeBridgeStablePrefixAudit(decision, upstreamBody)
 	return out
 }
 
@@ -673,14 +806,14 @@ func claudeCodeBridgeValueHasCacheControl(value any) bool {
 	}
 }
 
-func claudeCodeBridgeStablePrefixAudit(decision ClaudeCodeBridgeRouteDecision, body []byte) (string, string) {
+func claudeCodeBridgeStablePrefixAudit(decision ClaudeCodeBridgeRouteDecision, body []byte) (string, string, []string) {
 	secret := os.Getenv("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY")
 	if strings.TrimSpace(secret) == "" {
-		return "", ""
+		return "", "", nil
 	}
-	canonical, ok := claudeCodeBridgeStablePrefixCanonical(decision, body)
+	canonical, components, ok := claudeCodeBridgeStablePrefixCanonical(decision, body)
 	if !ok {
-		return "", ""
+		return "", "", nil
 	}
 	keyID := safeClaudeCodeNativeLabel(os.Getenv("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY_ID"))
 	if keyID == "" {
@@ -688,38 +821,90 @@ func claudeCodeBridgeStablePrefixAudit(decision ClaudeCodeBridgeRouteDecision, b
 	}
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write(canonical)
-	return "hmac-sha256:" + keyID + ":" + hex.EncodeToString(mac.Sum(nil)), claudeCodeBridgeTokenBucket(len(canonical))
+	componentHMACs := make([]string, 0, len(components))
+	for _, component := range components {
+		cmac := hmac.New(sha256.New, []byte(secret))
+		_, _ = cmac.Write(component.canonical)
+		componentHMACs = append(componentHMACs, component.name+":hmac-sha256:"+keyID+":"+hex.EncodeToString(cmac.Sum(nil)))
+	}
+	return "hmac-sha256:" + keyID + ":" + hex.EncodeToString(mac.Sum(nil)), claudeCodeBridgeTokenBucket(len(canonical)), componentHMACs
 }
 
-func claudeCodeBridgeStablePrefixCanonical(decision ClaudeCodeBridgeRouteDecision, body []byte) ([]byte, bool) {
+type claudeCodeBridgeStablePrefixComponent struct {
+	name      string
+	canonical []byte
+}
+
+func claudeCodeBridgeStablePrefixCanonical(decision ClaudeCodeBridgeRouteDecision, body []byte) ([]byte, []claudeCodeBridgeStablePrefixComponent, bool) {
 	var payload map[string]any
 	if len(body) == 0 || json.Unmarshal(body, &payload) != nil {
-		return nil, false
+		return nil, nil, false
 	}
 	stable := map[string]any{
 		"provider": strings.TrimSpace(decision.Provider),
 		"model":    claudeCodeBridgeEffectiveUpstreamModel(decision),
 	}
+	components := make([]claudeCodeBridgeStablePrefixComponent, 0, 6)
+	if modelCanonical, err := json.Marshal(map[string]any{"provider": stable["provider"], "model": stable["model"]}); err == nil {
+		components = append(components, claudeCodeBridgeStablePrefixComponent{name: "model", canonical: modelCanonical})
+	}
 	if system, ok := payload["system"]; ok {
 		stable["system"] = system
+		if canonical, err := json.Marshal(system); err == nil {
+			components = append(components, claudeCodeBridgeStablePrefixComponent{name: "system", canonical: canonical})
+		}
+		components = append(components, claudeCodeBridgeStablePrefixArrayComponents("system", system)...)
 	}
 	if tools, ok := payload["tools"]; ok {
 		stable["tools"] = tools
+		if canonical, err := json.Marshal(tools); err == nil {
+			components = append(components, claudeCodeBridgeStablePrefixComponent{name: "tools", canonical: canonical})
+		}
+		components = append(components, claudeCodeBridgeStablePrefixArrayComponents("tools", tools)...)
 	}
 	if rawMessages, ok := payload["messages"].([]any); ok && len(rawMessages) > 1 {
-		stable["messages"] = rawMessages[:len(rawMessages)-1]
+		stableMessages := rawMessages[:len(rawMessages)-1]
+		stable["messages"] = stableMessages
+		if canonical, err := json.Marshal(stableMessages); err == nil {
+			components = append(components, claudeCodeBridgeStablePrefixComponent{name: "messages", canonical: canonical})
+		}
+		components = append(components, claudeCodeBridgeStablePrefixArrayComponents("messages", stableMessages)...)
 	}
 	if rawInput, ok := payload["input"].([]any); ok && len(rawInput) > 1 {
-		stable["input"] = rawInput[:len(rawInput)-1]
+		stableInput := rawInput[:len(rawInput)-1]
+		stable["input"] = stableInput
+		if canonical, err := json.Marshal(stableInput); err == nil {
+			components = append(components, claudeCodeBridgeStablePrefixComponent{name: "input", canonical: canonical})
+		}
+		components = append(components, claudeCodeBridgeStablePrefixArrayComponents("input", stableInput)...)
 	}
 	if instructions, ok := payload["instructions"]; ok {
 		stable["instructions"] = instructions
+		if canonical, err := json.Marshal(instructions); err == nil {
+			components = append(components, claudeCodeBridgeStablePrefixComponent{name: "instructions", canonical: canonical})
+		}
 	}
 	canonical, err := json.Marshal(stable)
 	if err != nil {
-		return nil, false
+		return nil, nil, false
 	}
-	return canonical, true
+	return canonical, components, true
+}
+
+func claudeCodeBridgeStablePrefixArrayComponents(name string, value any) []claudeCodeBridgeStablePrefixComponent {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]claudeCodeBridgeStablePrefixComponent, 0, len(items))
+	for index, item := range items {
+		canonical, err := json.Marshal(item)
+		if err != nil {
+			continue
+		}
+		out = append(out, claudeCodeBridgeStablePrefixComponent{name: fmt.Sprintf("%s.%d", name, index), canonical: canonical})
+	}
+	return out
 }
 
 func claudeCodeBridgeTokenBucket(canonicalBytes int) string {
@@ -921,13 +1106,7 @@ func validateClaudeCodeBridgeEffortBinding(decision ClaudeCodeBridgeRouteDecisio
 	if normalized == nil {
 		return fmt.Errorf("claude code bridge unsupported effort")
 	}
-	levels := normalizedClaudeCodeBridgeReasoningEffortLevels(decision)
-	if len(levels) == 0 {
-		return fmt.Errorf("claude code bridge provider does not support effort")
-	}
-	if _, ok := levels[*normalized]; !ok {
-		return fmt.Errorf("claude code bridge unsupported effort")
-	}
+	_ = normalized
 	return nil
 }
 
@@ -990,7 +1169,7 @@ func claudeCodeBridgeEffectiveUpstreamModel(decision ClaudeCodeBridgeRouteDecisi
 
 func rewriteClaudeCodeBridgeAnthropicBodyModel(decision ClaudeCodeBridgeRouteDecision, body []byte) ([]byte, error) {
 	upstreamModel := claudeCodeBridgeEffectiveUpstreamModel(decision)
-	if upstreamModel == strings.TrimSpace(decision.ModelID) && !claudeCodeBridgeShouldInjectAnthropicCacheControl(decision) {
+	if upstreamModel == strings.TrimSpace(decision.ModelID) && !claudeCodeBridgeShouldInjectAnthropicCacheControl(decision) && !claudeCodeBridgeAnthropicBodyHasEffort(body) {
 		return body, nil
 	}
 	var payload map[string]any
@@ -998,6 +1177,8 @@ func rewriteClaudeCodeBridgeAnthropicBodyModel(decision ClaudeCodeBridgeRouteDec
 		return nil, fmt.Errorf("claude code bridge model rewrite requires JSON body")
 	}
 	payload["model"] = upstreamModel
+	stripClaudeCodeBridgeNativeBillingSystemBlocks(payload)
+	applyClaudeCodeBridgeAnthropicEffortPolicy(decision, payload)
 	if claudeCodeBridgeShouldInjectAnthropicCacheControl(decision) {
 		injectClaudeCodeBridgeAnthropicCacheControl(payload)
 	}
@@ -1008,10 +1189,100 @@ func rewriteClaudeCodeBridgeAnthropicBodyModel(decision ClaudeCodeBridgeRouteDec
 	return rewritten, nil
 }
 
+func stripClaudeCodeBridgeNativeBillingSystemBlocks(payload map[string]any) {
+	if payload == nil {
+		return
+	}
+	system, ok := payload["system"]
+	if !ok {
+		return
+	}
+	switch value := system.(type) {
+	case string:
+		if claudeCodeBridgeNativeBillingSystemText(value) {
+			delete(payload, "system")
+		}
+	case []any:
+		filtered := make([]any, 0, len(value))
+		for _, item := range value {
+			if claudeCodeBridgeNativeBillingSystemBlock(item) {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		if len(filtered) == 0 {
+			delete(payload, "system")
+			return
+		}
+		payload["system"] = filtered
+	}
+}
+
+func claudeCodeBridgeNativeBillingSystemBlock(value any) bool {
+	switch item := value.(type) {
+	case string:
+		return claudeCodeBridgeNativeBillingSystemText(item)
+	case map[string]any:
+		text, _ := item["text"].(string)
+		return claudeCodeBridgeNativeBillingSystemText(text)
+	default:
+		return false
+	}
+}
+
+func claudeCodeBridgeNativeBillingSystemText(value string) bool {
+	return strings.HasPrefix(strings.TrimSpace(value), "x-anthropic-billing-header:")
+}
+
+func claudeCodeBridgeAnthropicBodyHasEffort(body []byte) bool {
+	return gjson.GetBytes(body, "output_config.effort").Exists()
+}
+
+func applyClaudeCodeBridgeAnthropicEffortPolicy(decision ClaudeCodeBridgeRouteDecision, payload map[string]any) {
+	if payload == nil {
+		return
+	}
+	outputConfig, ok := payload["output_config"].(map[string]any)
+	if !ok {
+		return
+	}
+	rawEffort, exists := outputConfig["effort"]
+	if !exists {
+		return
+	}
+	effort, ok := rawEffort.(string)
+	if !ok {
+		delete(outputConfig, "effort")
+		return
+	}
+	normalized := NormalizeClaudeOutputEffort(effort)
+	levels := normalizedClaudeCodeBridgeReasoningEffortLevels(decision)
+	if normalized == nil || len(levels) == 0 {
+		delete(outputConfig, "effort")
+		return
+	}
+	if _, ok := levels[*normalized]; ok {
+		outputConfig["effort"] = *normalized
+		return
+	}
+	if _, ok := levels["high"]; ok {
+		outputConfig["effort"] = "high"
+		return
+	}
+	for _, fallback := range []string{"medium", "low", "xhigh", "max"} {
+		if _, ok := levels[fallback]; ok {
+			outputConfig["effort"] = fallback
+			return
+		}
+	}
+	delete(outputConfig, "effort")
+}
+
 func claudeCodeBridgeShouldInjectAnthropicCacheControl(decision ClaudeCodeBridgeRouteDecision) bool {
 	// DeepSeek's Anthropic-compatible endpoint ignores cache_control. Its
 	// official Context Caching is automatic prefix KV caching, audited via
-	// prompt_cache_hit_tokens/prompt_cache_miss_tokens and stable-prefix HMAC.
+	// Anthropic-compatible cache_read/cache_creation usage fields plus
+	// stable-prefix HMAC.
 	return false
 }
 
@@ -1381,14 +1652,15 @@ func collectClaudeCodeBridgeProviderUsage(payload string, fixture *ClaudeCodeBri
 		return
 	}
 	parsed := gjson.Parse(payload)
-	collectClaudeCodeBridgeProviderUsageNode(parsed.Get("message.usage"), fixture)
-	collectClaudeCodeBridgeProviderUsageNode(parsed.Get("usage"), fixture)
+	collectClaudeCodeBridgeProviderUsageNode("message.usage", parsed.Get("message.usage"), fixture)
+	collectClaudeCodeBridgeProviderUsageNode("usage", parsed.Get("usage"), fixture)
 }
 
-func collectClaudeCodeBridgeProviderUsageNode(usageNode gjson.Result, fixture *ClaudeCodeBridgeProviderFixture) {
+func collectClaudeCodeBridgeProviderUsageNode(prefix string, usageNode gjson.Result, fixture *ClaudeCodeBridgeProviderFixture) {
 	if !usageNode.Exists() {
 		return
 	}
+	recordClaudeCodeBridgeUsageFieldPaths(prefix, usageNode, fixture)
 	if v := usageNode.Get("cache_read_input_tokens"); v.Exists() && int(v.Int()) > fixture.CacheReadTokens {
 		fixture.CacheReadTokens = int(v.Int())
 	}
@@ -1414,6 +1686,48 @@ func collectClaudeCodeBridgeProviderUsageNode(usageNode gjson.Result, fixture *C
 	if v := usageNode.Get("prompt_cache_miss_tokens"); v.Exists() && int(v.Int()) > fixture.CacheMissTokens {
 		fixture.CacheMissTokens = int(v.Int())
 	}
+}
+
+func recordClaudeCodeBridgeUsageFieldPaths(prefix string, usageNode gjson.Result, fixture *ClaudeCodeBridgeProviderFixture) {
+	if fixture == nil || !usageNode.Exists() || !usageNode.IsObject() {
+		return
+	}
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		prefix = "usage"
+	}
+	usageNode.ForEach(func(key, value gjson.Result) bool {
+		name := safeClaudeCodeBridgeUsageFieldName(key.String())
+		if name == "" {
+			return true
+		}
+		path := prefix + "." + name
+		fixture.UsageFieldPaths = append(fixture.UsageFieldPaths, path)
+		if value.IsObject() {
+			value.ForEach(func(childKey, _ gjson.Result) bool {
+				childName := safeClaudeCodeBridgeUsageFieldName(childKey.String())
+				if childName != "" {
+					fixture.UsageFieldPaths = append(fixture.UsageFieldPaths, path+"."+childName)
+				}
+				return true
+			})
+		}
+		return true
+	})
+}
+
+func safeClaudeCodeBridgeUsageFieldName(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 80 {
+		return ""
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			continue
+		}
+		return ""
+	}
+	return value
 }
 
 func claudeCodeBridgeSSEDataPayload(block []string) (string, bool) {

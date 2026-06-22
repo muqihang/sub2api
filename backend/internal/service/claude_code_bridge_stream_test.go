@@ -132,7 +132,7 @@ func TestCP6BridgeToolUseSSEMatchesGoldenFixture(t *testing.T) {
 	require.False(t, result.Audit.FormalPoolAllowed)
 }
 
-func TestClaudeCodeBridgeRejectsUnsupportedProviderEffort(t *testing.T) {
+func TestClaudeCodeBridgeRejectsMalformedBridgeEffort(t *testing.T) {
 	tests := []struct {
 		name     string
 		decision ClaudeCodeBridgeRouteDecision
@@ -140,40 +140,16 @@ func TestClaudeCodeBridgeRejectsUnsupportedProviderEffort(t *testing.T) {
 		want     string
 	}{
 		{
-			name:     "deepseek medium rejected",
+			name:     "unknown effort rejected",
 			decision: ClaudeCodeBridgeRouteDecision{ModelID: "claude-code-bridge-deepseek-v4-pro", Provider: "deepseek", Route: "deepseek_bridge", ClientType: "claude_code_bridge_deepseek", CredentialScope: "bridge_pool", ReasoningEffortLevels: []string{"high", "max"}},
-			body:     `{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"medium"}}`,
+			body:     `{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"turbo"}}`,
 			want:     "unsupported effort",
 		},
 		{
-			name:     "openai max rejected",
+			name:     "non-string effort rejected",
 			decision: ClaudeCodeBridgeRouteDecision{ModelID: "claude-code-bridge-gpt-5.5", Provider: "openai", Route: "openai_bridge", ClientType: "claude_code_bridge_openai", CredentialScope: "bridge_pool", ReasoningEffortLevels: []string{"low", "medium", "high", "xhigh"}},
-			body:     `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"max"}}`,
-			want:     "unsupported effort",
-		},
-		{
-			name:     "kimi effort rejected",
-			decision: ClaudeCodeBridgeRouteDecision{ModelID: "claude-code-bridge-kimi-k2.7-code", Provider: "kimi", Route: "kimi_bridge", ClientType: "claude_code_bridge_kimi", CredentialScope: "bridge_pool"},
-			body:     `{"model":"claude-code-bridge-kimi-k2.7-code","messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"high"}}`,
-			want:     "does not support effort",
-		},
-		{
-			name:     "deepseek effort without catalog levels rejected",
-			decision: ClaudeCodeBridgeRouteDecision{ModelID: "claude-code-bridge-deepseek-v4-pro", Provider: "deepseek", Route: "deepseek_bridge", ClientType: "claude_code_bridge_deepseek", CredentialScope: "bridge_pool"},
-			body:     `{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"max"}}`,
-			want:     "does not support effort",
-		},
-		{
-			name:     "deepseek rejects catalog medium even when advertised",
-			decision: ClaudeCodeBridgeRouteDecision{ModelID: "claude-code-bridge-deepseek-v4-pro", Provider: "deepseek", Route: "deepseek_bridge", ClientType: "claude_code_bridge_deepseek", CredentialScope: "bridge_pool", ReasoningEffortLevels: []string{"medium", "high", "max"}},
-			body:     `{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"medium"}}`,
-			want:     "unsupported effort",
-		},
-		{
-			name:     "agnes rejects catalog effort even when advertised",
-			decision: ClaudeCodeBridgeRouteDecision{ModelID: "claude-code-bridge-agnes-2.0-flash", Provider: "agnes", Route: "agnes_bridge", ClientType: "claude_code_bridge_agnes", CredentialScope: "bridge_pool", ReasoningEffortLevels: []string{"high"}},
-			body:     `{"model":"claude-code-bridge-agnes-2.0-flash","messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"high"}}`,
-			want:     "does not support effort",
+			body:     `{"model":"claude-code-bridge-gpt-5.5","messages":[{"role":"user","content":"hi"}],"output_config":{"effort":5}}`,
+			want:     "effort must be a string",
 		},
 	}
 	for _, tt := range tests {
@@ -474,7 +450,7 @@ func TestClaudeCodeBridgeCacheAuditRowIsProviderTruthfulAndSafe(t *testing.T) {
 	}
 	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","system":"stable prefix must not leak","messages":[{"role":"user","content":"history must not leak"},{"role":"user","content":"latest turn must not leak"}],"tools":[{"name":"Agent","input_schema":{"type":"object"}}],"stream":true}`)
 	requestAudit := buildClaudeCodeBridgeAnthropicRequestAudit(decision, body, "https://api.deepseek.com/anthropic/v1/messages?api_key=must-not-leak")
-	summary := buildClaudeCodeBridgeAuditSummaryWithRequest(decision, ClaudeCodeBridgeProviderFixture{CacheReadTokens: 7, CacheMissTokens: 13}, requestAudit)
+	summary := buildClaudeCodeBridgeAuditSummaryWithRequest(decision, ClaudeCodeBridgeProviderFixture{CacheReadTokens: 7, CacheWriteTokens: 13}, requestAudit)
 
 	row := summary.CacheAuditRow()
 
@@ -488,13 +464,14 @@ func TestClaudeCodeBridgeCacheAuditRowIsProviderTruthfulAndSafe(t *testing.T) {
 	require.False(t, row.FallbackUsed)
 	require.Equal(t, "/anthropic/v1/messages", row.UpstreamPathKind)
 	require.Equal(t, "deepseek_prefix_kv", row.ProviderCacheMechanism)
-	require.Equal(t, []string{"prompt_cache_hit_tokens", "prompt_cache_miss_tokens"}, row.CacheUsageFields)
+	require.ElementsMatch(t, []string{"prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"}, row.CacheUsageFields)
 	require.True(t, row.CacheControlProviderIgnored)
 	require.False(t, row.PromptCacheKeyPresent)
 	require.Empty(t, row.PromptCacheKeyStrategy)
 	require.Zero(t, row.CachedTokens)
 	require.Equal(t, 7, row.CacheReadTokens)
-	require.Equal(t, 13, row.CacheMissTokens)
+	require.Equal(t, 13, row.CacheWriteTokens)
+	require.NotEmpty(t, row.StablePrefixComponentHMACs)
 	require.Regexp(t, `^hmac-sha256:cache-test-v1:[a-f0-9]{64}$`, row.StablePrefixHMAC)
 	raw, err := json.Marshal(row)
 	require.NoError(t, err)
@@ -726,6 +703,68 @@ func TestClaudeCodeBridgeSkeletonFailsClosedForParallelAgentTools(t *testing.T) 
 	require.NotContains(t, stream, `"city":"San Francisco"`)
 }
 
+func TestClaudeCodeBridgeBodyBindingAllowsUnsupportedBridgeEffortForRewriteClamp(t *testing.T) {
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","output_config":{"effort":"medium"},"messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	decision := ClaudeCodeBridgeRouteDecision{
+		ModelID:                  "claude-code-bridge-deepseek-v4-pro",
+		UpstreamModel:            "deepseek-v4-pro",
+		Provider:                 "deepseek",
+		Route:                    "deepseek_bridge",
+		ClientType:               "claude_code_bridge_deepseek",
+		FormalPoolAllowed:        false,
+		NativeAttestationAllowed: false,
+		CredentialScope:          "bridge_pool",
+		PreferredProtocol:        "anthropic_messages",
+		ReasoningEffortLevels:    []string{"high", "max"},
+	}
+
+	err := validateClaudeCodeBridgeBodyBinding(decision, body)
+
+	require.NoError(t, err)
+}
+
+func TestClaudeCodeBridgeAnthropicRewriteClampsBridgeEffortToProviderLevels(t *testing.T) {
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","output_config":{"effort":"medium"},"messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	decision := ClaudeCodeBridgeRouteDecision{
+		ModelID:                  "claude-code-bridge-deepseek-v4-pro",
+		UpstreamModel:            "deepseek-v4-pro",
+		Provider:                 "deepseek",
+		Route:                    "deepseek_bridge",
+		ClientType:               "claude_code_bridge_deepseek",
+		FormalPoolAllowed:        false,
+		NativeAttestationAllowed: false,
+		CredentialScope:          "bridge_pool",
+		PreferredProtocol:        "anthropic_messages",
+		ReasoningEffortLevels:    []string{"high", "max"},
+	}
+
+	rewritten, err := rewriteClaudeCodeBridgeAnthropicBodyModel(decision, body)
+
+	require.NoError(t, err)
+	require.Equal(t, "high", gjson.GetBytes(rewritten, "output_config.effort").String())
+}
+
+func TestClaudeCodeBridgeAnthropicRewriteRemovesEffortForProvidersWithoutEffort(t *testing.T) {
+	body := []byte(`{"model":"claude-code-bridge-kimi-k2.7-code","output_config":{"effort":"max","format":{"type":"json"}},"messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	decision := ClaudeCodeBridgeRouteDecision{
+		ModelID:                  "claude-code-bridge-kimi-k2.7-code",
+		UpstreamModel:            "kimi-k2.7-code",
+		Provider:                 "kimi",
+		Route:                    "kimi_bridge",
+		ClientType:               "claude_code_bridge_kimi",
+		FormalPoolAllowed:        false,
+		NativeAttestationAllowed: false,
+		CredentialScope:          "bridge_pool",
+		PreferredProtocol:        "anthropic_messages",
+	}
+
+	rewritten, err := rewriteClaudeCodeBridgeAnthropicBodyModel(decision, body)
+
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(rewritten, "output_config.effort").Exists())
+	require.Equal(t, "json", gjson.GetBytes(rewritten, "output_config.format.type").String())
+}
+
 func TestClaudeCodeBridgeAnthropicRewriteDoesNotInjectProviderIgnoredCacheControlForDeepSeek(t *testing.T) {
 	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","system":"stable project instructions","messages":[{"role":"user","content":"stable context"},{"role":"user","content":"latest turn"}],"tools":[{"name":"Agent","description":"subagent","input_schema":{"type":"object"}}],"stream":true}`)
 	decision := ClaudeCodeBridgeRouteDecision{
@@ -778,6 +817,29 @@ func TestClaudeCodeBridgeAnthropicRewriteOnlyMapsDeepSeekModelAndDoesNotInventCa
 			require.Equal(t, "latest turn", gjson.GetBytes(rewritten, "messages.2.content").String())
 		})
 	}
+}
+
+func TestClaudeCodeBridgeAnthropicRewriteStripsNativeBillingSystemBlockForBridgeOnly(t *testing.T) {
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","system":[{"type":"text","text":"x-anthropic-billing-header: dynamic-billing-metadata"},{"type":"text","text":"stable project instructions"}],"messages":[{"role":"user","content":"stable context"},{"role":"user","content":"latest turn"}],"stream":true}`)
+	decision := ClaudeCodeBridgeRouteDecision{
+		ModelID:                  "claude-code-bridge-deepseek-v4-pro",
+		UpstreamModel:            "deepseek-v4-pro",
+		Provider:                 "deepseek",
+		Route:                    "deepseek_bridge",
+		ClientType:               "claude_code_bridge_deepseek",
+		FormalPoolAllowed:        false,
+		NativeAttestationAllowed: false,
+		CredentialScope:          "bridge_pool",
+		PreferredProtocol:        "anthropic_messages",
+		CachePolicy:              "provider_cache_audit_required",
+	}
+
+	rewritten, err := rewriteClaudeCodeBridgeAnthropicBodyModel(decision, body)
+
+	require.NoError(t, err)
+	require.NotContains(t, string(rewritten), "x-anthropic-billing-header")
+	require.Equal(t, "stable project instructions", gjson.GetBytes(rewritten, "system.0.text").String())
+	require.False(t, gjson.GetBytes(rewritten, "system.1").Exists())
 }
 
 func TestClaudeCodeBridgeAnthropicRewritePreservesDeepSeekStringContentShape(t *testing.T) {
@@ -839,14 +901,17 @@ func TestClaudeCodeBridgeStablePrefixHMACIgnoresLatestTurnButTracksStablePrefix(
 	bodyChangedHistory := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","system":"stable system","tools":[{"name":"Agent","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"changed stable history"},{"role":"user","content":"latest A must not affect cache audit"}],"stream":true}`)
 	bodyChangedTool := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","system":"stable system","tools":[{"name":"Agent","description":"changed stable tool","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"stable history"},{"role":"user","content":"latest A must not affect cache audit"}],"stream":true}`)
 
-	hmacA, bucketA := claudeCodeBridgeStablePrefixAudit(decision, bodyA)
-	hmacB, bucketB := claudeCodeBridgeStablePrefixAudit(decision, bodyB)
-	hmacChangedHistory, _ := claudeCodeBridgeStablePrefixAudit(decision, bodyChangedHistory)
-	hmacChangedTool, _ := claudeCodeBridgeStablePrefixAudit(decision, bodyChangedTool)
+	hmacA, bucketA, componentsA := claudeCodeBridgeStablePrefixAudit(decision, bodyA)
+	hmacB, bucketB, componentsB := claudeCodeBridgeStablePrefixAudit(decision, bodyB)
+	hmacChangedHistory, _, componentsChangedHistory := claudeCodeBridgeStablePrefixAudit(decision, bodyChangedHistory)
+	hmacChangedTool, _, componentsChangedTool := claudeCodeBridgeStablePrefixAudit(decision, bodyChangedTool)
 
 	require.NotEmpty(t, hmacA)
 	require.Equal(t, hmacA, hmacB)
 	require.Equal(t, bucketA, bucketB)
+	require.ElementsMatch(t, componentsA, componentsB)
+	require.NotEqual(t, componentsA, componentsChangedHistory)
+	require.NotEqual(t, componentsA, componentsChangedTool)
 	require.NotEqual(t, hmacA, hmacChangedHistory)
 	require.NotEqual(t, hmacA, hmacChangedTool)
 	row := buildClaudeCodeBridgeAuditSummaryWithRequest(
@@ -858,4 +923,47 @@ func TestClaudeCodeBridgeStablePrefixHMACIgnoresLatestTurnButTracksStablePrefix(
 	require.NoError(t, err)
 	require.NotContains(t, string(raw), "latest A")
 	require.NotContains(t, string(raw), "stable history")
+}
+
+func TestClaudeCodeBridgeStablePrefixHMACBreaksDownSystemComponentsSafely(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY", "stable-prefix-unit-test-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_CACHE_AUDIT_HMAC_KEY_ID", "stable-prefix-v1")
+	decision := ClaudeCodeBridgeRouteDecision{
+		ModelID:           "claude-code-bridge-deepseek-v4-pro",
+		UpstreamModel:     "deepseek-v4-pro",
+		Provider:          "deepseek",
+		Route:             "deepseek_bridge",
+		ClientType:        "claude_code_bridge_deepseek",
+		CredentialScope:   "bridge_pool",
+		PreferredProtocol: "anthropic_messages",
+	}
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","system":[{"type":"text","text":"stable system one"},{"type":"text","text":"stable system two"}],"tools":[{"name":"Agent","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"stable history"},{"role":"user","content":"latest turn"}],"stream":true}`)
+
+	_, _, components := claudeCodeBridgeStablePrefixAudit(decision, body)
+	row := buildClaudeCodeBridgeAuditSummaryWithRequest(
+		decision,
+		ClaudeCodeBridgeProviderFixture{},
+		buildClaudeCodeBridgeAnthropicRequestAudit(decision, body, "https://api.deepseek.com/anthropic/v1/messages"),
+	).CacheAuditRow()
+
+	require.Contains(t, componentHMACTags(components), "system.0")
+	require.Contains(t, componentHMACTags(components), "system.1")
+	require.Contains(t, componentHMACTags(row.StablePrefixComponentHMACs), "system.0")
+	require.Contains(t, componentHMACTags(row.StablePrefixComponentHMACs), "system.1")
+	raw, err := json.Marshal(row)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "stable system one")
+	require.NotContains(t, string(raw), "stable system two")
+	require.NotContains(t, string(raw), "stable history")
+}
+
+func componentHMACTags(values []string) map[string]struct{} {
+	tags := map[string]struct{}{}
+	for _, value := range values {
+		parts := strings.Split(value, ":")
+		if len(parts) == 4 {
+			tags[parts[0]] = struct{}{}
+		}
+	}
+	return tags
 }

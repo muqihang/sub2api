@@ -629,6 +629,21 @@ type ClaudeUsage struct {
 	ProviderUsageExtra       map[string]any `json:"provider_usage_extra,omitempty"`
 }
 
+// AnthropicPassthroughCacheUsageObservation records only safe cache-usage field
+// presence and counters at the raw usage-node boundary. It deliberately avoids
+// storing raw JSON, prompts, headers, or provider responses.
+type AnthropicPassthroughCacheUsageObservation struct {
+	CacheReadInputTokensPresent     bool
+	CacheCreationInputTokensPresent bool
+	PromptCacheHitTokensPresent     bool
+	PromptCacheMissTokensPresent    bool
+	CacheReadInputTokens            int
+	CacheCreationInputTokens        int
+	PromptCacheHitTokens            int
+	PromptCacheMissTokens           int
+	CacheUsageFieldPaths            []string
+}
+
 // ForwardResult 转发结果
 type ForwardResult struct {
 	RequestID string
@@ -5733,6 +5748,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	if usage == nil {
 		usage = &ClaudeUsage{}
 	}
+	logAnthropicPassthroughCacheUsageAudit(account, input.RequestModel, usage)
 
 	return &ForwardResult{
 		RequestID:        resp.Header.Get("x-request-id"),
@@ -6068,6 +6084,7 @@ func (s *GatewayService) parseSSEUsagePassthrough(data string, usage *ClaudeUsag
 	case "message_start":
 		msgUsage := parsed.Get("message.usage")
 		if msgUsage.Exists() {
+			observeAnthropicPassthroughCacheUsageIntoUsage("message.usage", msgUsage, usage)
 			usage.InputTokens = int(msgUsage.Get("input_tokens").Int())
 			usage.CacheCreationInputTokens = int(msgUsage.Get("cache_creation_input_tokens").Int())
 			usage.CacheReadInputTokens = int(msgUsage.Get("cache_read_input_tokens").Int())
@@ -6084,6 +6101,7 @@ func (s *GatewayService) parseSSEUsagePassthrough(data string, usage *ClaudeUsag
 	case "message_delta":
 		deltaUsage := parsed.Get("usage")
 		if deltaUsage.Exists() {
+			observeAnthropicPassthroughCacheUsageIntoUsage("usage", deltaUsage, usage)
 			if v := deltaUsage.Get("input_tokens").Int(); v > 0 {
 				usage.InputTokens = int(v)
 			}
@@ -6129,8 +6147,12 @@ func (s *GatewayService) parseSSEUsagePassthrough(data string, usage *ClaudeUsag
 			usage.CacheCreationInputTokens = int(total)
 		}
 	}
-	recordProviderPromptCacheUsage(usage, parsed.Get("message.usage"))
-	recordProviderPromptCacheUsage(usage, parsed.Get("usage"))
+	messageUsage := parsed.Get("message.usage")
+	observeAnthropicPassthroughCacheUsageIntoUsage("message.usage", messageUsage, usage)
+	recordProviderPromptCacheUsage(usage, messageUsage)
+	topUsage := parsed.Get("usage")
+	observeAnthropicPassthroughCacheUsageIntoUsage("usage", topUsage, usage)
+	recordProviderPromptCacheUsage(usage, topUsage)
 }
 
 func parseClaudeUsageFromResponseBody(body []byte) *ClaudeUsage {
@@ -6149,6 +6171,7 @@ func parseClaudeUsageFromResponseBody(body []byte) *ClaudeUsage {
 	usage.OutputTokens = int(usageNode.Get("output_tokens").Int())
 	usage.CacheCreationInputTokens = int(usageNode.Get("cache_creation_input_tokens").Int())
 	usage.CacheReadInputTokens = int(usageNode.Get("cache_read_input_tokens").Int())
+	observeAnthropicPassthroughCacheUsageIntoUsage("usage", usageNode, usage)
 
 	cc5m := usageNode.Get("cache_creation.ephemeral_5m_input_tokens").Int()
 	cc1h := usageNode.Get("cache_creation.ephemeral_1h_input_tokens").Int()
@@ -6166,6 +6189,125 @@ func parseClaudeUsageFromResponseBody(body []byte) *ClaudeUsage {
 	}
 	recordProviderPromptCacheUsage(usage, usageNode)
 	return usage
+}
+
+func observeAnthropicPassthroughCacheUsageIntoUsage(prefix string, usageNode gjson.Result, usage *ClaudeUsage) {
+	if usage == nil {
+		return
+	}
+	var obs AnthropicPassthroughCacheUsageObservation
+	observeAnthropicPassthroughCacheUsage(prefix, usageNode, &obs)
+	if len(obs.CacheUsageFieldPaths) == 0 {
+		return
+	}
+	audit := anthropicPassthroughCacheUsageAudit(nil, "", usage, obs)
+	if usage.ProviderUsageExtra == nil {
+		usage.ProviderUsageExtra = map[string]any{}
+	}
+	usage.ProviderUsageExtra["anthropic_passthrough_cache_usage"] = audit
+}
+
+func observeAnthropicPassthroughCacheUsage(prefix string, usageNode gjson.Result, obs *AnthropicPassthroughCacheUsageObservation) {
+	if obs == nil || !usageNode.Exists() {
+		return
+	}
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		prefix = "usage"
+	}
+	record := func(field string, present *bool, value *int) {
+		node := usageNode.Get(field)
+		if !node.Exists() {
+			return
+		}
+		*present = true
+		*value = int(node.Int())
+		path := prefix + "." + field
+		for _, existing := range obs.CacheUsageFieldPaths {
+			if existing == path {
+				return
+			}
+		}
+		obs.CacheUsageFieldPaths = append(obs.CacheUsageFieldPaths, path)
+		sort.Strings(obs.CacheUsageFieldPaths)
+	}
+	record("cache_read_input_tokens", &obs.CacheReadInputTokensPresent, &obs.CacheReadInputTokens)
+	record("cache_creation_input_tokens", &obs.CacheCreationInputTokensPresent, &obs.CacheCreationInputTokens)
+	record("prompt_cache_hit_tokens", &obs.PromptCacheHitTokensPresent, &obs.PromptCacheHitTokens)
+	record("prompt_cache_miss_tokens", &obs.PromptCacheMissTokensPresent, &obs.PromptCacheMissTokens)
+}
+
+func anthropicPassthroughCacheUsageAudit(account *Account, model string, usage *ClaudeUsage, obs AnthropicPassthroughCacheUsageObservation) map[string]any {
+	accountID := int64(0)
+	if account != nil {
+		accountID = account.ID
+	}
+	return map[string]any{
+		"account_id": accountID,
+		"model":      safeClaudeCodeNativeLabel(model),
+		"anthropic_cache_read_input_tokens_present":     obs.CacheReadInputTokensPresent,
+		"anthropic_cache_creation_input_tokens_present": obs.CacheCreationInputTokensPresent,
+		"provider_prompt_cache_hit_tokens_present":      obs.PromptCacheHitTokensPresent,
+		"provider_prompt_cache_miss_tokens_present":     obs.PromptCacheMissTokensPresent,
+		"cache_read_input_tokens":                       obs.CacheReadInputTokens,
+		"cache_creation_input_tokens":                   obs.CacheCreationInputTokens,
+		"provider_prompt_cache_hit_tokens":              obs.PromptCacheHitTokens,
+		"provider_prompt_cache_miss_tokens":             obs.PromptCacheMissTokens,
+		"cache_usage_field_paths":                       safeClaudeCodeBridgeUsageFieldPaths(obs.CacheUsageFieldPaths),
+	}
+}
+
+func logAnthropicPassthroughCacheUsageAudit(account *Account, model string, usage *ClaudeUsage) {
+	fields := anthropicPassthroughCacheUsageLogFields(account, model, usage)
+	if len(fields) == 0 {
+		return
+	}
+	args := make([]any, 0, len(fields)*2)
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		args = append(args, key, fields[key])
+	}
+	slog.Info("gateway.anthropic_passthrough_cache_usage", args...)
+}
+
+func anthropicPassthroughCacheUsageLogFields(account *Account, model string, usage *ClaudeUsage) map[string]any {
+	if usage == nil || usage.ProviderUsageExtra == nil {
+		return nil
+	}
+	raw, ok := usage.ProviderUsageExtra["anthropic_passthrough_cache_usage"].(map[string]any)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	fields := map[string]any{}
+	for _, key := range []string{
+		"anthropic_cache_read_input_tokens_present",
+		"anthropic_cache_creation_input_tokens_present",
+		"provider_prompt_cache_hit_tokens_present",
+		"provider_prompt_cache_miss_tokens_present",
+		"cache_read_input_tokens",
+		"cache_creation_input_tokens",
+		"provider_prompt_cache_hit_tokens",
+		"provider_prompt_cache_miss_tokens",
+		"cache_usage_field_paths",
+	} {
+		if value, exists := raw[key]; exists {
+			fields[key] = value
+		}
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	accountID := int64(0)
+	if account != nil {
+		accountID = account.ID
+	}
+	fields["account_id"] = accountID
+	fields["model"] = safeClaudeCodeNativeLabel(model)
+	return fields
 }
 
 func recordProviderPromptCacheUsage(usage *ClaudeUsage, usageNode gjson.Result) {
@@ -6188,7 +6330,11 @@ func recordProviderPromptCacheUsage(usage *ClaudeUsage, usageNode gjson.Result) 
 		}
 	}
 	if miss.Exists() {
+		missTokens := int(miss.Int())
 		usage.ProviderUsageExtra["prompt_cache_miss_tokens"] = miss.Num
+		if usage.CacheCreationInputTokens == 0 && missTokens > 0 {
+			usage.CacheCreationInputTokens = missTokens
+		}
 	}
 }
 

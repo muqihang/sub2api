@@ -1554,6 +1554,92 @@ def test_managed_launch_writes_provider_profile_resolver_artifact(tmp_path: Path
             assert resolution["resolved_model_id"] != "claude-haiku-4-5-20251001", (provider, task)
 
 
+def test_managed_launch_writes_exact_effort_env_proof_artifact(tmp_path: Path):
+    captured = {}
+
+    class FakeGuard:
+        ready = {"listen": "http://127.0.0.1:18182"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_start_guard(plan, *, ready_timeout_seconds=10.0):
+        captured["guard_plan"] = plan
+        return FakeGuard()
+
+    def fake_runner(command, *, env, cwd):
+        captured["launch_env"] = dict(env)
+        return 0
+
+    run_managed_claude_code(
+        executable="claude",
+        repo_root=REPO_ROOT,
+        upstream_base="http://127.0.0.1:3017",
+        sub2api_auth="test-sub2api-dedicated-claude-code-key",
+        native_managed_access_token="managed-access-token",
+        managed_session_id="managed-session",
+        device_id=9,
+        attestation_secret="native-secret",
+        route_hint_secret="route-hint-secret",
+        runtime_hash="sha256:" + "1" * 64,
+        overlay_hash="sha256:" + "2" * 64,
+        bridge_live_models=(
+            "claude-code-bridge-gpt-5.5",
+            "claude-code-bridge-deepseek-v4-pro",
+            "claude-code-bridge-agnes-2.0-flash",
+            "claude-code-bridge-kimi-k2.7-code",
+        ),
+        config_root=tmp_path,
+        project_cwd=tmp_path,
+        guard_listen_port=18182,
+        start_guard=fake_start_guard,
+        process_runner=fake_runner,
+    )
+
+    proof_path = tmp_path / "claude-code" / "prod" / "overlay" / "cp3a-provider-profile" / "exact-effort-env-proof.json"
+    proof = json.loads(proof_path.read_text(encoding="utf-8"))
+    assert proof["schema_version"] == "claude-code-bridge-effort-env-proof-v1"
+    assert proof["exact_levels_env"] == "ZCCEL"
+    assert proof["capabilities_env"] == "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON"
+    assert proof["exact_levels_env_present"] is True
+    assert proof["capabilities_env_present"] is True
+    assert proof["runtime_hash"] == "sha256:" + "1" * 64
+    assert proof["overlay_hash"] == "sha256:" + "2" * 64
+    assert proof["models"]["claude-code-bridge-deepseek-v4-pro"] == ["high", "max"]
+    assert proof["models"]["claude-code-bridge-gpt-5.5"] == ["low", "medium", "high", "xhigh"]
+    assert "claude-code-bridge-agnes-2.0-flash" not in proof["models"]
+    assert "claude-code-bridge-kimi-k2.7-code" not in proof["models"]
+    dumped = json.dumps(proof, sort_keys=True)
+    assert "test-sub2api-dedicated-claude-code-key" not in dumped
+    assert "managed-access-token" not in dumped
+    assert "native-secret" not in dumped
+    assert "route-hint-secret" not in dumped
+
+
+def test_detect_stale_claude_process_warning_is_safe(tmp_path: Path):
+    ps_output = "\n".join([
+        "1001 /Users/example/other/.worktrees/old claude",
+        "1002 /Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-code-multiprovider-runtime claude",
+        "1003 /Users/example/other/.worktrees/new node",
+    ])
+
+    warning = launcher._managed_exact_effort_stale_process_warning(
+        project_cwd=Path("/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-code-multiprovider-runtime"),
+        ps_runner=lambda: ps_output,
+    )
+
+    assert warning is not None
+    assert "without managed exact-effort env" in warning
+    assert "Restart the interactive Claude Code via zhumeng-agent launcher" in warning
+    assert "ZCCEL=" not in warning
+    assert "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON=" not in warning
+    assert "Authorization" not in warning
+    assert "Bearer" not in warning
+
+
 def test_bridge_model_capabilities_json_exposes_exact_effort_levels_for_model_picker():
     capabilities = json.loads(launcher._bridge_model_capabilities_json((
         "claude-code-bridge-gpt-5.5",

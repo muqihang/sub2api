@@ -17,7 +17,7 @@ func TestClaudeCodeBridgeAnthropicLivePostsRawBodyAndPassesThroughSSE(t *testing
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
-	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "deepseek-unit-test-key")
 	var gotBody string
 	var gotPath string
 	var gotAuth string
@@ -44,7 +44,7 @@ func TestClaudeCodeBridgeAnthropicLivePostsRawBodyAndPassesThroughSSE(t *testing
 	require.Equal(t, "/anthropic/v1/messages", gotPath)
 	require.Contains(t, gotBody, `"model":"deepseek-v4-pro"`)
 	require.NotContains(t, gotBody, `"model":"claude-code-bridge-deepseek-v4-pro"`)
-	require.Equal(t, "sk-deepseek-test-key", gotAuth)
+	require.Equal(t, "deepseek-unit-test-key", gotAuth)
 	require.Empty(t, gotClientType)
 	require.Contains(t, string(result.Body), "message_stop")
 	require.False(t, result.Audit.NativeAttested)
@@ -94,7 +94,7 @@ func TestClaudeCodeBridgeAnthropicLiveAuditsDeepSeekCacheTruthWithoutRawBody(t *
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("event: message_start\n"))
-		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"id":"msg_cache","type":"message","role":"assistant","content":[],"model":"deepseek-v4-pro","usage":{"input_tokens":20,"prompt_cache_hit_tokens":7,"prompt_cache_miss_tokens":13}}}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"id":"msg_cache","type":"message","role":"assistant","content":[],"model":"deepseek-v4-pro","usage":{"input_tokens":20,"cache_read_input_tokens":7,"cache_creation_input_tokens":13}}}` + "\n\n"))
 		_, _ = w.Write([]byte("event: message_stop\n"))
 		_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
 	}))
@@ -117,7 +117,7 @@ func TestClaudeCodeBridgeAnthropicLiveAuditsDeepSeekCacheTruthWithoutRawBody(t *
 	require.Regexp(t, `^hmac-sha256:cache-test-v1:[a-f0-9]{64}$`, result.Audit.StablePrefixHMAC)
 	require.Equal(t, "lt_1k", result.Audit.StablePrefixTokenBucket)
 	require.Equal(t, 7, result.Audit.CacheReadTokens)
-	require.Equal(t, 13, result.Audit.CacheMissTokens)
+	require.Equal(t, 13, result.Audit.CacheWriteTokens)
 	rawAudit, err := json.Marshal(result.Audit)
 	require.NoError(t, err)
 	require.NotContains(t, string(rawAudit), "stable system prefix sentinel")
@@ -144,11 +144,56 @@ func TestClaudeCodeBridgeAnthropicLiveAuditsCurrentTurnCacheControlLocation(t *t
 	require.Contains(t, result.Audit.CacheControlLocations, "current")
 }
 
-func TestClaudeCodeBridgeAnthropicLiveAuditsDeepSeekPromptCacheFields(t *testing.T) {
+func TestClaudeCodeBridgeAnthropicLiveAuditsDeepSeekActualUsageCacheFieldPaths(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
 	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "sk-deepseek-test-key")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: message_start\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"id":"msg_cache","type":"message","role":"assistant","content":[],"model":"deepseek-v4-pro","usage":{"input_tokens":20,"cache_read_input_tokens":7,"cache_creation_input_tokens":13}}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: message_delta\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: message_stop\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"cache audit"}],"stream":true}`)
+
+	result, err := ExecuteClaudeCodeBridgeAnthropicLive(context.Background(), upstream.Client(), cp6LiveDeepSeekDecision(upstream.URL+"/anthropic"), body, ClaudeCodeBridgeDeepSeekAPIKeyFromEnv())
+
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{
+		"message.usage.input_tokens",
+		"message.usage.cache_creation_input_tokens",
+		"message.usage.cache_read_input_tokens",
+		"usage.output_tokens",
+	}, result.Audit.ResponseUsageFieldPaths)
+	row := result.Audit.CacheAuditRow()
+	require.ElementsMatch(t, []string{
+		"prompt_cache_hit_tokens",
+		"prompt_cache_miss_tokens",
+		"cache_read_input_tokens",
+		"cache_creation_input_tokens",
+	}, row.CacheUsageFields)
+	require.ElementsMatch(t, []string{
+		"message.usage.cache_creation_input_tokens",
+		"message.usage.cache_read_input_tokens",
+	}, row.ResponseUsageCacheFieldPaths)
+	require.NotContains(t, row.ResponseUsageCacheFieldPaths, "message.usage.prompt_cache_hit_tokens")
+	require.NotContains(t, row.ResponseUsageCacheFieldPaths, "message.usage.prompt_cache_miss_tokens")
+	require.True(t, row.ResponseUsageCacheFieldsPresent)
+	require.Equal(t, 7, row.CacheReadTokens)
+	require.Equal(t, 13, row.CacheWriteTokens)
+	require.Zero(t, row.CacheMissTokens)
+}
+
+func TestClaudeCodeBridgeAnthropicLiveAuditsDeepSeekPromptCacheHitMissFields(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_DEEPSEEK_API_KEY", "deepseek-unit-test-key")
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("event: message_start\n"))
@@ -166,7 +211,26 @@ func TestClaudeCodeBridgeAnthropicLiveAuditsDeepSeekPromptCacheFields(t *testing
 	require.NoError(t, err)
 	require.Equal(t, 7, result.Audit.CacheReadTokens)
 	require.Equal(t, 13, result.Audit.CacheMissTokens)
-	require.Contains(t, string(result.Body), "prompt_cache_hit_tokens")
+	require.Zero(t, result.Audit.CacheWriteTokens)
+	require.Contains(t, result.Audit.ResponseUsageFieldPaths, "message.usage.prompt_cache_hit_tokens")
+	require.Contains(t, result.Audit.ResponseUsageFieldPaths, "message.usage.prompt_cache_miss_tokens")
+	row := result.Audit.CacheAuditRow()
+	require.ElementsMatch(t, []string{
+		"prompt_cache_hit_tokens",
+		"prompt_cache_miss_tokens",
+		"cache_read_input_tokens",
+		"cache_creation_input_tokens",
+	}, row.CacheUsageFields)
+	require.ElementsMatch(t, []string{
+		"message.usage.prompt_cache_hit_tokens",
+		"message.usage.prompt_cache_miss_tokens",
+	}, row.ResponseUsageCacheFieldPaths)
+	require.NotContains(t, row.ResponseUsageCacheFieldPaths, "message.usage.cache_read_input_tokens")
+	require.NotContains(t, row.ResponseUsageCacheFieldPaths, "message.usage.cache_creation_input_tokens")
+	require.True(t, row.ResponseUsageCacheFieldsPresent)
+	require.Equal(t, 7, row.CacheReadTokens)
+	require.Equal(t, 13, row.CacheMissTokens)
+	require.Zero(t, row.CacheWriteTokens)
 }
 
 func TestCP6DeepSeekAnthropicLiveStripsForeignThinkingAndSignatureSSE(t *testing.T) {

@@ -156,9 +156,12 @@ def _cache_provider_evidence(*, strict_live: bool = False) -> dict[str, dict[str
             "cache_control_provider_ignored": True,
             "treats_cache_control_as_cache_mechanism": False,
             "request_shape_preserved": True,
-            "cache_usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"],
+            "cache_usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"],
             "stable_prefix_hmac_present": True,
             "live_usage_fields_observed": strict_live,
+            "live_cache_hit_observed": False,
+            "live_cache_write_observed": False,
+            "live_cache_miss_observed": False,
             "raw_sensitive_stored": False,
         },
     }
@@ -338,9 +341,11 @@ def _cache_account_ref(root: Path, scenario: dict[str, object], *, strict_live: 
                         "cache_control_provider_ignored": True,
                         "prompt_cache_key_present": False,
                         "prompt_cache_key_strategy": "absent",
-                        "cache_usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"],
+                        "cache_usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"],
+                        "response_usage_cache_fields_present": True,
+                        "response_usage_cache_field_paths": ["message.usage.cache_creation_input_tokens", "message.usage.cache_read_input_tokens"],
                         "cache_read_tokens": 7,
-                        "cache_miss_tokens": 13,
+                        "cache_write_tokens": 13,
                         "raw_sensitive_stored": False,
                     },
                     {
@@ -410,7 +415,9 @@ def test_cp8_collects_cache_account_audit_artifact_from_safe_3017_log_text(tmp_p
             "cache_control_provider_ignored": True,
             "prompt_cache_key_present": False,
             "prompt_cache_key_strategy": "absent",
-            "cache_usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"],
+            "cache_usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"],
+            "response_usage_cache_fields_present": True,
+            "response_usage_cache_field_paths": ["message.usage.prompt_cache_hit_tokens", "message.usage.prompt_cache_miss_tokens"],
             "cache_read_tokens": 7,
             "cache_miss_tokens": 13,
             "prompt_cache_hit_tokens": 7,
@@ -478,6 +485,154 @@ def test_cp8_collects_cache_account_audit_artifact_from_safe_3017_log_text(tmp_p
     assert "Bearer" not in dumped
 
 
+def test_cp8_cache_audit_log_collector_does_not_synthesize_unobserved_cache_field_family(tmp_path: Path):
+    log_text = "\n".join([
+        json.dumps({
+            "msg": "gateway.claude_code_bridge_cache_audit",
+            "provider": "deepseek",
+            "route": "deepseek_bridge",
+            "client_type": "claude_code_bridge_deepseek",
+            "model_id": "deepseek-v4-pro",
+            "preferred_protocol": "anthropic_messages",
+            "selected_protocol": "anthropic_messages",
+            "fallback_protocol": "openai_chat_completions",
+            "fallback_reason": "",
+            "fallback_used": False,
+            "provider_cache_mechanism": "deepseek_prefix_kv",
+            "upstream_path_kind": "/anthropic/v1/messages",
+            "cache_control_present": False,
+            "cache_control_locations": [],
+            "cache_control_provider_ignored": True,
+            "prompt_cache_key_present": False,
+            "prompt_cache_key_strategy": "absent",
+            "cache_usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"],
+            "prompt_cache_hit_tokens": 7,
+            "prompt_cache_miss_tokens": 13,
+            "cache_read_tokens": 7,
+            "cache_miss_tokens": 13,
+            "stable_prefix_hmac": "hmac-sha256:cp8-cache:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "stable_prefix_token_bucket": "1k_4k",
+            "raw_sensitive_stored": False,
+        }),
+        json.dumps({
+            "msg": "gateway.claude_code_bridge_cache_audit",
+            "provider": "openai",
+            "route": "openai_bridge",
+            "client_type": "claude_code_bridge_openai",
+            "model_id": "gpt-5.5",
+            "preferred_protocol": "responses",
+            "selected_protocol": "responses",
+            "fallback_protocol": "",
+            "fallback_reason": "",
+            "fallback_used": False,
+            "provider_cache_mechanism": "openai_prompt_cache",
+            "upstream_path_kind": "/v1/responses",
+            "cache_control_present": False,
+            "cache_control_locations": [],
+            "cache_control_provider_ignored": False,
+            "prompt_cache_key_present": True,
+            "prompt_cache_key_strategy": "present_redacted",
+            "cache_usage_fields": ["usage.prompt_tokens_details.cached_tokens"],
+            "cache_read_tokens": 9,
+            "cached_tokens": 9,
+            "stable_prefix_hmac": "hmac-sha256:cp8-cache:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            "stable_prefix_token_bucket": "1k_4k",
+            "raw_sensitive_stored": False,
+        }),
+    ])
+
+    payload, _ = collect_cp8_cache_account_audit_from_log_text(
+        log_text,
+        output_root=tmp_path,
+        safe_summary_hash_stable=True,
+        safe_tool_result_hash_stable=True,
+        usage_accounting_split_by_route=True,
+        stable_prefix_invalidated=False,
+        ttl_fast_switch_boundary_miss_count=1,
+        strict_live=False,
+    )
+
+    deepseek = _bridge_cache_row(payload["bridge_cache_audit_rows"], "deepseek")
+    assert deepseek["response_usage_cache_field_paths"] == [
+        "usage.prompt_cache_hit_tokens",
+        "usage.prompt_cache_miss_tokens",
+    ]
+    assert "usage.cache_read_input_tokens" not in deepseek["response_usage_cache_field_paths"]
+    assert "usage.cache_creation_input_tokens" not in deepseek["response_usage_cache_field_paths"]
+
+
+def test_cp8_cache_audit_log_collector_accepts_prod_zap_lines_without_json_msg(tmp_path: Path):
+    deepseek_payload = {
+        "level": "INFO",
+        "provider": "deepseek",
+        "route": "deepseek_bridge",
+        "client_type": "claude_code_bridge_deepseek",
+        "model_id": "deepseek-v4-pro",
+        "preferred_protocol": "anthropic_messages",
+        "selected_protocol": "anthropic_messages",
+        "fallback_protocol": "openai_chat_completions",
+        "fallback_reason": "",
+        "fallback_used": False,
+        "provider_cache_mechanism": "deepseek_prefix_kv",
+        "upstream_path_kind": "/v1/messages",
+        "cache_control_present": False,
+        "cache_control_locations": [],
+        "cache_control_provider_ignored": True,
+        "prompt_cache_key_present": False,
+        "prompt_cache_key_strategy": "absent",
+        "cache_usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"],
+        "cache_read_tokens": 7,
+        "cache_miss_tokens": 13,
+        "stable_prefix_hmac": "hmac-sha256:cp8-cache:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "stable_prefix_token_bucket": "1k_4k",
+        "raw_sensitive_stored": False,
+    }
+    openai_payload = {
+        "level": "INFO",
+        "provider": "openai",
+        "route": "openai_bridge",
+        "client_type": "claude_code_bridge_openai",
+        "model_id": "gpt-5.5",
+        "preferred_protocol": "responses",
+        "selected_protocol": "responses",
+        "fallback_protocol": "",
+        "fallback_reason": "",
+        "fallback_used": False,
+        "provider_cache_mechanism": "openai_prompt_cache",
+        "upstream_path_kind": "/v1/responses",
+        "cache_control_present": False,
+        "cache_control_locations": [],
+        "cache_control_provider_ignored": False,
+        "prompt_cache_key_present": True,
+        "prompt_cache_key_strategy": "present_redacted",
+        "cache_usage_fields": ["usage.prompt_tokens_details.cached_tokens"],
+        "cache_read_tokens": 9,
+        "cached_tokens": 9,
+        "stable_prefix_hmac": "hmac-sha256:cp8-cache:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        "stable_prefix_token_bucket": "1k_4k",
+        "raw_sensitive_stored": False,
+    }
+    log_text = "\n".join([
+        "2026-06-22T11:58:10.864+0800\tINFO\thandler/gateway_handler.go:2188\tgateway.claude_code_bridge_cache_audit\t" + json.dumps(deepseek_payload, sort_keys=True),
+        "2026-06-22T11:58:11.864+0800\tINFO\thandler/gateway_handler.go:2188\tgateway.claude_code_bridge_cache_audit\t" + json.dumps(openai_payload, sort_keys=True),
+        "2026-06-22T11:58:12.864+0800\tINFO\thandler/gateway_handler.go:2188\tunrelated.event\t" + json.dumps({**deepseek_payload, "provider": "deepseek"}),
+    ])
+
+    payload, _ = collect_cp8_cache_account_audit_from_log_text(
+        log_text,
+        output_root=tmp_path,
+        safe_summary_hash_stable=True,
+        safe_tool_result_hash_stable=True,
+        usage_accounting_split_by_route=True,
+        stable_prefix_invalidated=False,
+        ttl_fast_switch_boundary_miss_count=1,
+        strict_live=False,
+    )
+
+    assert _bridge_cache_row(payload["bridge_cache_audit_rows"], "deepseek")["upstream_path_kind"] == "/v1/messages"
+    assert _bridge_cache_row(payload["bridge_cache_audit_rows"], "openai")["selected_protocol"] == "responses"
+
+
 def test_cp8_cache_audit_log_collector_strict_live_requires_native_cache_observation(tmp_path: Path):
     log_text = "\n".join([
         json.dumps({
@@ -498,7 +653,9 @@ def test_cp8_cache_audit_log_collector_strict_live_requires_native_cache_observa
             "cache_control_provider_ignored": True,
             "prompt_cache_key_present": False,
             "prompt_cache_key_strategy": "absent",
-            "cache_usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"],
+            "cache_usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"],
+            "response_usage_cache_fields_present": True,
+            "response_usage_cache_field_paths": ["message.usage.prompt_cache_hit_tokens", "message.usage.prompt_cache_miss_tokens"],
             "cache_read_tokens": 7,
             "cache_miss_tokens": 13,
             "stable_prefix_hmac": "hmac-sha256:cp8-cache:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -600,7 +757,9 @@ def test_cp8_cache_audit_log_collector_rejects_sensitive_discarded_log_fields(tm
             "cache_control_provider_ignored": True,
             "prompt_cache_key_present": False,
             "prompt_cache_key_strategy": "absent",
-            "cache_usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"],
+            "cache_usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"],
+            "response_usage_cache_fields_present": True,
+            "response_usage_cache_field_paths": ["message.usage.prompt_cache_hit_tokens", "message.usage.prompt_cache_miss_tokens"],
             "cache_read_tokens": 7,
             "cache_miss_tokens": 13,
             "stable_prefix_hmac": "hmac-sha256:cp8-cache:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -661,7 +820,7 @@ def test_cp8_cache_audit_log_collector_rejects_sensitive_or_missing_rows(tmp_pat
         "cache_control_present": False,
         "cache_control_provider_ignored": True,
         "prompt_cache_key_present": False,
-        "cache_usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"],
+        "cache_usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"],
         "cache_read_tokens": 7,
         "cache_miss_tokens": 13,
         "stable_prefix_hmac": "hmac-sha256:cp8-cache:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -1476,6 +1635,82 @@ def test_cp8_strict_live_cache_account_audit_requires_live_usage_fields(tmp_path
     assert result.status == "fail"
     assert "cache_account_audit" in result.failed
     assert any("live usage" in issue for issue in result.scenario_results["cache_account_audit"].issues)
+
+
+def test_cp8_strict_live_deepseek_accepts_cache_field_presence_without_hit(tmp_path: Path):
+    payload = _fixture("live_matrix_pass.json")
+    payload["mode"] = "external_provider_live_matrix"
+    run_id = "cp8-cache-strict-live-zero-counters"
+    payload["live_provenance"] = {
+        "credential_backed": True,
+        "loopback_only": False,
+        "run_id": run_id,
+        "providers": {},
+    }
+    providers = {
+        "claude": ("formal_pool", "https://api.anthropic.com/v1/messages"),
+        "openai": ("bridge_pool", "https://api.openai.com/v1/responses"),
+        "deepseek": ("bridge_pool", "https://api.deepseek.com/anthropic/v1/messages"),
+    }
+    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir.mkdir()
+    for provider, (scope, endpoint) in providers.items():
+        proof = {
+            "schema_version": "cp8-live-provider-provenance-v1",
+            "checkpoint": "CP8",
+            "run_id": run_id,
+            "provider": provider,
+            "model": _provider_model(provider),
+            "credential_scope": scope,
+            "endpoint": endpoint,
+            "host": endpoint.split("/")[2],
+            "external_live_verified": True,
+            "loopback": False,
+            "response_status": 200,
+            "upstream_request_id": f"req_{provider}_live",
+        }
+        artifact = artifacts_dir / f"{provider}_live.json"
+        artifact.write_text(json.dumps(proof, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+        payload["live_provenance"]["providers"][provider] = {
+            "credential_scope": scope,
+            "live_provider_verified": True,
+            "endpoint": endpoint,
+            "model": _provider_model(provider),
+            "artifact_refs": [
+                {
+                    "path": f"artifacts/{provider}_live.json",
+                    "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                    "sensitive_scan_clean": True,
+                }
+            ],
+        }
+    for scenario in payload["scenarios"].values():
+        scenario["live_provider_verified"] = True
+    _add_strict_live_scenario_artifacts(payload, tmp_path, run_id)
+    cache_scenario = payload["scenarios"]["cache_account_audit"]
+    cache_scenario["cache_provider_evidence"] = _cache_provider_evidence(strict_live=True)
+    deepseek_evidence = cache_scenario["cache_provider_evidence"]["deepseek"]
+    deepseek_evidence["live_cache_hit_observed"] = False
+    deepseek_evidence["live_cache_write_observed"] = False
+    deepseek_evidence["live_cache_miss_observed"] = False
+    artifact_ref = cache_scenario["artifact_refs"][0]
+    artifact = tmp_path / artifact_ref["path"]
+    artifact_payload = json.loads(artifact.read_text(encoding="utf-8"))
+    deepseek = _bridge_cache_row(artifact_payload["bridge_cache_audit_rows"], "deepseek")
+    deepseek["cache_read_tokens"] = 0
+    deepseek["cache_write_tokens"] = 0
+    deepseek["cache_miss_tokens"] = 0
+    deepseek["response_usage_cache_fields_present"] = True
+    deepseek["response_usage_cache_field_paths"] = [
+        "message.usage.cache_creation_input_tokens",
+        "message.usage.cache_read_input_tokens",
+    ]
+    artifact.write_text(json.dumps(artifact_payload, ensure_ascii=True, sort_keys=True), encoding="utf-8")
+    artifact_ref["sha256"] = "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+    result = verify_cp8_live_matrix(payload, strict_live=True, evidence_root=tmp_path)
+
+    assert result.status == "pass"
 
 
 
