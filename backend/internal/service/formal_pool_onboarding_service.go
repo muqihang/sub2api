@@ -783,7 +783,7 @@ func (s *FormalPoolOnboardingService) SetupTokenCookieAuthAndCreate(ctx context.
 	}
 	summary, credentials, err := s.oauth.SetupTokenCookieAuth(ctx, sessionKey, rec.ProxyID)
 	if err != nil {
-		return nil, err
+		return nil, formalPoolSetupTokenCookieAuthError(err)
 	}
 	if !summary.ScopeContainsUserInference {
 		return nil, infraerrors.BadRequest("INVALID_SETUP_TOKEN_SCOPE", "setup-token account requires user inference scope")
@@ -834,6 +834,32 @@ func (s *FormalPoolOnboardingService) SetupTokenCookieAuthAndCreate(ctx context.
 		return nil, err
 	}
 	return s.sessionResponse(rec, nil), nil
+}
+
+func formalPoolSetupTokenCookieAuthError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var appErr *infraerrors.ApplicationError
+	if errors.As(err, &appErr) {
+		return err
+	}
+	return infraerrors.BadRequest(
+		"SETUP_TOKEN_COOKIE_AUTH_FAILED",
+		"Setup Token 登录态交换失败：请确认 Setup Token 未过期，并确认所选代理出口能正常访问 Claude；如果遇到浏览器安全校验，请更换同出口代理后重试。",
+	).WithCause(formalPoolSafeSetupTokenCookieAuthCause(err))
+}
+
+func formalPoolSafeSetupTokenCookieAuthCause(err error) error {
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "cloudflare") || strings.Contains(msg, "just a moment") || strings.Contains(msg, "challenge") || strings.Contains(msg, "<html"):
+		return errors.New("setup-token cookie auth blocked by Claude browser security challenge")
+	case strings.Contains(msg, "401") || strings.Contains(msg, "unauthorized") || strings.Contains(msg, "invalid_grant"):
+		return errors.New("setup-token cookie auth rejected or expired")
+	default:
+		return errors.New("setup-token cookie auth failed")
+	}
 }
 
 func (s *FormalPoolOnboardingService) RunAcceptance(ctx context.Context, id string) (*FormalPoolAcceptanceResult, error) {

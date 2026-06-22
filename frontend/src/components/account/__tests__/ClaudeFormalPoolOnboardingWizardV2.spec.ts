@@ -610,6 +610,39 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     vi.unstubAllGlobals()
   })
 
+  it('falls back to execCommand copy for browser egress links without permanently rendering the raw nonce', async () => {
+    const rawNonce = 'raw-nonce-FALLBACK-DO-NOT-LEAK-12345'
+    const realUrl = `https://safe.example/api/v1/claude-onboarding/browser-egress-check/${rawNonce}`
+    vi.stubGlobal('navigator', {})
+    const originalExecCommand = document.execCommand
+    const execCommand = vi.fn().mockReturnValue(true)
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: execCommand })
+    const wrapper = mountWizard()
+    await startSession(wrapper)
+
+    onboardingApi.testProxy.mockResolvedValueOnce(sessionFixture({
+      status: 'proxy_tested',
+      browser_egress_check_status: 'waiting',
+      browser_egress_check_url: realUrl,
+    }))
+    await wrapper.find('[data-testid="test-proxy"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="browser-egress-check-url-display"]').text()).toContain('[一次性 nonce 已隐藏]')
+    expect(wrapper.html()).not.toContain(rawNonce)
+    expect(wrapper.html()).not.toContain(realUrl)
+
+    await wrapper.find('[data-testid="copy-browser-egress-check-url"]').trigger('click')
+    await flushPromises()
+
+    expect(execCommand).toHaveBeenCalledWith('copy')
+    expect(wrapper.find('[data-testid="browser-egress-copy-status"]').text()).toContain('已复制校验链接')
+    expect(wrapper.html()).not.toContain(rawNonce)
+    expect(wrapper.html()).not.toContain(realUrl)
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: originalExecCommand })
+    vi.unstubAllGlobals()
+  })
+
   it('shows the OAuth 1/2/3 human flow, copies the generated authorization link, and keeps the raw URL hidden', async () => {
     const rawCode = 'oauth-code-DO-NOT-LEAK-12345'
     const realUrl = `https://claude.ai/oauth/authorize?code=${rawCode}`

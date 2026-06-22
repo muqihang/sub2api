@@ -54,6 +54,12 @@ func (s *claudeOAuthService) GetOrganizationUUID(ctx context.Context, sessionKey
 			Name:  "sessionKey",
 			Value: sessionKey,
 		}).
+		SetHeader("Accept", "application/json").
+		SetHeader("Accept-Language", "en-US,en;q=0.9").
+		SetHeader("Cache-Control", "no-cache").
+		SetHeader("Origin", "https://claude.ai").
+		SetHeader("Referer", "https://claude.ai/new").
+		SetHeader("User-Agent", claudeOAuthBrowserUserAgent).
 		SetSuccessResult(&orgs).
 		Get(targetURL)
 
@@ -267,6 +273,8 @@ func (s *claudeOAuthService) RefreshToken(ctx context.Context, refreshToken, pro
 
 	return &tokenResp, nil
 }
+
+const claudeOAuthBrowserUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
 func createReqClient(proxyURL string) (*req.Client, error) {
 	// 禁用 CookieJar，确保每次授权都是干净的会话
