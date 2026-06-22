@@ -3336,6 +3336,31 @@ def test_claude_code_live_matrix_cli_write_scenario_evidence_rejects_sensitive_o
     assert not (tmp_path / "artifacts" / "scenario_manual_provider_switch_deepseek.json").exists()
 
 
+
+def test_claude_code_live_matrix_cli_collect_provider_provenance_requires_explicit_lab_opt_in(capsys, tmp_path: Path, monkeypatch):
+    def fake_collect_cp8_live_provider_provenance(**kwargs):
+        raise AssertionError("direct provider lab collector must fail before collection without opt-in")
+
+    monkeypatch.setattr(cli, "collect_cp8_live_provider_provenance", fake_collect_cp8_live_provider_provenance, raising=False)
+    monkeypatch.delenv("SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE", raising=False)
+
+    assert main([
+        "claude-code",
+        "live-matrix",
+        "--collect-provider-provenance",
+        "--run-id",
+        "cp8-direct-provider-no-optin",
+        "--output-root",
+        str(tmp_path),
+    ]) == 1
+    data = parse_output(capsys)
+
+    assert data["command"] == "claude-code live-matrix collect-provider-provenance"
+    assert data["status"] == "not_configured"
+    assert "SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE=true" in data["message"]
+    assert not (tmp_path / "live_provenance.json").exists()
+    assert not (tmp_path / "artifacts").exists()
+
 def test_claude_code_live_matrix_cli_collects_provider_provenance(capsys, tmp_path: Path, monkeypatch):
     calls: list[dict[str, object]] = []
 
@@ -3353,6 +3378,7 @@ def test_claude_code_live_matrix_cli_collects_provider_provenance(capsys, tmp_pa
         }
 
     monkeypatch.setattr(cli, "collect_cp8_live_provider_provenance", fake_collect_cp8_live_provider_provenance, raising=False)
+    monkeypatch.setenv("SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE", "true")
 
     assert main([
         "claude-code",
@@ -3389,6 +3415,7 @@ def test_claude_code_live_matrix_cli_collects_provider_provenance_respects_out_p
         }
 
     monkeypatch.setattr(cli, "collect_cp8_live_provider_provenance", fake_collect_cp8_live_provider_provenance, raising=False)
+    monkeypatch.setenv("SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE", "true")
     out = tmp_path / "custom" / "cp8-live-provenance.json"
 
     assert main([
@@ -3419,6 +3446,7 @@ def test_claude_code_live_matrix_cli_collect_provenance_out_refuses_overwrite(ca
         return {"credential_backed": True, "loopback_only": False, "run_id": kwargs["run_id"], "providers": {}}
 
     monkeypatch.setattr(cli, "collect_cp8_live_provider_provenance", fake_collect_cp8_live_provider_provenance, raising=False)
+    monkeypatch.setenv("SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE", "true")
     out = tmp_path / "live_provenance.json"
     out.write_text('{"existing": true}', encoding="utf-8")
 
@@ -3449,6 +3477,7 @@ def test_claude_code_live_matrix_cli_collect_provenance_out_rejects_artifacts_di
         return {"credential_backed": True, "loopback_only": False, "run_id": kwargs["run_id"], "providers": {}}
 
     monkeypatch.setattr(cli, "collect_cp8_live_provider_provenance", fake_collect_cp8_live_provider_provenance, raising=False)
+    monkeypatch.setenv("SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE", "true")
 
     assert main([
         "claude-code",
@@ -3484,6 +3513,7 @@ def test_claude_code_live_matrix_module_entrypoint_executes_main_for_provider_pr
         }
     }
     env["PYTHONPATH"] = f"{REPO_ROOT}:{REPO_ROOT / 'tools' / 'zhumeng-agent' / 'src'}"
+    env["SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE"] = "true"
 
     result = subprocess.run(
         [
@@ -3520,6 +3550,9 @@ def test_claude_code_live_matrix_help_points_cp8_sub2api_base_url_to_3017_canary
     help_text = capsys.readouterr().out
     assert "http://127.0.0.1:3017" in help_text
     assert "http://127.0.0.1:3012" not in help_text
+    assert "lab-only" in help_text
+    assert "SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE=true" in help_text
+    assert "product CP8" in help_text
 
 def test_claude_code_live_matrix_cli_collects_sub2api_gateway_provenance(capsys, tmp_path: Path, monkeypatch):
     calls: list[dict[str, object]] = []

@@ -19,6 +19,15 @@ from zhumeng_agent.adapters.claude_code.live_matrix import (
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "claude_code_cp8"
 
 
+@pytest.fixture(autouse=True)
+def _clear_direct_provider_lab_opt_in(monkeypatch):
+    monkeypatch.delenv("SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE", raising=False)
+
+
+def _allow_direct_provider_lab_opt_in(monkeypatch):
+    monkeypatch.setenv("SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE", "true")
+
+
 def _fixture(name: str) -> dict[str, object]:
     return json.loads((FIXTURE_DIR / name).read_text(encoding="utf-8"))
 
@@ -1998,6 +2007,29 @@ def test_cp8_live_matrix_rejects_model_family_semantic_drift():
     assert "deepseek_bridge" in result.failed
     assert any("Pro and Flash" in issue for issue in result.scenario_results["deepseek_bridge"].issues)
 
+def test_cp8_live_provider_collector_requires_explicit_lab_opt_in_before_side_effects(monkeypatch, tmp_path: Path):
+    from zhumeng_agent.adapters.claude_code import live_matrix as live_matrix_module  # noqa: PLC0415
+
+    def fail_if_credentials_read():
+        raise AssertionError("credentials must not be read before direct provider lab opt-in")
+
+    def fail_if_transport_called(provider: str, endpoint: str, credential: str) -> dict[str, object]:
+        raise AssertionError("transport must not run before direct provider lab opt-in")
+
+    monkeypatch.delenv("SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE", raising=False)
+    monkeypatch.setattr(live_matrix_module, "_cp8_live_credentials_from_env", fail_if_credentials_read)
+
+    with pytest.raises(CP8LiveMatrixError, match="SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE=true"):
+        live_matrix_module.collect_cp8_live_provider_provenance(
+            run_id="cp8-direct-provider-no-optin",
+            output_root=tmp_path,
+            transport=fail_if_transport_called,
+        )
+
+    assert not (tmp_path / "artifacts").exists()
+    assert not (tmp_path / "live_provenance.json").exists()
+
+
 def test_cp8_live_matrix_public_api_is_exported():
     from zhumeng_agent.adapters.claude_code import (  # noqa: PLC0415
         CP8LiveMatrixError as ExportedError,
@@ -2506,6 +2538,8 @@ def test_cp8_strict_live_rejects_sub2api_mode_with_official_provider_endpoints(t
 def test_cp8_live_evidence_default_transport_posts_official_protocol_shapes(monkeypatch, tmp_path: Path):
     from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_live_provider_provenance  # noqa: PLC0415
 
+    _allow_direct_provider_lab_opt_in(monkeypatch)
+
     calls: list[dict[str, object]] = []
 
     class FakeHTTPResponse:
@@ -2587,6 +2621,8 @@ def test_cp8_live_evidence_default_transport_posts_official_protocol_shapes(monk
 def test_cp8_live_evidence_default_transport_rejects_unverified_openai_live_model(monkeypatch, tmp_path: Path):
     from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_live_provider_provenance  # noqa: PLC0415
 
+    _allow_direct_provider_lab_opt_in(monkeypatch)
+
     monkeypatch.setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_MODEL", "gpt-5.4")
 
     with pytest.raises(CP8LiveMatrixError, match="not CP4 live-catalog verified"):
@@ -2602,8 +2638,10 @@ def test_cp8_live_evidence_default_transport_rejects_unverified_openai_live_mode
         )
 
 
-def test_cp8_assemble_external_live_matrix_binds_provider_provenance_without_promoting_loopback(tmp_path: Path):
+def test_cp8_assemble_external_live_matrix_binds_provider_provenance_without_promoting_loopback(monkeypatch, tmp_path: Path):
     from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_live_provider_provenance  # noqa: PLC0415
+
+    _allow_direct_provider_lab_opt_in(monkeypatch)
 
     provenance = collect_cp8_live_provider_provenance(
         run_id="cp8-assemble-live",
@@ -2695,8 +2733,10 @@ def test_cp8_assemble_external_live_matrix_rejects_common_secret_and_payload_key
         assemble_cp8_external_live_matrix_evidence(payload, provenance)
 
 
-def test_cp8_live_evidence_collector_requires_all_provider_credentials(tmp_path: Path):
+def test_cp8_live_evidence_collector_requires_all_provider_credentials(monkeypatch, tmp_path: Path):
     from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_live_provider_provenance  # noqa: PLC0415
+
+    _allow_direct_provider_lab_opt_in(monkeypatch)
 
     with pytest.raises(CP8LiveMatrixError, match="missing live credential"):
         collect_cp8_live_provider_provenance(
@@ -2709,8 +2749,10 @@ def test_cp8_live_evidence_collector_requires_all_provider_credentials(tmp_path:
         )
 
 
-def test_cp8_live_evidence_collector_writes_sanitized_provider_bound_artifacts(tmp_path: Path):
+def test_cp8_live_evidence_collector_writes_sanitized_provider_bound_artifacts(monkeypatch, tmp_path: Path):
     from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_live_provider_provenance  # noqa: PLC0415
+
+    _allow_direct_provider_lab_opt_in(monkeypatch)
 
     calls: list[tuple[str, str, str]] = []
 
@@ -2762,8 +2804,10 @@ def test_cp8_live_evidence_collector_writes_sanitized_provider_bound_artifacts(t
         assert provider in artifact_text
 
 
-def test_cp8_live_evidence_collector_requires_success_and_rejects_sensitive_request_ids(tmp_path: Path):
+def test_cp8_live_evidence_collector_requires_success_and_rejects_sensitive_request_ids(monkeypatch, tmp_path: Path):
     from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_live_provider_provenance  # noqa: PLC0415
+
+    _allow_direct_provider_lab_opt_in(monkeypatch)
 
     credentials = {
         "claude": "sk-claude-secret",

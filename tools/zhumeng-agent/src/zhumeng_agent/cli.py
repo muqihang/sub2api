@@ -161,8 +161,16 @@ def build_parser() -> argparse.ArgumentParser:
     claude_code_live_matrix = claude_code_subparsers.add_parser("live-matrix")
     claude_code_live_matrix.add_argument("--evidence", type=Path)
     claude_code_live_matrix.add_argument("--strict-live", action="store_true")
-    claude_code_live_matrix.add_argument("--collect-provider-provenance", action="store_true")
-    claude_code_live_matrix.add_argument("--collect-sub2api-provenance", action="store_true")
+    claude_code_live_matrix.add_argument(
+        "--collect-provider-provenance",
+        action="store_true",
+        help="lab-only direct official-provider provenance; requires SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE=true and is not product CP8 sign-off.",
+    )
+    claude_code_live_matrix.add_argument(
+        "--collect-sub2api-provenance",
+        action="store_true",
+        help="Product CP8 provenance through the approved Sub2API/Claude Code Runtime canary, defaulting to http://127.0.0.1:3017.",
+    )
     claude_code_live_matrix.add_argument("--assemble-external", action="store_true")
     claude_code_live_matrix.add_argument("--write-scenario-evidence", action="store_true")
     claude_code_live_matrix.add_argument("--provenance", type=Path)
@@ -2135,6 +2143,12 @@ def handle_claude_code_runtime_command(args: argparse.Namespace) -> int:
                         "command": "claude-code live-matrix collect-provider-provenance",
                         "status": "not_configured",
                         "message": "provider provenance collection requires --run-id and --output-root",
+                    })
+                if os.environ.get("SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE") != "true":
+                    return emit_failed({
+                        "command": "claude-code live-matrix collect-provider-provenance",
+                        "status": "not_configured",
+                        "message": "direct official-provider lab provenance requires SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE=true; use --collect-sub2api-provenance for product CP8",
                     })
                 _cp8_live_provenance_output_path(args)
                 provenance = collect_cp8_live_provider_provenance(run_id=args.run_id, output_root=args.output_root)

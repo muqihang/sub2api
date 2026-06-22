@@ -2366,6 +2366,11 @@ def collect_cp8_live_provider_provenance(
     run_id = str(run_id or "").strip()
     if not run_id:
         raise CP8LiveMatrixError("CP8 live provider provenance requires run_id")
+    if os.environ.get("SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE") != "true":
+        raise CP8LiveMatrixError(
+            "direct official-provider lab provenance requires "
+            "SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE=true; use Sub2API gateway provenance for product CP8"
+        )
     root = Path(output_root).expanduser()
     artifacts_dir = root / "artifacts"
     artifacts_dir.mkdir(parents=True, exist_ok=True)

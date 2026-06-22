@@ -385,7 +385,7 @@ Success criteria: CLI output reports `release_gate=external_live_passed`. Any lo
 
 ### Lab/fallback direct provider collector
 
-`claude-code live-matrix --collect-provider-provenance` still exists for isolated official-provider lab checks with `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `DEEPSEEK_API_KEY`, but it is not the primary 47 号逐梦版 acceptance path and should not be used for product CP8 sign-off. The product CP8 path above must prove Claude/GPT/DeepSeek live behavior through the Sub2API gateway. Future user-owned provider URLs/API keys belong behind the 逐梦 Agent/Sub2API ProviderRegistry or local/hybrid gateway mode, not as direct Claude Code Runtime egress.
+`claude-code live-matrix --collect-provider-provenance` still exists only for isolated official-provider lab checks with `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `DEEPSEEK_API_KEY`. It is gated by `SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE=true`, is not the primary 47 号逐梦版 acceptance path, and must not be used for product CP8 sign-off. The product CP8 path above must prove Claude/GPT/DeepSeek live behavior through the Sub2API gateway. Future user-owned provider URLs/API keys belong behind the 逐梦 Agent/Sub2API ProviderRegistry or local/hybrid gateway mode, not as direct Claude Code Runtime egress.
 
 ## Known limitation before external release
 
@@ -430,3 +430,15 @@ Local CP34 evidence:
 - 3017 health remains `{"status":"ok"}`.
 
 Current release statement after CP34: **operator CP8 external-live collection is aligned to 3017 canary and fails closed for accidental 3012 loopback use by this worker**. `external_live_passed` remains unclaimed until real CP8 scenario/provider artifacts are collected and verified.
+
+
+## 2026-06-22 CP35 direct-provider lab collector safety gate
+
+The direct official-provider provenance collector is now lab-opt-in only. Both `claude-code live-matrix --collect-provider-provenance` and the exported direct-provider collector function fail closed before collection unless `SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE=true` is set explicitly. The product CP8 path remains `--collect-sub2api-provenance` through the approved 3017 canary. This avoids accidental official-provider probing from the Claude Code Runtime repair worker while preserving a clearly labeled lab-only escape hatch for isolated non-product diagnostics.
+
+Local CP35 evidence:
+
+- Direct-provider CLI and collector-level gate tests require the explicit lab opt-in and otherwise fail before collection, credential reads, transport, or artifact creation.
+- Product Sub2API collection tests remain on the 3017 canary path.
+- `tools/zhumeng-agent/.venv/bin/python -m pytest tests/test_cli.py tests/test_claude_code_live_matrix_cp8.py -q` from `tools/zhumeng-agent`: `273 passed`.
+- Go targeted baseline and 3017 readiness/health remain clean.
