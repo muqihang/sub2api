@@ -25,6 +25,7 @@ type ClaudeOAuthServiceSuite struct {
 type requestCapture struct {
 	path        string
 	method      string
+	headers     http.Header
 	cookies     []*http.Cookie
 	body        []byte
 	bodyJSON    map[string]any
@@ -59,6 +60,10 @@ func (s *ClaudeOAuthServiceSuite) TestGetOrganizationUUID() {
 				require.Len(s.T(), captured.cookies, 1, "expected 1 cookie")
 				require.Equal(s.T(), "sessionKey", captured.cookies[0].Name)
 				require.Equal(s.T(), "sess", captured.cookies[0].Value)
+				require.Equal(s.T(), "application/json", captured.headers.Get("Accept"))
+				require.Contains(s.T(), captured.headers.Get("User-Agent"), "Mozilla/5.0")
+				require.Equal(s.T(), "https://claude.ai/new", captured.headers.Get("Referer"))
+				require.Equal(s.T(), "https://claude.ai", captured.headers.Get("Origin"))
 			},
 		},
 		{
@@ -86,6 +91,7 @@ func (s *ClaudeOAuthServiceSuite) TestGetOrganizationUUID() {
 
 			rt := newInProcessTransport(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				captured.path = r.URL.Path
+				captured.headers = r.Header.Clone()
 				captured.cookies = r.Cookies()
 				tt.handler(w, r)
 			}), nil)

@@ -337,6 +337,23 @@ func TestFormalPoolSetupTokenCookieRequiresProxyTestButNotBrowserEgress(t *testi
 	}
 }
 
+func TestFormalPoolSetupTokenCookieCreateWrapsUntypedOAuthFailuresAsSafeBadRequest(t *testing.T) {
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{err: errors.New("failed to get organizations: status 403, body: <html>sk-ant-sid-secret</html>")}, Accounts: &formalAccountFake{}, CCGatewayRuntime: &formalRuntimeFake{}})
+	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "setup-acct", PoolProfile: "normal"})
+	_, _ = svc.TestProxy(context.Background(), sess.ID)
+
+	_, err := svc.SetupTokenCookieAuthAndCreate(context.Background(), sess.ID, FormalPoolSetupTokenCookieAuthAndCreateRequest{SessionKey: "sk-ant-sid02-secret"})
+	if err == nil {
+		t.Fatalf("expected safe setup-token oauth failure")
+	}
+	if got := strings.ToLower(err.Error()); strings.Contains(got, "internal error") || strings.Contains(got, "sk-ant-sid") || strings.Contains(got, "<html>") {
+		t.Fatalf("setup-token failure must be actionable and redacted, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "Setup Token") && !strings.Contains(err.Error(), "setup-token") {
+		t.Fatalf("setup-token failure should mention the failed login method, got %q", err.Error())
+	}
+}
+
 func TestFormalPoolSetupTokenCookieCreateRegistersRuntimeAndKeepsAccountUnschedulable(t *testing.T) {
 	acct := &formalAccountFake{}
 	runtime := &formalRuntimeFake{}

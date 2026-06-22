@@ -277,9 +277,9 @@
                 <div v-if="requiresBrowserEgress && session?.browser_egress_check_url" class="rounded-2xl border border-cyan-300 bg-white p-3 dark:border-cyan-800 dark:bg-slate-900">
                   <p class="font-semibold">只在即将登录 Claude 的同出口浏览器中复制打开：</p>
                   <p data-testid="browser-egress-check-url" class="mt-2 text-xs text-cyan-700 dark:text-cyan-300">已生成一次性校验链接</p>
-                  <p class="mt-1 font-mono text-xs text-cyan-700 dark:text-cyan-300">browser-egress-check/:nonce</p>
+                  <p data-testid="browser-egress-check-url-display" class="mt-1 font-mono text-xs text-cyan-700 dark:text-cyan-300">{{ redactedBrowserEgressCheckUrl }}</p>
                   <button data-testid="copy-browser-egress-check-url" class="btn btn-secondary mt-3" type="button" @click="copyBrowserEgressCheckUrl">复制校验链接</button>
-                  <p v-if="copyStatus" class="mt-2 text-xs text-slate-500 dark:text-slate-400">{{ copyStatus }}</p>
+                  <p v-if="copyStatus" data-testid="browser-egress-copy-status" class="mt-2 text-xs text-slate-500 dark:text-slate-400">{{ copyStatus }}</p>
                 </div>
                 <div v-else-if="requiresBrowserEgress" class="rounded-2xl border border-dashed border-slate-300 p-3 text-slate-500 dark:border-slate-700 dark:text-slate-400">代理测试成功前不展示同出口校验链接。</div>
                 <div
@@ -912,17 +912,32 @@ function scrubExtra(value: string, fallback = '—'): string {
     .replace(RAW_IPV4_PATTERN, REDACTED_TEXT)
 }
 
+const redactedBrowserEgressCheckUrl = computed(() => redactOneTimeURL(session.value?.browser_egress_check_url, 'browser-egress-check/[一次性 nonce 已隐藏]'))
+
+function redactOneTimeURL(raw: string | undefined, fallback: string): string {
+  const value = String(raw || '').trim()
+  if (!value) return fallback
+  try {
+    const parsed = new URL(value)
+    const parts = parsed.pathname.split('/').filter(Boolean)
+    const markerIndex = parts.lastIndexOf('browser-egress-check')
+    if (markerIndex >= 0) {
+      const safePath = `/${parts.slice(0, markerIndex + 1).join('/')}/[一次性 nonce 已隐藏]`
+      return `${parsed.origin}${safePath}`
+    }
+    return `${parsed.origin}/[一次性链接已隐藏]`
+  } catch {
+    return fallback
+  }
+}
+
 async function copyBrowserEgressCheckUrl() {
   const url = session.value?.browser_egress_check_url
   if (!url) return
   copyStatus.value = ''
-  try {
-    if (!navigator?.clipboard?.writeText) {
-      throw new Error('clipboard unavailable')
-    }
-    await navigator.clipboard.writeText(url)
+  if (await copySensitiveText(url)) {
     copyStatus.value = '已复制校验链接'
-  } catch {
+  } else {
     copyStatus.value = '复制失败，请稍后重试'
   }
 }
@@ -931,14 +946,44 @@ async function copyOAuthUrl() {
   const url = session.value?.auth_url
   if (!url) return
   oauthCopyStatus.value = ''
-  try {
-    if (!navigator?.clipboard?.writeText) {
-      throw new Error('clipboard unavailable')
-    }
-    await navigator.clipboard.writeText(url)
+  if (await copySensitiveText(url)) {
     oauthCopyStatus.value = '已复制授权链接'
-  } catch {
+  } else {
     oauthCopyStatus.value = '复制失败，请重试'
+  }
+}
+
+async function copySensitiveText(value: string): Promise<boolean> {
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value)
+      return true
+    }
+  } catch {
+    // Fall through to the legacy copy path for HTTP admin pages and restricted browsers.
+  }
+  return copySensitiveTextWithTemporaryTextarea(value)
+}
+
+function copySensitiveTextWithTemporaryTextarea(value: string): boolean {
+  if (typeof document === 'undefined' || typeof document.execCommand !== 'function') return false
+  const textarea = document.createElement('textarea')
+  textarea.value = value
+  textarea.setAttribute('readonly', 'true')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.style.top = '0'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  try {
+    textarea.focus()
+    textarea.select()
+    textarea.setSelectionRange(0, value.length)
+    return document.execCommand('copy')
+  } catch {
+    return false
+  } finally {
+    textarea.remove()
   }
 }
 
