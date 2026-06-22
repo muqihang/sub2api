@@ -1225,7 +1225,24 @@ def _validate_sub2api_gateway_base_url(base_url: str) -> str:
     host = _normalized_url_host(parsed.hostname)
     if host in _official_provider_hosts():
         raise CP8LiveMatrixError("CP8 Sub2API gateway base URL must not be an official provider host")
+    if str(parsed.port or "") == "3012" and _is_loopback_gateway_host(parsed.hostname):
+        raise CP8LiveMatrixError("CP8 Sub2API gateway base URL must use the approved 3017 canary; 3012 is legacy and must not be probed by this worker")
     return base_url
+
+
+def _is_loopback_gateway_host(hostname: str | None) -> bool:
+    host = _normalized_url_host(hostname or "")
+    if host == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if ip.is_loopback:
+        return True
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped.is_loopback
+    return False
 
 
 def _official_provider_hosts() -> set[str]:

@@ -178,7 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
     claude_code_live_matrix.add_argument("--provider-provenance-ref", action="append", default=[])
     claude_code_live_matrix.add_argument("--safe-evidence-summary")
     claude_code_live_matrix.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
-    claude_code_live_matrix.add_argument("--sub2api-base-url", help="Sub2API gateway base URL for CP8 live, e.g. http://127.0.0.1:3012")
+    claude_code_live_matrix.add_argument("--sub2api-base-url", help="Sub2API canary gateway base URL for CP8 live, e.g. http://127.0.0.1:3017")
     claude_code_live_matrix.add_argument("--sub2api-token", help="Sub2API gateway/session token; prefer SUB2API_CP8_LIVE_GATEWAY_TOKEN env")
     claude_code_live_matrix.add_argument(
         "--output-root",

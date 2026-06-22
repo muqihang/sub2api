@@ -11,7 +11,7 @@ This audit records the current completion evidence for CP0-CP8. It is intentiona
 
 Local implementation for CP0-CP8 is present in the dedicated worktree branch. Local verifier, fixture, loopback, bridge, guard, routing, transcript-boundary, UX, and strict-live assembly tests pass.
 
-The only remaining evidence that cannot be produced without an operator-owned live Sub2API gateway and live scenario artifacts is the final CP8 external live matrix. The release path is Claude Code Runtime -> Sub2API Gateway (for example `http://127.0.0.1:3012`) -> provider routing; direct official provider credential collection is retained only as a lab/fallback collector, not as the primary product acceptance path. The verifier and Sub2API collector fail closed for mock-only loopback fixtures or forged evidence; a loopback Sub2API gateway origin such as `http://127.0.0.1:3012` is allowed only when it forwards to real upstream provider routing. The operator must run the commands in [External live matrix steps](#external-live-matrix-steps) against a real Sub2API gateway and the corresponding live scenario artifact directory.
+The only remaining evidence that cannot be produced without an operator-owned live Sub2API gateway/canary and live scenario artifacts is the final CP8 external live matrix. For the current L8 canary worker, the release path is Claude Code Runtime -> 3017 Sub2API canary (`http://127.0.0.1:3017`) -> provider routing; port 3012 is the old local service and must not be stopped, restarted, reconfigured, or used for this worker's probes. Direct official provider credential collection is retained only as a lab/fallback collector, not as the primary product acceptance path. The verifier and Sub2API collector fail closed for mock-only loopback fixtures or forged evidence; a loopback Sub2API gateway origin is allowed only when it is the approved canary target and forwards to real upstream provider routing. The operator must run the commands in [External live matrix steps](#external-live-matrix-steps) against the 3017 canary gateway and the corresponding live scenario artifact directory.
 
 
 ## 2026-06-18 pre-L8 readiness update
@@ -21,7 +21,7 @@ Latest worktree commits before operator L8 live:
 - `9cebbad6b feat: plan disabled claude code bridge placeholders` adds `tools/claude_code_runtime_canary_config.py` and `tools/tests/test_claude_code_runtime_canary_config.py`. The helper is dry-run only, emits disabled Claude Code bridge placeholder group plans for OpenAI, DeepSeek, AGNES, Anthropic-compatible, GLM, and Kimi, redacts target credentials/path/query, refuses `--apply`, does not bind upstream accounts, does not add native group 8 membership, and keeps `models_list_config.enabled=false`.
 - `008b86d10 test: align guard integration with native managed auth` updates the local guard integration harness to the hardened native formal-pool boundary: native Claude formal-pool messages use the separate native managed access token, and missing native managed token fails closed before upstream.
 
-Current local runtime configuration was checked with redacted field-presence output only:
+Historical 2026-06-18 local runtime configuration snapshot (superseded for this worker by CP34; do not use 3012 for current L8 probes) was checked with redacted field-presence output only:
 
 - `gateway_base_url`: `http://127.0.0.1:3012`
 - `server_base_url`: `http://127.0.0.1:3012`
@@ -34,7 +34,7 @@ Current local runtime configuration was checked with redacted field-presence out
 
 Runtime status before live: `zhumeng_agent claude-code status` reports Claude Code runtime `2.1.177`, `status=enabled`, and integrity `pass`. Existing Docker services were observed healthy without restarting `3012`: `3012` app healthy, `3017` canary app healthy, postgres/redis healthy.
 
-Operator start command for L8 live from this worktree:
+Historical 2026-06-18 operator start command (superseded; retained only as audit history):
 
 ```bash
 cd /Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-code-multiprovider-runtime/tools/zhumeng-agent
@@ -48,7 +48,19 @@ cd /Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-co
 uv run zhumeng-claude start --project-cwd /path/to/project
 ```
 
-This start path uses the managed state above and points the Claude Code Runtime at the local Sub2API gateway (`3012`) through the loopback guard. It does not ask the operator to paste official Anthropic/OpenAI/DeepSeek provider keys directly into Claude Code Runtime.
+That historical start path used the managed state above and pointed the Claude Code Runtime at the local Sub2API gateway (`3012`) through the loopback guard. It is not the current CP34/L8 canary operator path. Current operators for this worker must use the 3017 canary start path below and must not probe or reconfigure 3012. Neither path asks the operator to paste official Anthropic/OpenAI/DeepSeek provider keys directly into Claude Code Runtime.
+
+Current CP34/L8 canary start path from this worktree:
+
+```bash
+cd /Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-code-multiprovider-runtime
+
+tools/zhumeng-agent/.venv/bin/python -m zhumeng_agent.cli claude-code start \
+  --state-root artifacts/claude-code-canary \
+  --runtime-root "/Users/muqihang/Library/Application Support/zhumeng-agent/runtimes" \
+  --project-cwd "$PWD" \
+  --guard-port 39817
+```
 
 Non-message startup smoke was run from this worktree with `uv run zhumeng-claude start -- --version`. It exited successfully with Claude Code `2.1.177`, `returncode=0`, `guard.attested=true`, `guard.route_hint_contract=true`, both `ANTHROPIC_BASE_URL` and `CLAUDE_CODE_API_BASE_URL` pointed at the ephemeral loopback guard, and `runtime.bridge_live_models=[]`. This smoke verifies the managed launcher/guard/base-url wiring without sending a live `/v1/messages` prompt to the formal pool.
 
@@ -283,7 +295,7 @@ Current release statement after CP32: **operator CP8 evidence collection has saf
 
 ## External live matrix steps
 
-These steps require a real Sub2API gateway/session (for example the local gateway on `http://127.0.0.1:3012`) and real CP8 scenario artifacts. They must be run before claiming `external_live_passed` in production release notes. The Claude/GPT/DeepSeek provider keys remain inside Sub2API/gateway provider routing; the Claude Code Runtime path must not ask the operator to paste official OpenAI/DeepSeek/Anthropic keys directly.
+These steps require the approved 3017 Claude Code Runtime canary gateway/session (`http://127.0.0.1:3017`) and real CP8 scenario artifacts. They must be run before claiming `external_live_passed` in production release notes. The Claude/GPT/DeepSeek provider keys remain inside Sub2API/gateway provider routing; the Claude Code Runtime path must not ask the operator to paste official OpenAI/DeepSeek/Anthropic keys directly, and this worker must not probe or reconfigure 3012.
 
 1. Pick a fresh run id and evidence directory outside the source worktree:
 
@@ -296,7 +308,7 @@ mkdir -p "$EVIDENCE_ROOT"
 2. Ensure the managed Claude Code Runtime is configured and the Sub2API gateway is reachable. The CLI will prefer values from managed setup state (`gateway_base_url`, `access_token`, server-provisioned `claude_code_native_attestation_secret`, server-provisioned `claude_code_route_hint_secret`, active runtime `runtime_hash`/`overlay_hash`, and the route catalog content hash derived from the active runtime route catalog). Use env/flags only to override or to run from a separate shell:
 
 ```bash
-export SUB2API_CP8_LIVE_BASE_URL="http://127.0.0.1:3012"
+export SUB2API_CP8_LIVE_BASE_URL="http://127.0.0.1:3017"
 export SUB2API_CP8_LIVE_GATEWAY_TOKEN="<Sub2API gateway/session token, not an official provider API key>"
 export SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET="<server-provisioned managed setup secret>"
 export SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET="<server-provisioned route hint secret>"
@@ -345,7 +357,7 @@ PYTHONPATH=.:tools/zhumeng-agent/src tools/zhumeng-agent/.venv/bin/python -m zhu
   --client-type claude_code_bridge_deepseek \
   --provider deepseek \
   --model deepseek-v4-pro \
-  --endpoint "${SUB2API_CP8_LIVE_BASE_URL:-http://127.0.0.1:3012}/v1/messages" \
+  --endpoint "${SUB2API_CP8_LIVE_BASE_URL:-http://127.0.0.1:3017}/v1/messages" \
   --upstream-request-id "<sanitized upstream or gateway request id>" \
   --provider-provenance-ref "artifacts/deepseek_sub2api_live_provenance.json" \
   --safe-evidence-summary "safe summary only"
@@ -402,3 +414,19 @@ After the user explicitly re-emphasized that DeepSeek and similar bridge models 
 - DeepSeek cache evidence is still provider-truthful: `cache_control` is not treated as the cache mechanism because DeepSeek's [Anthropic API compatibility](https://api-docs.deepseek.com/guides/anthropic_api) marks those fields as ignored. The accepted evidence path follows DeepSeek [Context Caching](https://api-docs.deepseek.com/guides/kv_cache): `provider_cache_mechanism=deepseek_prefix_kv`, `selected_protocol=anthropic_messages`, stable-prefix HMAC/token bucket, and response usage counters `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`.
 
 Current release statement after CP33: **local implementation, verifier safety, and 3017 readiness remain ready for operator L8 live scenario collection; DeepSeek is Anthropic-compatible-first, with chat-completions fallback disabled in canary and excluded from strict cache evidence**. Still do not claim `external_live_passed` until real external CP8 scenario/provider artifacts are collected and verified.
+
+
+## 2026-06-22 CP34 external live target safety audit
+
+The current worker's CP8 external live collection path is now explicitly 3017-canary scoped. The user constraint says 3012 is the old local Sub2API/Codex Gateway service and must not be stopped, restarted, reconfigured, or used for this worker's probes; only the 3017 Claude Code Runtime canary is movable for L8 evidence collection.
+
+CP34 closes a documentation/CLI footgun where older external-live examples still pointed operators at `http://127.0.0.1:3012`. Current operator-facing guidance and CLI help now use `http://127.0.0.1:3017`, and the CP8 Sub2API gateway live collector fails closed before transport if any loopback `:3012` base URL is supplied. This prevents accidental live probes against the protected legacy service while preserving the collector's general origin validation for other approved non-3012 gateways.
+
+Local CP34 evidence:
+
+- `tools/zhumeng-agent/.venv/bin/python -m pytest tests/test_cli.py tests/test_claude_code_live_matrix_cp8.py -q` from `tools/zhumeng-agent`: `271 passed`.
+- `go test ./internal/service ./internal/server/routes ./internal/pkg/apicompat -run 'ClaudeCode|AnthropicCompat|CP6|CP8|PromptCache|ToolUse|Effort|RouteTrust' -count=1` from `backend`: `ok`.
+- 3017 env readiness still reports `ready=true`, `deepseek_protocols=anthropic_messages`, and `deepseek_cache_evidence_eligible=true`.
+- 3017 health remains `{"status":"ok"}`.
+
+Current release statement after CP34: **operator CP8 external-live collection is aligned to 3017 canary and fails closed for accidental 3012 loopback use by this worker**. `external_live_passed` remains unclaimed until real CP8 scenario/provider artifacts are collected and verified.

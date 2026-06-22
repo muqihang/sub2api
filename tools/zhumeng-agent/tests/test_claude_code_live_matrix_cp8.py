@@ -181,9 +181,9 @@ def _provider_live_artifact(root: Path, provider: str) -> tuple[str, str, str]:
 
 def _sub2api_endpoint(provider: str) -> str:
     return {
-        "claude": "http://127.0.0.1:3012/v1/messages",
-        "openai": "http://127.0.0.1:3012/v1/messages",
-        "deepseek": "http://127.0.0.1:3012/v1/messages",
+        "claude": "http://127.0.0.1:3017/v1/messages",
+        "openai": "http://127.0.0.1:3017/v1/messages",
+        "deepseek": "http://127.0.0.1:3017/v1/messages",
     }[provider]
 
 
@@ -2039,7 +2039,7 @@ def test_cp8_sub2api_gateway_live_collector_uses_single_gateway_token_and_routes
     provenance = collect_cp8_sub2api_gateway_live_provenance(
         run_id="cp8-sub2api-live",
         output_root=tmp_path,
-        base_url="http://127.0.0.1:3012",
+        base_url="http://127.0.0.1:3017",
         gateway_token="sub2api-gateway-session-token",
         native_attestation_secret="native-attestation-secret",
         route_hint_secret="route-hint-secret",
@@ -2053,12 +2053,12 @@ def test_cp8_sub2api_gateway_live_collector_uses_single_gateway_token_and_routes
     assert provenance["credential_backed"] is True
     assert provenance["loopback_only"] is False
     assert provenance["mode"] == "sub2api_gateway_live_matrix"
-    assert provenance["gateway_base_url"] == "http://127.0.0.1:3012"
+    assert provenance["gateway_base_url"] == "http://127.0.0.1:3017"
     assert {call[2] for call in calls} == {"Bearer sub2api-gateway-session-token"}
     assert {call[1] for call in calls} == {
-        "http://127.0.0.1:3012/v1/messages",
+        "http://127.0.0.1:3017/v1/messages",
     }
-    assert provenance["providers"]["claude"]["endpoint"] == "http://127.0.0.1:3012/v1/messages"
+    assert provenance["providers"]["claude"]["endpoint"] == "http://127.0.0.1:3017/v1/messages"
     assert provenance["providers"]["claude"]["route"] == "claude_code_native"
     assert provenance["providers"]["openai"]["route"] == "openai_bridge"
     assert provenance["providers"]["openai"]["client_type"] == "claude_code_bridge_openai"
@@ -2156,6 +2156,61 @@ def test_cp8_sub2api_gateway_collector_accepts_claude_code_bridge_display_models
         assert artifact["request_model"] == seen_bodies[provider]["model"]
 
 
+
+def test_cp8_sub2api_gateway_live_collector_rejects_legacy_3012_canary_port(tmp_path: Path, monkeypatch):
+    from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_sub2api_gateway_live_provenance  # noqa: PLC0415
+
+    monkeypatch.setenv("SUB2API_CP8_ALLOW_LEGACY_3012", "true")
+    for base_url in (
+        "http://127.0.0.1:3012",
+        "http://127.0.0.2:3012",
+        "http://localhost:3012",
+        "http://[::1]:3012",
+        "http://[0:0:0:0:0:0:0:1]:3012",
+        "http://[::ffff:127.0.0.1]:3012",
+    ):
+        with pytest.raises(CP8LiveMatrixError, match="3012"):
+            collect_cp8_sub2api_gateway_live_provenance(
+                run_id="cp8-sub2api-legacy-3012",
+                output_root=tmp_path,
+                base_url=base_url,
+                gateway_token="sub2api-gateway-token",
+                native_attestation_secret="native-attestation-secret",
+                route_hint_secret="route-hint-secret",
+                runtime_hash="sha256:" + "1" * 64,
+                overlay_hash="sha256:" + "2" * 64,
+                catalog_hash="sha256:" + "3" * 64,
+                catalog_version="cp8-live-catalog",
+                transport=lambda provider, endpoint, request: (_ for _ in ()).throw(AssertionError("3012 must fail before transport")),
+            )
+
+
+def test_cp8_sub2api_gateway_live_collector_allows_non_3012_gateways(tmp_path: Path):
+    from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_sub2api_gateway_live_provenance  # noqa: PLC0415
+
+    seen_endpoints: list[str] = []
+
+    def transport(provider: str, endpoint: str, request: dict[str, object]) -> dict[str, object]:
+        seen_endpoints.append(endpoint)
+        return {"status": 200, "request_id": f"req_{provider}_allowed"}
+
+    provenance = collect_cp8_sub2api_gateway_live_provenance(
+        run_id="cp8-sub2api-allowed-3017",
+        output_root=tmp_path,
+        base_url="http://127.0.0.2:3017",
+        gateway_token="sub2api-gateway-token",
+        native_attestation_secret="native-attestation-secret",
+        route_hint_secret="route-hint-secret",
+        runtime_hash="sha256:" + "1" * 64,
+        overlay_hash="sha256:" + "2" * 64,
+        catalog_hash="sha256:" + "3" * 64,
+        catalog_version="cp8-live-catalog",
+        transport=transport,
+    )
+
+    assert provenance["gateway_base_url"] == "http://127.0.0.2:3017"
+    assert set(seen_endpoints) == {"http://127.0.0.2:3017/v1/messages"}
+
 def test_cp8_sub2api_gateway_live_collector_rejects_official_provider_hosts(tmp_path: Path):
     from zhumeng_agent.adapters.claude_code.live_matrix import collect_cp8_sub2api_gateway_live_provenance  # noqa: PLC0415
 
@@ -2204,7 +2259,7 @@ def test_cp8_sub2api_gateway_live_collector_requires_runtime_trust_secrets(tmp_p
         collect_cp8_sub2api_gateway_live_provenance(
             run_id="cp8-sub2api-missing-trust",
             output_root=tmp_path,
-            base_url="http://127.0.0.1:3012",
+            base_url="http://127.0.0.1:3017",
             gateway_token="sub2api-gateway-token",
             transport=lambda provider, endpoint, request: {"status": 200, "request_id": f"req_{provider}"},
         )
@@ -2226,7 +2281,7 @@ def test_cp8_sub2api_gateway_live_collector_sends_gateway_auth_and_signed_runtim
     collect_cp8_sub2api_gateway_live_provenance(
         run_id="cp8-sub2api-live-headers",
         output_root=tmp_path,
-        base_url="http://127.0.0.1:3012",
+        base_url="http://127.0.0.1:3017",
         gateway_token="sub2api-gateway-token",
         native_attestation_secret="native-attestation-secret",
         route_hint_secret="route-hint-secret",
@@ -2292,7 +2347,7 @@ def test_cp8_sub2api_gateway_live_collector_extracts_sub2api_and_provider_reques
     provenance = collect_cp8_sub2api_gateway_live_provenance(
         run_id="cp8-sub2api-live-request-id-headers",
         output_root=tmp_path,
-        base_url="http://127.0.0.1:3012",
+        base_url="http://127.0.0.1:3017",
         gateway_token="sub2api-gateway-token",
         native_attestation_secret="native-attestation-secret",
         route_hint_secret="route-hint-secret",
@@ -2316,7 +2371,7 @@ def test_cp8_strict_live_accepts_sub2api_gateway_provenance_only_in_sub2api_mode
     provenance = collect_cp8_sub2api_gateway_live_provenance(
         run_id=run_id,
         output_root=tmp_path,
-        base_url="http://127.0.0.1:3012",
+        base_url="http://127.0.0.1:3017",
         gateway_token="sub2api-gateway-token",
         native_attestation_secret="native-attestation-secret",
         route_hint_secret="route-hint-secret",
@@ -2352,7 +2407,7 @@ def test_cp8_strict_live_accepts_multi_provider_scenario_artifacts_with_provider
     provenance = collect_cp8_sub2api_gateway_live_provenance(
         run_id=run_id,
         output_root=tmp_path,
-        base_url="http://127.0.0.1:3012",
+        base_url="http://127.0.0.1:3017",
         gateway_token="sub2api-gateway-token",
         native_attestation_secret="native-attestation-secret",
         route_hint_secret="route-hint-secret",
@@ -2396,7 +2451,7 @@ def test_cp8_strict_live_rejects_sub2api_mode_with_official_provider_endpoints(t
         "mode": "sub2api_gateway_live_matrix",
         "credential_backed": True,
         "loopback_only": False,
-        "gateway_base_url": "http://127.0.0.1:3012",
+        "gateway_base_url": "http://127.0.0.1:3017",
         "run_id": run_id,
         "providers": {},
     }

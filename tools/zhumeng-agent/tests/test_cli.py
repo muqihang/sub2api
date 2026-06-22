@@ -3512,6 +3512,15 @@ def test_claude_code_live_matrix_module_entrypoint_executes_main_for_provider_pr
     assert "missing live credential" in data["message"]
 
 
+
+def test_claude_code_live_matrix_help_points_cp8_sub2api_base_url_to_3017_canary(capsys):
+    with pytest.raises(SystemExit) as excinfo:
+        main(["claude-code", "live-matrix", "--help"])
+    assert excinfo.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "http://127.0.0.1:3017" in help_text
+    assert "http://127.0.0.1:3012" not in help_text
+
 def test_claude_code_live_matrix_cli_collects_sub2api_gateway_provenance(capsys, tmp_path: Path, monkeypatch):
     calls: list[dict[str, object]] = []
 
@@ -3534,7 +3543,7 @@ def test_claude_code_live_matrix_cli_collects_sub2api_gateway_provenance(capsys,
     monkeypatch.setattr(cli, "default_state_store", lambda: SimpleNamespace(read=lambda: {}), raising=False)
     monkeypatch.setattr(cli, "resolve_active_managed_runtime", lambda runtime_root: (_ for _ in ()).throw(cli.RuntimeInstallerError("not installed")), raising=False)
     monkeypatch.setattr(cli, "route_catalog_content_hash_for_cp8_live", lambda version, bridge_live_models=(), **kwargs: "sha256:" + "e" * 64, raising=False)
-    monkeypatch.setenv("SUB2API_CP8_LIVE_BASE_URL", "http://127.0.0.1:3012")
+    monkeypatch.setenv("SUB2API_CP8_LIVE_BASE_URL", "http://127.0.0.1:3017")
     monkeypatch.setenv("SUB2API_CP8_LIVE_GATEWAY_TOKEN", "sub2api-env-token")
 
     assert main([
@@ -3558,7 +3567,7 @@ def test_claude_code_live_matrix_cli_collects_sub2api_gateway_provenance(capsys,
     assert calls == [{
         "run_id": "cp8-sub2api-cli",
         "output_root": tmp_path,
-        "base_url": "http://127.0.0.1:3012",
+        "base_url": "http://127.0.0.1:3017",
         "gateway_token": "sub2api-env-token",
         "native_attestation_secret": "",
         "route_hint_secret": "",
@@ -3577,7 +3586,7 @@ def test_claude_code_live_matrix_cli_collects_sub2api_from_managed_state(capsys,
 
         def read(self):
             return {
-                "gateway_base_url": "http://127.0.0.1:3012",
+                "gateway_base_url": "http://127.0.0.1:3017",
                 "access_token": "eyJ.generic-managed-jwt",
                 "claude_code_sub2api_api_key": "test-dedicated-claude-code-sub2api",
                 "claude_code_native_attestation_secret": "managed-native-secret",
@@ -3649,7 +3658,7 @@ def test_claude_code_live_matrix_cli_collects_sub2api_from_managed_state(capsys,
     assert calls == [{
         "run_id": "cp8-sub2api-managed-cli",
         "output_root": tmp_path,
-        "base_url": "http://127.0.0.1:3012",
+        "base_url": "http://127.0.0.1:3017",
         "gateway_token": "test-dedicated-claude-code-sub2api",
         "native_attestation_secret": "managed-native-secret",
         "route_hint_secret": "managed-route-secret",
@@ -3672,7 +3681,7 @@ def test_claude_code_live_matrix_cli_derives_route_catalog_hash_not_model_catalo
 
         def read(self):
             return {
-                "gateway_base_url": "http://127.0.0.1:3012",
+                "gateway_base_url": "http://127.0.0.1:3017",
                 "access_token": "managed-sub2api-token",
                 "claude_code_sub2api_api_key": "test-dedicated-claude-code-sub2api",
                 "claude_code_native_attestation_secret": "managed-native-secret",
@@ -3734,7 +3743,7 @@ def test_claude_code_live_matrix_cli_ignores_non_server_managed_runtime_secrets(
 
         def read(self):
             return {
-                "gateway_base_url": "http://127.0.0.1:3012",
+                "gateway_base_url": "http://127.0.0.1:3017",
                 "access_token": "managed-sub2api-token",
                 "claude_code_sub2api_api_key": "test-dedicated-claude-code-sub2api",
                 "claude_code_native_attestation_secret": "local-native-secret",
@@ -3809,7 +3818,7 @@ def test_claude_code_live_matrix_cli_sub2api_collection_requires_run_id_output_a
         "--output-root",
         str(tmp_path),
         "--sub2api-base-url",
-        "http://127.0.0.1:3012",
+        "http://127.0.0.1:3017",
     ]) == 1
     data = parse_output(capsys)
     assert data["command"] == "claude-code live-matrix"
@@ -3822,7 +3831,7 @@ def test_claude_code_live_matrix_cli_does_not_use_managed_jwt_as_sub2api_gateway
 
         def read(self):
             return {
-                "gateway_base_url": "http://127.0.0.1:3012",
+                "gateway_base_url": "http://127.0.0.1:3017",
                 "access_token": "eyJ.generic-managed-jwt",
                 "claude_code_native_attestation_secret": "managed-native-secret",
                 "claude_code_native_attestation_secret_source": "server",
@@ -3875,7 +3884,7 @@ def test_claude_code_live_matrix_cli_rejects_explicit_jwt_as_sub2api_gateway_tok
     monkeypatch.setattr(cli, "default_state_store", lambda: SimpleNamespace(path=tmp_path / "state.json", read=lambda: {}), raising=False)
     monkeypatch.setattr(cli, "resolve_active_managed_runtime", lambda runtime_root: (_ for _ in ()).throw(cli.RuntimeInstallerError("not installed")), raising=False)
     monkeypatch.setattr(cli, "collect_cp8_sub2api_gateway_live_provenance", fake_collect_cp8_sub2api_gateway_live_provenance, raising=False)
-    monkeypatch.setenv("SUB2API_CP8_LIVE_BASE_URL", "http://127.0.0.1:3012")
+    monkeypatch.setenv("SUB2API_CP8_LIVE_BASE_URL", "http://127.0.0.1:3017")
     monkeypatch.setenv("SUB2API_CP8_LIVE_GATEWAY_TOKEN", "eyJ.explicit-jwt")
 
     assert main([
