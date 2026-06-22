@@ -546,9 +546,11 @@ def _verify_scenario(
         if raw.get("anthropic_body_foreign_markers") not in ([], ()):  # JSON list or tuple in tests
             issues.append("foreign markers reached Anthropic body")
     elif name == "manual_provider_switch":
-        for field in ("foreign_reasoning_in_anthropic", "claude_private_metadata_in_bridge"):
+        for field in ("foreign_reasoning_in_anthropic", "claude_private_metadata_in_bridge", "foreign_cache_metadata_in_anthropic"):
             if raw.get(field) is not False:
                 issues.append(f"{field} must be false")
+        if raw.get("anthropic_body_foreign_markers") not in ([], ()):  # JSON list or tuple in tests
+            issues.append("foreign markers reached Anthropic body")
         for field in ("role_order_tool_pairing_verified", "same_provider_preserved"):
             if raw.get(field) is not True:
                 issues.append(f"{field} must be true")

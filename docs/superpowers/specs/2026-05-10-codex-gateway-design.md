@@ -1,5 +1,7 @@
 # Codex Gateway Design
 
+> **2026-06-22 Claude Code Runtime note:** This spec describes the older Codex Gateway DeepSeek adapter, where Codex Responses were translated to DeepSeek OpenAI-compatible Chat Completions. It must not be read as the Claude Code CLI multiprovider runtime policy. For Claude Code bridge models, DeepSeek is Anthropic-compatible-first (`anthropic_messages` on `/v1/messages`); `chat/completions` is only an explicit degraded fallback and cannot count as DeepSeek prefix-KV cache evidence.
+
 Date: 2026-05-10
 Status: Draft for user review
 Target branch: `codex/augment-gateway-multi-model`

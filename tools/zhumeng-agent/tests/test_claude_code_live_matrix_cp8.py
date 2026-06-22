@@ -937,6 +937,28 @@ def test_cp8_official_docs_snapshot_rejects_stale_glm46_or_unprobed_anthropic_cl
 
 
 
+def test_cp8_manual_provider_switch_rejects_foreign_markers_reaching_claude_native():
+    payload = _fixture("live_matrix_pass.json")
+    payload["scenarios"]["manual_provider_switch"]["anthropic_body_foreign_markers"] = ["deepseek.thinking", "openai.reasoning"]
+
+    result = verify_cp8_live_matrix(payload, evidence_root=FIXTURE_DIR)
+
+    assert result.status == "fail"
+    assert "manual_provider_switch" in result.failed
+    assert any("foreign markers" in issue for issue in result.scenario_results["manual_provider_switch"].issues)
+
+
+def test_cp8_manual_provider_switch_rejects_foreign_cache_metadata_replay_to_claude_native():
+    payload = _fixture("live_matrix_pass.json")
+    payload["scenarios"]["manual_provider_switch"]["foreign_cache_metadata_in_anthropic"] = True
+
+    result = verify_cp8_live_matrix(payload, evidence_root=FIXTURE_DIR)
+
+    assert result.status == "fail"
+    assert "manual_provider_switch" in result.failed
+    assert any("foreign_cache_metadata_in_anthropic" in issue for issue in result.scenario_results["manual_provider_switch"].issues)
+
+
 def test_cp8_official_docs_snapshot_rejects_kimi_endpoint_drift():
     payload = _fixture("live_matrix_pass.json")
     docs = payload["official_docs_snapshot"]

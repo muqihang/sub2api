@@ -279,6 +279,7 @@
       "status": "pass"
     },
     "manual_provider_switch": {
+      "anthropic_body_foreign_markers": [],
       "artifact_refs": [
         {
           "path": "artifacts/transcript_boundary.json",
@@ -287,6 +288,7 @@
         }
       ],
       "claude_private_metadata_in_bridge": false,
+      "foreign_cache_metadata_in_anthropic": false,
       "foreign_reasoning_in_anthropic": false,
       "live_provider_verified": false,
       "raw_sensitive_stored": false,

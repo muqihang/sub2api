@@ -442,3 +442,16 @@ Local CP35 evidence:
 - Product Sub2API collection tests remain on the 3017 canary path.
 - `tools/zhumeng-agent/.venv/bin/python -m pytest tests/test_cli.py tests/test_claude_code_live_matrix_cp8.py -q` from `tools/zhumeng-agent`: `273 passed`.
 - Go targeted baseline and 3017 readiness/health remain clean.
+
+
+## 2026-06-22 CP36 Claude hot-switch and DeepSeek cache-audit gap closure
+
+After CP35, a read-only gap scan found no Critical code issue but identified three local hardening items before the next L8 live attempt. CP36 closes those local items without claiming external live success: older Codex Gateway DeepSeek docs now carry an explicit Claude Code Runtime note that Claude Code bridge DeepSeek is Anthropic-compatible-first, CP8 `manual_provider_switch` verification now rejects any foreign markers or foreign cache metadata returning to Claude native, and the DeepSeek Anthropic cache-audit row test now pins the provider-truthful fields (`preferred_protocol=anthropic_messages`, `selected_protocol=anthropic_messages`, `provider_cache_mechanism=deepseek_prefix_kv`, hit/miss usage fields, no `cached_tokens`/prompt-cache-key claim).
+
+Local CP36 evidence:
+
+- `tools/zhumeng-agent/.venv/bin/python -m pytest tests/test_claude_code_live_matrix_cp8.py::test_cp8_live_matrix_fixture_covers_all_required_scenarios_without_native_contamination tests/test_claude_code_live_matrix_cp8.py::test_cp8_manual_provider_switch_rejects_foreign_markers_reaching_claude_native tests/test_claude_code_live_matrix_cp8.py::test_cp8_manual_provider_switch_rejects_foreign_cache_metadata_replay_to_claude_native -q` from `tools/zhumeng-agent`: `3 passed`.
+- `go test ./internal/service -run 'TestClaudeCodeBridgeCacheAuditRowIsProviderTruthfulAndSafe|TestClaudeCodeBridgeDeepSeekFallbackCacheAuditRowDoesNotClaimAnthropicKV' -count=1` from `backend`: `ok`.
+- 3017 safe log scan currently has no recent `gateway.claude_code_bridge_cache_audit` line, so DeepSeek KV hit/miss proof still requires the operator live scenario to produce safe audit/log artifacts.
+
+Current release statement after CP36: **local docs, verifier, and cache-audit row contracts are aligned with DeepSeek Anthropic-compatible-first and Claude native replay safety**. `external_live_passed` remains unclaimed until real 3017 CP8 scenario/provider artifacts, including DeepSeek hit/miss usage evidence when available, are collected and verified.
