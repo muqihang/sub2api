@@ -2832,7 +2832,12 @@ def test_cp8_live_scenario_evidence_writer_creates_hashable_strict_artifact(tmp_
         ("deepseek_bridge", "claude_code_bridge_deepseek", ["/tmp/provider_deepseek.json"], "safe summary"),
         ("deepseek_bridge", "claude_code_bridge_deepseek", ["artifacts/../provider_deepseek.json"], "safe summary"),
         ("deepseek_bridge", "claude_code_bridge_deepseek", ["provider_deepseek.json"], "safe summary"),
+        ("deepseek_bridge", "claude_code_bridge_deepseek", ["artifacts/raw_prompt.json"], "safe summary"),
+        ("deepseek_bridge", "claude_code_bridge_deepseek", ["artifacts/session_token.json"], "safe summary"),
         ("deepseek_bridge", "claude_code_bridge_deepseek", ["artifacts/provider_deepseek.json"], "raw_body: should fail"),
+        ("deepseek_bridge", "claude_code_bridge_deepseek", ["artifacts/provider_deepseek.json"], "raw_prompt redacted"),
+        ("deepseek_bridge", "claude_code_bridge_deepseek", ["artifacts/provider_deepseek.json"], "raw_header redacted"),
+        ("deepseek_bridge", "claude_code_bridge_deepseek", ["artifacts/provider_deepseek.json"], "api key redacted"),
     ),
 )
 def test_cp8_live_scenario_evidence_writer_rejects_unsafe_fields_before_claiming_scan_clean(

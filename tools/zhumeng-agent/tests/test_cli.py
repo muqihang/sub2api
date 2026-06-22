@@ -3281,6 +3281,11 @@ def test_claude_code_live_matrix_cli_write_scenario_evidence_requires_safe_requi
         ("--provider-provenance-ref", "artifacts/Bearer_sk_live_secret.json"),
         ("--provider-provenance-ref", "../provider_deepseek.json"),
         ("--provider-provenance-ref", "provider_deepseek.json"),
+        ("--provider-provenance-ref", "artifacts/raw_prompt.json"),
+        ("--provider-provenance-ref", "artifacts/session_token.json"),
+        ("--safe-evidence-summary", "raw_prompt redacted"),
+        ("--safe-evidence-summary", "raw_header redacted"),
+        ("--safe-evidence-summary", "api key redacted"),
     ),
 )
 def test_claude_code_live_matrix_cli_write_scenario_evidence_rejects_sensitive_or_unsafe_fields(
@@ -3317,6 +3322,8 @@ def test_claude_code_live_matrix_cli_write_scenario_evidence_rejects_sensitive_o
     if flag in {"--route", "--client-type"}:
         index = argv.index(flag)
         argv[index + 1] = value
+    elif flag == "--safe-evidence-summary":
+        argv.extend([flag, value])
     else:
         argv.extend([flag, value])
 

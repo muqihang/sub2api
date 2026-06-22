@@ -180,6 +180,10 @@ _PROVIDER_RELEASE_SENSITIVE_RE = re.compile(
 _INLINE_TEXT_KEY_RE = re.compile(r"(?:^|[\s,{\[])[\"']?([A-Za-z][A-Za-z0-9_./ -]{0,80})[\"']?\s*[:=]", re.MULTILINE)
 _CP8_SAFE_LABEL_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
 _CP8_SAFE_REL_ARTIFACT_RE = re.compile(r"^[A-Za-z0-9_./-]{1,240}$")
+_CP8_USER_TEXT_SENSITIVE_RE = re.compile(
+    r"(authorization|bearer|api\s*[_-]?\s*key|cookie|raw\s*[_./-]?\s*(?:body|prompt|request|response|payload|header|headers)|prompt|body|header|headers|payload|request|response|client\s*[_-]?\s*secret|password|secret|access\s*[_-]?\s*token|refresh\s*[_-]?\s*token|session\s*[_-]?\s*token|(?:^|[^a-z0-9])token(?:$|[^a-z0-9]))",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1601,7 +1605,7 @@ def write_cp8_live_scenario_evidence(
         value = raw.get(key)
         if isinstance(value, str) and value.strip():
             text = value.strip()[:4000]
-            if _SENSITIVE_ARTIFACT_RE.search(text) or _sensitive_inline_text_issue(text, path=key):
+            if _cp8_user_text_sensitive_issue(text) or _sensitive_inline_text_issue(text, path=key):
                 raise CP8LiveMatrixError(f"CP8 live scenario evidence {key} contains sensitive material")
             artifact_payload[key] = text
     issue = _sensitive_inline_evidence_issue(artifact_payload, path="scenario_evidence")
@@ -1670,12 +1674,24 @@ def _cp8_safe_provider_provenance_refs(value: object) -> list[str]:
             or ref.startswith("/")
             or ".." in Path(ref).parts
             or not _CP8_SAFE_REL_ARTIFACT_RE.fullmatch(ref)
-            or _SENSITIVE_ARTIFACT_RE.search(ref)
+            or _cp8_user_text_sensitive_issue(ref)
             or _sensitive_inline_text_issue(ref, path="provider_provenance_ref")
         ):
             raise CP8LiveMatrixError("CP8 live scenario provider provenance refs must be safe artifacts/ relative paths")
         refs.add(ref)
     return sorted(refs)
+
+
+def _cp8_user_text_sensitive_issue(value: str) -> bool:
+    value = str(value or "")
+    normalized = _normalize_inline_evidence_key(value)
+    return bool(
+        _SENSITIVE_ARTIFACT_RE.search(value)
+        or _PROVIDER_RELEASE_SENSITIVE_RE.search(value)
+        or _CP8_USER_TEXT_SENSITIVE_RE.search(value)
+        or _PROVIDER_RELEASE_SENSITIVE_RE.search(normalized)
+        or _CP8_USER_TEXT_SENSITIVE_RE.search(normalized)
+    )
 
 
 def collect_cp8_sub2api_gateway_live_provenance(
