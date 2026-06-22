@@ -52,6 +52,7 @@ _SENSITIVE_INLINE_KEYS = frozenset({
     "client_secret",
     "cookie",
     "cookies",
+    "header",
     "headers",
     "input",
     "messages",
@@ -60,6 +61,8 @@ _SENSITIVE_INLINE_KEYS = frozenset({
     "prompt",
     "raw",
     "raw_body",
+    "raw_header",
+    "raw_headers",
     "raw_payload",
     "raw_prompt",
     "raw_request",
@@ -67,10 +70,12 @@ _SENSITIVE_INLINE_KEYS = frozenset({
     "refresh_token",
     "request",
     "request_body",
+    "request_header",
     "request_headers",
     "request_payload",
     "response",
     "response_body",
+    "response_header",
     "response_headers",
     "response_payload",
     "secret",
@@ -188,7 +193,17 @@ _CP8_GENERIC_ARTIFACT_SENSITIVE_RE = re.compile(
     r"(authorization|bearer|api\s*[_ -]?\s*key|cookie|raw\s*[_./ -]?\s*(?:body|prompt|request|response|payload|header|headers)|prompt\s*[_./ -]?\s*cache\s*[_./ -]?\s*key(?:$|[^a-z0-9])|client\s*[_ -]?\s*secret|password|secret|access\s*[_ -]?\s*token|refresh\s*[_ -]?\s*token|session\s*[_ -]?\s*token|(?:^|[^a-z0-9])token(?:$|[^a-z0-9]))",
     re.IGNORECASE,
 )
-_CP8_GENERIC_ARTIFACT_SENSITIVE_KEYS = frozenset({"prompt_cache_key", "raw_header", "raw_headers"})
+_CP8_GENERIC_ARTIFACT_SENSITIVE_KEYS = frozenset({
+    "header",
+    "headers",
+    "prompt_cache_key",
+    "raw_header",
+    "raw_headers",
+    "request_header",
+    "request_headers",
+    "response_header",
+    "response_headers",
+})
 _CP8_SCENARIO_ARTIFACT_PROTOCOL_KEYS = frozenset({
     "schema_version",
     "checkpoint",
@@ -744,6 +759,172 @@ def _cache_account_audit_artifact_valid(
     ):
         return False
     return not _cache_provider_evidence_issues(payload.get("cache_provider_evidence"), strict_live=strict_live) and not _bridge_cache_audit_rows_issues(payload.get("bridge_cache_audit_rows"), strict_live=strict_live)
+
+
+def collect_cp8_cache_account_audit_from_log_text(
+    log_text: str,
+    *,
+    output_root: Path | str,
+    safe_summary_hash_stable: bool,
+    safe_tool_result_hash_stable: bool,
+    usage_accounting_split_by_route: bool,
+    stable_prefix_invalidated: bool,
+    ttl_fast_switch_boundary_miss_count: int,
+    strict_live: bool,
+    claude_native_live_usage_observed: bool = False,
+) -> tuple[dict[str, object], dict[str, object]]:
+    if strict_live and not claude_native_live_usage_observed:
+        raise CP8LiveMatrixError("CP8 strict-live cache/account audit requires Claude native cache usage observation")
+    root = Path(output_root).expanduser()
+    artifact = root / "artifacts" / "cache_account_audit.json"
+    if artifact.exists():
+        raise CP8LiveMatrixError("CP8 cache/account audit artifact refuses to overwrite existing file: " + str(artifact))
+    rows = _cp8_cache_audit_rows_from_log_text(log_text)
+    provider_rows = {str(row.get("provider") or "").strip(): row for row in rows}
+    missing = tuple(provider for provider in _BRIDGE_CACHE_AUDIT_PROVIDERS if provider not in provider_rows)
+    if missing:
+        raise CP8LiveMatrixError("CP8 cache/account audit log evidence missing bridge provider rows: " + ",".join(missing))
+    selected_rows = [provider_rows[provider] for provider in _BRIDGE_CACHE_AUDIT_PROVIDERS]
+    issues = _bridge_cache_audit_rows_issues(selected_rows, strict_live=strict_live)
+    if issues:
+        raise CP8LiveMatrixError("CP8 cache/account audit log evidence invalid: " + issues[0])
+    payload: dict[str, object] = {
+        "schema_version": "cp8-cache-account-audit-v1",
+        "checkpoint": "CP8",
+        "scenario": "cache_account_audit",
+        "status": "pass",
+        "raw_sensitive_stored": False,
+        "safe_summary_hash_stable": bool(safe_summary_hash_stable),
+        "safe_tool_result_hash_stable": bool(safe_tool_result_hash_stable),
+        "ttl_fast_switch_boundary_miss_count": int(ttl_fast_switch_boundary_miss_count),
+        "stable_prefix_invalidated": bool(stable_prefix_invalidated),
+        "usage_accounting_split_by_route": bool(usage_accounting_split_by_route),
+        "audit_summary_only": True,
+        "cache_provider_evidence": _cp8_cache_provider_evidence_from_bridge_rows(
+            selected_rows,
+            claude_native_live_usage_observed=bool(claude_native_live_usage_observed),
+        ),
+        "bridge_cache_audit_rows": selected_rows,
+    }
+    scenario = {
+        "safe_summary_hash_stable": bool(safe_summary_hash_stable),
+        "safe_tool_result_hash_stable": bool(safe_tool_result_hash_stable),
+        "ttl_fast_switch_boundary_miss_count": int(ttl_fast_switch_boundary_miss_count),
+        "stable_prefix_invalidated": bool(stable_prefix_invalidated),
+        "usage_accounting_split_by_route": bool(usage_accounting_split_by_route),
+        "audit_summary_only": True,
+    }
+    if _sensitive_inline_evidence_issue(payload, path="cache_account_audit"):
+        raise CP8LiveMatrixError("CP8 cache/account audit artifact contains sensitive inline evidence")
+    if not _cache_account_audit_artifact_valid(payload, scenario=scenario, strict_live=strict_live):
+        raise CP8LiveMatrixError("CP8 cache/account audit artifact failed contract validation")
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2), encoding="utf-8")
+    return payload, {
+        "path": "artifacts/cache_account_audit.json",
+        "sha256": "sha256:" + hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        "sensitive_scan_clean": True,
+    }
+
+
+def _cp8_cache_audit_rows_from_log_text(log_text: str) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for line in str(log_text or "").splitlines():
+        payload = _cp8_cache_audit_log_payload(line)
+        if not payload:
+            continue
+        row = _cp8_cache_audit_row_from_log_payload(payload)
+        if row:
+            rows.append(row)
+    return rows
+
+
+def _cp8_cache_audit_log_payload(line: str) -> Mapping[str, object] | None:
+    line = str(line or "").strip()
+    if "gateway.claude_code_bridge_cache_audit" not in line:
+        return None
+    start = line.find("{")
+    if start < 0:
+        return None
+    try:
+        payload = json.loads(line[start:])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    if str(payload.get("msg") or payload.get("message") or "").strip() != "gateway.claude_code_bridge_cache_audit":
+        return None
+    issue = _sensitive_inline_evidence_issue(payload, path="cache_audit_log")
+    if issue:
+        raise CP8LiveMatrixError("CP8 cache/account audit log evidence contains sensitive inline field: " + issue)
+    if _cp8_generic_payload_sensitive_issue(payload):
+        raise CP8LiveMatrixError("CP8 cache/account audit log evidence contains sensitive inline material")
+    return payload
+
+
+def _cp8_cache_audit_row_from_log_payload(payload: Mapping[str, object]) -> dict[str, object]:
+    row: dict[str, object] = {"schema_version": _BRIDGE_CACHE_AUDIT_ROW_SCHEMA}
+    for field in _BRIDGE_CACHE_AUDIT_ROW_FIELDS - {"schema_version"}:
+        if field in payload:
+            row[field] = copy.deepcopy(payload[field])
+    if "cache_control_present" not in row and "upstream_body_has_cache_control" in payload:
+        row["cache_control_present"] = bool(payload.get("upstream_body_has_cache_control"))
+    row.setdefault("fallback_protocol", "")
+    row.setdefault("fallback_reason", "")
+    row.setdefault("fallback_used", False)
+    row.setdefault("cache_control_locations", [])
+    row.setdefault("cache_control_present", False)
+    row.setdefault("cache_control_provider_ignored", False)
+    row.setdefault("prompt_cache_key_present", False)
+    row.setdefault("cache_usage_fields", [])
+    row.setdefault("raw_sensitive_stored", False)
+    for field in ("cache_read_tokens", "cache_write_tokens", "cache_miss_tokens", "cached_tokens"):
+        if field in row:
+            row[field] = _int(row[field])
+    if row.get("provider") == "deepseek":
+        row["cache_read_tokens"] = max(_int(row.get("cache_read_tokens")), _int(payload.get("prompt_cache_hit_tokens")))
+        row["cache_miss_tokens"] = max(_int(row.get("cache_miss_tokens")), _int(payload.get("prompt_cache_miss_tokens")))
+        row.setdefault("prompt_cache_key_strategy", "absent")
+    if row.get("provider") == "openai":
+        row["cached_tokens"] = max(_int(row.get("cached_tokens")), _int(row.get("cache_read_tokens")))
+        row.setdefault("prompt_cache_key_strategy", "present_redacted" if row.get("prompt_cache_key_present") else "absent")
+    return row
+
+
+def _cp8_cache_provider_evidence_from_bridge_rows(
+    rows: list[dict[str, object]],
+    *,
+    claude_native_live_usage_observed: bool,
+) -> dict[str, object]:
+    provider_rows = {str(row.get("provider") or "").strip(): row for row in rows}
+    deepseek = provider_rows.get("deepseek", {})
+    openai = provider_rows.get("openai", {})
+    return {
+        "claude_native": {
+            "mechanism": "anthropic_cache_control",
+            "cache_usage_fields": ["cache_creation_input_tokens", "cache_read_input_tokens"],
+            "request_shape_preserved": True,
+            "raw_sensitive_stored": False,
+            "live_usage_fields_observed": bool(claude_native_live_usage_observed),
+        },
+        "openai": {
+            "mechanism": "openai_prompt_cache",
+            "cache_usage_fields": ["usage.prompt_tokens_details.cached_tokens"],
+            "request_shape_preserved": True,
+            "raw_sensitive_stored": False,
+            "live_usage_fields_observed": _int(openai.get("cached_tokens")) > 0 or _int(openai.get("cache_read_tokens")) > 0,
+        },
+        "deepseek": {
+            "mechanism": "deepseek_prefix_kv",
+            "cache_usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"],
+            "request_shape_preserved": True,
+            "raw_sensitive_stored": False,
+            "live_usage_fields_observed": _int(deepseek.get("cache_read_tokens")) > 0 or _int(deepseek.get("cache_miss_tokens")) > 0,
+            "cache_control_provider_ignored": True,
+            "treats_cache_control_as_cache_mechanism": False,
+            "stable_prefix_hmac_present": bool(str(deepseek.get("stable_prefix_hmac") or "").strip()),
+        },
+    }
 
 
 def _bridge_cache_audit_rows_issues(value: object, *, strict_live: bool) -> tuple[str, ...]:

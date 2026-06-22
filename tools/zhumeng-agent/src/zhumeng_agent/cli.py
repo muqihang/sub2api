@@ -64,6 +64,7 @@ from .adapters.claude_code.runtime_installer import (
 from .adapters.claude_code.live_matrix import (
     CP8LiveMatrixError,
     assemble_cp8_external_live_matrix_evidence,
+    collect_cp8_cache_account_audit_from_log_text,
     collect_cp8_live_provider_provenance,
     collect_cp8_sub2api_gateway_live_provenance,
     verify_cp8_live_matrix,
@@ -171,10 +172,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Product CP8 provenance through the approved Sub2API/Claude Code Runtime canary, defaulting to http://127.0.0.1:3017.",
     )
+    claude_code_live_matrix.add_argument(
+        "--collect-cache-account-audit",
+        action="store_true",
+        help="Build a safe CP8 cache/account artifact from filtered 3017 cache-audit logs; no raw body/prompt/header fields are accepted.",
+    )
     claude_code_live_matrix.add_argument("--assemble-external", action="store_true")
     claude_code_live_matrix.add_argument("--write-scenario-evidence", action="store_true")
     claude_code_live_matrix.add_argument("--provenance", type=Path)
     claude_code_live_matrix.add_argument("--out", type=Path)
+    claude_code_live_matrix.add_argument("--log-file", type=Path, help="Safe filtered 3017 log file for --collect-cache-account-audit; use '-' for stdin.")
     claude_code_live_matrix.add_argument("--run-id")
     claude_code_live_matrix.add_argument("--scenario")
     claude_code_live_matrix.add_argument("--route")
@@ -193,6 +200,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Dedicated CP8 evidence output directory; do not point this at a source worktree.",
     )
+    claude_code_live_matrix.add_argument("--safe-summary-hash-stable", action="store_true")
+    claude_code_live_matrix.add_argument("--safe-tool-result-hash-stable", action="store_true")
+    claude_code_live_matrix.add_argument("--usage-accounting-split-by-route", action="store_true")
+    claude_code_live_matrix.add_argument("--stable-prefix-invalidated", action="store_true")
+    claude_code_live_matrix.add_argument("--ttl-fast-switch-boundary-miss-count", type=int, default=0)
+    claude_code_live_matrix.add_argument("--claude-native-live-cache-usage-observed", action="store_true")
+    claude_code_live_matrix.add_argument("--require-live-cache-usage", action="store_true")
     claude_code_preflight = claude_code_subparsers.add_parser("preflight")
     claude_code_preflight.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
     claude_code_preflight.add_argument("--state-root", type=Path, default=state_dir())
@@ -2127,6 +2141,7 @@ def handle_claude_code_runtime_command(args: argparse.Namespace) -> int:
             live_matrix_modes = [
                 bool(args.collect_provider_provenance),
                 bool(getattr(args, "collect_sub2api_provenance", False)),
+                bool(getattr(args, "collect_cache_account_audit", False)),
                 bool(args.assemble_external),
                 bool(getattr(args, "write_scenario_evidence", False)),
                 bool(args.strict_live),
@@ -2135,7 +2150,7 @@ def handle_claude_code_runtime_command(args: argparse.Namespace) -> int:
                 return emit_failed({
                     "command": "claude-code live-matrix",
                     "status": "not_configured",
-                    "message": "conflicting live-matrix modes: choose exactly one of --collect-provider-provenance, --collect-sub2api-provenance, --assemble-external, --write-scenario-evidence, or --strict-live",
+                    "message": "conflicting live-matrix modes: choose exactly one of --collect-provider-provenance, --collect-sub2api-provenance, --collect-cache-account-audit, --assemble-external, --write-scenario-evidence, or --strict-live",
                 })
             if args.collect_provider_provenance:
                 if not args.run_id or args.output_root is None:
@@ -2174,6 +2189,36 @@ def handle_claude_code_runtime_command(args: argparse.Namespace) -> int:
                     "status": "collected",
                     "live_provenance": provenance,
                     "provenance": str(provenance_path),
+                })
+            if getattr(args, "collect_cache_account_audit", False):
+                if args.output_root is None or args.log_file is None:
+                    return emit_failed({
+                        "command": "claude-code live-matrix collect-cache-account-audit",
+                        "status": "not_configured",
+                        "message": "cache/account audit collection requires --output-root and --log-file",
+                    })
+                log_text = sys.stdin.read() if str(args.log_file) == "-" else args.log_file.read_text(encoding="utf-8")
+                payload, artifact_ref = collect_cp8_cache_account_audit_from_log_text(
+                    log_text,
+                    output_root=args.output_root,
+                    safe_summary_hash_stable=bool(args.safe_summary_hash_stable),
+                    safe_tool_result_hash_stable=bool(args.safe_tool_result_hash_stable),
+                    usage_accounting_split_by_route=bool(args.usage_accounting_split_by_route),
+                    stable_prefix_invalidated=bool(args.stable_prefix_invalidated),
+                    ttl_fast_switch_boundary_miss_count=int(args.ttl_fast_switch_boundary_miss_count or 0),
+                    strict_live=bool(args.require_live_cache_usage),
+                    claude_native_live_usage_observed=bool(args.claude_native_live_cache_usage_observed),
+                )
+                return emit({
+                    "command": "claude-code live-matrix collect-cache-account-audit",
+                    "status": "written",
+                    "artifact_ref": artifact_ref,
+                    "cache_provider_evidence": payload.get("cache_provider_evidence"),
+                    "bridge_cache_audit_providers": [
+                        str(row.get("provider") or "")
+                        for row in payload.get("bridge_cache_audit_rows", [])
+                        if isinstance(row, Mapping)
+                    ],
                 })
             if args.assemble_external:
                 if args.evidence is None or args.provenance is None or args.out is None:

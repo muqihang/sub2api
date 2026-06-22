@@ -455,3 +455,39 @@ Local CP36 evidence:
 - 3017 safe log scan currently has no recent `gateway.claude_code_bridge_cache_audit` line, so DeepSeek KV hit/miss proof still requires the operator live scenario to produce safe audit/log artifacts.
 
 Current release statement after CP36: **local docs, verifier, and cache-audit row contracts are aligned with DeepSeek Anthropic-compatible-first and Claude native replay safety**. `external_live_passed` remains unclaimed until real 3017 CP8 scenario/provider artifacts, including DeepSeek hit/miss usage evidence when available, are collected and verified.
+
+## 2026-06-22 CP37 safe cache/account evidence extraction
+
+CP37 closes the remaining local diagnostic gap where real 3017 DeepSeek/OpenAI cache-audit log lines existed as the expected source of truth, but operators had no tool-backed way to convert those safe structured rows into a CP8 `cp8-cache-account-audit-v1` artifact. The new `claude-code live-matrix --collect-cache-account-audit` mode consumes an already filtered 3017 log file or stdin, extracts only `gateway.claude_code_bridge_cache_audit` rows, rejects any raw/sensitive keys or values before field selection, and writes `artifacts/cache_account_audit.json` with only route/protocol/cache counters, stable-prefix HMAC, cache mechanism enums, and provider-truthful cache evidence.
+
+DeepSeek remains Anthropic-compatible-first in this path: accepted DeepSeek rows must prove `preferred_protocol=anthropic_messages`, `selected_protocol=anthropic_messages`, `route=deepseek_bridge`, `client_type=claude_code_bridge_deepseek`, `provider_cache_mechanism=deepseek_prefix_kv`, and usage fields `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`. `cache_control` is still treated as provider-ignored for DeepSeek and is not represented as the cache mechanism. OpenAI rows remain Responses/prompt-cache evidence and must not expose a raw `prompt_cache_key` value.
+
+Operator usage after running the live cache/account scenario is now:
+
+```bash
+docker logs --tail 5000 sub2api-canary-app-main-f3a9f235d-cc-runtime-current-3017 2>&1 \
+  | rg 'gateway\.claude_code_bridge_cache_audit' \
+  > "$EVIDENCE_ROOT/safe-cache-audit.log"
+
+PYTHONPATH=.:tools/zhumeng-agent/src tools/zhumeng-agent/.venv/bin/python -m zhumeng_agent.cli \
+  claude-code live-matrix \
+  --collect-cache-account-audit \
+  --output-root "$EVIDENCE_ROOT" \
+  --log-file "$EVIDENCE_ROOT/safe-cache-audit.log" \
+  --safe-summary-hash-stable \
+  --safe-tool-result-hash-stable \
+  --usage-accounting-split-by-route \
+  --ttl-fast-switch-boundary-miss-count 1
+```
+
+If the operator wants the artifact itself to require observed live cache counters, add `--require-live-cache-usage`. That stricter mode also requires `--claude-native-live-cache-usage-observed`, because bridge logs alone cannot prove native Claude prompt-cache usage. The collector refuses to overwrite an existing `artifacts/cache_account_audit.json`, so each evidence run should use a fresh `$EVIDENCE_ROOT` or intentionally archive the old artifact outside the source worktree.
+
+Local CP37 evidence:
+
+- `tools/zhumeng-agent/.venv/bin/python -m pytest tests/test_claude_code_live_matrix_cp8.py tests/test_cli.py -q` from `tools/zhumeng-agent`: `281 passed`.
+- `go test ./internal/service ./internal/handler -run 'ClaudeCode|AnthropicCompat|CP6|CP8|PromptCache|ToolUse|Effort|RouteTrust|BridgeLiveEmitsSafeCacheAuditLog' -count=1` from `backend`: `ok`.
+- 3017 env readiness still reports `ready=true`, `deepseek_protocols=anthropic_messages`, and `deepseek_cache_evidence_eligible=true`.
+- 3017 health remains `{"status":"ok"}`.
+- Current safe log scan still has no recent `gateway.claude_code_bridge_cache_audit` lines, so the collector is ready but real DeepSeek/OpenAI live cache evidence still requires the operator scenario to produce those rows.
+
+Current release statement after CP37: **local CP8 cache/account evidence extraction is tool-backed, sensitive-data fail-closed, and aligned with DeepSeek Anthropic-compatible-first cache semantics**. `external_live_passed` remains unclaimed until real 3017 CP8 scenario/provider artifacts are collected, assembled, and verified.

@@ -3554,6 +3554,195 @@ def test_claude_code_live_matrix_help_points_cp8_sub2api_base_url_to_3017_canary
     assert "SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE=true" in help_text
     assert "product CP8" in help_text
 
+
+def test_claude_code_live_matrix_cli_collects_cache_account_audit_from_safe_log(capsys, tmp_path: Path):
+    log_file = tmp_path / "safe-3017-cache.log"
+    log_file.write_text("\n".join([
+        json.dumps({
+            "msg": "gateway.claude_code_bridge_cache_audit",
+            "provider": "deepseek",
+            "route": "deepseek_bridge",
+            "client_type": "claude_code_bridge_deepseek",
+            "model_id": "deepseek-v4-pro",
+            "preferred_protocol": "anthropic_messages",
+            "selected_protocol": "anthropic_messages",
+            "fallback_protocol": "openai_chat_completions",
+            "fallback_reason": "",
+            "fallback_used": False,
+            "provider_cache_mechanism": "deepseek_prefix_kv",
+            "upstream_path_kind": "/anthropic/v1/messages",
+            "cache_control_present": False,
+            "cache_control_locations": [],
+            "cache_control_provider_ignored": True,
+            "prompt_cache_key_present": False,
+            "prompt_cache_key_strategy": "absent",
+            "cache_usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"],
+            "cache_read_tokens": 11,
+            "cache_miss_tokens": 17,
+            "prompt_cache_hit_tokens": 11,
+            "prompt_cache_miss_tokens": 17,
+            "stable_prefix_hmac": "hmac-sha256:cp8-cache:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "stable_prefix_token_bucket": "1k_4k",
+            "raw_sensitive_stored": False,
+        }),
+        json.dumps({
+            "msg": "gateway.claude_code_bridge_cache_audit",
+            "provider": "openai",
+            "route": "openai_bridge",
+            "client_type": "claude_code_bridge_openai",
+            "model_id": "gpt-5.5",
+            "preferred_protocol": "responses",
+            "selected_protocol": "responses",
+            "fallback_protocol": "",
+            "fallback_reason": "",
+            "fallback_used": False,
+            "provider_cache_mechanism": "openai_prompt_cache",
+            "upstream_path_kind": "/v1/responses",
+            "cache_control_present": False,
+            "cache_control_locations": [],
+            "cache_control_provider_ignored": False,
+            "prompt_cache_key_present": True,
+            "prompt_cache_key_strategy": "present_redacted",
+            "cache_usage_fields": ["usage.prompt_tokens_details.cached_tokens"],
+            "cache_read_tokens": 13,
+            "cached_tokens": 13,
+            "stable_prefix_hmac": "hmac-sha256:cp8-cache:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            "stable_prefix_token_bucket": "1k_4k",
+            "raw_sensitive_stored": False,
+        }),
+    ]), encoding="utf-8")
+
+    assert main([
+        "claude-code",
+        "live-matrix",
+        "--collect-cache-account-audit",
+        "--output-root",
+        str(tmp_path),
+        "--log-file",
+        str(log_file),
+        "--safe-summary-hash-stable",
+        "--safe-tool-result-hash-stable",
+        "--usage-accounting-split-by-route",
+        "--ttl-fast-switch-boundary-miss-count",
+        "1",
+    ]) == 0
+    data = parse_output(capsys)
+
+    assert data["command"] == "claude-code live-matrix collect-cache-account-audit"
+    assert data["status"] == "written"
+    artifact = tmp_path / data["artifact_ref"]["path"]
+    assert artifact.exists()
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "cp8-cache-account-audit-v1"
+    assert payload["cache_provider_evidence"]["deepseek"]["live_usage_fields_observed"] is True
+    assert payload["bridge_cache_audit_rows"][0]["provider"] == "openai"
+    assert payload["bridge_cache_audit_rows"][1]["provider"] == "deepseek"
+    dumped = json.dumps(data, ensure_ascii=True, sort_keys=True) + artifact.read_text(encoding="utf-8")
+    assert "Authorization" not in dumped
+    assert "Bearer" not in dumped
+    assert "raw_prompt" not in dumped
+
+
+def test_claude_code_live_matrix_cli_cache_account_audit_strict_cache_usage_requires_native_flag(capsys, tmp_path: Path):
+    log_file = tmp_path / "safe-3017-cache.log"
+    log_file.write_text("\n".join([
+        json.dumps({
+            "msg": "gateway.claude_code_bridge_cache_audit",
+            "provider": "deepseek",
+            "route": "deepseek_bridge",
+            "client_type": "claude_code_bridge_deepseek",
+            "model_id": "deepseek-v4-pro",
+            "preferred_protocol": "anthropic_messages",
+            "selected_protocol": "anthropic_messages",
+            "fallback_protocol": "openai_chat_completions",
+            "fallback_reason": "",
+            "fallback_used": False,
+            "provider_cache_mechanism": "deepseek_prefix_kv",
+            "upstream_path_kind": "/anthropic/v1/messages",
+            "cache_control_present": False,
+            "cache_control_locations": [],
+            "cache_control_provider_ignored": True,
+            "prompt_cache_key_present": False,
+            "prompt_cache_key_strategy": "absent",
+            "cache_usage_fields": ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"],
+            "cache_read_tokens": 1,
+            "cache_miss_tokens": 2,
+            "stable_prefix_hmac": "hmac-sha256:cp8-cache:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "stable_prefix_token_bucket": "1k_4k",
+            "raw_sensitive_stored": False,
+        }),
+        json.dumps({
+            "msg": "gateway.claude_code_bridge_cache_audit",
+            "provider": "openai",
+            "route": "openai_bridge",
+            "client_type": "claude_code_bridge_openai",
+            "model_id": "gpt-5.5",
+            "preferred_protocol": "responses",
+            "selected_protocol": "responses",
+            "fallback_protocol": "",
+            "fallback_reason": "",
+            "fallback_used": False,
+            "provider_cache_mechanism": "openai_prompt_cache",
+            "upstream_path_kind": "/v1/responses",
+            "cache_control_present": False,
+            "cache_control_locations": [],
+            "cache_control_provider_ignored": False,
+            "prompt_cache_key_present": True,
+            "prompt_cache_key_strategy": "present_redacted",
+            "cache_usage_fields": ["usage.prompt_tokens_details.cached_tokens"],
+            "cache_read_tokens": 3,
+            "cached_tokens": 3,
+            "stable_prefix_hmac": "hmac-sha256:cp8-cache:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            "stable_prefix_token_bucket": "1k_4k",
+            "raw_sensitive_stored": False,
+        }),
+    ]), encoding="utf-8")
+
+    base_args = [
+        "claude-code",
+        "live-matrix",
+        "--collect-cache-account-audit",
+        "--require-live-cache-usage",
+        "--output-root",
+        str(tmp_path),
+        "--log-file",
+        str(log_file),
+        "--safe-summary-hash-stable",
+        "--safe-tool-result-hash-stable",
+        "--usage-accounting-split-by-route",
+        "--ttl-fast-switch-boundary-miss-count",
+        "1",
+    ]
+
+    assert main(base_args) == 1
+    data = parse_output(capsys)
+    assert "Claude native cache usage" in data["message"]
+
+    assert main(base_args + ["--claude-native-live-cache-usage-observed"]) == 0
+    data = parse_output(capsys)
+    assert data["status"] == "written"
+
+def test_claude_code_live_matrix_cli_cache_account_audit_rejects_conflicting_modes(capsys, tmp_path: Path):
+    log_file = tmp_path / "safe.log"
+    log_file.write_text("", encoding="utf-8")
+
+    assert main([
+        "claude-code",
+        "live-matrix",
+        "--collect-cache-account-audit",
+        "--collect-sub2api-provenance",
+        "--run-id",
+        "cp8-conflict",
+        "--output-root",
+        str(tmp_path),
+        "--log-file",
+        str(log_file),
+    ]) == 1
+    data = parse_output(capsys)
+
+    assert data["status"] == "not_configured"
+    assert "--collect-cache-account-audit" in data["message"]
+
 def test_claude_code_live_matrix_cli_collects_sub2api_gateway_provenance(capsys, tmp_path: Path, monkeypatch):
     calls: list[dict[str, object]] = []
 
