@@ -134,6 +134,8 @@ var (
 	userPlatformQuotaSentinelSetCacheErrorTotal atomic.Int64
 )
 
+var errFormalPoolAuthRefreshRuntimeReregisterRequired = errors.New("formal pool auth refresh requires cc gateway runtime re-registration before retry")
+
 func GatewayWindowCostPrefetchStats() (cacheHit, cacheMiss, batchSQL, fallback, errCount int64) {
 	return windowCostPrefetchCacheHitTotal.Load(),
 		windowCostPrefetchCacheMissTotal.Load(),
@@ -4732,6 +4734,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	if ccGatewayErr != nil {
 		return nil, ccGatewayErr
 	}
+	if err := enforceFormalPoolNativeProtocolBoundary(ctx, account, "native_messages"); err != nil {
+		return nil, err
+	}
 
 	// === DEBUG: 打印客户端原始请求（headers + body 摘要）===
 	if c != nil {
@@ -5001,6 +5006,12 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 				}
 			}
 			if refreshErr != nil {
+				if refreshedAccount != nil {
+					account = refreshedAccount
+				}
+				if errors.Is(refreshErr, errFormalPoolAuthRefreshRuntimeReregisterRequired) {
+					return nil, refreshErr
+				}
 				reason := "refresh_failed"
 				if isInvalidGrantError(refreshErr) {
 					reason = "refresh_token_invalid"
@@ -5209,6 +5220,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			}
 		}
 
+		if shouldFailClosedCCGatewayUpstream(useCCGateway, account, resp.StatusCode) {
+			break
+		}
+
 		// 检查是否需要通用重试（排除400，因为400已经在上面特殊处理过了）
 		if resp.StatusCode >= 400 && resp.StatusCode != 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
 			if attempt < maxRetryAttempts {
@@ -5269,6 +5284,27 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		return nil, errors.New("upstream request failed: empty response")
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	if shouldFailClosedCCGatewayUpstream(useCCGateway, account, resp.StatusCode) {
+		respBody, _ := s.readUpstreamErrorBody(resp)
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		if auth401RefreshRetried && resp.StatusCode == http.StatusUnauthorized {
+			s.quarantineFormalPoolRefreshFailure(ctx, account, http.StatusUnauthorized, "refresh_failed")
+		}
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform:           account.Platform,
+			AccountID:          account.ID,
+			AccountName:        account.Name,
+			UpstreamStatusCode: resp.StatusCode,
+			UpstreamRequestID:  resp.Header.Get("x-request-id"),
+			Kind:               "cc_gateway_fail_closed",
+			Message:            sanitizeUpstreamErrorMessage(extractUpstreamErrorMessage(respBody)),
+		})
+		s.observeSessionBudgetResponse(ctx, account, budgetObservation, resp.Header, resp.StatusCode, respBody)
+		writeCCGatewayUpstreamFailClosedError(c, resp.StatusCode)
+		return nil, ccGatewayUpstreamFailClosedError(resp.StatusCode)
+	}
 
 	// 处理重试耗尽的情况
 	if resp.StatusCode >= 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
@@ -5502,6 +5538,9 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	if ccGatewayErr != nil {
 		return nil, ccGatewayErr
 	}
+	if err := enforceFormalPoolNativeProtocolBoundary(ctx, account, "native_messages"); err != nil {
+		return nil, err
+	}
 	token, tokenType, err := s.GetAccessToken(ctx, account)
 	if err != nil {
 		return nil, err
@@ -5604,6 +5643,10 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			return nil, fmt.Errorf("cc gateway control-plane error: %s", code)
 		}
 
+		if shouldFailClosedCCGatewayUpstream(useCCGateway, account, resp.StatusCode) {
+			break
+		}
+
 		// 透传分支禁止 400 请求体降级重试（该重试会改写请求体）
 		if resp.StatusCode >= 400 && resp.StatusCode != 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
 			if attempt < maxRetryAttempts {
@@ -5656,6 +5699,24 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 		return nil, errors.New("upstream request failed: empty response")
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	if shouldFailClosedCCGatewayUpstream(useCCGateway, account, resp.StatusCode) {
+		respBody, _ := s.readUpstreamErrorBody(resp)
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform:           account.Platform,
+			AccountID:          account.ID,
+			AccountName:        account.Name,
+			UpstreamStatusCode: resp.StatusCode,
+			UpstreamRequestID:  resp.Header.Get("x-request-id"),
+			Passthrough:        true,
+			Kind:               "cc_gateway_fail_closed",
+			Message:            sanitizeUpstreamErrorMessage(extractUpstreamErrorMessage(respBody)),
+		})
+		writeCCGatewayUpstreamFailClosedError(c, resp.StatusCode)
+		return nil, ccGatewayUpstreamFailClosedError(resp.StatusCode)
+	}
 
 	if resp.StatusCode >= 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
 		if s.shouldFailoverUpstreamError(resp.StatusCode) {
@@ -5799,13 +5860,20 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 		body = sanitized
 	}
 
+	var clientHeaders http.Header
+	if c != nil && c.Request != nil {
+		clientHeaders = c.Request.Header
+		if useCCGateway {
+			ctx = withCCGatewayObservedClientProfileSeed(ctx, clientHeaders)
+		}
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, nil, err
 	}
 
-	if c != nil && c.Request != nil {
-		clientHeaders := c.Request.Header
+	if clientHeaders != nil {
 		if useCCGateway {
 			clientHeaders = SanitizeAnthropicCompatInboundHeaders(clientHeaders)
 		}
@@ -5828,10 +5896,23 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	req.Header.Del("cookie")
 	setHeaderRaw(req.Header, "x-api-key", token)
 	if useCCGateway {
-		applyCCGatewayAnthropicHeaders(req, s.cfg, account, "apikey")
-		applyCCGatewayContext1MSelection(req, clientHeadersForCCGatewayContext1M(c), body, gjson.GetBytes(body, "model").String())
+		if err := applyCCGatewayAnthropicHeaders(req, s.cfg, account, "apikey"); err != nil {
+			return nil, nil, err
+		}
+		applyCCGatewayContext1MSelection(req, s.cfg, account)
+		attachCCGatewayObservedClientProfileSnapshot(req)
+		if mappedBody := claudeCodeReadRequestBody(req); len(mappedBody) > 0 {
+			body = mappedBody
+			if shouldStripCCGatewayDownstreamBillingMaterial(account) {
+				body = stripCCGatewayDownstreamBillingMaterial(mappedBody)
+			}
+			claudeCodeReplaceRequestBody(req, body)
+		}
 		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
 		if err := ApplyClaudeCodePathAuditHeaders(req.Header, ctx); err != nil {
+			return nil, nil, err
+		}
+		if err := applyCCGatewayFormalPoolAttestation(req, s.cfg, account); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -6381,6 +6462,27 @@ func writeAnthropicPassthroughResponseHeaders(dst http.Header, src http.Header, 
 	}
 }
 
+func shouldFailClosedCCGatewayUpstream(useCCGateway bool, account *Account, status int) bool {
+	return useCCGateway && IsFormalPoolAccount(account) && status >= http.StatusBadRequest
+}
+
+func writeCCGatewayUpstreamFailClosedError(c *gin.Context, status int) {
+	if c == nil || c.Writer.Written() {
+		return
+	}
+	c.JSON(mapUpstreamStatusCode(status), gin.H{
+		"type": "error",
+		"error": gin.H{
+			"type":    "upstream_error",
+			"message": "CC Gateway upstream unavailable",
+		},
+	})
+}
+
+func ccGatewayUpstreamFailClosedError(status int) error {
+	return fmt.Errorf("cc gateway upstream failed closed: status %d", status)
+}
+
 // ApplyBedrockCCCompat 应用 Bedrock CC 兼容转换（渠道级模型映射后调用）
 // 清理 Anthropic API 专有字段、注入 Bedrock 必需字段、修复 thinking/tool_use ID
 func (s *GatewayService) ApplyBedrockCCCompat(ctx context.Context, body []byte, model string, account *Account, groupID *int64) []byte {
@@ -6765,20 +6867,19 @@ func (s *GatewayService) handleBedrockNonStreamingResponse(
 	return usage, nil
 }
 
-func clientHeadersForCCGatewayContext1M(c *gin.Context) http.Header {
-	if c == nil || c.Request == nil {
-		return nil
-	}
-	return c.Request.Header
-}
-
 func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token, tokenType, modelID string, reqStream bool, mimicClaudeCode bool, strictPassthrough bool) (*http.Request, []byte, error) {
 	if account.Platform == PlatformAnthropic && account.Type == AccountTypeServiceAccount {
 		req, err := s.buildUpstreamRequestAnthropicVertex(ctx, c, account, body, token, modelID, reqStream)
 		return req, body, err
 	}
 
-	useCCGateway, routeErr := s.selectCCGatewayAnthropicRoute(account, ccGatewayRouteNativeMessages)
+	var useCCGateway bool
+	var routeErr error
+	if canaryReq, ok := GetCCGatewayExplicitCanaryRequest(ctx); ok {
+		useCCGateway, routeErr = s.selectCCGatewayAnthropicCanaryRoute(account, canaryReq)
+	} else {
+		useCCGateway, routeErr = s.selectCCGatewayAnthropicRoute(account, ccGatewayRouteNativeMessages)
+	}
 	if routeErr != nil {
 		return nil, nil, routeErr
 	}
@@ -6817,6 +6918,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		clientHeaders = c.Request.Header
 	}
 	if useCCGateway {
+		ctx = withCCGatewayObservedClientProfileSeed(ctx, clientHeaders)
 		clientHeaders = SanitizeAnthropicCompatInboundHeaders(clientHeaders)
 	}
 
@@ -6948,9 +7050,13 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	}
 
 	if useCCGateway {
-		applyCCGatewayAnthropicHeaders(req, s.cfg, account, tokenType)
-		applyCCGatewayContext1MSelection(req, clientHeadersForCCGatewayContext1M(c), body, modelID)
+		seedCCGatewayClaudeCodeSessionMappingInput(ctx, req, c.Request.Header)
+		if err := applyCCGatewayAnthropicHeaders(req, s.cfg, account, tokenType); err != nil {
+			return nil, nil, err
+		}
+		applyCCGatewayContext1MSelection(req, s.cfg, account)
 		preserveClaudeCodeNativeWireBody(ctx, req, body)
+		attachCCGatewayObservedClientProfileSnapshot(req)
 		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
 		if err := ApplyClaudeCodePathAuditHeaders(req.Header, ctx); err != nil {
 			return nil, nil, err
@@ -6961,6 +7067,9 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 				body = stripCCGatewayDownstreamBillingMaterial(mappedBody)
 			}
 			claudeCodeReplaceRequestBody(req, body)
+		}
+		if err := applyCCGatewayFormalPoolAttestation(req, s.cfg, account); err != nil {
+			return nil, nil, err
 		}
 	}
 
@@ -8095,12 +8204,81 @@ func (s *GatewayService) refreshFormalPoolAuth401(ctx context.Context, account *
 	if err != nil {
 		return nil, err
 	}
+	updated, gateErr := s.failClosedFormalPoolAuthRefreshUntilRuntimeRegistered(ctx, refreshed)
+	if updated != nil {
+		refreshed = updated
+	}
 	if s.schedulerSnapshot != nil && refreshed != nil {
 		if syncErr := s.schedulerSnapshot.UpdateAccountInCache(ctx, refreshed); syncErr != nil {
 			slog.Warn("formal_pool_auth_refresh_scheduler_sync_failed", "account_id", refreshed.ID, "error", syncErr)
 		}
 	}
+	if gateErr != nil {
+		return refreshed, gateErr
+	}
 	return refreshed, nil
+}
+
+func (s *GatewayService) failClosedFormalPoolAuthRefreshUntilRuntimeRegistered(ctx context.Context, account *Account) (*Account, error) {
+	if account == nil || !IsFormalPoolAccount(account) {
+		return account, nil
+	}
+	accountRef := formalPoolGeneratedRuntimeAccountRef(account)
+	if !isSafeLedgerRef(accountRef) {
+		return account, errors.New("formal pool auth refresh requires safe runtime account ref")
+	}
+	proxyIdentityRef := strings.TrimSpace(ccGatewayProxyIdentityRef(account))
+	if account.ProxyID != nil && *account.ProxyID > 0 {
+		proxyIdentityRef = formalPoolSafeRef("proxy", strconv.FormatInt(*account.ProxyID, 10))
+	}
+	generation := formalPoolNextCredentialGeneration(account)
+	extra := map[string]any{
+		"onboarding_state":                      FormalPoolStageRefreshed,
+		FormalPoolExtraOnboardingStage:          FormalPoolStageRefreshed,
+		FormalPoolExtraOnboardingStageUpdatedAt: formalPoolTimestamp(time.Now()),
+		FormalPoolExtraHealthcheckStatus:        "pending",
+		FormalPoolExtraRuntimeRegistered:        "false",
+		FormalPoolExtraRuntimeRegisteredAt:      "",
+		FormalPoolExtraCredentialGeneration:     generation,
+		FormalPoolExtraLastFailureOrigin:        "",
+		FormalPoolExtraLastFailureCode:          "",
+		FormalPoolExtraLastFailureSource:        "",
+	}
+	for k, v := range formalPoolRuntimeIdentityExtra(accountRef, proxyIdentityRef, account.Credentials, ccGatewayContextAttestationSecretFromConfig(s.cfg), generation) {
+		extra[k] = v
+	}
+	for k, v := range extra {
+		if account.Extra == nil {
+			account.Extra = map[string]any{}
+		}
+		account.Extra[k] = v
+	}
+	account.Schedulable = false
+	if account.Status == "" {
+		account.Status = StatusActive
+	}
+	if s != nil && s.accountRepo != nil {
+		if err := s.accountRepo.UpdateExtra(ctx, account.ID, extra); err != nil {
+			return account, err
+		}
+		if err := s.accountRepo.SetSchedulable(ctx, account.ID, false); err != nil {
+			return account, err
+		}
+		if latest, err := s.accountRepo.GetByID(ctx, account.ID); err == nil && latest != nil {
+			account = latest
+		}
+	}
+	return account, errFormalPoolAuthRefreshRuntimeReregisterRequired
+}
+
+func ccGatewayContextAttestationSecretFromConfig(cfg *config.Config) string {
+	if cfg == nil {
+		return "formal-pool-runtime-binding-local-test-secret"
+	}
+	if secret := strings.TrimSpace(cfg.Gateway.CCGateway.ContextAttestationSecret); secret != "" {
+		return secret
+	}
+	return "formal-pool-runtime-binding-local-test-secret"
 }
 
 func (s *GatewayService) quarantineFormalPoolRefreshFailure(ctx context.Context, account *Account, statusCode int, reason string) {
@@ -10263,6 +10441,10 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		s.countTokensError(c, http.StatusBadGateway, "cc_gateway_control_plane", "CC Gateway route policy rejected request")
 		return ccGatewayErr
 	}
+	if err := enforceFormalPoolNativeProtocolBoundary(ctx, account, "native_count_tokens"); err != nil {
+		s.countTokensError(c, http.StatusBadGateway, "cc_gateway_control_plane", "Formal pool native protocol required")
+		return err
+	}
 
 	isStrictClaudeCode := account != nil && account.IsOAuth() && IsClaudeCodeClient(ctx)
 	legacyLooksLikeClaudeCode := false
@@ -10419,6 +10601,11 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		writeCCGatewayControlPlaneError(c, mapUpstreamStatusCode(resp.StatusCode), code, msg)
 		return fmt.Errorf("cc gateway control-plane error: %s", code)
 	}
+	if shouldFailClosedCCGatewayUpstream(useCCGateway, account, resp.StatusCode) {
+		setOpsUpstreamError(c, resp.StatusCode, sanitizeUpstreamErrorMessage(extractUpstreamErrorMessage(respBody)), "")
+		writeCCGatewayUpstreamFailClosedError(c, resp.StatusCode)
+		return ccGatewayUpstreamFailClosedError(resp.StatusCode)
+	}
 
 	// 检测 thinking block 签名错误（400）并重试一次（过滤 thinking blocks）
 	if !isStrictClaudeCode && resp.StatusCode == 400 && s.shouldRectifySignatureError(ctx, account, respBody) {
@@ -10507,6 +10694,10 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 	if ccGatewayErr != nil {
 		s.countTokensError(c, http.StatusBadGateway, "cc_gateway_control_plane", "CC Gateway route policy rejected request")
 		return ccGatewayErr
+	}
+	if err := enforceFormalPoolNativeProtocolBoundary(ctx, account, "native_count_tokens"); err != nil {
+		s.countTokensError(c, http.StatusBadGateway, "cc_gateway_control_plane", "Formal pool native protocol required")
+		return err
 	}
 	token, tokenType, err := s.GetAccessToken(ctx, account)
 	if err != nil {
@@ -10681,13 +10872,20 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 		body = sanitized
 	}
 
+	var clientHeaders http.Header
+	if c != nil && c.Request != nil {
+		clientHeaders = c.Request.Header
+		if useCCGateway {
+			ctx = withCCGatewayObservedClientProfileSeed(ctx, clientHeaders)
+		}
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 
-	if c != nil && c.Request != nil {
-		clientHeaders := c.Request.Header
+	if clientHeaders != nil {
 		if useCCGateway {
 			clientHeaders = SanitizeAnthropicCompatInboundHeaders(clientHeaders)
 		}
@@ -10709,10 +10907,23 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	req.Header.Del("cookie")
 	req.Header.Set("x-api-key", token)
 	if useCCGateway {
-		applyCCGatewayAnthropicHeaders(req, s.cfg, account, "apikey")
-		applyCCGatewayContext1MSelection(req, clientHeadersForCCGatewayContext1M(c), body, gjson.GetBytes(body, "model").String())
+		if err := applyCCGatewayAnthropicHeaders(req, s.cfg, account, "apikey"); err != nil {
+			return nil, err
+		}
+		applyCCGatewayContext1MSelection(req, s.cfg, account)
+		attachCCGatewayObservedClientProfileSnapshot(req)
+		if mappedBody := claudeCodeReadRequestBody(req); len(mappedBody) > 0 {
+			body = mappedBody
+			if shouldStripCCGatewayDownstreamBillingMaterial(account) {
+				body = stripCCGatewayDownstreamBillingMaterial(mappedBody)
+			}
+			claudeCodeReplaceRequestBody(req, body)
+		}
 		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
 		if err := ApplyClaudeCodePathAuditHeaders(req.Header, ctx); err != nil {
+			return nil, err
+		}
+		if err := applyCCGatewayFormalPoolAttestation(req, s.cfg, account); err != nil {
 			return nil, err
 		}
 	}
@@ -10768,6 +10979,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		clientHeaders = c.Request.Header
 	}
 	if useCCGateway {
+		ctx = withCCGatewayObservedClientProfileSeed(ctx, clientHeaders)
 		clientHeaders = SanitizeAnthropicCompatInboundHeaders(clientHeaders)
 	}
 
@@ -10876,9 +11088,13 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	}
 
 	if useCCGateway {
-		applyCCGatewayAnthropicHeaders(req, s.cfg, account, tokenType)
-		applyCCGatewayContext1MSelection(req, clientHeadersForCCGatewayContext1M(c), body, modelID)
+		seedCCGatewayClaudeCodeSessionMappingInput(ctx, req, c.Request.Header)
+		if err := applyCCGatewayAnthropicHeaders(req, s.cfg, account, tokenType); err != nil {
+			return nil, nil, err
+		}
+		applyCCGatewayContext1MSelection(req, s.cfg, account)
 		preserveClaudeCodeNativeWireBody(ctx, req, body)
+		attachCCGatewayObservedClientProfileSnapshot(req)
 		applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
 		if err := ApplyClaudeCodePathAuditHeaders(req.Header, ctx); err != nil {
 			return nil, nil, err
@@ -10889,6 +11105,9 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 				body = stripCCGatewayDownstreamBillingMaterial(mappedBody)
 			}
 			claudeCodeReplaceRequestBody(req, body)
+		}
+		if err := applyCCGatewayFormalPoolAttestation(req, s.cfg, account); err != nil {
+			return nil, nil, err
 		}
 	}
 

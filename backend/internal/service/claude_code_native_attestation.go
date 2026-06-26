@@ -647,7 +647,6 @@ func preserveClaudeCodeNativeWireBody(ctx context.Context, req *http.Request, or
 		return
 	}
 	claudeCodeReplaceRequestBody(req, originalBody)
-	deleteHeaderAllForms(req.Header, "X-Claude-Code-Session-Id")
 }
 
 type ClaudeCodeNativeDirectedHealthcheckEvidence struct {

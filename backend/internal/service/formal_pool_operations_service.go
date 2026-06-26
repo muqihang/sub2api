@@ -189,29 +189,31 @@ type FormalPoolOperationsProxyStore interface {
 }
 
 type FormalPoolOperationsDeps struct {
-	Accounts         FormalPoolOperationsAccountStore
-	OAuth            FormalPoolOAuthFacade
-	Proxy            FormalPoolOperationsProxyStore
-	CCGatewayRuntime FormalPoolCCGatewayRuntimeRegistrar
-	Healthcheck      FormalPoolAccountHealthcheckRunner
-	Quarantine       *AccountQuarantineService
-	Audit            FormalPoolOperationAuditWriter
-	CacheInvalidator TokenCacheInvalidator
-	SchedulerCache   SchedulerCache
-	Now              func() time.Time
+	Accounts                          FormalPoolOperationsAccountStore
+	OAuth                             FormalPoolOAuthFacade
+	Proxy                             FormalPoolOperationsProxyStore
+	CCGatewayRuntime                  FormalPoolCCGatewayRuntimeRegistrar
+	Healthcheck                       FormalPoolAccountHealthcheckRunner
+	Quarantine                        *AccountQuarantineService
+	Audit                             FormalPoolOperationAuditWriter
+	CacheInvalidator                  TokenCacheInvalidator
+	SchedulerCache                    SchedulerCache
+	Now                               func() time.Time
+	CCGatewayContextAttestationSecret string
 }
 
 type FormalPoolOperationsService struct {
-	accounts         FormalPoolOperationsAccountStore
-	oauth            FormalPoolOAuthFacade
-	proxy            FormalPoolOperationsProxyStore
-	ccGatewayRuntime FormalPoolCCGatewayRuntimeRegistrar
-	healthcheck      FormalPoolAccountHealthcheckRunner
-	quarantine       *AccountQuarantineService
-	audit            FormalPoolOperationAuditWriter
-	cacheInvalidator TokenCacheInvalidator
-	schedulerCache   SchedulerCache
-	now              func() time.Time
+	accounts                          FormalPoolOperationsAccountStore
+	oauth                             FormalPoolOAuthFacade
+	proxy                             FormalPoolOperationsProxyStore
+	ccGatewayRuntime                  FormalPoolCCGatewayRuntimeRegistrar
+	healthcheck                       FormalPoolAccountHealthcheckRunner
+	quarantine                        *AccountQuarantineService
+	audit                             FormalPoolOperationAuditWriter
+	cacheInvalidator                  TokenCacheInvalidator
+	schedulerCache                    SchedulerCache
+	now                               func() time.Time
+	ccGatewayContextAttestationSecret string
 }
 
 func NewFormalPoolOperationsService(deps FormalPoolOperationsDeps) *FormalPoolOperationsService {
@@ -220,16 +222,17 @@ func NewFormalPoolOperationsService(deps FormalPoolOperationsDeps) *FormalPoolOp
 		now = time.Now
 	}
 	return &FormalPoolOperationsService{
-		accounts:         deps.Accounts,
-		oauth:            deps.OAuth,
-		proxy:            deps.Proxy,
-		ccGatewayRuntime: deps.CCGatewayRuntime,
-		healthcheck:      deps.Healthcheck,
-		quarantine:       deps.Quarantine,
-		audit:            deps.Audit,
-		cacheInvalidator: deps.CacheInvalidator,
-		schedulerCache:   deps.SchedulerCache,
-		now:              now,
+		accounts:                          deps.Accounts,
+		oauth:                             deps.OAuth,
+		proxy:                             deps.Proxy,
+		ccGatewayRuntime:                  deps.CCGatewayRuntime,
+		healthcheck:                       deps.Healthcheck,
+		quarantine:                        deps.Quarantine,
+		audit:                             deps.Audit,
+		cacheInvalidator:                  deps.CacheInvalidator,
+		schedulerCache:                    deps.SchedulerCache,
+		now:                               now,
+		ccGatewayContextAttestationSecret: strings.TrimSpace(deps.CCGatewayContextAttestationSecret),
 	}
 }
 
@@ -891,6 +894,11 @@ func runtimeEvidenceComplete(account *Account) bool {
 	return formalPoolOpsBool(account.Extra[FormalPoolExtraRuntimeRegistered]) &&
 		strings.TrimSpace(account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt)) != "" &&
 		isSafeLedgerRef(strings.TrimSpace(account.GetExtraString(ccGatewayExtraAccountRef))) &&
+		isSafeLedgerRef(strings.TrimSpace(account.GetExtraString(ccGatewayExtraCredentialRef))) &&
+		ccGatewayCredentialBindingHMACRe.MatchString(strings.TrimSpace(account.GetExtraString(ccGatewayExtraCredentialBindingHMAC))) &&
+		isSafeLedgerRef(strings.TrimSpace(account.GetExtraString(ccGatewayExtraProxyIdentityRef))) &&
+		strings.TrimSpace(account.GetExtraString(ccGatewayExtraPersonaProfile)) != "" &&
+		claudeCodeDeviceIDRe.MatchString(strings.TrimSpace(account.GetExtraString("claude_code_device_id"))) &&
 		formalPoolEgressBucketEvidenceComplete(account)
 }
 
@@ -1206,7 +1214,12 @@ func formalPoolRequireSetupTokenAccount(account *Account) error {
 
 func (s *FormalPoolOperationsService) refreshedExtra(account *Account) map[string]any {
 	now := s.now()
-	return map[string]any{
+	accountRef := formalPoolGeneratedRuntimeAccountRef(account)
+	proxyIdentityRef := ""
+	if account != nil && account.ProxyID != nil && *account.ProxyID > 0 {
+		proxyIdentityRef = formalPoolSafeRef("proxy", strconv.FormatInt(*account.ProxyID, 10))
+	}
+	extra := map[string]any{
 		"onboarding_state":                       FormalPoolStageRefreshed,
 		FormalPoolExtraOnboardingStage:           FormalPoolStageRefreshed,
 		FormalPoolExtraOnboardingStageUpdatedAt:  formalPoolTimestamp(now),
@@ -1225,6 +1238,14 @@ func (s *FormalPoolOperationsService) refreshedExtra(account *Account) map[strin
 		FormalPoolExtraQuarantineReason:          "",
 		FormalPoolExtraQuarantineAt:              "",
 	}
+	var credentials map[string]any
+	if account != nil {
+		credentials = account.Credentials
+	}
+	for k, v := range formalPoolRuntimeIdentityExtra(accountRef, proxyIdentityRef, credentials, s.ccGatewayRuntimeBindingSecret(), stringFromMap(extra, FormalPoolExtraCredentialGeneration)) {
+		extra[k] = v
+	}
+	return extra
 }
 
 func formalPoolNextCredentialGeneration(account *Account) string {
@@ -1340,14 +1361,39 @@ func (s *FormalPoolOperationsService) runtimeRegistrationInput(ctx context.Conte
 	if egressBucket == "" {
 		return FormalPoolCCGatewayRuntimeRegistration{}, infraerrors.BadRequest("CC_GATEWAY_EGRESS_BUCKET_REQUIRED", "cc gateway egress bucket is required")
 	}
+	credentialRef := strings.TrimSpace(ccGatewayCredentialRef(account))
+	if !isSafeLedgerRef(credentialRef) {
+		return FormalPoolCCGatewayRuntimeRegistration{}, infraerrors.BadRequest("CC_GATEWAY_CREDENTIAL_REF_REQUIRED", "safe cc gateway credential ref is required")
+	}
+	credentialBinding := strings.TrimSpace(ccGatewayCredentialBindingHMAC(account))
+	if !ccGatewayCredentialBindingHMACRe.MatchString(credentialBinding) {
+		return FormalPoolCCGatewayRuntimeRegistration{}, infraerrors.BadRequest("CC_GATEWAY_CREDENTIAL_BINDING_REQUIRED", "safe cc gateway credential binding is required")
+	}
+	tokenType, credentialProof := ccGatewaySelectedCredentialBindingMaterial(account)
+	if strings.TrimSpace(tokenType) == "" || strings.TrimSpace(credentialProof) == "" {
+		return FormalPoolCCGatewayRuntimeRegistration{}, infraerrors.BadRequest("CC_GATEWAY_CREDENTIAL_PROOF_REQUIRED", "cc gateway credential proof is required")
+	}
+	proxyIdentityRef := strings.TrimSpace(ccGatewayProxyIdentityRef(account))
+	if !isSafeLedgerRef(proxyIdentityRef) {
+		return FormalPoolCCGatewayRuntimeRegistration{}, infraerrors.BadRequest("CC_GATEWAY_PROXY_IDENTITY_REF_REQUIRED", "safe cc gateway proxy identity ref is required")
+	}
+	deviceID := strings.TrimSpace(ccGatewayDeviceID(account))
+	if !claudeCodeDeviceIDRe.MatchString(deviceID) {
+		return FormalPoolCCGatewayRuntimeRegistration{}, infraerrors.BadRequest("CC_GATEWAY_DEVICE_ID_REQUIRED", "cc gateway account-owned device id is required")
+	}
 	return FormalPoolCCGatewayRuntimeRegistration{
-		AccountRef:     accountRef,
-		EgressBucket:   egressBucket,
-		ProxyURL:       normalized,
-		ProxyRef:       formalPoolSafeRef("proxy", fmt.Sprintf("%d", *account.ProxyID)),
-		PolicyVersion:  ccGatewayAnthropicPolicyVersion,
-		PersonaVariant: fmt.Sprintf("claude-code-%s-macos-local", ccGatewayAnthropicPolicyVersion),
-		SessionPolicy:  "preserve_downstream_session_id",
+		AccountRef:            accountRef,
+		CredentialRef:         credentialRef,
+		CredentialBindingHMAC: credentialBinding,
+		TokenType:             tokenType,
+		CredentialProof:       credentialProof,
+		EgressBucket:          egressBucket,
+		ProxyURL:              normalized,
+		ProxyRef:              proxyIdentityRef,
+		PolicyVersion:         ccGatewayAnthropicPolicyVersion,
+		PersonaVariant:        fmt.Sprintf("claude-code-%s-macos-local", ccGatewayAnthropicPolicyVersion),
+		SessionPolicy:         "preserve_downstream_session_id",
+		DeviceID:              strings.ToLower(deviceID),
 	}, nil
 }
 
@@ -1363,17 +1409,46 @@ func (s *FormalPoolOperationsService) ensureRuntimeIdentityEvidence(ctx context.
 	if strings.TrimSpace(egressBucket) == "" {
 		return account, infraerrors.BadRequest("CC_GATEWAY_EGRESS_BUCKET_REQUIRED", "cc gateway egress bucket is required")
 	}
-	if account.GetExtraString(ccGatewayExtraAccountRef) == accountRef && strings.TrimSpace(resolveCCGatewayEgressBucket(account)) == egressBucket {
+	proxyIdentityRef := ""
+	if account.ProxyID != nil && *account.ProxyID > 0 {
+		proxyIdentityRef = formalPoolSafeRef("proxy", strconv.FormatInt(*account.ProxyID, 10))
+	}
+	generation := strings.TrimSpace(account.GetExtraString(FormalPoolExtraCredentialGeneration))
+	if generation == "" {
+		generation = "1"
+	}
+	identity := formalPoolRuntimeIdentityExtra(accountRef, proxyIdentityRef, account.Credentials, s.ccGatewayRuntimeBindingSecret(), generation)
+	if account.GetExtraString(ccGatewayExtraAccountRef) == accountRef &&
+		strings.TrimSpace(resolveCCGatewayEgressBucket(account)) == egressBucket &&
+		strings.TrimSpace(account.GetExtraString(ccGatewayExtraCredentialRef)) == stringFromMap(identity, ccGatewayExtraCredentialRef) &&
+		strings.TrimSpace(account.GetExtraString(ccGatewayExtraCredentialBindingHMAC)) == stringFromMap(identity, ccGatewayExtraCredentialBindingHMAC) &&
+		strings.TrimSpace(account.GetExtraString(ccGatewayExtraProxyIdentityRef)) == stringFromMap(identity, ccGatewayExtraProxyIdentityRef) &&
+		strings.TrimSpace(account.GetExtraString(ccGatewayExtraPersonaProfile)) == stringFromMap(identity, ccGatewayExtraPersonaProfile) &&
+		strings.TrimSpace(account.GetExtraString("claude_code_device_id")) == stringFromMap(identity, "claude_code_device_id") {
 		return account, nil
 	}
-	updated, err := s.accounts.UpdateFormalPoolAccountState(ctx, account.ID, false, StatusActive, map[string]any{
+	extra := map[string]any{
 		ccGatewayExtraAccountRef:   accountRef,
 		ccGatewayExtraEgressBucket: egressBucket,
-	})
+	}
+	for k, v := range identity {
+		extra[k] = v
+	}
+	updated, err := s.accounts.UpdateFormalPoolAccountState(ctx, account.ID, false, StatusActive, extra)
 	if err != nil {
 		return account, err
 	}
 	return updated, nil
+}
+
+func (s *FormalPoolOperationsService) ccGatewayRuntimeBindingSecret() string {
+	if s == nil {
+		return ""
+	}
+	if secret := strings.TrimSpace(s.ccGatewayContextAttestationSecret); secret != "" {
+		return secret
+	}
+	return "formal-pool-runtime-binding-local-test-secret"
 }
 
 func (s *FormalPoolOperationsService) runtimeEvidenceFailureExtra(source string) map[string]any {

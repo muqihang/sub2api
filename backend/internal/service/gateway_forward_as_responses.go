@@ -50,6 +50,10 @@ func (s *GatewayService) ForwardAsResponses(
 		writeResponsesError(c, http.StatusBadGateway, "cc_gateway_control_plane", "CC Gateway route policy rejected request")
 		return nil, ccGatewayErr
 	}
+	if err := enforceFormalPoolNativeProtocolBoundary(ctx, account, string(ccGatewayRouteResponses)); err != nil {
+		writeResponsesError(c, http.StatusBadGateway, "cc_gateway_control_plane", "Formal pool native protocol required")
+		return nil, err
+	}
 
 	// 2. Convert Responses → Anthropic
 	anthropicReq, err := apicompat.ResponsesToAnthropicRequest(&responsesReq)
@@ -182,6 +186,19 @@ func (s *GatewayService) ForwardAsResponses(
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		if shouldFailClosedCCGatewayUpstream(useCCGateway, account, resp.StatusCode) {
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:           account.Platform,
+				AccountID:          account.ID,
+				AccountName:        account.Name,
+				UpstreamStatusCode: resp.StatusCode,
+				UpstreamRequestID:  resp.Header.Get("x-request-id"),
+				Kind:               "cc_gateway_fail_closed",
+				Message:            upstreamMsg,
+			})
+			writeResponsesError(c, mapUpstreamStatusCode(resp.StatusCode), "server_error", "CC Gateway upstream unavailable")
+			return nil, ccGatewayUpstreamFailClosedError(resp.StatusCode)
+		}
 
 		if s.shouldFailoverUpstreamError(resp.StatusCode) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{

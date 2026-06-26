@@ -69,17 +69,19 @@ type FormalPoolRuntimeRegistrationReplayAccountStore interface {
 }
 
 type FormalPoolRuntimeRegistrationReplayDeps struct {
-	Accounts         FormalPoolRuntimeRegistrationReplayAccountStore
-	Proxy            FormalPoolOperationsProxyStore
-	CCGatewayRuntime FormalPoolCCGatewayRuntimeRegistrar
-	Now              func() time.Time
+	Accounts                          FormalPoolRuntimeRegistrationReplayAccountStore
+	Proxy                             FormalPoolOperationsProxyStore
+	CCGatewayRuntime                  FormalPoolCCGatewayRuntimeRegistrar
+	Now                               func() time.Time
+	CCGatewayContextAttestationSecret string
 }
 
 type FormalPoolRuntimeRegistrationReplayService struct {
-	accounts         FormalPoolRuntimeRegistrationReplayAccountStore
-	proxy            FormalPoolOperationsProxyStore
-	ccGatewayRuntime FormalPoolCCGatewayRuntimeRegistrar
-	now              func() time.Time
+	accounts                          FormalPoolRuntimeRegistrationReplayAccountStore
+	proxy                             FormalPoolOperationsProxyStore
+	ccGatewayRuntime                  FormalPoolCCGatewayRuntimeRegistrar
+	now                               func() time.Time
+	ccGatewayContextAttestationSecret string
 }
 
 type FormalPoolRuntimeRegistrationReplayResult struct {
@@ -93,7 +95,7 @@ func NewFormalPoolRuntimeRegistrationReplayService(deps FormalPoolRuntimeRegistr
 	if now == nil {
 		now = time.Now
 	}
-	return &FormalPoolRuntimeRegistrationReplayService{accounts: deps.Accounts, proxy: deps.Proxy, ccGatewayRuntime: deps.CCGatewayRuntime, now: now}
+	return &FormalPoolRuntimeRegistrationReplayService{accounts: deps.Accounts, proxy: deps.Proxy, ccGatewayRuntime: deps.CCGatewayRuntime, now: now, ccGatewayContextAttestationSecret: strings.TrimSpace(deps.CCGatewayContextAttestationSecret)}
 }
 
 func (s *FormalPoolRuntimeRegistrationReplayService) Replay(ctx context.Context) (FormalPoolRuntimeRegistrationReplayResult, error) {
@@ -125,7 +127,7 @@ func (s *FormalPoolRuntimeRegistrationReplayService) Replay(ctx context.Context)
 		reg, err := s.runtimeReplayRegistrationInput(ctx, account)
 		if err != nil {
 			out.Failed++
-			_ = s.markReplayFailure(ctx, account, "runtime_replay_input_missing")
+			_ = s.markReplayFailure(ctx, account, safeRuntimeReplayFailureCode(err, "runtime_replay_input_missing"))
 			continue
 		}
 		if err := s.ccGatewayRuntime.RegisterCCGatewayRuntime(ctx, reg); err != nil {
@@ -150,6 +152,17 @@ func (s *FormalPoolRuntimeRegistrationReplayService) Replay(ctx context.Context)
 		out.Registered++
 	}
 	return out, nil
+}
+
+func safeRuntimeReplayFailureCode(err error, fallback string) string {
+	code := strings.TrimSpace(infraerrors.Reason(err))
+	if code == "" {
+		code = strings.TrimSpace(fallback)
+	}
+	if code == "" || formalPoolUnsafeDiagnosticText(code) {
+		return "runtime_replay_input_missing"
+	}
+	return code
 }
 
 func formalPoolRuntimeReplayCandidate(account *Account) bool {
@@ -180,13 +193,32 @@ func (s *FormalPoolRuntimeRegistrationReplayService) ensureRuntimeIdentityEviden
 	if strings.TrimSpace(egressBucket) == "" {
 		return account, infraerrors.BadRequest("CC_GATEWAY_EGRESS_BUCKET_REQUIRED", "cc gateway egress bucket is required")
 	}
-	if account.GetExtraString(ccGatewayExtraAccountRef) == accountRef && strings.TrimSpace(resolveCCGatewayEgressBucket(account)) == egressBucket {
+	proxyIdentityRef := ""
+	if account.ProxyID != nil && *account.ProxyID > 0 {
+		proxyIdentityRef = formalPoolSafeRef("proxy", fmt.Sprintf("%d", *account.ProxyID))
+	}
+	generation := strings.TrimSpace(account.GetExtraString(FormalPoolExtraCredentialGeneration))
+	if generation == "" {
+		generation = "1"
+	}
+	identity := formalPoolRuntimeIdentityExtra(accountRef, proxyIdentityRef, account.Credentials, s.ccGatewayRuntimeBindingSecret(), generation)
+	if account.GetExtraString(ccGatewayExtraAccountRef) == accountRef &&
+		strings.TrimSpace(resolveCCGatewayEgressBucket(account)) == egressBucket &&
+		strings.TrimSpace(account.GetExtraString(ccGatewayExtraCredentialRef)) == stringFromMap(identity, ccGatewayExtraCredentialRef) &&
+		strings.TrimSpace(account.GetExtraString(ccGatewayExtraCredentialBindingHMAC)) == stringFromMap(identity, ccGatewayExtraCredentialBindingHMAC) &&
+		strings.TrimSpace(account.GetExtraString(ccGatewayExtraProxyIdentityRef)) == stringFromMap(identity, ccGatewayExtraProxyIdentityRef) &&
+		strings.TrimSpace(account.GetExtraString(ccGatewayExtraPersonaProfile)) == stringFromMap(identity, ccGatewayExtraPersonaProfile) &&
+		strings.TrimSpace(account.GetExtraString("claude_code_device_id")) == stringFromMap(identity, "claude_code_device_id") {
 		return account, nil
 	}
-	updated, err := s.accounts.UpdateFormalPoolAccountState(ctx, account.ID, false, StatusActive, map[string]any{
+	extra := map[string]any{
 		ccGatewayExtraAccountRef:   accountRef,
 		ccGatewayExtraEgressBucket: egressBucket,
-	})
+	}
+	for k, v := range identity {
+		extra[k] = v
+	}
+	updated, err := s.accounts.UpdateFormalPoolAccountState(ctx, account.ID, false, StatusActive, extra)
 	if err != nil {
 		return account, err
 	}
@@ -226,15 +258,50 @@ func (s *FormalPoolRuntimeRegistrationReplayService) runtimeReplayRegistrationIn
 	if egressBucket == "" {
 		return FormalPoolCCGatewayRuntimeRegistration{}, infraerrors.BadRequest("CC_GATEWAY_EGRESS_BUCKET_REQUIRED", "cc gateway egress bucket is required")
 	}
+	credentialRef := strings.TrimSpace(ccGatewayCredentialRef(account))
+	if !isSafeLedgerRef(credentialRef) {
+		return FormalPoolCCGatewayRuntimeRegistration{}, infraerrors.BadRequest("CC_GATEWAY_CREDENTIAL_REF_REQUIRED", "safe cc gateway credential ref is required")
+	}
+	credentialBinding := strings.TrimSpace(ccGatewayCredentialBindingHMAC(account))
+	if !ccGatewayCredentialBindingHMACRe.MatchString(credentialBinding) {
+		return FormalPoolCCGatewayRuntimeRegistration{}, infraerrors.BadRequest("CC_GATEWAY_CREDENTIAL_BINDING_REQUIRED", "safe cc gateway credential binding is required")
+	}
+	tokenType, credentialProof := ccGatewaySelectedCredentialBindingMaterial(account)
+	if strings.TrimSpace(tokenType) == "" || strings.TrimSpace(credentialProof) == "" {
+		return FormalPoolCCGatewayRuntimeRegistration{}, infraerrors.BadRequest("CC_GATEWAY_CREDENTIAL_PROOF_REQUIRED", "cc gateway credential proof is required")
+	}
+	proxyIdentityRef := strings.TrimSpace(ccGatewayProxyIdentityRef(account))
+	if !isSafeLedgerRef(proxyIdentityRef) {
+		return FormalPoolCCGatewayRuntimeRegistration{}, infraerrors.BadRequest("CC_GATEWAY_PROXY_IDENTITY_REF_REQUIRED", "safe cc gateway proxy identity ref is required")
+	}
+	deviceID := strings.TrimSpace(ccGatewayDeviceID(account))
+	if !claudeCodeDeviceIDRe.MatchString(deviceID) {
+		return FormalPoolCCGatewayRuntimeRegistration{}, infraerrors.BadRequest("CC_GATEWAY_DEVICE_ID_REQUIRED", "cc gateway account-owned device id is required")
+	}
 	return FormalPoolCCGatewayRuntimeRegistration{
-		AccountRef:     accountRef,
-		EgressBucket:   egressBucket,
-		ProxyURL:       normalized,
-		ProxyRef:       formalPoolSafeRef("proxy", fmt.Sprintf("%d", *account.ProxyID)),
-		PolicyVersion:  ccGatewayAnthropicPolicyVersion,
-		PersonaVariant: fmt.Sprintf("claude-code-%s-macos-local", ccGatewayAnthropicPolicyVersion),
-		SessionPolicy:  "preserve_downstream_session_id",
+		AccountRef:            accountRef,
+		CredentialRef:         credentialRef,
+		CredentialBindingHMAC: credentialBinding,
+		TokenType:             tokenType,
+		CredentialProof:       credentialProof,
+		EgressBucket:          egressBucket,
+		ProxyURL:              normalized,
+		ProxyRef:              proxyIdentityRef,
+		PolicyVersion:         ccGatewayAnthropicPolicyVersion,
+		PersonaVariant:        fmt.Sprintf("claude-code-%s-macos-local", ccGatewayAnthropicPolicyVersion),
+		SessionPolicy:         "preserve_downstream_session_id",
+		DeviceID:              strings.ToLower(deviceID),
 	}, nil
+}
+
+func (s *FormalPoolRuntimeRegistrationReplayService) ccGatewayRuntimeBindingSecret() string {
+	if s == nil {
+		return ""
+	}
+	if secret := strings.TrimSpace(s.ccGatewayContextAttestationSecret); secret != "" {
+		return secret
+	}
+	return "formal-pool-runtime-binding-local-test-secret"
 }
 
 func (s *FormalPoolRuntimeRegistrationReplayService) markReplayFailure(ctx context.Context, account *Account, code string) error {

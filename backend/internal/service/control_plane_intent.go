@@ -236,7 +236,7 @@ func parseControlPlaneIntentStrict(body []byte) (*ControlPlaneIntent, error) {
 }
 
 func (s *ControlPlaneIntentService) validateIntent(intent *ControlPlaneIntent) error {
-	if s == nil || s.matrix == nil || intent == nil || intent.Method != "GET" {
+	if s == nil || s.matrix == nil || intent == nil {
 		return validateControlPlaneIntent(intent)
 	}
 	if _, exists := s.matrix.policies[controlPlanePolicyKey(intent.Method, intent.PathTemplate)]; !exists {
@@ -349,7 +349,7 @@ func (s *ControlPlaneIntentService) decide(intent *ControlPlaneIntent) *ControlP
 	if s == nil {
 		s = NewControlPlaneIntentService()
 	}
-	if s.matrix != nil && intent.Method == "GET" {
+	if s.matrix != nil {
 		query := url.Values{}
 		for key, value := range intent.NormalizedQuery {
 			query.Set(key, value)
@@ -366,13 +366,6 @@ func (s *ControlPlaneIntentService) decide(intent *ControlPlaneIntent) *ControlP
 				decision.Body = safeControlPlaneStubBody(matrixDecision.Policy)
 			}
 			return decision
-		}
-	}
-	if intent.Method == "POST" && (intent.PathTemplate == "/api/event_logging/batch" || intent.PathTemplate == "/api/event_logging/v2/batch" || strings.HasPrefix(intent.PathTemplate, "/api/eval/")) {
-		return &ControlPlaneIntentDecision{
-			Decision: "suppress_204",
-			Reason:   "control_plane:telemetry_or_eval:path",
-			Status:   204,
 		}
 	}
 	if intent.Method == "GET" {
@@ -537,6 +530,9 @@ func validatePathTemplate(pathTemplate string) error {
 	}
 	for _, segment := range strings.Split(pathTemplate, "/")[1:] {
 		if segment == "" {
+			continue
+		}
+		if segment == "*" && pathTemplate == "/api/eval/*" {
 			continue
 		}
 		if strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}") {

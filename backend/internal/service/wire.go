@@ -136,6 +136,7 @@ func formalPoolConfigFromAppConfig(cfg *config.Config) (FormalPoolConfig, error)
 		}
 		formalPoolCfg.RateLimitHMACSecret = secret
 	}
+	formalPoolCfg.CCGatewayContextAttestationSecret = strings.TrimSpace(cfg.Gateway.CCGateway.ContextAttestationSecret)
 	return formalPoolCfg, nil
 }
 
@@ -143,16 +144,17 @@ func ProvideFormalPoolOperationsService(adminService AdminService, oauthService 
 	oauthFacade := NewFormalPoolClaudeOAuthFacade(oauthService)
 	quarantine := NewAccountQuarantineService(accountRepo, newDefaultSessionBudgetObserveSink())
 	return NewFormalPoolOperationsService(FormalPoolOperationsDeps{
-		Accounts:         NewFormalPoolOperationsAdminAccountStore(adminService),
-		OAuth:            oauthFacade,
-		Proxy:            NewFormalPoolOperationsAdminProxyStore(adminService),
-		CCGatewayRuntime: NewFormalPoolHTTPCCGatewayRuntimeRegistrar(cfg),
-		Healthcheck:      NewFormalPoolGatewayHealthcheckRunner(accountRepo, httpUpstream, cfg, quarantine),
-		Quarantine:       quarantine,
-		Audit:            NewFormalPoolOperationStructuredLogAuditWriter(),
-		CacheInvalidator: cacheInvalidator,
-		SchedulerCache:   schedulerCache,
-		Now:              time.Now,
+		Accounts:                          NewFormalPoolOperationsAdminAccountStore(adminService),
+		OAuth:                             oauthFacade,
+		Proxy:                             NewFormalPoolOperationsAdminProxyStore(adminService),
+		CCGatewayRuntime:                  NewFormalPoolHTTPCCGatewayRuntimeRegistrar(cfg),
+		Healthcheck:                       NewFormalPoolGatewayHealthcheckRunner(accountRepo, httpUpstream, cfg, quarantine),
+		Quarantine:                        quarantine,
+		Audit:                             NewFormalPoolOperationStructuredLogAuditWriter(),
+		CacheInvalidator:                  cacheInvalidator,
+		SchedulerCache:                    schedulerCache,
+		Now:                               time.Now,
+		CCGatewayContextAttestationSecret: strings.TrimSpace(cfg.Gateway.CCGateway.ContextAttestationSecret),
 	})
 }
 
@@ -162,6 +164,7 @@ func ProvideFormalPoolRuntimeRegistrationStartupReplay(accountRepo AccountReposi
 		NewFormalPoolOperationsAdminProxyStore(adminService),
 		NewFormalPoolHTTPCCGatewayRuntimeRegistrar(cfg),
 		time.Now,
+		strings.TrimSpace(cfg.Gateway.CCGateway.ContextAttestationSecret),
 	)
 }
 
@@ -170,8 +173,13 @@ func ProvideFormalPoolRuntimeRegistrationStartupReplayWithDeps(
 	proxy FormalPoolOperationsProxyStore,
 	registrar FormalPoolCCGatewayRuntimeRegistrar,
 	now func() time.Time,
+	contextAttestationSecret ...string,
 ) *FormalPoolRuntimeRegistrationStartupReplay {
-	replay := NewFormalPoolRuntimeRegistrationReplayService(FormalPoolRuntimeRegistrationReplayDeps{Accounts: accounts, Proxy: proxy, CCGatewayRuntime: registrar, Now: now})
+	secret := ""
+	if len(contextAttestationSecret) > 0 {
+		secret = strings.TrimSpace(contextAttestationSecret[0])
+	}
+	replay := NewFormalPoolRuntimeRegistrationReplayService(FormalPoolRuntimeRegistrationReplayDeps{Accounts: accounts, Proxy: proxy, CCGatewayRuntime: registrar, Now: now, CCGatewayContextAttestationSecret: secret})
 	runner := NewFormalPoolRuntimeRegistrationStartupReplay(replay)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
