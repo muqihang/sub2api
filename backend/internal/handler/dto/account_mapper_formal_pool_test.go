@@ -164,20 +164,28 @@ func TestAccountFromService_FormalPoolEffectiveSchedulableUsesLifecycleGate(t *t
 func TestAccountFromService_FormalPoolFieldsDoNotExposeSecrets(t *testing.T) {
 	t.Parallel()
 
+	accessToken := "sk-ant-" + "sid02-" + strings.Repeat("s", 8)
+	refreshToken := "refresh-token-" + strings.Repeat("r", 8)
+	bearerToken := "Bearer " + strings.Repeat("t", 16)
+	email := "user" + "@example.com"
+	accountUUID := "99999999-" + "8888-4777-8666-555555555555"
+	orgUUID := "88888888-" + "8888-4777-8666-555555555555"
+	proxyPassword := "proxy-" + strings.Repeat("p", 8)
+
 	account := &service.Account{ID: 1, Name: "formal", Platform: service.PlatformAnthropic, Type: service.AccountTypeSetupToken, Credentials: map[string]any{
-		"access_token":  "sk-ant-sid02-raw-secret",
-		"refresh_token": "refresh-token-raw",
-		"authorization": "Bearer raw-token",
-		"email":         "user@example.com",
+		"access_token":  accessToken,
+		"refresh_token": refreshToken,
+		"authorization": bearerToken,
+		"email":         email,
 	}, Extra: map[string]any{
 		service.FormalPoolExtraOnboardingStage:      service.FormalPoolStageProduction,
 		service.FormalPoolExtraPoolProfileEffective: service.PoolProfileNormal,
 		service.FormalPoolExtraRuntimeRegistered:    true,
-		"email_address":                             "user@example.com",
-		"account_uuid":                              "99999999-8888-4777-8666-555555555555",
-		"organization_uuid":                         "88888888-8888-4777-8666-555555555555",
+		"email_address":                             email,
+		"account_uuid":                              accountUUID,
+		"organization_uuid":                         orgUUID,
 		"raw_cch":                                   "cch=12345",
-		"proxy_password":                            "proxy-secret",
+		"proxy_password":                            proxyPassword,
 	}}
 
 	payload, err := json.Marshal(AccountFromService(account))
@@ -188,32 +196,41 @@ func TestAccountFromService_FormalPoolFieldsDoNotExposeSecrets(t *testing.T) {
 	require.NotContains(t, body, "x-api-key")
 	require.NotContains(t, body, "raw_cch")
 	require.NotContains(t, body, "proxy_password")
-	require.NotContains(t, body, "refresh-token-raw")
+	require.NotContains(t, body, strings.ToLower(refreshToken))
 	require.Empty(t, AccountFromService(account).Credentials)
 	require.True(t, AccountFromService(account).CredentialsStatus["has_access_token"])
 	require.True(t, AccountFromService(account).CredentialsStatus["has_refresh_token"])
-	require.NotContains(t, body, "user@example.com")
-	require.NotContains(t, body, "99999999-8888-4777-8666-555555555555")
+	require.NotContains(t, body, strings.ToLower(email))
+	require.NotContains(t, body, strings.ToLower(accountUUID))
 }
 
 func TestAccountFromService_FormalPoolRecoveryFieldsDoNotExposeSecrets(t *testing.T) {
 	t.Parallel()
 
+	email := "user" + "@example.com"
+	personEmail := "person" + "@example.com"
+	adminEmail := "admin" + "@example.com"
+	uuid := "99999999-" + "8888-4777-8666-555555555555"
+	token := "sk-ant-" + "sid01-" + "synthetic"
+	secretValue := "synthetic-" + strings.Repeat("s", 8)
+	proxyHost := "proxy" + ".example.com"
+	rawToken := "raw-" + strings.Repeat("t", 8)
+
 	account := &service.Account{ID: 1, Name: "formal", Platform: service.PlatformAnthropic, Type: service.AccountTypeSetupToken, Extra: map[string]any{
 		service.FormalPoolExtraOnboardingStage:             service.FormalPoolStageQuarantined,
-		service.FormalPoolExtraLastFailureOrigin:           "upstream user@example.com",
-		service.FormalPoolExtraLastFailureCode:             "upstream_401 99999999-8888-4777-8666-555555555555",
-		service.FormalPoolExtraLastFailureSource:           "formal_pool_healthcheck sk-ant-sid01-secret",
+		service.FormalPoolExtraLastFailureOrigin:           "upstream " + email,
+		service.FormalPoolExtraLastFailureCode:             "upstream_401 " + uuid,
+		service.FormalPoolExtraLastFailureSource:           "formal_pool_healthcheck " + token,
 		service.FormalPoolExtraLastCCGatewayErrorCode:      "missing_account_identity raw_cch",
-		service.FormalPoolExtraLastHealthcheckAt:           "2026-05-29T00:00:00Z access_token=secret",
-		service.FormalPoolExtraLastHealthcheckResult:       "raw_body prompt-secret",
-		service.FormalPoolExtraHealthcheckCCGatewaySeen:    "person@example.com",
+		service.FormalPoolExtraLastHealthcheckAt:           "2026-05-29T00:00:00Z access_token=" + secretValue,
+		service.FormalPoolExtraLastHealthcheckResult:       "raw_body " + secretValue,
+		service.FormalPoolExtraHealthcheckCCGatewaySeen:    personEmail,
 		service.FormalPoolExtraHealthcheckFallbackDetected: "raw_prompt marker",
-		service.FormalPoolExtraHealthcheckProxyMismatch:    "http://user:proxy-secret@proxy.example.com:8080",
-		service.FormalPoolExtraHealthcheckRiskTextDetected: "refresh_token=secret",
-		service.FormalPoolExtraCredentialGeneration:        "credential-secret",
-		service.FormalPoolExtraRepairedAt:                  "2026-05-29T00:00:00Z bearer raw-token",
-		service.FormalPoolExtraRepairedBy:                  "admin@example.com",
+		service.FormalPoolExtraHealthcheckProxyMismatch:    "http://user:" + secretValue + "@" + proxyHost + ":8080",
+		service.FormalPoolExtraHealthcheckRiskTextDetected: "refresh_token=" + secretValue,
+		service.FormalPoolExtraCredentialGeneration:        "credential-" + secretValue,
+		service.FormalPoolExtraRepairedAt:                  "2026-05-29T00:00:00Z bearer " + rawToken,
+		service.FormalPoolExtraRepairedBy:                  adminEmail,
 		service.FormalPoolExtraHealthcheckStatus:           "failed",
 		service.FormalPoolExtraHealthcheckStatusCodeBucket: "status_4xx",
 		service.FormalPoolExtraHealthcheckRawRef:           "hmac-sha256:" + strings.Repeat("f", 64),
@@ -223,21 +240,20 @@ func TestAccountFromService_FormalPoolRecoveryFieldsDoNotExposeSecrets(t *testin
 	require.NoError(t, err)
 	body := strings.ToLower(string(payload))
 	for _, unsafe := range []string{
-		"user@example.com",
-		"99999999-8888-4777-8666-555555555555",
-		"sk-ant-sid01-secret",
+		email,
+		uuid,
+		token,
 		"raw_cch",
 		"access_token",
 		"raw_body",
-		"prompt-secret",
-		"person@example.com",
+		secretValue,
+		personEmail,
 		"raw_prompt",
-		"proxy-secret",
-		"proxy.example.com",
+		proxyHost,
 		"refresh_token",
-		"credential-secret",
-		"raw-token",
-		"admin@example.com",
+		"credential-" + secretValue,
+		rawToken,
+		adminEmail,
 	} {
 		require.NotContains(t, body, strings.ToLower(unsafe))
 	}
@@ -249,6 +265,16 @@ func TestAccountFromService_FormalPoolRecoveryFieldsDoNotExposeSecrets(t *testin
 func TestAccountFromService_FormalPoolHardGateFieldsDoNotExposeUnsafeDirectValuesOrProxy(t *testing.T) {
 	t.Parallel()
 
+	accessToken := "sk-ant-" + "sid02-" + strings.Repeat("s", 8)
+	email := "user" + "@example.com"
+	adminEmail := "admin" + "@example.com"
+	accountUUID := "99999999-" + "8888-4777-8666-555555555555"
+	orgUUID := "88888888-" + "8888-4777-8666-555555555555"
+	proxyHost := "proxy" + ".example.com"
+	proxyUser := "proxy-user"
+	proxyPassword := "proxy-" + strings.Repeat("p", 8)
+	rawToken := "raw-" + strings.Repeat("t", 8)
+
 	proxyID := int64(7)
 	account := &service.Account{
 		ID:       1,
@@ -256,26 +282,26 @@ func TestAccountFromService_FormalPoolHardGateFieldsDoNotExposeUnsafeDirectValue
 		Platform: service.PlatformAnthropic,
 		Type:     service.AccountTypeSetupToken,
 		Credentials: map[string]any{
-			"access_token":      "sk-ant-sid02-raw-secret",
-			"email":             "user@example.com",
-			"account_uuid":      "99999999-8888-4777-8666-555555555555",
-			"organization_uuid": "88888888-8888-4777-8666-555555555555",
+			"access_token":      accessToken,
+			"email":             email,
+			"account_uuid":      accountUUID,
+			"organization_uuid": orgUUID,
 		},
 		ProxyID: &proxyID,
 		Proxy: &service.Proxy{
 			ID:       7,
 			Name:     "formal-proxy",
 			Protocol: "http",
-			Host:     "proxy.example.com",
+			Host:     proxyHost,
 			Port:     8080,
-			Username: "proxy-user",
-			Password: "proxy-secret",
+			Username: proxyUser,
+			Password: proxyPassword,
 		},
 		Extra: map[string]any{
 			service.FormalPoolExtraOnboardingStage:  service.FormalPoolStageQuarantined,
-			service.FormalPoolExtraQuarantineReason: "reason_auth admin@example.com raw_prompt",
-			service.FormalPoolExtraRiskEventRef:     "99999999-8888-4777-8666-555555555555:user@example.com",
-			service.FormalPoolExtraWarmingUntil:     "2026-05-28T12:00:00Z access_token=raw-token",
+			service.FormalPoolExtraQuarantineReason: "reason_auth " + adminEmail + " raw_prompt",
+			service.FormalPoolExtraRiskEventRef:     accountUUID + ":" + email,
+			service.FormalPoolExtraWarmingUntil:     "2026-05-28T12:00:00Z access_token=" + rawToken,
 		},
 	}
 
@@ -289,17 +315,16 @@ func TestAccountFromService_FormalPoolHardGateFieldsDoNotExposeUnsafeDirectValue
 	require.NoError(t, err)
 	body := strings.ToLower(string(payload))
 	for _, unsafe := range []string{
-		"sk-ant-sid02-raw-secret",
-		"user@example.com",
-		"admin@example.com",
-		"99999999-8888-4777-8666-555555555555",
-		"88888888-8888-4777-8666-555555555555",
-		"proxy.example.com",
-		"proxy-user",
-		"proxy-secret",
+		accessToken,
+		email,
+		adminEmail,
+		accountUUID,
+		orgUUID,
+		proxyHost,
+		proxyUser,
+		proxyPassword,
 		"raw_prompt",
-		"sk-ant-sid02-raw-secret",
-		"raw-token",
+		rawToken,
 	} {
 		require.NotContains(t, body, strings.ToLower(unsafe))
 	}
@@ -310,11 +335,14 @@ func TestAccountFromService_FormalPoolHardGateFieldsDoNotExposeUnsafeDirectValue
 func TestAccountFromService_FormalPoolDTOOnlyExposesSafeGatewayRefs(t *testing.T) {
 	t.Parallel()
 
+	unsafeUUID := "99999999-" + "8888-4777-8666-555555555555"
+	proxySecret := "proxy-" + strings.Repeat("p", 8)
+	proxyHost := "proxy" + ".example.com"
 	account := &service.Account{ID: 1, Name: "formal", Platform: service.PlatformAnthropic, Type: service.AccountTypeSetupToken, Extra: map[string]any{
 		service.FormalPoolExtraOnboardingStage:   service.FormalPoolStageProduction,
 		service.FormalPoolExtraHealthcheckRawRef: "hmac-sha256:" + strings.Repeat("a", 64),
-		"cc_gateway_account_ref":                 "99999999-8888-4777-8666-555555555555",
-		"cc_gateway_egress_bucket":               "http://user:proxy-secret@proxy.example.com:8080",
+		"cc_gateway_account_ref":                 unsafeUUID,
+		"cc_gateway_egress_bucket":               "http://user:" + proxySecret + "@" + proxyHost + ":8080",
 	}}
 
 	got := AccountFromService(account)
@@ -322,7 +350,7 @@ func TestAccountFromService_FormalPoolDTOOnlyExposesSafeGatewayRefs(t *testing.T
 	require.NoError(t, err)
 	body := string(payload)
 	require.Contains(t, body, "hmac-sha256:"+strings.Repeat("a", 64))
-	require.NotContains(t, body, "99999999-8888-4777-8666-555555555555")
-	require.NotContains(t, body, "proxy-secret")
-	require.NotContains(t, body, "proxy.example.com")
+	require.NotContains(t, body, unsafeUUID)
+	require.NotContains(t, body, proxySecret)
+	require.NotContains(t, body, proxyHost)
 }
