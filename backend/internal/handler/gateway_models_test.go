@@ -392,6 +392,60 @@ func TestGatewayModels_OpenAICustomModelsListKeepsOpenAIResponseShapeForDefaultF
 	require.Empty(t, got.Data[0].CreatedAt)
 }
 
+func TestGatewayModels_ClaudeCodeOnlyCustomModelsListUsesExactRuntimeCatalog(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	groupID := int64(28)
+	h := newGatewayModelsHandlerForTest(
+		&gatewayModelsAccountRepoStub{
+			byGroup: map[int64][]service.Account{
+				groupID: {
+					{ID: 1, Platform: service.PlatformAnthropic},
+				},
+			},
+		},
+	)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{
+			ID:             groupID,
+			Platform:       service.PlatformAnthropic,
+			ClaudeCodeOnly: true,
+			ModelsListConfig: service.GroupModelsListConfig{
+				Enabled: true,
+				Models: []string{
+					"claude-opus-4-8",
+					"claude-sonnet-4-6",
+					"claude-haiku-4-5-20251001",
+					"claude-code-bridge-gpt-5.5",
+					"claude-code-bridge-deepseek-v4-pro",
+				},
+			},
+		},
+	})
+
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, []string{
+		"claude-opus-4-8",
+		"claude-sonnet-4-6",
+		"claude-haiku-4-5-20251001",
+		"claude-code-bridge-gpt-5.5",
+		"claude-code-bridge-deepseek-v4-pro",
+	}, modelIDsForTest(got.Data))
+	require.NotContains(t, modelIDsForTest(got.Data), "claude-opus-4-7")
+	require.NotContains(t, modelIDsForTest(got.Data), "claude-fable-5")
+	require.NotContains(t, modelIDsForTest(got.Data), "claude-opus-4-5-20251101")
+	require.NotContains(t, modelIDsForTest(got.Data), "claude-sonnet-4-5-20250929")
+}
+
 func modelIDsForTest(models []gatewayModelItemForTest) []string {
 	ids := make([]string, 0, len(models))
 	for _, model := range models {

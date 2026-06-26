@@ -508,6 +508,16 @@ func nextBackoff(current time.Duration) time.Duration {
 	return jittered
 }
 
+func preserveClaudeCodeRuntimeBridgeClient(c *gin.Context, apiKey *service.APIKey) {
+	if c == nil || c.Request == nil || apiKey == nil || !apiKey.IsClientProduct("claude_code_runtime") {
+		return
+	}
+	if _, ok := service.AnthropicCompatAuditSummaryFromContext(c.Request.Context()); !ok {
+		return
+	}
+	c.Request = c.Request.WithContext(service.SetClaudeCodeClient(c.Request.Context(), true))
+}
+
 func forceAnthropicCompatNonNative(c *gin.Context) {
 	if c == nil || c.Request == nil {
 		return

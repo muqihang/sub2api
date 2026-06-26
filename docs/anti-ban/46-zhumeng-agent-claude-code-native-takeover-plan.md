@@ -945,6 +945,15 @@ future_provider_profiles=[openai_compat_future, deepseek_compat_future]
 docs/anti-ban/47-zhumeng-agent-multi-provider-in-claude-code-plan.md
 ```
 
+### 14.1 与 47 号 CP0 的交界状态
+
+47 号 CP0 只接上 46 号 native takeover 的真实启动链路，不实施多 provider bridge：
+
+- `build_native_guard_plan()` 必须显式带 `--native-attestation`，否则 guard 不会为 `/v1/messages` 生成 native attestation，服务端应 fail closed。
+- `zhumeng-claude start` / 逐梦 Agent desktop open path 通过 managed launcher 启动 loopback guard，再把 Claude Code 的 `ANTHROPIC_BASE_URL` 与 `CLAUDE_CODE_API_BASE_URL` 指向该 guard。
+- native attestation 绑定 route、model、runtime/overlay/catalog hash、session/body-shape、nonce、timestamp；Claude formal-pool 请求仍保持 `claude_code_native` 身份进入 Sub2API / CC Gateway。
+- 47 号 CP0 不引入 GPT、DeepSeek、AGNES、GLM、Kimi 等 bridge route，也不改变 Codex Gateway / DeepSeek / AGNES 路径。
+
 ## 15. 结论
 
 44 号服务端 compat adapter 已完成，解决了“非 Claude Code Anthropic 客户端如何接入”的问题。46 号计划解决的是“真实 Claude Code CLI 如何被本机安全 native 接管”。

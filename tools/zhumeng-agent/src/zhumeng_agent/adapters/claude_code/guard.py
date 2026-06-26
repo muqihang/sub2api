@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -15,6 +17,8 @@ from urllib.parse import urlparse
 _MANAGED_NO_PROXY = "127.0.0.1,localhost,::1"
 _OFFICIAL_HOST_MARKERS = ("anthropic.com", "claude.ai", "claude.com")
 _SENSITIVE_ENV_MARKERS = ("TOKEN", "API_KEY", "COOKIE", "SESSION", "PROXY", "BASE_URL")
+_CP0_OVERLAY_HASH = "sha256:" + hashlib.sha256(b"zhumeng-claude-runtime-overlay:cp0-native-only").hexdigest()
+_UNKNOWN_HASH = "sha256:" + ("0" * 64)
 
 
 class NativeGuardMode(StrEnum):
@@ -36,11 +40,26 @@ class NativeGuardConfig:
     control_plane_intent_auth: str | None = field(default=None, repr=False)
     capture_level: str = "summary"
     connect_mode: str | None = None
+    cert_path: Path | None = None
+    key_path: Path | None = None
     max_messages: int = 0
     attestation_secret: str | None = field(default=None, repr=False)
+    native_managed_access_token: str | None = field(default=None, repr=False)
+    native_managed_state_path: Path | None = None
     attestation_key_id: str = "guard_v1"
     hmac_key: str | None = field(default=None, repr=False)
     hmac_key_id: str = "local_guard_v1"
+    allow_nonloopback_upstream: bool = False
+    managed_session_id: str | None = field(default=None, repr=False)
+    device_id: int | None = None
+    agent_version: str = "0.1.0"
+    route_hint_secret: str | None = field(default=None, repr=False)
+    route_hint_catalog_version: str = "cp4-cli-fixture-v1"
+    runtime_hash: str | None = None
+    overlay_hash: str | None = None
+    bridge_live_models: tuple[str, ...] = ()
+    bridge_provider_release_statuses: Mapping[str, str] = field(default_factory=dict)
+    bridge_live_expanded_providers: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.mode not in set(NativeGuardMode):
@@ -49,7 +68,15 @@ class NativeGuardConfig:
             raise ValueError("native guard must listen on loopback")
         if self.listen_port <= 0 or self.listen_port > 65535:
             raise ValueError("native guard listen_port must be a valid TCP port")
-        object.__setattr__(self, "upstream_base", _validate_loopback_origin(self.upstream_base, field_name="upstream_base"))
+        object.__setattr__(
+            self,
+            "upstream_base",
+            _validate_loopback_origin(
+                self.upstream_base,
+                field_name="upstream_base",
+                allow_nonloopback=self.allow_nonloopback_upstream,
+            ),
+        )
         if self.control_plane_intent_url is not None:
             object.__setattr__(
                 self,
@@ -96,6 +123,7 @@ def build_native_guard_plan(
         config.upstream_base,
         "--sub2api-auth-env",
         "ZHUMENG_CLAUDE_NATIVE_SUB2API_AUTH",
+        "--native-attestation",
         "--summary-path",
         str(config.summary_path),
         "--connect-mode",
@@ -127,8 +155,27 @@ def build_native_guard_plan(
         "--cost-allow-assistant-messages",
         "--cost-allow-tool-content",
     ]
+    if config.allow_nonloopback_upstream:
+        command.append("--allow-nonloopback-upstream")
+    if config.cert_path is not None:
+        command.extend(["--cert-path", str(config.cert_path)])
+    if config.key_path is not None:
+        command.extend(["--key-path", str(config.key_path)])
+    if config.managed_session_id:
+        command.extend(["--managed-session", config.managed_session_id])
+    if config.device_id is not None:
+        command.extend(["--device-id", str(config.device_id)])
+    if config.agent_version:
+        command.extend(["--agent-version", config.agent_version])
+    if config.native_managed_access_token:
+        command.extend(["--native-managed-access-token-env", "ZHUMENG_CLAUDE_NATIVE_MANAGED_ACCESS_TOKEN"])
+    if config.native_managed_state_path is not None:
+        command.extend(["--native-managed-state-path", str(config.native_managed_state_path)])
     if config.control_plane_intent_url is not None:
         command.extend(["--control-plane-intent-url", config.control_plane_intent_url])
+    if config.route_hint_secret:
+        command.extend(["--route-hint-secret-env", "ZHUMENG_CLAUDE_ROUTE_HINT_SECRET"])
+        command.extend(["--route-hint-catalog-version", config.route_hint_catalog_version])
     return NativeGuardPlan(command=command, env=env, cwd=config.repo_root, config=config)
 
 
@@ -166,6 +213,26 @@ def _build_guard_env(config: NativeGuardConfig, *, inherited_env: Mapping[str, s
     env["NO_PROXY"] = _MANAGED_NO_PROXY
     env["no_proxy"] = _MANAGED_NO_PROXY
     env["ZHUMENG_CLAUDE_NATIVE_SUB2API_AUTH"] = config.sub2api_auth
+    env["ZHUMENG_CLAUDE_RUNTIME_HASH"] = config.runtime_hash or _sha256_file(config.repo_root / "tools" / "cli_control_plane_guard.py")
+    env["ZHUMENG_CLAUDE_OVERLAY_HASH"] = config.overlay_hash or _CP0_OVERLAY_HASH
+    env["ZHUMENG_CLAUDE_CATALOG_HASH"] = _route_catalog_content_hash(
+        config.repo_root,
+        config.route_hint_catalog_version,
+        config.bridge_live_models,
+        bridge_provider_release_statuses=config.bridge_provider_release_statuses,
+        bridge_live_expanded_providers=config.bridge_live_expanded_providers,
+    )
+    if config.bridge_live_models:
+        env["ZHUMENG_CLAUDE_BRIDGE_LIVE_MODELS"] = ",".join(config.bridge_live_models)
+    if config.bridge_provider_release_statuses:
+        env["ZHUMENG_CLAUDE_BRIDGE_PROVIDER_RELEASE_STATUSES_JSON"] = json.dumps(
+            dict(sorted(config.bridge_provider_release_statuses.items())),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    if config.bridge_live_expanded_providers:
+        env["ZHUMENG_CLAUDE_BRIDGE_LIVE_EXPANDED_PROVIDERS"] = ",".join(config.bridge_live_expanded_providers)
     if config.control_plane_intent_auth is not None:
         env["SUB2API_CONTROL_PLANE_INTENT_TOKEN"] = config.control_plane_intent_auth
     if config.attestation_secret is not None:
@@ -173,6 +240,10 @@ def _build_guard_env(config: NativeGuardConfig, *, inherited_env: Mapping[str, s
         env["SUB2API_CONTROL_PLANE_ATTESTATION_CURRENT_KEY_ID"] = config.attestation_key_id
         env["SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET"] = config.attestation_secret
         env["SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_CURRENT_KEY_ID"] = config.attestation_key_id
+    if config.native_managed_access_token is not None:
+        env["ZHUMENG_CLAUDE_NATIVE_MANAGED_ACCESS_TOKEN"] = config.native_managed_access_token
+    if config.route_hint_secret is not None:
+        env["ZHUMENG_CLAUDE_ROUTE_HINT_SECRET"] = config.route_hint_secret
     if config.hmac_key is not None:
         env["SUB2API_CONTROL_PLANE_HMAC_KEY"] = config.hmac_key
         env["SUB2API_CONTROL_PLANE_HMAC_KEY_ID"] = config.hmac_key_id
@@ -203,7 +274,7 @@ def _connect_mode_for(mode: NativeGuardMode) -> str:
     return "block"
 
 
-def _validate_loopback_origin(url: str, *, field_name: str, allow_path: bool = False) -> str:
+def _validate_loopback_origin(url: str, *, field_name: str, allow_path: bool = False, allow_nonloopback: bool = False) -> str:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         raise ValueError(f"{field_name} must use http(s)")
@@ -216,6 +287,8 @@ def _validate_loopback_origin(url: str, *, field_name: str, allow_path: bool = F
     if any(marker in lowered for marker in _OFFICIAL_HOST_MARKERS):
         raise ValueError(f"{field_name} must not target official Claude/Anthropic hosts")
     if lowered not in {"127.0.0.1", "localhost", "::1"}:
+        if allow_nonloopback:
+            return url
         raise ValueError(f"{field_name} must target loopback only")
     if not allow_path and (parsed.path not in {"", "/"} or parsed.params or parsed.query or parsed.fragment):
         raise ValueError(f"{field_name} must be an origin without path/query")
@@ -246,3 +319,43 @@ def _read_guard_ready(process: subprocess.Popen[str], *, timeout_seconds: float)
         except OSError:
             stderr = ""
     raise RuntimeError(f"native guard did not become ready; stdout={lines!r}; stderr={stderr[:1000]}")
+
+
+def _sha256_file(path: Path) -> str:
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return _UNKNOWN_HASH
+    return "sha256:" + digest
+
+
+def _route_catalog_content_hash(
+    repo_root: Path,
+    catalog_version: str,
+    bridge_live_models: tuple[str, ...] = (),
+    *,
+    bridge_provider_release_statuses: Mapping[str, str] | None = None,
+    bridge_live_expanded_providers: tuple[str, ...] = (),
+) -> str:
+    route_trust = _load_route_trust_module(repo_root)
+    catalog = route_trust.cp4_fixture_route_catalog(
+        runtime_hash=_UNKNOWN_HASH,
+        overlay_hash=_UNKNOWN_HASH,
+        catalog_hash=_UNKNOWN_HASH,
+        catalog_version=catalog_version,
+        bridge_live_models=bridge_live_models,
+        bridge_live_provider_statuses=bridge_provider_release_statuses,
+        bridge_live_expanded_providers=bridge_live_expanded_providers,
+    )
+    return str(route_trust.route_catalog_content_hash(catalog))
+
+
+def _load_route_trust_module(repo_root: Path):
+    module_path = repo_root / "tools" / "claude_code_route_trust.py"
+    spec = importlib.util.spec_from_file_location("zhumeng_claude_code_route_trust", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("unable to load Claude Code route trust module")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module

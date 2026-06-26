@@ -1,0 +1,9 @@
+{
+  "name": "same_provider_deepseek_preserve",
+  "replay_context": "normal",
+  "source_profile": {"provider": "deepseek", "route": "deepseek_bridge", "client_type": "claude_code_bridge_deepseek", "model_id": "deepseek-v4-pro", "native_replay_allowed": false},
+  "target_profile": {"provider": "deepseek", "route": "deepseek_bridge", "client_type": "claude_code_bridge_deepseek", "model_id": "deepseek-v4-pro", "native_replay_allowed": false},
+  "input_messages": [
+    {"role": "assistant", "content": "visible", "reasoning_content": "deepseek provider-local reasoning", "provider_private_state_ref": "deepseek-local"}
+  ]
+}

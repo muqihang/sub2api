@@ -478,6 +478,8 @@ func newFormalPoolAuthRetryGateway(t *testing.T, account *Account, upstream *for
 	cfg.Gateway.CCGateway.Enabled = true
 	cfg.Gateway.CCGateway.BaseURL = "http://cc-gateway:8443"
 	cfg.Gateway.CCGateway.Token = "ccg-token"
+	cfg.Gateway.CCGateway.InternalControlToken = "internal-control-material-test"
+	cfg.Gateway.CCGateway.ContextAttestationSecret = "formal-pool-attestation-secret-test"
 	cfg.Gateway.CCGateway.Providers.Anthropic = true
 	return &GatewayService{
 		accountRepo:         repo,
@@ -504,6 +506,12 @@ func newFormalPoolRefreshAccount(accountType string) *Account {
 	account.Extra["cc_gateway_egress_bucket_enabled"] = "true"
 	account.Extra["cc_gateway_egress_bucket"] = "bucket-a"
 	account.Extra["cc_gateway_account_ref"] = "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	account.Extra[ccGatewayExtraCredentialRef] = "opaque:credential-ref:v1:refresh-cred-a"
+	account.Extra[ccGatewayExtraCredentialBindingHMAC] = ccGatewayCredentialBindingHMACForMaterial("formal-pool-attestation-secret-test", "oauth", "Bearer old-token")
+	account.Extra[ccGatewayExtraProxyIdentityRef] = "opaque:proxy-ref:v1:bucket-a"
+	account.Extra[ccGatewayExtraPersonaProfile] = "claude-code-2.1.175-macos-local"
+	account.Extra[FormalPoolExtraPoolProfileEffective] = "claude-code-2.1.175-macos-local"
+	account.Extra["claude_code_device_id"] = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 	account.Extra[FormalPoolExtraRuntimeRegistered] = "true"
 	account.Extra[FormalPoolExtraRuntimeRegisteredAt] = "2026-05-29T00:00:00Z"
 	account.Extra[FormalPoolExtraHealthcheckStatus] = "passed"
@@ -517,29 +525,36 @@ func newFormalPoolRefreshAccount(accountType string) *Account {
 	return account
 }
 
-func TestFormalPoolAuth401RefreshRetrySucceedsWithoutQuarantine(t *testing.T) {
+func TestFormalPoolAuth401RefreshFailsClosedUntilRuntimeReregistered(t *testing.T) {
 	for _, accountType := range []string{AccountTypeSetupToken, AccountTypeOAuth} {
 		t.Run(accountType, func(t *testing.T) {
+			useClaudeCodeSessionBoundaryLedgerFileForTest(t)
 			account := newFormalPoolRefreshAccount(accountType)
+			oldBinding := account.GetExtraString(ccGatewayExtraCredentialBindingHMAC)
 			upstream := &formalPoolAuthRetryUpstream{responses: []*http.Response{newFormalPool401Response(), newAnthropicSuccessResponse()}}
 			executor := &formalPoolGatewayRefreshExecutor{}
 			svc, repo, schedulerCache, refreshCache := newFormalPoolAuthRetryGateway(t, account, upstream, executor)
 			c, ctx := newAnthropicForwardTestContext("/v1/messages", true)
-			body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+			c.Request.Header.Set("X-Claude-Code-Session-Id", "11111111-2222-4333-8444-555555555555")
+			body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 
 			_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
 
-			require.NoError(t, err)
-			require.Equal(t, 2, upstream.requests)
+			require.Error(t, err)
+			require.Equal(t, 1, upstream.requests)
 			require.Equal(t, 1, executor.refreshCalls)
 			require.Equal(t, "Bearer old-token", upstream.authorizations[0])
-			require.Equal(t, "Bearer new-token", upstream.authorizations[1])
-			require.Len(t, upstream.bodies, 2)
-			require.True(t, bytes.Equal(body, upstream.bodies[0]))
-			require.True(t, bytes.Equal(body, upstream.bodies[1]))
-			require.Equal(t, FormalPoolStageProduction, repo.accountsByID[account.ID].Extra[FormalPoolExtraOnboardingStage])
-			require.True(t, repo.accountsByID[account.ID].Schedulable)
+			require.Len(t, upstream.bodies, 1)
+			require.False(t, bytes.Equal(body, upstream.bodies[0]), "formal-pool CC Gateway path must rewrite client session before attestation")
+			require.NotContains(t, string(upstream.bodies[0]), "11111111-2222-4333-8444-555555555555")
+			require.Equal(t, "new-token", repo.accountsByID[account.ID].GetCredential("access_token"))
+			require.Equal(t, FormalPoolStageRefreshed, repo.accountsByID[account.ID].Extra[FormalPoolExtraOnboardingStage])
+			require.False(t, repo.accountsByID[account.ID].Schedulable)
 			require.Equal(t, StatusActive, repo.accountsByID[account.ID].Status)
+			require.Equal(t, "false", repo.accountsByID[account.ID].GetExtraString(FormalPoolExtraRuntimeRegistered))
+			require.Empty(t, repo.accountsByID[account.ID].GetExtraString(FormalPoolExtraRuntimeRegisteredAt))
+			require.NotEqual(t, oldBinding, repo.accountsByID[account.ID].GetExtraString(ccGatewayExtraCredentialBindingHMAC))
+			require.Equal(t, ccGatewayCredentialBindingHMACForMaterial("formal-pool-attestation-secret-test", "oauth", "Bearer new-token"), repo.accountsByID[account.ID].GetExtraString(ccGatewayExtraCredentialBindingHMAC))
 			require.Len(t, schedulerCache.setAccountCalls, 1)
 			require.Equal(t, "new-token", schedulerCache.setAccountCalls[0].GetCredential("access_token"))
 			require.Contains(t, refreshCache.deletedKeys, ClaudeTokenCacheKey(account))
@@ -547,33 +562,37 @@ func TestFormalPoolAuth401RefreshRetrySucceedsWithoutQuarantine(t *testing.T) {
 	}
 }
 
-func TestFormalPoolAuth401Second401QuarantinesAfterSingleRefresh(t *testing.T) {
+func TestFormalPoolAuth401RefreshStopsBeforeSecondRequestUntilRuntimeReregistered(t *testing.T) {
+	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
 	account := newFormalPoolRefreshAccount(AccountTypeSetupToken)
 	upstream := &formalPoolAuthRetryUpstream{responses: []*http.Response{newFormalPool401Response(), newFormalPool401Response()}}
 	executor := &formalPoolGatewayRefreshExecutor{}
 	svc, repo, _, _ := newFormalPoolAuthRetryGateway(t, account, upstream, executor)
 	c, ctx := newAnthropicForwardTestContext("/v1/messages", true)
-	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	c.Request.Header.Set("X-Claude-Code-Session-Id", "11111111-2222-4333-8444-555555555555")
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 
 	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
 
 	require.Error(t, err)
-	require.Equal(t, 2, upstream.requests)
+	require.Equal(t, 1, upstream.requests)
 	require.Equal(t, 1, executor.refreshCalls)
-	require.Equal(t, FormalPoolStageQuarantined, repo.accountsByID[account.ID].Extra[FormalPoolExtraOnboardingStage])
+	require.Equal(t, FormalPoolStageRefreshed, repo.accountsByID[account.ID].Extra[FormalPoolExtraOnboardingStage])
 	require.False(t, repo.accountsByID[account.ID].Schedulable)
-	require.Equal(t, StatusError, repo.accountsByID[account.ID].Status)
+	require.Equal(t, StatusActive, repo.accountsByID[account.ID].Status)
 	require.NotContains(t, repo.accountsByID[account.ID].Extra, "formal_pool_auth_refresh_attempted")
 }
 
 func TestFormalPoolAuth401RefreshFailureQuarantinesWithoutRetry(t *testing.T) {
+	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
 	account := newFormalPoolRefreshAccount(AccountTypeSetupToken)
 	upstream := &formalPoolAuthRetryUpstream{responses: []*http.Response{newFormalPool401Response(), newAnthropicSuccessResponse()}}
 	executor := &formalPoolGatewayRefreshExecutor{err: errors.New("refresh temporarily unavailable")}
 	svc, repo, schedulerCache, _ := newFormalPoolAuthRetryGateway(t, account, upstream, executor)
 	repo.cloneOnGet = true
 	c, ctx := newAnthropicForwardTestContext("/v1/messages", true)
-	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	c.Request.Header.Set("X-Claude-Code-Session-Id", "11111111-2222-4333-8444-555555555555")
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 
 	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
 
@@ -590,13 +609,15 @@ func TestFormalPoolAuth401RefreshFailureQuarantinesWithoutRetry(t *testing.T) {
 func TestFormalPoolAuth401InvalidGrantQuarantinesWithoutRetry(t *testing.T) {
 	for _, accountType := range []string{AccountTypeSetupToken, AccountTypeOAuth} {
 		t.Run(accountType, func(t *testing.T) {
+			useClaudeCodeSessionBoundaryLedgerFileForTest(t)
 			account := newFormalPoolRefreshAccount(accountType)
 			upstream := &formalPoolAuthRetryUpstream{responses: []*http.Response{newFormalPool401Response(), newAnthropicSuccessResponse()}}
 			executor := &formalPoolGatewayRefreshExecutor{err: errors.New("invalid_grant: refresh token is invalid")}
 			svc, repo, schedulerCache, _ := newFormalPoolAuthRetryGateway(t, account, upstream, executor)
 			repo.cloneOnGet = true
 			c, ctx := newAnthropicForwardTestContext("/v1/messages", true)
-			body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+			c.Request.Header.Set("X-Claude-Code-Session-Id", "11111111-2222-4333-8444-555555555555")
+			body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 
 			_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
 

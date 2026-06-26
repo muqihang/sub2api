@@ -12,10 +12,8 @@ func TestDefaultModels_ContainsNewAndLegacyImageModels(t *testing.T) {
 	}
 
 	requiredIDs := []string{
-		"claude-fable-5",
 		"claude-opus-4-8",
-		"claude-opus-4-6-thinking",
-		"claude-opus-4-8",
+		"claude-sonnet-4-6",
 		"gemini-2.5-flash-image",
 		"gemini-2.5-flash-image-preview",
 		"gemini-3.1-flash-image",
@@ -26,6 +24,17 @@ func TestDefaultModels_ContainsNewAndLegacyImageModels(t *testing.T) {
 	for _, id := range requiredIDs {
 		if _, ok := byID[id]; !ok {
 			t.Fatalf("expected model %q to be exposed in DefaultModels", id)
+		}
+	}
+
+	for _, stale := range []string{
+		"claude-opus-4-7",
+		"claude-opus-4-5-thinking",
+		"claude-opus-4-6-thinking",
+		"claude-fable-5",
+	} {
+		if _, ok := byID[stale]; ok {
+			t.Fatalf("stale Claude model %q should not be exposed in DefaultModels", stale)
 		}
 	}
 }

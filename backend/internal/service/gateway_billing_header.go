@@ -127,6 +127,9 @@ func shouldStripCCGatewayDownstreamBillingMaterial(account *Account) bool {
 	if account == nil {
 		return false
 	}
+	if requiresCCGatewayFormalPoolAttestation(account) && ccGatewayBillingShapePolicy(account) == "strip" {
+		return true
+	}
 	return strings.EqualFold(strings.TrimSpace(account.GetExtraString("billing_cch_mode")), "sign")
 }
 

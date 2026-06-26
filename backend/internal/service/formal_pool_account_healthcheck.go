@@ -85,9 +85,14 @@ func (r *FormalPoolGatewayHealthcheckRunner) RunHealthcheck(ctx context.Context,
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
 	req.Header.Set("authorization", "Bearer "+account.GetCredential("access_token"))
-	applyCCGatewayAnthropicHeaders(req, r.cfg, account, "oauth")
 	setHeaderRaw(req.Header, ccGatewayHealthcheckPersonaHeader, ccGatewayHealthcheckNon1MProfile)
+	if err := applyCCGatewayAnthropicHeaders(req, r.cfg, account, "oauth"); err != nil {
+		return nil, err
+	}
 	applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
+	if err := applyCCGatewayFormalPoolAttestationWithPersona(req, r.cfg, account, ccGatewayHealthcheckNon1MProfile); err != nil {
+		return nil, err
+	}
 
 	resp, err := r.upstream.DoWithTLS(req, "", account.ID, account.Concurrency, nil)
 	if err != nil {
@@ -192,7 +197,7 @@ func formalPoolHealthcheckBody() ([]byte, error) {
 	return json.Marshal(map[string]any{
 		"model":      formalPoolHealthcheckModel,
 		"max_tokens": 64,
-		"metadata":   map[string]any{"user_id": `{"session_id":"formal-pool-healthcheck"}`},
+		"metadata":   map[string]any{"user_id": `{"device_id":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","session_id":"formal-pool-healthcheck"}`},
 		"stream":     false,
 		"system": []map[string]any{
 			{"type": "text", "text": "<env>\nPlatform: darwin\nShell: zsh\nOS Version: Darwin 24.4.0\nWorking directory: /tmp/formal-pool-healthcheck\n</env>"},

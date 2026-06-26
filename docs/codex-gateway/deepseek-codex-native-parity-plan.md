@@ -1,5 +1,7 @@
 # DeepSeek Codex Native Parity Remediation Implementation Plan
 
+> **2026-06-22 Claude Code Runtime note:** This document is a historical Codex Gateway / Codex Desktop plan for translating Codex Responses to DeepSeek OpenAI-compatible Chat Completions. It is **not** the default transport policy for the Claude Code CLI multiprovider runtime. In the Claude Code bridge, DeepSeek is Anthropic-compatible-first (`anthropic_messages` via `/v1/messages`); OpenAI-compatible `chat/completions` is allowed only as an explicit, fixture-backed degraded fallback and must not be used for product CP8/L8 cache evidence.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Close the remaining DeepSeek-via-Codex gaps that make the app feel non-native: deferred tool search/subagents, subagent model override freshness, skill routing parity, Computer Use visibility, abort/resume cache stability, and subagent session registration reliability.

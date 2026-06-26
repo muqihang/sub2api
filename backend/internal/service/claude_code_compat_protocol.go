@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -29,24 +30,44 @@ const (
 	anthropicCompatUnsupportedMessage         = "Only Anthropic /v1/messages protocol is supported for Claude Code compatibility"
 )
 
+var anthropicCompatSafeToolNameRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+
+func isAnthropicCompatSafeToolName(name string) bool {
+	name = strings.TrimSpace(name)
+	return anthropicCompatSafeToolNameRE.MatchString(name) || name == "multi_tool_use.parallel"
+}
+
 var anthropicCompatOpenAIOnlyTopLevelFields = []string{
 	"audio",
 	"frequency_penalty",
+	"background",
+	"conversation",
 	"function_call",
 	"functions",
+	"include",
 	"input",
 	"instructions",
 	"logit_bias",
 	"logprobs",
 	"max_completion_tokens",
+	"max_output_tokens",
 	"modalities",
+	"n",
 	"parallel_tool_calls",
 	"presence_penalty",
+	"previous_response_id",
 	"prompt",
+	"prompt_cache_key",
+	"reasoning",
 	"response_format",
 	"seed",
+	"stop",
 	"store",
+	"stream_options",
+	"text",
 	"top_logprobs",
+	"truncation",
+	"user",
 }
 
 type AnthropicCompatAuditSummary struct {
@@ -124,6 +145,10 @@ type AnthropicCompatIngressDecision struct {
 	ClientType     string
 }
 
+type AnthropicCompatIngressOptions struct {
+	AllowBridgeRuntimeModels bool
+}
+
 type AnthropicCompatProtocolError struct {
 	Status  int
 	Code    string
@@ -138,6 +163,10 @@ func (e *AnthropicCompatProtocolError) Error() string {
 }
 
 func ValidateAnthropicOnlyCompatIngress(method, rawRoute string, body []byte) (AnthropicCompatIngressDecision, error) {
+	return ValidateAnthropicOnlyCompatIngressWithOptions(method, rawRoute, body, AnthropicCompatIngressOptions{})
+}
+
+func ValidateAnthropicOnlyCompatIngressWithOptions(method, rawRoute string, body []byte, opts AnthropicCompatIngressOptions) (AnthropicCompatIngressDecision, error) {
 	pathname, query := splitCompatRoute(rawRoute)
 	if method != http.MethodPost {
 		return AnthropicCompatIngressDecision{}, anthropicCompatError(http.StatusNotFound, "unsupported_route")
@@ -148,7 +177,7 @@ func ValidateAnthropicOnlyCompatIngress(method, rawRoute string, body []byte) (A
 	if query != "" && query != "beta=true" {
 		return AnthropicCompatIngressDecision{}, anthropicCompatError(http.StatusNotFound, "unsupported_route")
 	}
-	if err := validateAnthropicCompatMessagesBody(body); err != nil {
+	if err := validateAnthropicCompatMessagesBody(body, opts); err != nil {
 		return AnthropicCompatIngressDecision{}, err
 	}
 	return AnthropicCompatIngressDecision{
@@ -164,6 +193,10 @@ func anthropicCompatError(status int, code string) *AnthropicCompatProtocolError
 
 func AnthropicCompatUnsupportedProtocolMessage() string {
 	return anthropicCompatUnsupportedMessage
+}
+
+func IsClaudeCodeBridgeDisplayModelID(modelID string) bool {
+	return strings.HasPrefix(strings.TrimSpace(modelID), "claude-code-bridge-")
 }
 
 func SanitizeAnthropicCompatInboundHeaders(headers http.Header) http.Header {
@@ -214,7 +247,7 @@ func splitCompatRoute(rawRoute string) (string, string) {
 	return path, query
 }
 
-func validateAnthropicCompatMessagesBody(body []byte) error {
+func validateAnthropicCompatMessagesBody(body []byte, opts AnthropicCompatIngressOptions) error {
 	if !gjson.ValidBytes(body) {
 		return anthropicCompatError(http.StatusBadRequest, "invalid_json")
 	}
@@ -231,7 +264,14 @@ func validateAnthropicCompatMessagesBody(body []byte) error {
 	if !model.Exists() || model.Type != gjson.String || strings.TrimSpace(model.String()) == "" {
 		return anthropicCompatError(http.StatusBadRequest, "unsupported_body_shape")
 	}
-	if !strings.HasPrefix(strings.TrimSpace(model.String()), "claude-") {
+	modelID := strings.TrimSpace(model.String())
+	if IsClaudeCodeBridgeDisplayModelID(modelID) {
+		return anthropicCompatError(http.StatusBadRequest, "unsupported_body_shape")
+	}
+	if !strings.HasPrefix(modelID, "claude-") && !opts.AllowBridgeRuntimeModels {
+		return anthropicCompatError(http.StatusBadRequest, "unsupported_body_shape")
+	}
+	if opts.AllowBridgeRuntimeModels && looksSensitiveText(modelID) {
 		return anthropicCompatError(http.StatusBadRequest, "unsupported_body_shape")
 	}
 	messages := gjson.GetBytes(body, "messages")
@@ -256,22 +296,55 @@ func validateAnthropicCompatMessagesBody(body []byte) error {
 	if badMessageRole {
 		return anthropicCompatError(http.StatusBadRequest, "unsupported_body_shape")
 	}
+	if !validateAnthropicCompatToolShapes(body) {
+		return anthropicCompatError(http.StatusBadRequest, "unsupported_body_shape")
+	}
+	return nil
+}
+
+func validateAnthropicCompatToolShapes(body []byte) bool {
+	toolNames := map[string]struct{}{}
 	tools := gjson.GetBytes(body, "tools")
 	if tools.Exists() {
 		if !tools.IsArray() {
-			return anthropicCompatError(http.StatusBadRequest, "unsupported_body_shape")
+			return false
 		}
-		openAIShape := false
+		valid := true
 		tools.ForEach(func(_, tool gjson.Result) bool {
-			if tool.Get("function").Exists() {
-				openAIShape = true
+			if !tool.IsObject() || tool.Get("function").Exists() || tool.Get("type").String() == "function" {
+				valid = false
 				return false
 			}
+			name := strings.TrimSpace(tool.Get("name").String())
+			if !isAnthropicCompatSafeToolName(name) || !tool.Get("input_schema").IsObject() {
+				valid = false
+				return false
+			}
+			toolNames[name] = struct{}{}
 			return true
 		})
-		if openAIShape {
-			return anthropicCompatError(http.StatusBadRequest, "unsupported_body_shape")
+		if !valid {
+			return false
 		}
 	}
-	return nil
+	choice := gjson.GetBytes(body, "tool_choice")
+	if !choice.Exists() {
+		return true
+	}
+	if !choice.IsObject() || choice.Get("function").Exists() || choice.Get("type").String() == "function" {
+		return false
+	}
+	switch choice.Get("type").String() {
+	case "tool":
+		name := strings.TrimSpace(choice.Get("name").String())
+		if !isAnthropicCompatSafeToolName(name) {
+			return false
+		}
+		_, ok := toolNames[name]
+		return ok
+	case "auto", "any", "none":
+		return true
+	default:
+		return false
+	}
 }

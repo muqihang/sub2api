@@ -2,11 +2,19 @@ package service
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
@@ -14,38 +22,60 @@ import (
 )
 
 const (
-	ccGatewayTokenHeader              = "x-cc-gateway-token"
-	ccGatewayAccountIDHeader          = "x-cc-account-id"
-	ccGatewayProviderHeader           = "x-cc-provider"
-	ccGatewayTokenTypeHeader          = "x-cc-token-type"
-	ccGatewayAccountEmailHeader       = "x-cc-account-email"
-	ccGatewayAccountUUIDHeader        = "x-cc-account-uuid"
-	ccGatewayOrganizationUUIDHeader   = "x-cc-organization-uuid"
-	ccGatewayProjectIDHeader          = "x-cc-project-id"
-	ccGatewayEgressBucketHeader       = "x-cc-egress-bucket"
-	ccGatewayPolicyVersionHeader      = "x-cc-policy-version"
-	ccGatewayTrustedPersonaHeader     = "x-sub2api-persona-trusted"
-	ccGatewayHealthcheckPersonaHeader = "x-sub2api-healthcheck-persona"
-	ccGatewayContext1MHeader          = "x-sub2api-context-1m"
-	ccGatewayHealthcheckNon1MProfile  = "claude_code_2_1_175_api_key_non_1m"
-	ccGatewayErrorKindHeader          = "x-cc-gateway-error-kind"
-	ccGatewayErrorCodeHeader          = "x-cc-gateway-error-code"
+	ccGatewayTokenHeader               = "x-cc-gateway-token"
+	ccGatewayAccountIDHeader           = "x-cc-account-id"
+	ccGatewayProviderHeader            = "x-cc-provider"
+	ccGatewayTokenTypeHeader           = "x-cc-token-type"
+	ccGatewayAccountEmailHeader        = "x-cc-account-email"
+	ccGatewayAccountUUIDHeader         = "x-cc-account-uuid"
+	ccGatewayOrganizationUUIDHeader    = "x-cc-organization-uuid"
+	ccGatewayProjectIDHeader           = "x-cc-project-id"
+	ccGatewayEgressBucketHeader        = "x-cc-egress-bucket"
+	ccGatewayPolicyVersionHeader       = "x-cc-policy-version"
+	ccGatewayCredentialRefHeader       = "x-cc-credential-ref"
+	ccGatewayFormalPoolContextHeader   = "x-cc-formal-pool-context"
+	ccGatewayFormalPoolSignatureHeader = "x-cc-formal-pool-signature"
+	ccGatewayInternalControlHeader     = "x-cc-internal-control-token"
+	ccGatewayTrustedPersonaHeader      = "x-sub2api-persona-trusted"
+	ccGatewayHealthcheckPersonaHeader  = "x-sub2api-healthcheck-persona"
+	ccGatewayContext1MHeader           = "x-sub2api-context-1m"
+	ccGatewayDefaultPersonaProfile     = "claude_code_2_1_179_native_degraded"
+	ccGatewayHealthcheckNon1MProfile   = "claude_code_2_1_179_native_degraded"
+	ccGatewayErrorKindHeader           = "x-cc-gateway-error-kind"
+	ccGatewayErrorCodeHeader           = "x-cc-gateway-error-code"
 
-	ccGatewayExtraEgressBucket        = "cc_gateway_egress_bucket"
-	ccGatewayExtraEgressBucketEnabled = "cc_gateway_egress_bucket_enabled"
-	ccGatewayExtraPolicyVersion       = "cc_gateway_policy_version"
-	ccGatewayExtraAccountRef          = "cc_gateway_account_ref"
-	openAIGatewayExtraEgressFallback  = "openai_gateway_egress_bucket"
+	ccGatewayExtraEgressBucket          = "cc_gateway_egress_bucket"
+	ccGatewayExtraEgressBucketEnabled   = "cc_gateway_egress_bucket_enabled"
+	ccGatewayExtraPolicyVersion         = "cc_gateway_policy_version"
+	ccGatewayExtraAccountRef            = "cc_gateway_account_ref"
+	ccGatewayExtraCredentialRef         = "cc_gateway_credential_ref"
+	ccGatewayExtraCredentialBindingHMAC = "cc_gateway_credential_binding_hmac"
+	ccGatewayExtraProxyIdentityRef      = "cc_gateway_proxy_identity_ref"
+	ccGatewayExtraPersonaProfile        = "cc_gateway_persona_profile"
+	ccGatewayExtraTrustedEgressProfile  = "cc_gateway_trusted_egress_profile_ref"
+	ccGatewayExtraProfilePolicyVersion  = "cc_gateway_profile_policy_version"
+	ccGatewayExtraBillingShapePolicy    = "cc_gateway_billing_shape_policy"
+	ccGatewayExtraRequestShapeProfile   = "cc_gateway_request_shape_profile_ref"
+	ccGatewayExtraCacheParityProfile    = "cc_gateway_cache_parity_profile_ref"
+	openAIGatewayExtraEgressFallback    = "openai_gateway_egress_bucket"
 
 	ccGatewayExtraEnabled    = "cc_gateway_enabled"
 	ccGatewayExtraCanaryOnly = "cc_gateway_canary_only"
 	ccGatewayExtraBillingCCH = "billing_cch_mode"
 
-	// Final shared-pool policy is anchored to the verified Claude Code 2.1.175
+	ccGatewayDefaultTrustedEgressProfileRef  = "strip_attribution"
+	ccGatewayDefault2179ProfilePolicyVersion = "claude_code_2_1_179_cp1_degraded_v1"
+	ccGatewayDefaultBillingShapePolicy       = "strip"
+	ccGatewayDefault2179RequestShapeProfile  = "claude_code_2_1_179_messages_streaming_tooldefs_degraded_v1"
+	ccGatewayDefault2179CacheParityProfile   = "claude_code_2_1_179_cache_parity_degraded_v1"
+
+	// Final shared-pool policy is anchored to the verified Claude Code 2.1.179
 	// profile. Stale compatible account metadata is admission-only and final
 	// normal outbound traffic canonicalizes to this version.
-	ccGatewayAnthropicPolicyVersion = "2.1.175"
+	ccGatewayAnthropicPolicyVersion = "2.1.179"
 )
+
+var ccGatewayCredentialBindingHMACRe = regexp.MustCompile(`^hmac-sha256:[a-fA-F0-9]{64}$`)
 
 type ccGatewayAnthropicRoute string
 
@@ -67,6 +97,12 @@ type CCGatewayAnthropicCanaryRequest struct {
 
 type ccGatewayExplicitCanaryRequestContextKey struct{}
 type ccGatewayExplicitCanaryLocalOnlyContextKey struct{}
+type ccGatewayObservedClientProfileContextKey struct{}
+
+type ccGatewayObservedClientProfileSeed struct {
+	CLIVersionBucket string
+	ObservedProfile  map[string]any
+}
 
 func WithCCGatewayExplicitCanaryRequest(ctx context.Context, req CCGatewayAnthropicCanaryRequest) context.Context {
 	return context.WithValue(ctx, ccGatewayExplicitCanaryRequestContextKey{}, req)
@@ -84,6 +120,26 @@ func WithCCGatewayExplicitCanaryLocalOnly(ctx context.Context) context.Context {
 func IsCCGatewayExplicitCanaryLocalOnly(ctx context.Context) bool {
 	v, _ := ctx.Value(ccGatewayExplicitCanaryLocalOnlyContextKey{}).(bool)
 	return v
+}
+
+func withCCGatewayObservedClientProfileSeed(ctx context.Context, headers http.Header) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	version := ccGatewayObservedCLIVersionBucketFromHeaders(headers)
+	if version == "" {
+		version = "unknown"
+	}
+	return context.WithValue(ctx, ccGatewayObservedClientProfileContextKey{}, ccGatewayObservedClientProfileSeed{CLIVersionBucket: version})
+}
+
+func attachCCGatewayObservedClientProfileSnapshot(req *http.Request) {
+	if req == nil {
+		return
+	}
+	seed, _ := req.Context().Value(ccGatewayObservedClientProfileContextKey{}).(ccGatewayObservedClientProfileSeed)
+	seed.ObservedProfile = ccGatewayObservedClientProfileForBody(req, ccGatewayRouteClassFromRequest(req), claudeCodeReadRequestBody(req))
+	*req = *req.WithContext(context.WithValue(req.Context(), ccGatewayObservedClientProfileContextKey{}, seed))
 }
 
 func ccGatewayConfig(cfg *config.Config) config.GatewayCCGatewayConfig {
@@ -301,6 +357,9 @@ func (s *GatewayService) selectCCGatewayAnthropicRouteForMode(account *Account, 
 	if canaryOnly && !explicitCanary {
 		return false, fmt.Errorf("cc gateway canary-only account %d is not eligible for broad routing", account.ID)
 	}
+	if IsFormalPoolAccount(account) && !isSafeLedgerRef(strings.TrimSpace(account.GetExtraString(ccGatewayExtraAccountRef))) {
+		return false, fmt.Errorf("cc gateway account ref missing or unsafe for account %d", account.ID)
+	}
 	if IsFormalPoolAccount(account) && !explicitCanary {
 		if !account.IsSchedulable() {
 			return false, fmt.Errorf("cc gateway lifecycle ineligible for account %d", account.ID)
@@ -349,9 +408,9 @@ func resolveCCGatewayEgressBucket(account *Account) string {
 	return ""
 }
 
-func applyCCGatewayAnthropicHeaders(req *http.Request, cfg *config.Config, account *Account, tokenType string) {
+func applyCCGatewayAnthropicHeaders(req *http.Request, cfg *config.Config, account *Account, tokenType string) error {
 	if req == nil || account == nil || cfg == nil {
-		return
+		return nil
 	}
 	ccg := cfg.Gateway.CCGateway
 	setHeaderRaw(req.Header, ccGatewayTokenHeader, strings.TrimSpace(ccg.Token))
@@ -359,33 +418,135 @@ func applyCCGatewayAnthropicHeaders(req *http.Request, cfg *config.Config, accou
 	setHeaderRaw(req.Header, ccGatewayProviderHeader, PlatformAnthropic)
 	setHeaderRaw(req.Header, ccGatewayTokenTypeHeader, tokenType)
 	setHeaderRaw(req.Header, ccGatewayPolicyVersionHeader, ccGatewayAnthropicPolicyVersion)
+	setHeaderRaw(req.Header, ccGatewayCredentialRefHeader, ccGatewayCredentialRef(account))
 	// Formal shared-pool Anthropic routing must not send raw email/account/org
 	// identity headers to CC Gateway. Account identity is selected by the
 	// server-owned x-cc-account-id ref and CC Gateway account_identities config.
 	setHeaderRaw(req.Header, ccGatewayEgressBucketHeader, resolveCCGatewayEgressBucket(account))
-	applyCCGatewayClaudeCodeSessionMapping(req, account)
+	return applyCCGatewayClaudeCodeSessionMapping(req, account)
 }
 
-func applyCCGatewayContext1MSelection(req *http.Request, clientHeaders http.Header, body []byte, modelID string) {
+func applyCCGatewayInternalControlToken(req *http.Request, cfg *config.Config) {
+	if req == nil || cfg == nil {
+		return
+	}
+	if token := strings.TrimSpace(cfg.Gateway.CCGateway.InternalControlToken); token != "" {
+		setHeaderRaw(req.Header, ccGatewayInternalControlHeader, token)
+	}
+}
+
+func applyCCGatewayFormalPoolAttestation(req *http.Request, cfg *config.Config, account *Account) error {
+	return applyCCGatewayFormalPoolAttestationWithPersona(req, cfg, account, "")
+}
+
+func applyCCGatewayFormalPoolAttestationWithPersona(req *http.Request, cfg *config.Config, account *Account, personaOverride string) error {
+	if req == nil || cfg == nil || account == nil {
+		return nil
+	}
+	if !requiresCCGatewayFormalPoolAttestation(account) {
+		return nil
+	}
+	applyCCGatewayInternalControlToken(req, cfg)
+	secret := strings.TrimSpace(cfg.Gateway.CCGateway.ContextAttestationSecret)
+	if secret == "" {
+		if cfg.Gateway.CCGateway.Enabled {
+			return fmt.Errorf("cc gateway formal-pool attestation secret is required")
+		}
+		return nil
+	}
+	credentialRef := strings.TrimSpace(ccGatewayCredentialRef(account))
+	proxyIdentityRef := strings.TrimSpace(ccGatewayProxyIdentityRef(account))
+	personaProfile := strings.TrimSpace(personaOverride)
+	if personaProfile == "" {
+		personaProfile = strings.TrimSpace(ccGatewayPersonaProfile(account))
+	}
+	sessionID := strings.TrimSpace(getHeaderRaw(req.Header, "X-Claude-Code-Session-Id"))
+	if credentialRef == "" || proxyIdentityRef == "" || personaProfile == "" || sessionID == "" {
+		missing := make([]string, 0, 4)
+		if credentialRef == "" {
+			missing = append(missing, "credential_ref")
+		}
+		if proxyIdentityRef == "" {
+			missing = append(missing, "proxy_identity_ref")
+		}
+		if personaProfile == "" {
+			missing = append(missing, "persona_profile")
+		}
+		if sessionID == "" {
+			missing = append(missing, "session_id")
+		}
+		return fmt.Errorf("cc gateway formal-pool attestation context is incomplete: missing %s", strings.Join(missing, ","))
+	}
+	if !isSafeLedgerRef(credentialRef) || !isSafeLedgerRef(proxyIdentityRef) {
+		return fmt.Errorf("cc gateway formal-pool attestation refs are unsafe")
+	}
+	routeClass := ccGatewayRouteClassFromRequest(req)
+	path := "/v1/messages"
+	if req.URL != nil {
+		path = strings.TrimSpace(req.URL.Path)
+	}
+	ctx := map[string]any{
+		"account_id":                 strings.TrimSpace(getHeaderRaw(req.Header, ccGatewayAccountIDHeader)),
+		"credential_source":          "server_account_credentials",
+		"credential_ref":             credentialRef,
+		"egress_bucket":              strings.TrimSpace(getHeaderRaw(req.Header, ccGatewayEgressBucketHeader)),
+		"method":                     strings.ToUpper(strings.TrimSpace(req.Method)),
+		"nonce":                      "nonce-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		"observed_client_profile":    ccGatewayObservedClientProfile(req, routeClass),
+		"path":                       path,
+		"persona_profile":            personaProfile,
+		"policy_version":             strings.TrimSpace(getHeaderRaw(req.Header, ccGatewayPolicyVersionHeader)),
+		"proxy_identity_ref":         proxyIdentityRef,
+		"route_class":                routeClass,
+		"session_id":                 sessionID,
+		"timestamp_ms":               time.Now().UnixMilli(),
+		"token_type":                 strings.TrimSpace(getHeaderRaw(req.Header, ccGatewayTokenTypeHeader)),
+		"trusted_egress_profile_ref": ccGatewayTrustedEgressProfileRef(account),
+		"profile_policy_version":     ccGatewayProfilePolicyVersion(account),
+		"billing_shape_policy":       ccGatewayBillingShapePolicy(account),
+		"request_shape_profile_ref":  ccGatewayRequestShapeProfileRef(account),
+		"cache_parity_profile_ref":   ccGatewayCacheParityProfileRef(account),
+	}
+	raw, err := json.Marshal(ctx)
+	if err != nil {
+		return err
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write(raw)
+	setHeaderRaw(req.Header, ccGatewayFormalPoolContextHeader, base64.RawURLEncoding.EncodeToString(raw))
+	setHeaderRaw(req.Header, ccGatewayFormalPoolSignatureHeader, "hmac-sha256:"+hex.EncodeToString(mac.Sum(nil)))
+	return nil
+}
+
+func requiresCCGatewayFormalPoolAttestation(account *Account) bool {
+	if IsFormalPoolAccount(account) {
+		return true
+	}
+	if account == nil || account.Platform != PlatformAnthropic || account.Type != AccountTypeAPIKey {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(account.GetExtraString(ccGatewayExtraEnabled)), "true")
+}
+
+func applyCCGatewayContext1MSelection(req *http.Request, cfg *config.Config, account *Account) {
 	if req == nil {
 		return
 	}
-	if ccGatewayClientSelectedContext1M(clientHeaders, body, modelID) {
+	if ccGatewayServerSelectedContext1M(account) {
+		applyCCGatewayInternalControlToken(req, cfg)
 		setHeaderRaw(req.Header, ccGatewayContext1MHeader, "true")
 	}
 }
 
-func ccGatewayClientSelectedContext1M(clientHeaders http.Header, body []byte, modelID string) bool {
-	if anthropicBetaTokensContains(getHeaderRaw(clientHeaders, "anthropic-beta"), "context-1m-2025-08-07") {
-		return true
+func ccGatewayServerSelectedContext1M(account *Account) bool {
+	profile := strings.ToLower(strings.TrimSpace(ccGatewayPersonaProfile(account)))
+	if profile == "" || strings.Contains(profile, "non_1m") || strings.Contains(profile, "non-1m") {
+		return false
 	}
-	if strings.Contains(strings.ToLower(strings.TrimSpace(modelID)), "[1m]") {
-		return true
-	}
-	if len(body) > 0 && strings.Contains(strings.ToLower(gjson.GetBytes(body, "model").String()), "[1m]") {
-		return true
-	}
-	return false
+	return strings.HasSuffix(profile, "_1m") ||
+		strings.HasSuffix(profile, "-1m") ||
+		strings.Contains(profile, "subscription_1m") ||
+		strings.Contains(profile, "context_1m")
 }
 
 func applyCCGatewayAnthropicPolicyVersion(ctx context.Context, req *http.Request, account *Account) {
@@ -394,10 +555,14 @@ func applyCCGatewayAnthropicPolicyVersion(ctx context.Context, req *http.Request
 	}
 	trustedPersona := ccGatewayTrustedPersonaContext(ctx)
 	if trustedPersona {
-		setHeaderRaw(req.Header, ccGatewayTrustedPersonaHeader, "1")
 		if version := strings.TrimSpace(GetClaudeCodeVersion(ctx)); version != "" {
-			setHeaderRaw(req.Header, ccGatewayPolicyVersionHeader, version)
-			return
+			if ccGatewayPolicyVersionCompatible(version) {
+				setHeaderRaw(req.Header, ccGatewayTrustedPersonaHeader, "1")
+				setHeaderRaw(req.Header, ccGatewayPolicyVersionHeader, version)
+				return
+			}
+		} else {
+			setHeaderRaw(req.Header, ccGatewayTrustedPersonaHeader, "1")
 		}
 	}
 	if account != nil {
@@ -415,6 +580,32 @@ func ccGatewayTrustedPersonaContext(ctx context.Context) bool {
 	return ok
 }
 
+func enforceFormalPoolNativeProtocolBoundary(ctx context.Context, account *Account, protocol string) error {
+	if !IsFormalPoolAccount(account) {
+		return nil
+	}
+	protocol = strings.TrimSpace(protocol)
+	if _, ok := ClaudeCodeBridgeAuditSummaryFromContext(ctx); ok {
+		return fmt.Errorf("formal pool accounts must not use bridge protocol")
+	}
+	if _, ok := AnthropicCompatAuditSummaryFromContext(ctx); ok {
+		switch protocol {
+		case "", "native_messages", "native_count_tokens":
+			if !IsClaudeCodeClient(ctx) {
+				return fmt.Errorf("formal pool accounts must not use compat protocol")
+			}
+		default:
+			return fmt.Errorf("formal pool accounts must not use compat protocol")
+		}
+	}
+	switch protocol {
+	case "", "native_messages", "native_count_tokens":
+		return nil
+	default:
+		return fmt.Errorf("formal pool accounts require native messages protocol")
+	}
+}
+
 func ccGatewayAccountRef(account *Account) string {
 	if account == nil {
 		return ""
@@ -423,6 +614,390 @@ func ccGatewayAccountRef(account *Account) string {
 		return ref
 	}
 	return strconv.FormatInt(account.ID, 10)
+}
+
+func ccGatewayCredentialRef(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	return strings.TrimSpace(account.GetExtraString(ccGatewayExtraCredentialRef))
+}
+
+func ccGatewayCredentialBindingHMAC(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	value := strings.TrimSpace(account.GetExtraString(ccGatewayExtraCredentialBindingHMAC))
+	if ccGatewayCredentialBindingHMACRe.MatchString(value) {
+		return strings.ToLower(value)
+	}
+	return ""
+}
+
+func ccGatewayCredentialBindingHMACForMaterial(secret, tokenType, rawCredential string) string {
+	secret = strings.TrimSpace(secret)
+	tokenType = strings.TrimSpace(tokenType)
+	rawCredential = strings.TrimSpace(rawCredential)
+	if secret == "" || tokenType == "" || rawCredential == "" {
+		return ""
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte("formal_pool_credential_binding_v1"))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte(tokenType))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte(rawCredential))
+	return "hmac-sha256:" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func ccGatewayOAuthCredentialBindingHMAC(secret, accessToken string) string {
+	accessToken = strings.TrimSpace(accessToken)
+	if accessToken == "" {
+		return ""
+	}
+	return ccGatewayCredentialBindingHMACForMaterial(secret, "oauth", "Bearer "+accessToken)
+}
+
+func ccGatewaySelectedCredentialBindingMaterial(account *Account) (string, string) {
+	if account == nil {
+		return "", ""
+	}
+	return ccGatewayCredentialBindingMaterialFromCredentials(account.Type, account.Credentials)
+}
+
+func ccGatewayCredentialBindingMaterialFromCredentials(accountType string, credentials map[string]any) (string, string) {
+	switch accountType {
+	case AccountTypeOAuth, AccountTypeSetupToken:
+		if accessToken := ccGatewayCredentialString(credentials, "access_token"); accessToken != "" {
+			return "oauth", "Bearer " + accessToken
+		}
+	case AccountTypeAPIKey:
+		if apiKey := ccGatewayCredentialString(credentials, "api_key"); apiKey != "" {
+			return "apikey", apiKey
+		}
+	}
+	return "", ""
+}
+
+func ccGatewayCredentialString(credentials map[string]any, key string) string {
+	if credentials == nil {
+		return ""
+	}
+	v, ok := credentials[key]
+	if !ok || v == nil {
+		return ""
+	}
+	switch val := v.(type) {
+	case string:
+		return strings.TrimSpace(val)
+	case json.Number:
+		return strings.TrimSpace(val.String())
+	case float64:
+		return strconv.FormatInt(int64(val), 10)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case int:
+		return strconv.Itoa(val)
+	default:
+		return ""
+	}
+}
+
+func ccGatewayCredentialBindingHMACFromAccount(secret string, account *Account) string {
+	tokenType, rawCredential := ccGatewaySelectedCredentialBindingMaterial(account)
+	return ccGatewayCredentialBindingHMACForMaterial(secret, tokenType, rawCredential)
+}
+
+func ccGatewayGeneratedCredentialRef(accountRef, generation string) string {
+	accountRef = strings.TrimSpace(accountRef)
+	generation = strings.TrimSpace(generation)
+	if generation == "" {
+		generation = "1"
+	}
+	if accountRef == "" {
+		return ""
+	}
+	return formalPoolSafeRef("credential", accountRef+":"+generation)
+}
+
+func ccGatewayGeneratedDeviceID(accountRef string) string {
+	accountRef = strings.TrimSpace(accountRef)
+	if accountRef == "" {
+		return ""
+	}
+	return hex.EncodeToString(scopedStickyHMACBytes("formal_pool_claude_code_device", accountRef))
+}
+
+func ccGatewayDeviceID(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	for _, key := range []string{"claude_code_device_id", "device_id"} {
+		if deviceID := strings.TrimSpace(account.GetExtraString(key)); claudeCodeDeviceIDRe.MatchString(deviceID) {
+			return strings.ToLower(deviceID)
+		}
+	}
+	return ""
+}
+
+func ccGatewayProxyIdentityRef(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	if ref := strings.TrimSpace(account.GetExtraString(ccGatewayExtraProxyIdentityRef)); ref != "" {
+		return ref
+	}
+	return strings.TrimSpace(account.GetExtraString("proxy_identity_ref"))
+}
+
+func ccGatewayPersonaProfile(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	if v := strings.TrimSpace(account.GetExtraString(ccGatewayExtraPersonaProfile)); v != "" {
+		return v
+	}
+	return ""
+}
+
+func ccGatewayTrustedEgressProfileRef(account *Account) string {
+	if account != nil {
+		if v := safeProfileRef(account.GetExtraString(ccGatewayExtraTrustedEgressProfile)); v != "" {
+			return v
+		}
+	}
+	return ccGatewayDefaultTrustedEgressProfileRef
+}
+
+func ccGatewayProfilePolicyVersion(account *Account) string {
+	if account != nil {
+		if v := safeProfileRef(account.GetExtraString(ccGatewayExtraProfilePolicyVersion)); v != "" {
+			return v
+		}
+	}
+	return ccGatewayDefault2179ProfilePolicyVersion
+}
+
+func ccGatewayBillingShapePolicy(account *Account) string {
+	if account != nil {
+		switch strings.TrimSpace(strings.ToLower(account.GetExtraString(ccGatewayExtraBillingShapePolicy))) {
+		case "strip", "no_cch", "signed_cch":
+			return strings.TrimSpace(strings.ToLower(account.GetExtraString(ccGatewayExtraBillingShapePolicy)))
+		}
+	}
+	return ccGatewayDefaultBillingShapePolicy
+}
+
+func ccGatewayRequestShapeProfileRef(account *Account) string {
+	if account != nil {
+		if v := safeProfileRef(account.GetExtraString(ccGatewayExtraRequestShapeProfile)); v != "" {
+			return v
+		}
+	}
+	return ccGatewayDefault2179RequestShapeProfile
+}
+
+func ccGatewayCacheParityProfileRef(account *Account) string {
+	if account != nil {
+		if v := safeProfileRef(account.GetExtraString(ccGatewayExtraCacheParityProfile)); v != "" {
+			return v
+		}
+	}
+	return ccGatewayDefault2179CacheParityProfile
+}
+
+func safeProfileRef(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == ':' || r == '.' {
+			continue
+		}
+		return ""
+	}
+	if len(value) > 128 {
+		return ""
+	}
+	return value
+}
+
+func ccGatewayObservedClientProfile(req *http.Request, routeClass string) map[string]any {
+	if req != nil {
+		if seed, ok := req.Context().Value(ccGatewayObservedClientProfileContextKey{}).(ccGatewayObservedClientProfileSeed); ok && len(seed.ObservedProfile) > 0 {
+			return cloneCCGatewayObservedClientProfile(seed.ObservedProfile)
+		}
+	}
+	return ccGatewayObservedClientProfileForBody(req, routeClass, claudeCodeReadRequestBody(req))
+}
+
+func ccGatewayObservedClientProfileForBody(req *http.Request, routeClass string, body []byte) map[string]any {
+	profile := map[string]any{
+		"schema_version":     "observed_client_profile.v1",
+		"cli_version_bucket": ccGatewayObservedCLIVersionBucket(req),
+		"route_class":        sanitizeReasonCode(routeClass),
+	}
+	if req == nil {
+		return profile
+	}
+	if stream := gjson.GetBytes(body, "stream"); stream.Exists() && (stream.Type == gjson.True || stream.Type == gjson.False) {
+		profile["stream"] = stream.Bool()
+	}
+	if len(body) > 0 {
+		keys := make([]string, 0)
+		unknownKeys := 0
+		gjson.ParseBytes(body).ForEach(func(k, _ gjson.Result) bool {
+			key := ccGatewayObservedSafeTopLevelBodyKey(k.String())
+			if key != "" {
+				keys = append(keys, key)
+			} else {
+				unknownKeys++
+			}
+			return true
+		})
+		sort.Strings(keys)
+		profile["top_level_body_keys"] = keys
+		if unknownKeys > 0 {
+			profile["unknown_top_level_body_key_count"] = unknownKeys
+		}
+		profile["tool_count"] = int(gjson.GetBytes(body, "tools.#").Int())
+		profile["thinking_present"] = gjson.GetBytes(body, "thinking").Exists()
+		profile["output_config_present"] = gjson.GetBytes(body, "output_config").Exists()
+		profile["context_management_present"] = gjson.GetBytes(body, "context_management").Exists()
+	}
+	billingHeaders := collectCCGatewayBillingHeaderTexts(body)
+	profile["billing_block_count"] = len(billingHeaders)
+	profile["billing_shape"] = ccGatewayBillingShapeFromObservedHeaders(billingHeaders)
+	profile["cc_entrypoint_bucket"] = ccGatewayEntrypointBucketFromObservedHeaders(billingHeaders)
+	return profile
+}
+
+func cloneCCGatewayObservedClientProfile(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		switch values := v.(type) {
+		case []string:
+			out[k] = append([]string(nil), values...)
+		case []any:
+			out[k] = append([]any(nil), values...)
+		default:
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func ccGatewayRouteClassFromRequest(req *http.Request) string {
+	if req != nil && req.URL != nil && strings.TrimSpace(req.URL.Path) == "/v1/messages/count_tokens" {
+		return "count_tokens"
+	}
+	return "messages"
+}
+
+func ccGatewayObservedSafeTopLevelBodyKey(raw string) string {
+	switch strings.TrimSpace(raw) {
+	case "anthropic_beta",
+		"context_management",
+		"max_tokens",
+		"messages",
+		"metadata",
+		"model",
+		"output_config",
+		"service_tier",
+		"stream",
+		"system",
+		"thinking",
+		"tool_choice",
+		"tools":
+		return strings.TrimSpace(raw)
+	default:
+		return ""
+	}
+}
+
+func ccGatewayObservedCLIVersionBucket(req *http.Request) string {
+	if req == nil {
+		return "unknown"
+	}
+	if seed, ok := req.Context().Value(ccGatewayObservedClientProfileContextKey{}).(ccGatewayObservedClientProfileSeed); ok {
+		if version := strings.TrimSpace(seed.CLIVersionBucket); version != "" {
+			return version
+		}
+	}
+	return ccGatewayObservedCLIVersionBucketFromHeaders(req.Header)
+}
+
+func ccGatewayObservedCLIVersionBucketFromHeaders(headers http.Header) string {
+	for _, raw := range []string{
+		getHeaderRaw(headers, "User-Agent"),
+		getHeaderRaw(headers, ClaudeCodeNativeClaudeCodeVersionHeader),
+	} {
+		if match := regexp.MustCompile(`\b(\d+\.\d+\.\d+)\b`).FindStringSubmatch(raw); len(match) == 2 {
+			return match[1]
+		}
+	}
+	return "unknown"
+}
+
+func collectCCGatewayBillingHeaderTexts(body []byte) []string {
+	if len(body) == 0 {
+		return nil
+	}
+	var parsed any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil
+	}
+	var out []string
+	var walk func(any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case string:
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(x)), "x-anthropic-billing-header:") {
+				out = append(out, x)
+			}
+		case []any:
+			for _, child := range x {
+				walk(child)
+			}
+		case map[string]any:
+			for _, child := range x {
+				walk(child)
+			}
+		}
+	}
+	walk(parsed)
+	return out
+}
+
+func ccGatewayBillingShapeFromObservedHeaders(headers []string) string {
+	if len(headers) == 0 {
+		return "absent"
+	}
+	for _, header := range headers {
+		if regexp.MustCompile(`(?i)\bcch=[a-f0-9]{5};`).MatchString(header) {
+			return "cch_present"
+		}
+	}
+	return "no_cch"
+}
+
+func ccGatewayEntrypointBucketFromObservedHeaders(headers []string) string {
+	for _, header := range headers {
+		match := regexp.MustCompile(`(?i)\bcc_entrypoint=([^;]+);`).FindStringSubmatch(header)
+		if len(match) < 2 {
+			continue
+		}
+		switch strings.TrimSpace(strings.ToLower(match[1])) {
+		case "cli":
+			return "cli"
+		case "sdk-cli":
+			return "sdk-cli"
+		default:
+			return "other"
+		}
+	}
+	return "absent"
 }
 
 func ccGatewayAccountEmail(account *Account) string {
@@ -479,21 +1054,48 @@ func isCCGatewayControlPlaneResponse(resp *http.Response) bool {
 
 func ccGatewayControlPlaneCode(resp *http.Response, body []byte) string {
 	if resp != nil {
-		if code := strings.TrimSpace(resp.Header.Get(ccGatewayErrorCodeHeader)); code != "" {
+		if code := safeCCGatewayControlPlaneCode(resp.Header.Get(ccGatewayErrorCodeHeader)); code != "" {
 			return code
 		}
 	}
-	if code := strings.TrimSpace(gjson.GetBytes(body, "error.code").String()); code != "" {
+	if code := safeCCGatewayControlPlaneCode(gjson.GetBytes(body, "error.code").String()); code != "" {
 		return code
 	}
 	return "unknown_control_plane"
 }
 
+func safeCCGatewayControlPlaneCode(code string) string {
+	code = strings.TrimSpace(code)
+	if code == "" || len(code) > 128 || !formalPoolDiagnosticSafeCodeRe.MatchString(code) || formalPoolUnsafeDiagnosticText(code) {
+		return ""
+	}
+	return code
+}
+
 func ccGatewayControlPlaneMessage(body []byte) string {
 	if msg := strings.TrimSpace(gjson.GetBytes(body, "error.message").String()); msg != "" {
+		if ccGatewayControlPlaneMessageUnsafe(msg) {
+			return "CC Gateway control-plane rejected request"
+		}
 		return sanitizeUpstreamErrorMessage(msg)
 	}
 	return "CC Gateway control-plane rejected request"
+}
+
+func ccGatewayControlPlaneMessageUnsafe(msg string) bool {
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		return false
+	}
+	if formalPoolDiagnosticSensitiveKeyValueRe.MatchString(msg) {
+		return true
+	}
+	for _, token := range strings.Fields(msg) {
+		if formalPoolUnsafeDiagnosticText(token) {
+			return true
+		}
+	}
+	return false
 }
 
 func newAntigravityAPIRequestWithCCGateway(

@@ -127,7 +127,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	if err != nil {
 		return nil, fmt.Errorf("invalid base_url: %w", err)
 	}
-	targetURL := buildOpenAIChatCompletionsURL(validatedURL)
+	targetURL := buildOpenAIChatCompletionsURLForAccount(validatedURL, account)
 
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
 	upstreamReq, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, targetURL, bytes.NewReader(upstreamBody))
@@ -473,4 +473,52 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 // 与 buildOpenAIResponsesURL 是姐妹函数。
 func buildOpenAIChatCompletionsURL(base string) string {
 	return buildOpenAIEndpointURL(base, "/v1/chat/completions")
+}
+
+func buildOpenAIChatCompletionsURLForAccount(base string, account *Account) string {
+	return buildOpenAIEndpointURL(base, openAIChatCompletionsEndpointForAccount(account))
+}
+
+func openAIChatCompletionsEndpointForAccount(account *Account) string {
+	if account != nil {
+		if endpoint := sanitizeOpenAIChatCompletionsEndpoint(account.GetCredential("chat_completions_path")); endpoint != "" {
+			return endpoint
+		}
+		if endpoint := sanitizeOpenAIChatCompletionsEndpoint(account.GetExtraString("chat_completions_path")); endpoint != "" {
+			return endpoint
+		}
+		providerRole := strings.ToLower(strings.TrimSpace(account.GetExtraString("provider_role")))
+		if providerRole == "" {
+			providerRole = strings.ToLower(strings.TrimSpace(account.GetCredential("provider_role")))
+		}
+		if endpoint := openAIChatCompletionsEndpointForProviderRole(providerRole); endpoint != "" {
+			return endpoint
+		}
+	}
+	return "/v1/chat/completions"
+}
+
+func openAIChatCompletionsEndpointForProviderRole(providerRole string) string {
+	if strings.ToLower(strings.TrimSpace(providerRole)) == "deepseek" {
+		// DeepSeek's official OpenAI-compatible chat endpoint is /chat/completions.
+		return "/chat/completions"
+	}
+	return ""
+}
+
+func sanitizeOpenAIChatCompletionsEndpoint(endpoint string) string {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" || strings.Contains(endpoint, "://") || strings.ContainsAny(endpoint, "?#") {
+		return ""
+	}
+	if strings.Contains(endpoint, "..") || strings.ContainsAny(endpoint, "\r\n\t") {
+		return ""
+	}
+	if !strings.HasPrefix(endpoint, "/") {
+		endpoint = "/" + endpoint
+	}
+	if endpoint == "/" {
+		return ""
+	}
+	return endpoint
 }

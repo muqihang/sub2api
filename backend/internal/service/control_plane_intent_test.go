@@ -182,3 +182,51 @@ func baseControlPlaneIntentPayload() map[string]any {
 		},
 	}
 }
+
+func TestControlPlaneIntentServiceEvaluateIntentSuppressesLegacyTelemetry(t *testing.T) {
+	svc := NewControlPlaneIntentService()
+	payload := map[string]any{
+		"method":                  "POST",
+		"path_template":           "/api/event_logging/batch",
+		"normalized_query":        map[string]string{},
+		"query_ref":               nil,
+		"query_omitted_reason":    "no_query",
+		"classification":          "telemetry_or_eval_suppressed",
+		"policy_version":          1,
+		"strategy_version":        1,
+		"response_schema_version": 1,
+		"routing_intent":          "local_stub_or_suppress",
+		"body_length_bucket":      "256_1023_bytes",
+		"schema_summary":          map[string]any{"content_kind": "json", "top_level_type": "object", "top_level_keys": []any{"events"}},
+		"body_omitted_reason":     "high_risk_body_not_retained",
+		"digest_omitted_reason":   "raw_body_digest_forbidden_by_policy",
+		"redaction_proof": map[string]any{
+			"sensitive_scan":            "clean",
+			"path_identifiers_redacted": false,
+			"raw_query_persisted":       false,
+			"body_persisted":            false,
+			"raw_body_digest_persisted": false,
+		},
+	}
+
+	body, err := json.Marshal(payload)
+	require.NoError(t, err)
+
+	decision, err := svc.EvaluateIntent(body)
+	require.NoError(t, err)
+	require.Equal(t, "suppress_204", decision.Decision)
+	require.Equal(t, 204, decision.Status)
+}
+
+func TestControlPlaneIntentServiceRejectsMatrixClassificationMismatch(t *testing.T) {
+	svc := NewControlPlaneIntentService()
+	payload := baseControlPlaneIntentPayload()
+	payload["classification"] = "account_settings_sensitive"
+
+	body, err := json.Marshal(payload)
+	require.NoError(t, err)
+
+	_, err = svc.EvaluateIntent(body)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "classification")
+}

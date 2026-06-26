@@ -66,6 +66,7 @@ def test_safe_env_scrubs_sensitive_inherited_values_and_uses_zhumeng_key(tmp_pat
     assert env["no_proxy"] == "127.0.0.1,localhost,::1"
     assert env["HTTP_PROXY"] == "http://127.0.0.1:43117"
     assert env["HTTPS_PROXY"] == "http://127.0.0.1:43117"
+    assert env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
     assert "ALL_PROXY" not in env
 
     joined = "\n".join(f"{key}={value}" for key, value in env.items())
@@ -128,3 +129,30 @@ def test_profile_repr_does_not_expose_entry_api_key(tmp_path: Path):
     )
 
     assert "secret-entry-key" not in repr(profile)
+
+
+def test_cp3_static_anthropic_default_model_env_is_not_inherited(tmp_path):
+    from zhumeng_agent.adapters.claude_code.profile import CaptureMode, ClaudeCodeProfile, build_safe_env  # noqa: PLC0415
+
+    profile = ClaudeCodeProfile(
+        profile_id="cp3",
+        guard_base_url="http://127.0.0.1:19999",
+        zhumeng_entry_api_key="entry-key",
+        config_dir=tmp_path / "managed" / "claude-code" / "cp3" / "config",
+        capture_mode=CaptureMode.PRODUCTION,
+    )
+
+    env = build_safe_env(
+        profile,
+        inherited_env={
+            "PATH": "/bin",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-would-leak",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-would-leak",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-would-leak",
+        },
+    )
+
+    assert env["PATH"] == "/bin"
+    assert "ANTHROPIC_DEFAULT_HAIKU_MODEL" not in env
+    assert "ANTHROPIC_DEFAULT_SONNET_MODEL" not in env
+    assert "ANTHROPIC_DEFAULT_OPUS_MODEL" not in env

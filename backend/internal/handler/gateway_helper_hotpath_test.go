@@ -513,6 +513,26 @@ func TestSetClaudeCodeClientContextDowngradesProxyUAWithoutExactClaudeCodeBeta(t
 	require.False(t, service.IsClaudeCodeClient(c.Request.Context()))
 }
 
+func TestPreserveClaudeCodeRuntimeBridgeClientReappliesAfterCompatDowngrade(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`))
+	c.Request.Header.Set("User-Agent", "Go-http-client/2.0")
+	c.Request = c.Request.WithContext(service.SetClaudeCodeClient(c.Request.Context(), true))
+
+	decision := service.AnthropicCompatIngressDecision{InboundRoute: service.AnthropicCompatInboundMessages, CCGatewayRoute: service.AnthropicCompatCCGatewayMessages, ClientType: service.AnthropicCompatClientType}
+	ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), service.NewAnthropicCompatAuditSummary(decision))
+	c.Request = c.Request.WithContext(ctx)
+	forceAnthropicCompatNonNative(c)
+	require.False(t, service.IsClaudeCodeClient(c.Request.Context()))
+
+	product := "claude_code_runtime"
+	preserveClaudeCodeRuntimeBridgeClient(c, &service.APIKey{RestrictedClientProduct: &product})
+
+	require.True(t, service.IsClaudeCodeClient(c.Request.Context()))
+}
+
 func TestForceAnthropicCompatNonNativeStillDowngradesNonOfficialUA(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

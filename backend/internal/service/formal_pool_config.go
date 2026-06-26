@@ -10,18 +10,19 @@ import (
 )
 
 type FormalPoolConfig struct {
-	NonceTTL                    time.Duration
-	EgressMatchCIDRWhitelist    []net.IPNet
-	ProxyEgressCacheSuccessTTL  time.Duration
-	ProxyEgressCacheFailureTTL  time.Duration
-	ProxyEgressProbeTimeout     time.Duration
-	PublicRouteRatePerNonce     int
-	PublicRouteRatePerIP        int
-	PublicRouteTotalPerNonce    int
-	PublicRouteFallbackPerIP    int
-	PublicRouteConstantDelayMin time.Duration
-	PublicRouteConstantDelayMax time.Duration
-	RateLimitHMACSecret         []byte
+	NonceTTL                          time.Duration
+	EgressMatchCIDRWhitelist          []net.IPNet
+	ProxyEgressCacheSuccessTTL        time.Duration
+	ProxyEgressCacheFailureTTL        time.Duration
+	ProxyEgressProbeTimeout           time.Duration
+	PublicRouteRatePerNonce           int
+	PublicRouteRatePerIP              int
+	PublicRouteTotalPerNonce          int
+	PublicRouteFallbackPerIP          int
+	PublicRouteConstantDelayMin       time.Duration
+	PublicRouteConstantDelayMax       time.Duration
+	RateLimitHMACSecret               []byte
+	CCGatewayContextAttestationSecret string
 }
 
 func DefaultFormalPoolConfig() FormalPoolConfig {

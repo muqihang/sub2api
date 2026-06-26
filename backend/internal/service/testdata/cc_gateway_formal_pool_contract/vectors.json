@@ -1,0 +1,85 @@
+{
+  "account": {
+    "account_id": "hmac-sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "account_ref": "hmac-sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "account_uuid_ref": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "credential_ref": "opaque:credential-ref:v1:shared-fixture-cred-a",
+    "credential_source": "server_account_credentials",
+    "device_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "egress_bucket": "shared-fixture-bucket-a",
+    "email_ref": "hmac-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "persona_profile": "claude_code_2_1_179_native_degraded",
+    "policy_version": "2.1.179",
+    "proxy_identity_ref": "opaque:proxy-ref:v1:shared-fixture-bucket-a"
+  },
+  "cases": {
+    "expired": {
+      "expected_cc_gateway_error_code": "expired_formal_pool_context_attestation",
+      "timestamp_offset_ms": -360001
+    },
+    "one_field_mismatch": {
+      "expected_cc_gateway_error_code": "formal_pool_context_mismatch",
+      "mutate_context": {
+        "egress_bucket": "shared-fixture-bucket-denied"
+      }
+    },
+    "replay_nonce": {
+      "expected_cc_gateway_error_code": "replayed_formal_pool_context_attestation",
+      "nonce": "shared-fixture-replay-nonce"
+    }
+  },
+  "client_input": {
+    "raw_client_session_id": "123e4567-e89b-42d3-a456-426614174321"
+  },
+  "description": "Safe synthetic Sub2API <-> CC Gateway formal-pool attestation contract vectors. No API keys, cookies, account UUID/email, proxy credentials, raw prompt/body/response, telemetry, CCH, or raw HMAC preimage is stored.",
+  "materials": {
+    "context_attestation_material": "scheduler-hmac-material-v1-shared-fixture-ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "credential_binding_material_ref": "opaque:credential-input-ref:v1:shared-fixture-selected-oauth",
+    "gateway_control_material": "gateway-control-material-v1-shared-fixture-ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "internal_control_material": "internal-control-material-v1-shared-fixture-ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "sub2api_session_budget_material": "sub2api-session-budget-material-v1-shared-fixture-ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+  },
+  "schema_version": 1,
+  "valid_context": {
+    "account_id": "hmac-sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "billing_shape_policy": "strip",
+    "cache_parity_profile_ref": "claude_code_2_1_179_cache_parity_degraded_v1",
+    "credential_ref": "opaque:credential-ref:v1:shared-fixture-cred-a",
+    "credential_source": "server_account_credentials",
+    "egress_bucket": "shared-fixture-bucket-a",
+    "method": "POST",
+    "nonce": "shared-fixture-valid-nonce",
+    "observed_client_profile": {
+      "billing_block_count": 1,
+      "billing_shape": "cch_present",
+      "cc_entrypoint_bucket": "sdk-cli",
+      "cli_version_bucket": "2.1.179",
+      "context_management_present": false,
+      "output_config_present": false,
+      "route_class": "messages",
+      "schema_version": "observed_client_profile.v1",
+      "stream": true,
+      "thinking_present": false,
+      "tool_count": 1,
+      "top_level_body_keys": [
+        "max_tokens",
+        "messages",
+        "metadata",
+        "model",
+        "stream",
+        "system",
+        "tools"
+      ]
+    },
+    "path": "/v1/messages",
+    "persona_profile": "claude_code_2_1_179_native_degraded",
+    "policy_version": "2.1.179",
+    "profile_policy_version": "claude_code_2_1_179_cp1_degraded_v1",
+    "proxy_identity_ref": "opaque:proxy-ref:v1:shared-fixture-bucket-a",
+    "request_shape_profile_ref": "claude_code_2_1_179_messages_streaming_tooldefs_degraded_v1",
+    "route_class": "messages",
+    "session_id": "2775e5ba-bb74-457a-9c64-bef6b08f00f2",
+    "token_type": "oauth",
+    "trusted_egress_profile_ref": "strip_attribution"
+  }
+}

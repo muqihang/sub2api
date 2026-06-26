@@ -183,6 +183,15 @@ class CliControlPlaneIntentTest(unittest.TestCase):
         with self.assertRaises(module.IntentValidationError):
             self._build_base_envelope(path="/api/tenants/local-org-secret/settings")
 
+
+    def test_claude_code_organizations_metrics_path_is_not_templated_as_org_id(self):
+        module = self._load_module()
+        envelope = self._build_base_envelope(
+            path="/api/claude_code/organizations/metrics_enabled",
+            classification="claude_code_feature_flags_stubbed",
+        )
+        self.assertEqual(envelope["path_template"], "/api/claude_code/organizations/metrics_enabled")
+
     def test_build_control_plane_intent_uses_safe_default_routing_intent(self):
         module = self._load_module()
         envelope = module.build_control_plane_intent(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -14,7 +15,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from .adapters.codex.config_manager import CodexConfigManager, choose_local_proxy_port, discover_git_project_path
 from .adapters.codex.capture_baseline import generate_capture_baseline
@@ -36,6 +37,43 @@ from .adapters.codex.model_picker import inspect_plugin_mention_marketplace_app,
 from .adapters.codex.model_picker import restore_latest_plugin_auth_gate_backup, restore_latest_plugin_mention_marketplace_backup
 from .adapters.codex.model_picker import codex_app_is_running
 from .adapters.base import BaseAdapter
+from .adapters.claude_code.launcher import (
+    _bridge_model_capabilities_json,
+    bridge_effort_capabilities_hash,
+    run_managed_claude_code,
+)
+from .adapters.claude_code.doctor import ClaudeCodeDoctorContext, evaluate_toolsearch_profile
+from .adapters.claude_code.profile import ClaudeCodeCapabilityProfile, FgtsMode, ToolSearchMode
+from .adapters.claude_code.runtime_installer import (
+    EFFORT_CAPABILITY_HOOK_REPLACEMENT,
+    EXACT_EFFORT_EFFECTIVE_CLAMP_PATCH_POINT,
+    EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT,
+    EXACT_EFFORT_LEVEL_UI_PATCH_POINT,
+    EXACT_EFFORT_LEVEL_UI_REPLACEMENT,
+    RuntimeInstallerError,
+    apply_managed_runtime_agent_model_schema_patch,
+    apply_managed_runtime_effort_capability_patch,
+    apply_shell_alias_plan,
+    build_managed_runtime_install_plan,
+    build_shell_alias_plan,
+    disable_managed_runtime,
+    read_managed_runtime_status,
+    resolve_active_managed_runtime,
+    write_managed_runtime_artifacts,
+)
+from .adapters.claude_code.live_matrix import (
+    CP8LiveMatrixError,
+    assemble_cp8_external_live_matrix_evidence,
+    collect_cp8_cache_account_audit_from_log_text,
+    collect_cp8_live_provider_provenance,
+    collect_cp8_sub2api_gateway_live_provenance,
+    verify_cp8_live_matrix,
+    write_cp8_live_scenario_evidence,
+)
+from .adapters.claude_code.evidence_gate import (
+    CanaryEvidenceError,
+    prepare_canary_evidence_run,
+)
 from .adapters.claude_code.status import derive_claude_code_operator_status
 from .doctor import codex_doctor_report
 from .desktop import run_desktop_command
@@ -90,6 +128,98 @@ def build_parser() -> argparse.ArgumentParser:
     codex_parser = subparsers.add_parser("codex")
     codex_parser.add_argument("args", nargs=argparse.REMAINDER)
 
+    claude_code_parser = subparsers.add_parser("claude-code")
+    claude_code_subparsers = claude_code_parser.add_subparsers(dest="claude_code_command", required=True)
+    claude_code_start = claude_code_subparsers.add_parser("start")
+    claude_code_start.add_argument("--executable", default=None, help="Override only for tests; production start resolves the active managed runtime manifest.")
+    claude_code_start.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
+    claude_code_start.add_argument("--state-root", type=Path, default=state_dir())
+    claude_code_start.add_argument("--project-cwd", type=Path, default=Path.cwd())
+    claude_code_start.add_argument("--guard-port", type=int)
+    claude_code_start.add_argument("args", nargs=argparse.REMAINDER)
+    claude_code_install = claude_code_subparsers.add_parser("install")
+    claude_code_install.add_argument("--executable", default="claude")
+    claude_code_install.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
+    claude_code_status = claude_code_subparsers.add_parser("status")
+    claude_code_status.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
+    claude_code_doctor = claude_code_subparsers.add_parser("doctor")
+    claude_code_doctor.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
+    claude_code_restart = claude_code_subparsers.add_parser("restart")
+    claude_code_restart.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
+    claude_code_rollback = claude_code_subparsers.add_parser("rollback")
+    claude_code_rollback.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
+    claude_code_uninstall = claude_code_subparsers.add_parser("uninstall")
+    claude_code_uninstall.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
+    claude_code_runtime_patch = claude_code_subparsers.add_parser("runtime-patch")
+    claude_code_runtime_patch.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
+    claude_code_runtime_patch.add_argument("--approve-managed-binary-patch", action="store_true")
+    claude_code_runtime_patch.add_argument("patch_name", choices=("effort-capability",))
+    claude_code_alias = claude_code_subparsers.add_parser("alias")
+    claude_code_alias_subparsers = claude_code_alias.add_subparsers(dest="alias_action", required=True)
+    for action in ("enable", "disable", "status"):
+        alias_parser = claude_code_alias_subparsers.add_parser(action)
+        alias_parser.add_argument("--shell-rc", required=True, type=Path)
+    claude_code_live_matrix = claude_code_subparsers.add_parser("live-matrix")
+    claude_code_live_matrix.add_argument("--evidence", type=Path)
+    claude_code_live_matrix.add_argument("--strict-live", action="store_true")
+    claude_code_live_matrix.add_argument(
+        "--collect-provider-provenance",
+        action="store_true",
+        help="lab-only direct official-provider provenance; requires SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE=true and is not product CP8 sign-off.",
+    )
+    claude_code_live_matrix.add_argument(
+        "--collect-sub2api-provenance",
+        action="store_true",
+        help="Product CP8 provenance through the approved Sub2API/Claude Code Runtime canary, defaulting to http://127.0.0.1:3017.",
+    )
+    claude_code_live_matrix.add_argument(
+        "--collect-cache-account-audit",
+        action="store_true",
+        help="Build a safe CP8 cache/account artifact from filtered 3017 cache-audit logs; no raw body/prompt/header fields are accepted.",
+    )
+    claude_code_live_matrix.add_argument("--assemble-external", action="store_true")
+    claude_code_live_matrix.add_argument("--write-scenario-evidence", action="store_true")
+    claude_code_live_matrix.add_argument("--provenance", type=Path)
+    claude_code_live_matrix.add_argument("--out", type=Path)
+    claude_code_live_matrix.add_argument("--log-file", type=Path, help="Safe filtered 3017 log file for --collect-cache-account-audit; use '-' for stdin.")
+    claude_code_live_matrix.add_argument("--run-id")
+    claude_code_live_matrix.add_argument("--scenario")
+    claude_code_live_matrix.add_argument("--route")
+    claude_code_live_matrix.add_argument("--client-type")
+    claude_code_live_matrix.add_argument("--provider")
+    claude_code_live_matrix.add_argument("--model")
+    claude_code_live_matrix.add_argument("--endpoint")
+    claude_code_live_matrix.add_argument("--upstream-request-id")
+    claude_code_live_matrix.add_argument("--provider-provenance-ref", action="append", default=[])
+    claude_code_live_matrix.add_argument("--safe-evidence-summary")
+    claude_code_live_matrix.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
+    claude_code_live_matrix.add_argument("--sub2api-base-url", help="Sub2API canary gateway base URL for CP8 live, e.g. http://127.0.0.1:3017")
+    claude_code_live_matrix.add_argument("--sub2api-token", help="Sub2API gateway/session token; prefer SUB2API_CP8_LIVE_GATEWAY_TOKEN env")
+    claude_code_live_matrix.add_argument(
+        "--output-root",
+        type=Path,
+        help="Dedicated CP8 evidence output directory; do not point this at a source worktree.",
+    )
+    claude_code_live_matrix.add_argument("--safe-summary-hash-stable", action="store_true")
+    claude_code_live_matrix.add_argument("--safe-tool-result-hash-stable", action="store_true")
+    claude_code_live_matrix.add_argument("--usage-accounting-split-by-route", action="store_true")
+    claude_code_live_matrix.add_argument("--stable-prefix-invalidated", action="store_true")
+    claude_code_live_matrix.add_argument("--ttl-fast-switch-boundary-miss-count", type=int, default=0)
+    claude_code_live_matrix.add_argument("--claude-native-live-cache-usage-observed", action="store_true")
+    claude_code_live_matrix.add_argument("--require-live-cache-usage", action="store_true")
+    claude_code_preflight = claude_code_subparsers.add_parser("preflight")
+    claude_code_preflight.add_argument("--runtime-root", type=Path, default=state_dir() / "runtimes")
+    claude_code_preflight.add_argument("--state-root", type=Path, default=state_dir())
+    claude_code_preflight.add_argument("--project-cwd", type=Path, default=Path.cwd())
+    claude_code_preflight.add_argument("--run-id", required=True)
+    claude_code_preflight.add_argument("--evidence", required=True, type=Path)
+    claude_code_preflight.add_argument(
+        "--output-root",
+        required=True,
+        type=Path,
+        help="Dedicated local preflight evidence root; writes <run-id>/preflight/decision-freeze.json.",
+    )
+
     status_parser = subparsers.add_parser("status")
     status_parser.add_argument("--json", action="store_true")
 
@@ -135,7 +265,19 @@ def emit_failed(payload: dict[str, object]) -> int:
 
 
 def default_state_store() -> JsonStateStore:
+    override = os.environ.get("ZHUMENG_AGENT_STATE_PATH")
+    if override:
+        return JsonStateStore(Path(override).expanduser())
     return JsonStateStore(state_dir() / "state.json")
+
+
+def claude_code_start_state_store(state_root: Path) -> JsonStateStore:
+    if os.environ.get("ZHUMENG_AGENT_STATE_PATH"):
+        return default_state_store()
+    state_path = Path(state_root).expanduser() / "state.json"
+    if state_path.exists():
+        return JsonStateStore(state_path)
+    return default_state_store()
 
 
 def default_http_client(server: str) -> AgentHTTPClient:
@@ -172,6 +314,26 @@ def run_codex_process(args: list[str], env: dict[str, str]) -> int:
 
 def launch_codex_process(command: list[str]) -> None:
     subprocess.Popen(command)
+
+
+def launch_claude_code_process(
+    command: list[str],
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+    *,
+    detach_stdio: bool = False,
+):
+    if detach_stdio:
+        return subprocess.Popen(
+            command,
+            env=env,
+            cwd=str(cwd) if cwd is not None else None,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    return subprocess.Popen(command, env=env, cwd=str(cwd) if cwd is not None else None)
 
 
 def default_codex_app_path() -> Path | None:
@@ -463,12 +625,349 @@ def codex_restart_required_after_config_change(config_hash_before: str | None, c
     return bool(app_path is not None and codex_app_is_running(app_path))
 
 
+def server_native_attestation_secret(exchanged: dict[str, object], *, existing_state: dict[str, object] | None = None) -> str:
+    secret = str(exchanged.get("claude_code_native_attestation_secret") or "").strip()
+    if secret:
+        return secret
+    current = existing_state or {}
+    if (
+        str(current.get("claude_code_native_attestation_secret_source") or "").strip().lower() == "server"
+        and str(current.get("claude_code_native_attestation_secret") or "").strip()
+    ):
+        return str(current["claude_code_native_attestation_secret"])
+    raise ValueError("managed setup is incomplete: missing server-provisioned claude_code_native_attestation_secret")
+
+
+def require_server_native_attestation_secret(state: dict[str, object]) -> str:
+    secret = str(state.get("claude_code_native_attestation_secret") or "").strip()
+    source = str(state.get("claude_code_native_attestation_secret_source") or "").strip().lower()
+    if secret and source == "server":
+        return secret
+    raise ValueError("managed setup is incomplete: missing server-provisioned claude_code_native_attestation_secret")
+
+
+def server_route_hint_secret(state: dict[str, object]) -> str | None:
+    secret = str(state.get("claude_code_route_hint_secret") or "").strip()
+    source = str(state.get("claude_code_route_hint_secret_source") or "").strip().lower()
+    if secret and source == "server":
+        return secret
+    return None
+
+
+def require_server_route_hint_secret(state: dict[str, object]) -> str:
+    secret = server_route_hint_secret(state)
+    if secret:
+        return secret
+    raise ValueError("managed setup is incomplete: missing server-provisioned claude_code_route_hint_secret")
+
+
+def _managed_state_str(state: Mapping[str, object], key: str) -> str:
+    value = state.get(key)
+    return str(value or "").strip()
+
+
+def _read_env_file_value(path: Path, key: str) -> str:
+    try:
+        lines = path.expanduser().read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return ""
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        name, value = stripped.split("=", 1)
+        if name.strip() == key:
+            return value.strip().strip('"').strip("'")
+    return ""
+
+
+def _looks_like_agent_jwt(value: str) -> bool:
+    return value.strip().startswith("eyJ")
+
+
+def _safe_claude_code_sub2api_key(value: str) -> str:
+    value = str(value or "").strip()
+    if not value or _looks_like_agent_jwt(value):
+        return ""
+    return value
+
+
+def resolve_claude_code_sub2api_auth(state: Mapping[str, object], *, state_root: Path) -> str:
+    for key in (
+        "claude_code_sub2api_api_key",
+        "claude_code_gateway_api_key",
+        "sub2api_api_key",
+    ):
+        value = _safe_claude_code_sub2api_key(_managed_state_str(state, key))
+        if value:
+            return value
+    env_value = _safe_claude_code_sub2api_key(_read_env_file_value(state_root / "claude-code-sub2api.env", "SUB2API_API_KEY"))
+    if env_value:
+        return env_value
+    for key in ("ZHUMENG_CLAUDE_CODE_SUB2API_API_KEY", "SUB2API_CLAUDE_CODE_API_KEY"):
+        value = _safe_claude_code_sub2api_key(str(os.environ.get(key) or ""))
+        if value:
+            return value
+    raise ValueError("managed Claude Code setup is incomplete: missing Claude Code dedicated Sub2API API key (state claude_code_sub2api_api_key, claude-code-sub2api.env SUB2API_API_KEY, or ZHUMENG_CLAUDE_CODE_SUB2API_API_KEY)")
+
+
+def _catalog_version_from_state(state: Mapping[str, object]) -> str:
+    explicit = _managed_state_str(state, "claude_code_route_hint_catalog_version")
+    if explicit:
+        return explicit
+    return "cp4-cli-fixture-v1"
+
+
+def resolve_claude_code_native_managed_credentials(state: Mapping[str, object]) -> tuple[str, str, int]:
+    access_token = (
+        _managed_state_str(state, "claude_code_native_access_token")
+        or _managed_state_str(state, "claude_code_native_managed_access_token")
+        or _managed_state_str(state, "access_token")
+    )
+    managed_session_id = (
+        _managed_state_str(state, "claude_code_native_managed_session_id")
+        or _managed_state_str(state, "managed_session_id")
+    )
+    raw_device_id = state.get("claude_code_native_device_id")
+    if raw_device_id is None or str(raw_device_id).strip() == "":
+        raw_device_id = state.get("device_id")
+    missing = []
+    if not access_token:
+        missing.append("claude_code_native_access_token")
+    if not managed_session_id:
+        missing.append("claude_code_native_managed_session_id")
+    if raw_device_id is None or str(raw_device_id).strip() == "":
+        missing.append("claude_code_native_device_id")
+    if missing:
+        raise ValueError(f"managed Claude Code native setup is incomplete: missing {', '.join(missing)}")
+    try:
+        device_id = int(raw_device_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("managed Claude Code native setup is incomplete: claude_code_native_device_id is invalid") from exc
+    if device_id <= 0:
+        raise ValueError("managed Claude Code native setup is incomplete: claude_code_native_device_id is invalid")
+    return access_token, managed_session_id, device_id
+
+
+def _managed_jwt_seconds_until_expiry(token: str) -> int | None:
+    parts = str(token or "").strip().split(".")
+    if len(parts) < 2:
+        return None
+    payload_segment = parts[1]
+    try:
+        payload_segment += "=" * ((4 - len(payload_segment) % 4) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_segment.encode("ascii")))
+        exp = int(payload["exp"])
+    except Exception:  # noqa: BLE001 - non-JWT test tokens should not force refresh.
+        return None
+    return exp - int(datetime.now(UTC).timestamp())
+
+
+def refresh_claude_code_native_managed_credentials_if_needed(
+    state: dict[str, object],
+    *,
+    store,
+    refresh_window_seconds: int = 300,
+) -> dict[str, object]:
+    access_token = _managed_state_str(state, "claude_code_native_access_token")
+    if not access_token:
+        return state
+    seconds = _managed_jwt_seconds_until_expiry(access_token)
+    if seconds is None or seconds > refresh_window_seconds:
+        return state
+    refresh_token = _managed_state_str(state, "claude_code_native_refresh_token")
+    raw_device_id = state.get("claude_code_native_device_id")
+    if not refresh_token or raw_device_id is None or str(raw_device_id).strip() == "":
+        raise ValueError("managed Claude Code native setup is incomplete: native access token expired and refresh credentials are missing")
+    server_base = (
+        _managed_state_str(state, "claude_code_native_server_base_url")
+        or _managed_state_str(state, "server_base_url")
+        or _managed_state_str(state, "gateway_base_url")
+    )
+    if not server_base:
+        raise ValueError("managed Claude Code native setup is incomplete: missing server_base_url for native token refresh")
+    try:
+        device_id = int(raw_device_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("managed Claude Code native setup is incomplete: claude_code_native_device_id is invalid") from exc
+    refreshed = default_http_client(server_base).refresh_device_token(device_id=device_id, refresh_token=refresh_token)
+    next_access_token = str(refreshed.get("access_token") or "").strip()
+    next_refresh_token = str(refreshed.get("refresh_token") or "").strip()
+    next_session = str(refreshed.get("managed_session_id") or "").strip()
+    if not next_access_token or not next_refresh_token or not next_session:
+        raise ValueError("managed Claude Code native token refresh returned an incomplete response")
+    patch = {
+        "claude_code_native_access_token": next_access_token,
+        "claude_code_native_refresh_token": next_refresh_token,
+        "claude_code_native_managed_session_id": next_session,
+        "claude_code_native_device_id": device_id,
+        "claude_code_native_status": "configured",
+    }
+    expires_at = refreshed.get("expires_at")
+    if expires_at:
+        patch["claude_code_native_expires_at"] = str(expires_at)
+        patch["claude_code_native_token_expires_at"] = str(expires_at)
+    updated = store.update(patch) if hasattr(store, "update") else {**state, **patch}
+    state.update(patch)
+    return dict(updated or state)
+
+
+def route_catalog_content_hash_for_cp8_live(
+    catalog_version: str,
+    *,
+    bridge_live_models: tuple[str, ...] = (),
+    bridge_provider_release_statuses: Mapping[str, str] | None = None,
+    bridge_live_expanded_providers: tuple[str, ...] = (),
+) -> str:
+    from .adapters.claude_code.guard import _route_catalog_content_hash  # noqa: PLC0415
+
+    return _route_catalog_content_hash(
+        Path(__file__).resolve().parents[4],
+        catalog_version,
+        bridge_live_models,
+        bridge_provider_release_statuses=bridge_provider_release_statuses,
+        bridge_live_expanded_providers=bridge_live_expanded_providers,
+    )
+
+
+def _optional_server_native_attestation_secret(state: dict[str, object]) -> str:
+    try:
+        return require_server_native_attestation_secret(state)
+    except ValueError:
+        return ""
+
+
+def _optional_server_route_hint_secret(state: dict[str, object]) -> str:
+    try:
+        return require_server_route_hint_secret(state)
+    except ValueError:
+        return ""
+
+
+def _state_store_root(store: object) -> Path:
+    path = getattr(store, "path", None)
+    if path:
+        return Path(path).expanduser().parent
+    return state_dir()
+
+
+def _optional_claude_code_sub2api_auth(state: Mapping[str, object], *, state_root: Path) -> str:
+    try:
+        return resolve_claude_code_sub2api_auth(state, state_root=state_root)
+    except ValueError:
+        return ""
+
+
+def _cp8_sub2api_gateway_token(args: argparse.Namespace, state: Mapping[str, object], *, state_root: Path) -> str:
+    explicit = _safe_claude_code_sub2api_key(str(args.sub2api_token or os.environ.get("SUB2API_CP8_LIVE_GATEWAY_TOKEN") or ""))
+    if explicit:
+        return explicit
+    return _optional_claude_code_sub2api_auth(state, state_root=state_root)
+
+
+def cp8_sub2api_live_provenance_args(args: argparse.Namespace) -> dict[str, object]:
+    store = default_state_store()
+    state = store.read()
+    state_root = _state_store_root(store)
+    runtime_root = getattr(args, "runtime_root", state_dir() / "runtimes")
+    active_runtime = None
+    try:
+        active_runtime = resolve_active_managed_runtime(runtime_root)
+    except RuntimeInstallerError:
+        active_runtime = None
+    catalog_version = str(os.environ.get("SUB2API_CLAUDE_CODE_ROUTE_HINT_CATALOG_VERSION") or os.environ.get("ZHUMENG_CLAUDE_CATALOG_VERSION") or _catalog_version_from_state(state) or "")
+    bridge_live_models = _active_runtime_bridge_live_models(getattr(active_runtime, "patches", {})) if active_runtime is not None else ()
+    bridge_provider_release_statuses = _bridge_provider_release_statuses_from_patches(getattr(active_runtime, "patches", {})) if active_runtime is not None else {}
+    bridge_live_expanded_providers = tuple(sorted(_bridge_live_expanded_providers_from_patches(getattr(active_runtime, "patches", {})))) if active_runtime is not None else ()
+    catalog_hash = str(os.environ.get("ZHUMENG_CLAUDE_CATALOG_HASH") or os.environ.get("SUB2API_CLAUDE_CODE_CATALOG_HASH") or route_catalog_content_hash_for_cp8_live(
+        catalog_version,
+        bridge_live_models=bridge_live_models,
+        bridge_provider_release_statuses=bridge_provider_release_statuses,
+        bridge_live_expanded_providers=bridge_live_expanded_providers,
+    ) or "")
+    payload = {
+        "run_id": args.run_id,
+        "output_root": args.output_root,
+        "base_url": str(args.sub2api_base_url or os.environ.get("SUB2API_CP8_LIVE_BASE_URL") or os.environ.get("SUB2API_BASE_URL") or _managed_state_str(state, "gateway_base_url") or ""),
+        "gateway_token": _cp8_sub2api_gateway_token(args, state, state_root=state_root),
+        "native_attestation_secret": str(os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET") or _optional_server_native_attestation_secret(state) or ""),
+        "route_hint_secret": str(os.environ.get("SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET") or _optional_server_route_hint_secret(state) or ""),
+        "runtime_hash": str(os.environ.get("ZHUMENG_CLAUDE_RUNTIME_HASH") or os.environ.get("SUB2API_CLAUDE_CODE_RUNTIME_HASH") or (getattr(active_runtime, "runtime_hash", "") if active_runtime is not None else "") or ""),
+        "overlay_hash": str(os.environ.get("ZHUMENG_CLAUDE_OVERLAY_HASH") or os.environ.get("SUB2API_CLAUDE_CODE_OVERLAY_HASH") or (getattr(active_runtime, "overlay_hash", "") if active_runtime is not None else "") or ""),
+        "catalog_hash": catalog_hash,
+        "catalog_version": catalog_version,
+    }
+    managed_session_id = _managed_state_str(state, "claude_code_native_managed_session_id") or _managed_state_str(state, "managed_session_id")
+    raw_device_id = state.get("claude_code_native_device_id")
+    if raw_device_id is None or str(raw_device_id).strip() == "":
+        raw_device_id = state.get("device_id")
+    if managed_session_id and raw_device_id is not None and str(raw_device_id).strip():
+        try:
+            device_id = int(raw_device_id)
+        except (TypeError, ValueError):
+            device_id = 0
+        if device_id > 0:
+            payload["managed_session_id"] = managed_session_id
+            payload["device_id"] = device_id
+    return payload
+
+
+def _write_cp8_live_provenance_file(args: argparse.Namespace, provenance: Mapping[str, object]) -> Path:
+    path = _cp8_live_provenance_output_path(args)
+    path.write_text(json.dumps(dict(provenance), ensure_ascii=True, sort_keys=True, indent=2), encoding="utf-8")
+    return path
+
+
+def _cp8_live_provenance_output_path(args: argparse.Namespace) -> Path:
+    out = getattr(args, "out", None)
+    output_root = getattr(args, "output_root", None)
+    root = Path(output_root).expanduser().resolve(strict=False)
+    path = (Path(out).expanduser() if out is not None else root / "live_provenance.json").resolve(strict=False)
+    artifacts_dir = (root / "artifacts").resolve(strict=False)
+    if artifacts_dir in path.parents or path == artifacts_dir:
+        raise CP8LiveMatrixError("CP8 live provenance output must not be inside the scenario artifacts directory")
+    if path.exists():
+        raise CP8LiveMatrixError("CP8 live provenance output refuses to overwrite existing file: " + str(path))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _cp8_live_scenario_evidence_payload(args: argparse.Namespace) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "status": "pass",
+        "live_provider_verified": True,
+        "raw_sensitive_stored": False,
+        "loopback": False,
+    }
+    for arg_name, key in (
+        ("provider", "provider"),
+        ("model", "model"),
+        ("endpoint", "endpoint"),
+        ("upstream_request_id", "upstream_request_id"),
+        ("safe_evidence_summary", "safe_evidence_summary"),
+    ):
+        value = str(getattr(args, arg_name, "") or "").strip()
+        if value:
+            payload[key] = value
+    refs = [str(item).strip() for item in (getattr(args, "provider_provenance_ref", None) or ()) if str(item).strip()]
+    if refs:
+        payload["provider_provenance_refs"] = refs
+    return payload
+
+
+def _cp8_required_arg(args: argparse.Namespace, name: str) -> str:
+    value = str(getattr(args, name, "") or "").strip()
+    setattr(args, name, value)
+    return value
+
+
 def setup_managed_client(client_name: str, code: str, server: str) -> dict[str, object]:
     if client_name != "codex":
         raise ValueError(f"unsupported client: {client_name}")
     client = default_http_client(server)
     exchanged = client.exchange_setup_grant(code=code, server_origin=server, client=client_name)
     loopback_secret = generate_loopback_secret()
+    claude_code_native_attestation_secret = server_native_attestation_secret(exchanged)
     proxy_port = choose_local_proxy_port()
     config_manager = default_config_manager()
     prior_auth_json = config_manager.auth_path.read_text(encoding="utf-8") if config_manager.auth_path.exists() else None
@@ -508,6 +1007,10 @@ def setup_managed_client(client_name: str, code: str, server: str) -> dict[str, 
         "config_profile": exchanged["config_profile"],
         "proxy_port": proxy_port,
         "loopback_secret": loopback_secret,
+        "claude_code_native_attestation_secret": claude_code_native_attestation_secret,
+        "claude_code_native_attestation_secret_source": "server",
+        "claude_code_route_hint_secret": str(exchanged.get("claude_code_route_hint_secret") or "").strip(),
+        "claude_code_route_hint_secret_source": "server" if str(exchanged.get("claude_code_route_hint_secret") or "").strip() else "",
         "backup_paths": [str(path) for path in plan.backup_paths],
         "prior_auth_json": prior_auth_json,
         "prior_catalog_json": prior_catalog_json,
@@ -621,9 +1124,14 @@ def reauth_managed_client(client_name: str, code: str, server: str) -> dict[str,
     model_catalog, model_catalog_meta = fetch_codex_model_catalog(client, config_manager, setup_state)
     proxy_port = int(current.get("proxy_port", choose_local_proxy_port()))
     loopback_secret = str(current.get("loopback_secret") or generate_loopback_secret())
+    claude_code_native_attestation_secret = server_native_attestation_secret(exchanged, existing_state=current)
     config_hash_before = file_sha256(config_manager.config_path)
     config_manager.repair(profile, proxy_port, loopback_secret, model_catalog, trusted_project_paths=current_trusted_project_paths())
     config_hash_after = file_sha256(config_manager.config_path)
+    route_hint_secret = str(exchanged.get("claude_code_route_hint_secret") or "").strip()
+    if not route_hint_secret:
+        route_hint_secret = server_route_hint_secret(current) or ""
+    route_hint_secret_source = "server" if route_hint_secret else ""
     patch = {
         "client": client_name,
         "server_base_url": exchanged["server_base_url"],
@@ -635,6 +1143,10 @@ def reauth_managed_client(client_name: str, code: str, server: str) -> dict[str,
         "config_profile": profile,
         "proxy_port": proxy_port,
         "loopback_secret": loopback_secret,
+        "claude_code_native_attestation_secret": claude_code_native_attestation_secret,
+        "claude_code_native_attestation_secret_source": "server",
+        "claude_code_route_hint_secret": route_hint_secret,
+        "claude_code_route_hint_secret_source": route_hint_secret_source,
         "model_catalog_meta": model_catalog_meta,
         "config_hash_after": config_hash_after,
         "auth_hash_after": file_sha256(config_manager.auth_path),
@@ -670,6 +1182,33 @@ def desktop_diagnose_data() -> dict[str, object]:
 
 
 def desktop_open_app(app: str) -> dict[str, object]:
+    if app == "zhumeng-claude":
+        command = [sys.executable, "-m", "zhumeng_agent", "claude-code", "start"]
+        process = launch_claude_code_process(
+            command,
+            env=merge_env_no_proxy(dict(os.environ)),
+            cwd=Path.cwd(),
+            detach_stdio=True,
+        )
+        return {
+            "status": "started",
+            "app": app,
+            "pid": int(getattr(process, "pid", 0) or 0),
+            "launch_command": command,
+            "nonblocking": True,
+            "stdio_detached": True,
+            "official_claude_unaffected": True,
+        }
+    if app == "claude-code":
+        runtime_state_root = state_dir()
+        return build_claude_code_start_payload(
+            executable=None,
+            state_root=runtime_state_root,
+            project_cwd=Path.cwd(),
+            guard_port=None,
+            runtime_root=runtime_state_root / "runtimes",
+            argv=[],
+        )
     if app != "codex":
         raise ValueError(f"unsupported app: {app}")
     app_path = default_codex_app_path()
@@ -878,7 +1417,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         })
 
     if args.command == "setup":
-        result = setup_managed_client(args.client, args.code, args.server)
+        try:
+            result = setup_managed_client(args.client, args.code, args.server)
+        except ValueError as err:
+            return emit_failed({
+                "command": "setup",
+                "client": args.client,
+                "server": args.server,
+                "status": "not_configured",
+                "message": str(err),
+            })
         return emit({
             "command": "setup",
             **result,
@@ -954,6 +1502,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             "command": "launch",
             **result.to_dict(),
         })
+
+    if args.command == "claude-code":
+        if args.claude_code_command == "start":
+            return handle_claude_code_start(args)
+        if args.claude_code_command in {"install", "status", "doctor", "restart", "rollback", "uninstall", "alias", "live-matrix", "preflight", "runtime-patch"}:
+            return handle_claude_code_runtime_command(args)
+        parser.error("unknown claude-code command")
 
     if args.command == "codex":
         if args.args and args.args[0] == "model-picker":
@@ -1136,6 +1691,958 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.error("unknown command")
     return 2
 
+
+def handle_claude_code_start(args: argparse.Namespace) -> int:
+    try:
+        payload = build_claude_code_start_payload(
+            executable=args.executable,
+            state_root=args.state_root,
+            project_cwd=args.project_cwd,
+            guard_port=args.guard_port,
+            runtime_root=args.runtime_root,
+            argv=normalize_passthrough(args.args),
+        )
+    except (ValueError, RuntimeInstallerError) as err:
+        return emit_failed({
+            "command": "claude-code start",
+            "status": "not_configured",
+            "message": str(err),
+        })
+    return emit(payload)
+
+
+
+def _hash_path_sha256(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+_PREFLIGHT_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_PREFLIGHT_SENSITIVE_KEY_RE = re.compile(
+    r"(^|[^a-z0-9])(authorization|cookie|api[_-]?key|raw[_-]?(body|prompt|request|response|payload)|request[_-]?body|response[_-]?body|access[_-]?token|refresh[_-]?token|session[_-]?token|prompt[_-]?cache[_-]?key|client[_-]?secret|password|secret)([^a-z0-9]|$)",
+    re.IGNORECASE,
+)
+_PREFLIGHT_SENSITIVE_VALUE_RE = re.compile(
+    r"(Bearer\s+|sk-[A-Za-z0-9][A-Za-z0-9_.:-]{6,}|Cookie\s*=|Authorization\s*[:=]|raw[_./ -]?(body|prompt|request|response|payload)\s*[:=]|access[_-]?token\s*[:=]|refresh[_-]?token\s*[:=]|session[_-]?token\s*[:=]|prompt[_-]?cache[_-]?key\s*[:=])",
+    re.IGNORECASE,
+)
+_PREFLIGHT_ALLOWED_SENSITIVE_KEYS = frozenset({
+    "cache_control_provider_ignored",
+    "prompt_cache_key_present",
+    "prompt_cache_key",
+    "prompt_cache_key_strategy",
+    "raw_sensitive_stored",
+    "sensitive_scan_clean",
+})
+
+
+def _safe_catalog_hash_from_sources(
+    state: Mapping[str, object],
+    *,
+    catalog_version: str,
+    bridge_live_models: tuple[str, ...],
+    bridge_provider_release_statuses: Mapping[str, str] | None = None,
+    bridge_live_expanded_providers: tuple[str, ...] = (),
+) -> str:
+    computed = route_catalog_content_hash_for_cp8_live(
+        catalog_version,
+        bridge_live_models=bridge_live_models,
+        bridge_provider_release_statuses=bridge_provider_release_statuses,
+        bridge_live_expanded_providers=bridge_live_expanded_providers,
+    )
+    if not _PREFLIGHT_SHA256_RE.fullmatch(computed):
+        raise CP8LiveMatrixError("preflight catalog_hash computed by local route catalog is invalid")
+    override = str(os.environ.get("ZHUMENG_CLAUDE_CATALOG_HASH") or os.environ.get("SUB2API_CLAUDE_CODE_CATALOG_HASH") or "").strip()
+    if not override:
+        return computed
+    if not _PREFLIGHT_SHA256_RE.fullmatch(override):
+        raise CP8LiveMatrixError("preflight catalog_hash override must be sha256:<64 lowercase hex>")
+    if override != computed:
+        raise CP8LiveMatrixError("preflight catalog_hash override does not match local route catalog hash")
+    return override
+
+
+def _preflight_sensitive_json_issues(value: object, *, path: str = "$", issues: list[str] | None = None) -> list[str]:
+    if issues is None:
+        issues = []
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            key_text = str(key)
+            next_path = f"{path}.{key_text}"
+            if key_text not in _PREFLIGHT_ALLOWED_SENSITIVE_KEYS and _PREFLIGHT_SENSITIVE_KEY_RE.search(key_text):
+                issues.append(next_path)
+            _preflight_sensitive_json_issues(child, path=next_path, issues=issues)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _preflight_sensitive_json_issues(child, path=f"{path}[{index}]", issues=issues)
+    elif isinstance(value, str):
+        if _PREFLIGHT_SENSITIVE_VALUE_RE.search(value):
+            issues.append(path)
+    return issues
+
+
+def _preflight_artifact_ref_paths(cp8_payload: Mapping[str, object], *, evidence_root: Path) -> tuple[Path, ...]:
+    out: list[Path] = []
+
+    def visit(value: object) -> None:
+        if isinstance(value, Mapping):
+            refs = value.get("artifact_refs")
+            if isinstance(refs, list):
+                for ref in refs:
+                    if not isinstance(ref, Mapping):
+                        continue
+                    raw_path = str(ref.get("path") or "").strip()
+                    if not raw_path or raw_path.startswith("/") or ".." in Path(raw_path).parts:
+                        continue
+                    path = (evidence_root / raw_path).resolve(strict=False)
+                    try:
+                        path.relative_to(evidence_root.resolve(strict=False))
+                    except ValueError:
+                        continue
+                    out.append(path)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(cp8_payload)
+    return tuple(dict.fromkeys(out))
+
+
+def _preflight_sensitive_evidence_issues(cp8_payload: Mapping[str, object], *, evidence_path: Path) -> tuple[str, ...]:
+    issues = [f"cp8:{item}" for item in _preflight_sensitive_json_issues(cp8_payload)]
+    evidence_root = evidence_path.parent
+    for artifact in _preflight_artifact_ref_paths(cp8_payload, evidence_root=evidence_root):
+        if not artifact.exists() or not artifact.is_file():
+            continue
+        try:
+            text = artifact.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        try:
+            loaded = json.loads(text)
+        except json.JSONDecodeError:
+            if _PREFLIGHT_SENSITIVE_VALUE_RE.search(text):
+                issues.append(f"artifact:{artifact.relative_to(evidence_root)}")
+            continue
+        for item in _preflight_sensitive_json_issues(loaded):
+            issues.append(f"artifact:{artifact.relative_to(evidence_root)}:{item}")
+    return tuple(issues)
+
+
+def _safe_preflight_run_id(value: str) -> str:
+    run_id = str(value or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", run_id):
+        raise CP8LiveMatrixError("preflight run_id must be a safe identifier")
+    return run_id
+
+
+def _runtime_patch_points(active_runtime) -> tuple[str, ...]:
+    out: list[str] = []
+    for source in (getattr(active_runtime, "manifest", {}), getattr(active_runtime, "patches", {})):
+        if not isinstance(source, Mapping):
+            continue
+        for item in source.get("patch_points", ()):
+            value = str(item).strip()
+            if value and value not in out:
+                out.append(value)
+    return tuple(out)
+
+
+def _effort_ui_preflight(active_runtime, bridge_live_models: Sequence[str]) -> dict[str, object]:
+    effort_models = _bridge_effort_ui_models(bridge_live_models)
+    if effort_models:
+        _require_effort_capability_patch_for_bridge_ui(active_runtime, bridge_live_models)
+    patches = getattr(active_runtime, "patches", {})
+    effort_patch = patches.get("effort_capability_patch") if isinstance(patches, Mapping) else None
+    if not isinstance(effort_patch, Mapping):
+        return {"required": bool(effort_models), "status": "not_required", "models": list(effort_models)}
+    allowed_keys = (
+        "status",
+        "schema",
+        "ui_probe",
+        "probe_status",
+        "probe_schema_version",
+        "runtime_hash",
+        "capabilities_hash",
+        "supported_models_exact",
+        "exact_effort_levels_supported",
+        "boolean_only_hook_rejected",
+    )
+    return {
+        "required": bool(effort_models),
+        "status": "pass" if not effort_models or str(effort_patch.get("probe_status") or effort_patch.get("status") or "") else "present",
+        "models": list(effort_models),
+        **{key: effort_patch.get(key) for key in allowed_keys if key in effort_patch},
+    }
+
+
+def _toolsearch_preflight(state: Mapping[str, object], *, claude_code_version: str) -> dict[str, object]:
+    capability = _claude_code_capability_profile_from_state(state)
+    context = _claude_code_toolsearch_doctor_context_from_state(state, claude_code_version=claude_code_version)
+    if context is None:
+        return {
+            "status": "degraded",
+            "env_value": "auto",
+            "degraded": True,
+            "reasons": ["doctor_context_missing"],
+            "capability_profile_id": capability.profile_id,
+        }
+    decision = evaluate_toolsearch_profile(capability, context)
+    return {
+        "status": decision.status,
+        "env_value": decision.env_value,
+        "degraded": decision.degraded,
+        "reasons": list(decision.reasons),
+        "capability_profile_id": capability.profile_id,
+        "control_plane_policy_version": capability.control_plane_policy_version,
+        "server_shape_healthcheck_version": capability.server_shape_healthcheck_version,
+    }
+
+
+def _provider_scope_preflight(patches: Mapping[str, object]) -> dict[str, object]:
+    statuses = _bridge_provider_release_statuses_from_patches(patches)
+    expanded = sorted(_bridge_live_expanded_providers_from_patches(patches))
+    return {
+        "l8_live_targets": ["claude_native", "openai", "deepseek"],
+        "conditional_live_disabled_by_default": ["agnes", "glm", "kimi"],
+        "bridge_provider_release_statuses": {key: statuses[key] for key in sorted(statuses)},
+        "bridge_live_expanded_providers": expanded,
+    }
+
+
+def _local_preflight_decisions() -> dict[str, object]:
+    return {
+        "managed_runtime_patch_policy": "preload_metadata_plus_approved_managed_runtime_patch_only",
+        "deepseek_prefix_kv_policy": "anthropic_messages_prompt_cache_hit_miss_stable_prefix_hmac",
+        "deepseek_cache_control_policy": "legacy_provider_ignored_if_present_not_cache_mechanism",
+        "toolsearch_policy": "true_only_after_doctor_and_shape_healthcheck_else_degraded_auto_or_false",
+        "audit_digest_policy": "purpose_scoped_hmac_no_content_hashes",
+        "live_rollout_policy": "no_3017_change_without_explicit_approval",
+        "forbidden_service_policy": "never_touch_3012",
+    }
+
+
+def _assert_preflight_payload_safe(payload: Mapping[str, object]) -> None:
+    text = json.dumps(payload, ensure_ascii=True, sort_keys=True)
+    forbidden = (
+        "Authorization",
+        "Bearer ",
+        "raw_body",
+        "raw_prompt",
+        "raw_response",
+        "request_body",
+        "response_body",
+        "api_key",
+        "cookie",
+        "access_token",
+        "refresh_token",
+        "session_token",
+        "prompt_cache_key",
+    )
+    lowered = text.lower()
+    for item in forbidden:
+        if item.lower() in lowered:
+            raise CP8LiveMatrixError(f"preflight decision-freeze contains forbidden sensitive marker: {item}")
+
+
+def build_claude_code_local_preflight(args: argparse.Namespace) -> dict[str, object]:
+    run_id = _safe_preflight_run_id(args.run_id)
+    state_root = Path(args.state_root).expanduser().resolve(strict=False)
+    state_path = state_root / "state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+    except json.JSONDecodeError as exc:
+        raise CP8LiveMatrixError("preflight state.json must be a JSON object") from exc
+    if not isinstance(state, dict):
+        raise CP8LiveMatrixError("preflight state.json must be a JSON object")
+    active_runtime = resolve_active_managed_runtime(args.runtime_root)
+    patches = getattr(active_runtime, "patches", {})
+    if not isinstance(patches, Mapping):
+        patches = {}
+    bridge_live_models = tuple(_active_runtime_bridge_live_models(patches))
+    catalog_version = str(os.environ.get("SUB2API_CLAUDE_CODE_ROUTE_HINT_CATALOG_VERSION") or os.environ.get("ZHUMENG_CLAUDE_CATALOG_VERSION") or _catalog_version_from_state(state) or "")
+    bridge_provider_release_statuses = _bridge_provider_release_statuses_from_patches(patches)
+    bridge_live_expanded_providers = tuple(sorted(_bridge_live_expanded_providers_from_patches(patches)))
+    catalog_hash = _safe_catalog_hash_from_sources(
+        state,
+        catalog_version=catalog_version,
+        bridge_live_models=bridge_live_models,
+        bridge_provider_release_statuses=bridge_provider_release_statuses,
+        bridge_live_expanded_providers=bridge_live_expanded_providers,
+    )
+    evidence_path = Path(args.evidence)
+    cp8_payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+    if not isinstance(cp8_payload, Mapping):
+        raise CP8LiveMatrixError("preflight CP8 evidence must be a JSON object")
+    sensitive_issues = _preflight_sensitive_evidence_issues(cp8_payload, evidence_path=evidence_path)
+    if sensitive_issues:
+        return {
+            "command": "claude-code preflight",
+            "status": "fail",
+            "phase": "local-runtime-verification",
+            "run_id": run_id,
+            "failed": ["sensitive_evidence_scan"],
+            "missing": [],
+            "issues": list(sensitive_issues),
+            "touches_3017": False,
+            "touches_3012": False,
+        }
+    cp8 = verify_cp8_live_matrix(cp8_payload, strict_live=False, evidence_root=evidence_path.parent)
+    if cp8.status != "pass":
+        return {
+            "command": "claude-code preflight",
+            "status": "fail",
+            "phase": "local-runtime-verification",
+            "run_id": run_id,
+            "failed": list(cp8.failed),
+            "missing": list(cp8.missing),
+            "cp8_local_matrix": cp8.to_dict(),
+            "touches_3017": False,
+            "touches_3012": False,
+        }
+    effort_ui = _effort_ui_preflight(active_runtime, bridge_live_models)
+    toolsearch = _toolsearch_preflight(state, claude_code_version=active_runtime.upstream_version)
+    run = prepare_canary_evidence_run(
+        Path(args.output_root),
+        run_id=run_id,
+        runtime_hash=active_runtime.runtime_hash,
+        overlay_hash=active_runtime.overlay_hash,
+        catalog_hash=catalog_hash,
+    )
+    payload = {
+        "schema_version": "claude-code-l8-local-preflight-decision-freeze-v1",
+        "audit_schema_version": "claude_code_l8_local_preflight_v1",
+        "command": "claude-code preflight",
+        "status": "pass",
+        "phase": "local-runtime-verification",
+        "run_id": run_id,
+        "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "worktree": str(Path(args.project_cwd).expanduser().resolve(strict=False)),
+        "runtime_hash": active_runtime.runtime_hash,
+        "overlay_hash": active_runtime.overlay_hash,
+        "catalog_hash": catalog_hash,
+        "catalog_version": catalog_version,
+        "runtime": {
+            "name": "claude-code",
+            "version": active_runtime.upstream_version,
+            "manifest_path": str(active_runtime.manifest_path),
+            "runtime_hash": active_runtime.runtime_hash,
+            "overlay_hash": active_runtime.overlay_hash,
+            "patch_points": list(_runtime_patch_points(active_runtime)),
+            "bridge_live_models": list(bridge_live_models),
+        },
+        "provider_scope": _provider_scope_preflight(patches),
+        "decisions": _local_preflight_decisions(),
+        "toolsearch": toolsearch,
+        "effort_ui": effort_ui,
+        "cp8_local_matrix": {
+            "status": cp8.status,
+            "release_gate": cp8.release_gate,
+            "strict_live_ready": cp8.strict_live_ready,
+            "artifact_evidence_verified": cp8.artifact_evidence_verified,
+        },
+        "evidence": {
+            "cp8_local_matrix_path": str(evidence_path.expanduser().resolve(strict=False)),
+            "cp8_local_matrix_sha256": _hash_path_sha256(evidence_path),
+            "run_manifest_path": str(run.run_dir / "preflight" / "run-manifest.json"),
+            "decision_freeze_path": str(run.run_dir / "preflight" / "decision-freeze.json"),
+        },
+        "touches_3017": False,
+        "touches_3012": False,
+        "raw_sensitive_stored": False,
+    }
+    _assert_preflight_payload_safe(payload)
+    out_path = run.run_dir / "preflight" / "decision-freeze.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    return payload
+
+
+def handle_claude_code_runtime_command(args: argparse.Namespace) -> int:
+    try:
+        if args.claude_code_command == "install":
+            plan = build_managed_runtime_install_plan(
+                executable=args.executable,
+                runtime_root=args.runtime_root,
+                runner=subprocess.run,
+            )
+            write_managed_runtime_artifacts(plan)
+            status = read_managed_runtime_status(args.runtime_root)
+            return emit({
+                "command": "claude-code install",
+                "status": "installed",
+                "runtime": "claude-code",
+                "runtime_root": str(args.runtime_root),
+                "active_version": status.get("active_version"),
+                "manifest_path": status.get("manifest_path"),
+                "official_claude_unaffected": True,
+            })
+        if args.claude_code_command == "runtime-patch":
+            if args.patch_name == "effort-capability":
+                result = apply_managed_runtime_effort_capability_patch(
+                    args.runtime_root,
+                    resolve_active_managed_runtime(args.runtime_root).executable,
+                    approved=bool(args.approve_managed_binary_patch),
+                )
+                return emit({
+                    "command": "claude-code runtime-patch effort-capability",
+                    **result,
+                })
+            return emit_failed({
+                "command": "claude-code runtime-patch",
+                "status": "unknown_patch",
+                "message": f"unsupported runtime patch: {args.patch_name}",
+            })
+        if args.claude_code_command == "status":
+            return emit({"command": "claude-code status", **read_managed_runtime_status(args.runtime_root)})
+        if args.claude_code_command == "doctor":
+            status = read_managed_runtime_status(args.runtime_root)
+            return emit({
+                "command": "claude-code doctor",
+                **status,
+                "destructive_cleanup_requires_confirmation": True,
+            })
+        if args.claude_code_command == "restart":
+            status = read_managed_runtime_status(args.runtime_root)
+            if status.get("status") not in {"enabled", "ready"}:
+                return emit_failed({
+                    "command": "claude-code restart",
+                    **status,
+                    "message": "managed Claude Code runtime is not enabled",
+                    "nonblocking": False,
+                })
+            return emit_failed({
+                "command": "claude-code restart",
+                **status,
+                "status": "restart_unavailable",
+                "message": "no running managed Claude Code process state is available; use zhumeng-claude start to launch a new session",
+                "nonblocking": False,
+                "official_claude_unaffected": True,
+                "destructive_cleanup_requires_confirmation": True,
+            })
+        if args.claude_code_command in {"rollback", "uninstall"}:
+            disabled = disable_managed_runtime(args.runtime_root)
+            return emit({
+                "command": f"claude-code {args.claude_code_command}",
+                **disabled,
+            })
+        if args.claude_code_command == "alias":
+            plan = build_shell_alias_plan(action=args.alias_action, shell_rc=args.shell_rc)
+            result = apply_shell_alias_plan(plan)
+            return emit({
+                "command": f"claude-code alias {args.alias_action}",
+                **result,
+            })
+        if args.claude_code_command == "preflight":
+            result = build_claude_code_local_preflight(args)
+            return emit(result) if result.get("status") == "pass" else emit_failed(result)
+        if args.claude_code_command == "live-matrix":
+            live_matrix_modes = [
+                bool(args.collect_provider_provenance),
+                bool(getattr(args, "collect_sub2api_provenance", False)),
+                bool(getattr(args, "collect_cache_account_audit", False)),
+                bool(args.assemble_external),
+                bool(getattr(args, "write_scenario_evidence", False)),
+                bool(args.strict_live),
+            ]
+            if sum(1 for enabled in live_matrix_modes if enabled) > 1:
+                return emit_failed({
+                    "command": "claude-code live-matrix",
+                    "status": "not_configured",
+                    "message": "conflicting live-matrix modes: choose exactly one of --collect-provider-provenance, --collect-sub2api-provenance, --collect-cache-account-audit, --assemble-external, --write-scenario-evidence, or --strict-live",
+                })
+            if args.collect_provider_provenance:
+                if not args.run_id or args.output_root is None:
+                    return emit_failed({
+                        "command": "claude-code live-matrix collect-provider-provenance",
+                        "status": "not_configured",
+                        "message": "provider provenance collection requires --run-id and --output-root",
+                    })
+                if os.environ.get("SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE") != "true":
+                    return emit_failed({
+                        "command": "claude-code live-matrix collect-provider-provenance",
+                        "status": "not_configured",
+                        "message": "direct official-provider lab provenance requires SUB2API_CP8_ALLOW_DIRECT_PROVIDER_PROVENANCE=true; use --collect-sub2api-provenance for product CP8",
+                    })
+                _cp8_live_provenance_output_path(args)
+                provenance = collect_cp8_live_provider_provenance(run_id=args.run_id, output_root=args.output_root)
+                provenance_path = _write_cp8_live_provenance_file(args, provenance)
+                return emit({
+                    "command": "claude-code live-matrix collect-provider-provenance",
+                    "status": "collected",
+                    "live_provenance": provenance,
+                    "provenance": str(provenance_path),
+                })
+            if getattr(args, "collect_sub2api_provenance", False):
+                if not args.run_id or args.output_root is None:
+                    return emit_failed({
+                        "command": "claude-code live-matrix collect-sub2api-provenance",
+                        "status": "not_configured",
+                        "message": "Sub2API provenance collection requires --run-id and --output-root",
+                    })
+                _cp8_live_provenance_output_path(args)
+                provenance = collect_cp8_sub2api_gateway_live_provenance(**cp8_sub2api_live_provenance_args(args))
+                provenance_path = _write_cp8_live_provenance_file(args, provenance)
+                return emit({
+                    "command": "claude-code live-matrix collect-sub2api-provenance",
+                    "status": "collected",
+                    "live_provenance": provenance,
+                    "provenance": str(provenance_path),
+                })
+            if getattr(args, "collect_cache_account_audit", False):
+                if args.output_root is None or args.log_file is None:
+                    return emit_failed({
+                        "command": "claude-code live-matrix collect-cache-account-audit",
+                        "status": "not_configured",
+                        "message": "cache/account audit collection requires --output-root and --log-file",
+                    })
+                log_text = sys.stdin.read() if str(args.log_file) == "-" else args.log_file.read_text(encoding="utf-8")
+                payload, artifact_ref = collect_cp8_cache_account_audit_from_log_text(
+                    log_text,
+                    output_root=args.output_root,
+                    safe_summary_hash_stable=bool(args.safe_summary_hash_stable),
+                    safe_tool_result_hash_stable=bool(args.safe_tool_result_hash_stable),
+                    usage_accounting_split_by_route=bool(args.usage_accounting_split_by_route),
+                    stable_prefix_invalidated=bool(args.stable_prefix_invalidated),
+                    ttl_fast_switch_boundary_miss_count=int(args.ttl_fast_switch_boundary_miss_count or 0),
+                    strict_live=bool(args.require_live_cache_usage),
+                    claude_native_live_usage_observed=bool(args.claude_native_live_cache_usage_observed),
+                )
+                return emit({
+                    "command": "claude-code live-matrix collect-cache-account-audit",
+                    "status": "written",
+                    "artifact_ref": artifact_ref,
+                    "cache_provider_evidence": payload.get("cache_provider_evidence"),
+                    "bridge_cache_audit_providers": [
+                        str(row.get("provider") or "")
+                        for row in payload.get("bridge_cache_audit_rows", [])
+                        if isinstance(row, Mapping)
+                    ],
+                })
+            if args.assemble_external:
+                if args.evidence is None or args.provenance is None or args.out is None:
+                    return emit_failed({
+                        "command": "claude-code live-matrix assemble-external",
+                        "status": "not_configured",
+                        "message": "external live matrix assembly requires --evidence, --provenance, and --out",
+                    })
+                payload = json.loads(args.evidence.read_text(encoding="utf-8"))
+                provenance = json.loads(args.provenance.read_text(encoding="utf-8"))
+                assembled = assemble_cp8_external_live_matrix_evidence(payload, provenance)
+                args.out.parent.mkdir(parents=True, exist_ok=True)
+                args.out.write_text(json.dumps(assembled, ensure_ascii=True, sort_keys=True, indent=2), encoding="utf-8")
+                return emit({
+                    "command": "claude-code live-matrix assemble-external",
+                    "status": "assembled",
+                    "evidence": str(args.evidence),
+                    "provenance": str(args.provenance),
+                    "out": str(args.out),
+                    "promotes_scenario_live_flags": False,
+                })
+            if getattr(args, "write_scenario_evidence", False):
+                if (
+                    not _cp8_required_arg(args, "run_id")
+                    or args.output_root is None
+                    or not _cp8_required_arg(args, "scenario")
+                    or not _cp8_required_arg(args, "route")
+                    or not _cp8_required_arg(args, "client_type")
+                ):
+                    return emit_failed({
+                        "command": "claude-code live-matrix write-scenario-evidence",
+                        "status": "not_configured",
+                        "message": "scenario evidence writing requires --run-id, --output-root, --scenario, --route, and --client-type",
+                    })
+                artifact_ref = write_cp8_live_scenario_evidence(
+                    output_root=args.output_root,
+                    run_id=args.run_id,
+                    scenario=args.scenario,
+                    route=args.route,
+                    client_type=args.client_type,
+                    evidence=_cp8_live_scenario_evidence_payload(args),
+                )
+                return emit({
+                    "command": "claude-code live-matrix write-scenario-evidence",
+                    "status": "written",
+                    "artifact_ref": artifact_ref,
+                })
+            if args.evidence is None:
+                return emit_failed({
+                    "command": "claude-code live-matrix",
+                    "status": "not_configured",
+                    "message": "live matrix verification requires --evidence",
+                })
+            payload = json.loads(args.evidence.read_text(encoding="utf-8"))
+            result = verify_cp8_live_matrix(payload, strict_live=args.strict_live, evidence_root=args.evidence.parent)
+            body = {"command": "claude-code live-matrix", **result.to_dict()}
+            return emit(body) if result.status == "pass" else emit_failed(body)
+    except (RuntimeInstallerError, CP8LiveMatrixError, CanaryEvidenceError, OSError, json.JSONDecodeError) as err:
+        return emit_failed({
+            "command": f"claude-code {args.claude_code_command}",
+            "status": "not_configured",
+            "message": str(err),
+        })
+    return emit_failed({
+        "command": f"claude-code {args.claude_code_command}",
+        "status": "unknown_command",
+    })
+
+
+def build_claude_code_start_payload(
+    *,
+    executable: Path | str,
+    state_root: Path,
+    project_cwd: Path,
+    guard_port: int | None,
+    runtime_root: Path,
+    argv: list[str],
+) -> dict[str, object]:
+    store = claude_code_start_state_store(state_root)
+    state = store.read()
+    if not state.get("gateway_base_url"):
+        raise ValueError("managed setup is incomplete: missing gateway_base_url")
+    metadata_only_start = _claude_code_start_metadata_only(argv)
+    try:
+        state = refresh_claude_code_native_managed_credentials_if_needed(state, store=store)
+    except Exception as exc:  # noqa: BLE001 - sanitize refresh/network failures before CLI output.
+        if metadata_only_start and _managed_state_str(state, "claude_code_native_access_token"):
+            state = dict(state)
+        else:
+            raise ValueError("managed Claude Code native token refresh failed; retry login or ensure the local managed server is reachable") from exc
+    selected_guard_port = int(guard_port or choose_local_proxy_port())
+    active_runtime = resolve_active_managed_runtime(runtime_root)
+    if executable is not None and str(Path(executable).expanduser()) != str(active_runtime.executable.expanduser()):
+        raise ValueError("zhumeng-claude start refuses executable drift outside the active managed runtime")
+    agent_schema_patch = apply_managed_runtime_agent_model_schema_patch(runtime_root, active_runtime.executable)
+    if agent_schema_patch.get("runtime_hash_after") != active_runtime.runtime_hash:
+        active_runtime = resolve_active_managed_runtime(runtime_root)
+    bridge_provider_release_statuses = _bridge_provider_release_statuses_from_patches(active_runtime.patches)
+    bridge_live_expanded_providers = _bridge_live_expanded_providers_from_patches(active_runtime.patches)
+    bridge_live_models = tuple(_active_runtime_bridge_live_models(active_runtime.patches))
+    if not metadata_only_start:
+        _require_effort_capability_patch_for_bridge_ui(active_runtime, bridge_live_models)
+    attestation_secret = require_server_native_attestation_secret(state)
+    route_hint_secret = require_server_route_hint_secret(state)
+    claude_code_sub2api_auth = resolve_claude_code_sub2api_auth(state, state_root=state_root)
+    native_access_token, native_managed_session_id, native_device_id = resolve_claude_code_native_managed_credentials(state)
+    capability_profile = _claude_code_capability_profile_from_state(state)
+    toolsearch_doctor_context = _claude_code_toolsearch_doctor_context_from_state(
+        state,
+        claude_code_version=active_runtime.upstream_version,
+    )
+    result = run_managed_claude_code(
+        executable=active_runtime.executable,
+        repo_root=Path(__file__).resolve().parents[4],
+        upstream_base=str(state["gateway_base_url"]),
+        sub2api_auth=claude_code_sub2api_auth,
+        attestation_secret=attestation_secret,
+        native_managed_access_token=native_access_token,
+        route_hint_secret=route_hint_secret,
+        managed_session_id=native_managed_session_id,
+        device_id=native_device_id,
+        runtime_hash=active_runtime.runtime_hash,
+        overlay_hash=active_runtime.overlay_hash,
+        bridge_live_models=bridge_live_models,
+        bridge_provider_release_statuses=bridge_provider_release_statuses,
+        bridge_live_expanded_providers=bridge_live_expanded_providers,
+        config_root=state_root,
+        project_cwd=project_cwd,
+        guard_listen_port=selected_guard_port,
+        argv=argv,
+        inherited_env=dict(os.environ),
+        capability_profile=capability_profile,
+        toolsearch_doctor_context=toolsearch_doctor_context,
+    )
+    guard_listen = str(result.guard_ready.get("listen", ""))
+    return {
+        "command": "claude-code start",
+        "status": "exited",
+        "returncode": result.returncode,
+        "guard": {
+            "listen": guard_listen,
+            "attested": "--native-attestation" in result.guard_plan.command,
+            "route_hint_contract": "--route-hint-secret-env" in result.guard_plan.command,
+            "summary_path": str(result.guard_plan.config.summary_path),
+        },
+        "claude_base_url": result.launch_plan.env.get("ANTHROPIC_BASE_URL"),
+        "claude_code_api_base_url": result.launch_plan.env.get("CLAUDE_CODE_API_BASE_URL"),
+        "runtime": {
+            "version": active_runtime.upstream_version,
+            "manifest_path": str(active_runtime.manifest_path),
+            "runtime_hash": active_runtime.runtime_hash,
+            "overlay_hash": active_runtime.overlay_hash,
+            "executable": str(active_runtime.executable),
+            "bridge_live_models": list(bridge_live_models),
+            "agent_model_schema_patch": agent_schema_patch,
+        },
+        **(
+            {
+                "toolsearch": {
+                    "status_path": result.launch_plan.env.get("ZHUMENG_CLAUDE_TOOLSEARCH_STATUS_PATH", ""),
+                    "capability_profile_id": capability_profile.profile_id,
+                }
+            }
+            if capability_profile is not None
+            else {}
+        ),
+    }
+
+
+def _claude_code_start_metadata_only(argv: Sequence[str]) -> bool:
+    return tuple(str(item).strip() for item in argv if str(item).strip()) == ("--version",)
+
+
+def _claude_code_capability_profile_from_state(state: Mapping[str, object]) -> ClaudeCodeCapabilityProfile | None:
+    raw = state.get("claude_code_capability_profile")
+    if not isinstance(raw, Mapping):
+        raw = {}
+    return ClaudeCodeCapabilityProfile(
+        profile_id=_string_field(raw, "profile_id", "native-prod"),
+        claude_code_version_family=_string_field(raw, "claude_code_version_family", "2.1.x"),
+        persona_profile_id=_string_field(raw, "persona_profile_id", "claude-code-native-prod"),
+        tool_search_mode=ToolSearchMode(_string_field(raw, "tool_search_mode", ToolSearchMode.TRUE.value)),
+        fgts_mode=FgtsMode(_string_field(raw, "fgts_mode", FgtsMode.OBSERVE_ONLY.value)),
+        control_plane_policy_version=_string_field(raw, "control_plane_policy_version", ""),
+        capture_level=_string_field(raw, "capture_level", "summary"),
+        netwatch_required=_bool_field(raw, "netwatch_required", True),
+        server_shape_healthcheck_version=_string_field(raw, "server_shape_healthcheck_version", ""),
+        tool_search_healthcheck_passed=_bool_field(raw, "tool_search_healthcheck_passed", False),
+        kill_switches=tuple(
+            item
+            for item in (_string_list_field(raw, "kill_switches"))
+            if item
+        ),
+    )
+
+
+def _claude_code_toolsearch_doctor_context_from_state(
+    state: Mapping[str, object],
+    *,
+    claude_code_version: str,
+) -> ClaudeCodeDoctorContext | None:
+    raw = state.get("claude_code_toolsearch_doctor_context")
+    if not isinstance(raw, Mapping):
+        return None
+    return ClaudeCodeDoctorContext(
+        model=_string_field(raw, "model", "claude-sonnet-4-6"),
+        claude_code_version=_string_field(raw, "claude_code_version", claude_code_version),
+        has_mcp_deferred_tools=_bool_field(raw, "has_mcp_deferred_tools", False),
+        has_pending_mcp_server=_bool_field(raw, "has_pending_mcp_server", False),
+        disallowed_tools=set(_string_list_field(raw, "disallowed_tools")),
+        model_supports_tool_reference=_bool_field(raw, "model_supports_tool_reference", True),
+    )
+
+
+def _string_field(raw: Mapping[str, object], key: str, default: str) -> str:
+    value = raw.get(key, default)
+    if isinstance(value, str):
+        value = value.strip()
+    return str(value or default)
+
+
+def _bool_field(raw: Mapping[str, object], key: str, default: bool) -> bool:
+    value = raw.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _string_list_field(raw: Mapping[str, object], key: str) -> list[str]:
+    value = raw.get(key, ())
+    if isinstance(value, str):
+        return [value]
+    if not isinstance(value, Sequence):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _bridge_effort_ui_models(bridge_live_models: Sequence[str]) -> tuple[str, ...]:
+    effort_model_markers = (
+        "claude-code-bridge-gpt-",
+        "claude-code-bridge-deepseek-",
+        "claude-code-bridge-glm-",
+    )
+    return tuple(model for model in bridge_live_models if any(model.startswith(marker) for marker in effort_model_markers))
+
+
+def _active_runtime_has_exact_effort_patch_bytes(active_runtime) -> bool:
+    executable_value = getattr(active_runtime, "executable", None)
+    if not executable_value:
+        manifest = getattr(active_runtime, "manifest", {})
+        if isinstance(manifest, Mapping):
+            executable_value = manifest.get("executable_path")
+    if not executable_value:
+        return False
+    executable = Path(str(executable_value))
+    try:
+        data = executable.read_bytes()
+    except OSError:
+        return False
+    return (
+        EFFORT_CAPABILITY_HOOK_REPLACEMENT.rstrip() in data
+        and EXACT_EFFORT_LEVEL_UI_REPLACEMENT.rstrip() in data
+        and EXACT_EFFORT_EFFECTIVE_CLAMP_REPLACEMENT.rstrip() in data
+    )
+
+
+def _require_effort_capability_patch_for_bridge_ui(active_runtime, bridge_live_models: Sequence[str]) -> None:
+    effort_ui_models = _bridge_effort_ui_models(bridge_live_models)
+    if not effort_ui_models:
+        return
+    if str(getattr(active_runtime, "upstream_version", "")) != "2.1.177":
+        return
+    manifest = getattr(active_runtime, "manifest", {})
+    patches = getattr(active_runtime, "patches", {})
+    manifest_points = manifest.get("patch_points", ()) if isinstance(manifest, Mapping) else ()
+    patch_points = patches.get("patch_points", ()) if isinstance(patches, Mapping) else ()
+    effort_patch = patches.get("effort_capability_patch") if isinstance(patches, Mapping) else None
+    has_patch_point = (
+        "effort_capability_hook" in set(str(item) for item in manifest_points)
+        and "effort_capability_hook" in set(str(item) for item in patch_points)
+        and isinstance(effort_patch, Mapping)
+        and str(effort_patch.get("env", "")) == "ZHUMENG_CLAUDE_MODEL_CAPABILITIES_JSON"
+    )
+    if has_patch_point:
+        exact_schema = str(effort_patch.get("schema", "")) == "exact_effort_levels_v1"
+        ui_probe = str(effort_patch.get("ui_probe", "")) == "claude_code_2_1_177_model_picker_exact_effort_levels"
+        manifest_patch_points = set(str(item) for item in manifest_points)
+        patch_file_points = set(str(item) for item in patch_points)
+        if (
+            exact_schema
+            and ui_probe
+            and EXACT_EFFORT_LEVEL_UI_PATCH_POINT in manifest_patch_points
+            and EXACT_EFFORT_LEVEL_UI_PATCH_POINT in patch_file_points
+            and EXACT_EFFORT_EFFECTIVE_CLAMP_PATCH_POINT in manifest_patch_points
+            and EXACT_EFFORT_EFFECTIVE_CLAMP_PATCH_POINT in patch_file_points
+            and str(effort_patch.get("patch_point", "")) == EXACT_EFFORT_LEVEL_UI_PATCH_POINT
+            and str(effort_patch.get("effective_clamp_patch_point", "")) == EXACT_EFFORT_EFFECTIVE_CLAMP_PATCH_POINT
+            and str(effort_patch.get("hook", "")) == "exact_effort_levels_ui"
+            and str(effort_patch.get("exact_levels_env", "")) == "ZCCEL"
+            and effort_patch.get("exact_effort_levels_supported") is True
+            and effort_patch.get("effective_effort_clamp_supported") is True
+            and effort_patch.get("boolean_only_hook_rejected") is False
+            and str(effort_patch.get("probe_status", "")) == "pass"
+            and str(effort_patch.get("probe_schema_version", "")) == "claude-code-2.1.177-bridge-effort-ui-probe-v1"
+            and _active_runtime_has_exact_effort_patch_bytes(active_runtime)
+        ):
+            return
+        raise RuntimeInstallerError(
+            "managed Claude Code 2.1.177 bridge /model effort UI requires exact effort levels patch; "
+            "the older boolean-only effort capability hook cannot hide DeepSeek Medium or GPT Max"
+        )
+    raise RuntimeInstallerError(
+        "managed Claude Code 2.1.177 bridge /model effort UI requires effort capability patch; "
+        "run 'zhumeng-agent claude-code runtime-patch --approve-managed-binary-patch effort-capability' before start"
+    )
+
+
+def _bridge_provider_release_statuses_from_patches(patches: Mapping[str, object]) -> dict[str, str]:
+    raw = patches.get("bridge_provider_release_statuses")
+    if not isinstance(raw, Mapping):
+        return {}
+    return {str(key): str(value) for key, value in raw.items()}
+
+
+def _bridge_live_expanded_providers_from_patches(patches: Mapping[str, object]) -> tuple[str, ...]:
+    raw = patches.get("bridge_live_expanded_providers")
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        return ()
+    return tuple(dict.fromkeys(str(item).strip() for item in raw if str(item).strip()))
+
+
+def _bridge_runtime_account_providers_from_patches(patches: Mapping[str, object]) -> set[str]:
+    raw = patches.get("bridge_runtime_account_providers")
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        return set()
+    return {str(item).strip() for item in raw if str(item).strip()}
+
+
+def _active_runtime_bridge_live_models(patches: Mapping[str, object]) -> tuple[str, ...]:
+    if patches.get("live_bridge_models_enabled") is not True:
+        return ()
+    raw = patches.get("live_bridge_model_allowlist")
+    catalog = patches.get("live_bridge_model_catalog")
+    if not isinstance(raw, list) or not isinstance(catalog, Mapping):
+        return ()
+    provider_statuses = _bridge_provider_release_statuses_from_patches(patches)
+    expanded_providers = set(_bridge_live_expanded_providers_from_patches(patches))
+    runtime_account_providers = _bridge_runtime_account_providers_from_patches(patches)
+    allowed = []
+    for item in raw:
+        model = str(item).strip()
+        if not model:
+            continue
+        metadata = catalog.get(model)
+        if not isinstance(metadata, Mapping):
+            continue
+        route = str(metadata.get("route") or "")
+        client_type = str(metadata.get("client_type") or "")
+        provider = str(metadata.get("provider") or _bridge_provider_from_route(route, client_type, model))
+        route_is_bridge = route.endswith("_bridge") and not route.startswith("claude_code_bridge_")
+        if (
+            model.startswith("claude-code-bridge-")
+            and route_is_bridge
+            and client_type.startswith("claude_code_bridge_")
+            and client_type != "claude_code_native"
+            and metadata.get("live_enabled") is True
+            and metadata.get("formal_pool_eligible") is False
+            and _bridge_provider_live_scope_allowed(
+                provider,
+                provider_statuses=provider_statuses,
+                expanded_providers=expanded_providers,
+                runtime_account_providers=runtime_account_providers,
+            )
+        ):
+            allowed.append(model)
+    return tuple(dict.fromkeys(allowed))
+
+
+def _bridge_provider_from_route(route: str, client_type: str, model: str) -> str:
+    for value in (route, client_type, model):
+        text = str(value or "").lower()
+        if "deepseek" in text:
+            return "deepseek"
+        if "openai" in text or "gpt" in text:
+            return "openai"
+        if "agnes" in text:
+            return "agnes"
+        if "zai_glm" in text or "glm" in text:
+            return "zai_glm"
+        if "kimi" in text:
+            return "kimi"
+    return ""
+
+
+def _bridge_provider_live_scope_allowed(
+    provider: str,
+    *,
+    provider_statuses: Mapping[str, str],
+    expanded_providers: set[str],
+    runtime_account_providers: set[str],
+) -> bool:
+    if provider in {"openai", "deepseek"}:
+        return True
+    if provider == "agnes":
+        return provider_statuses.get("agnes") == "strict-live-pass"
+    if provider in {"zai_glm", "kimi"}:
+        return (
+            provider in expanded_providers
+            and provider in runtime_account_providers
+            and provider_statuses.get(provider) == "strict-live-pass"
+        )
+    return False
+
+
+def zhumeng_claude_main(argv: Sequence[str] | None = None) -> int:
+    passthrough = list(argv) if argv is not None else list(sys.argv[1:])
+    claude_runtime_commands = {"install", "status", "doctor", "restart", "rollback", "uninstall", "alias", "live-matrix", "preflight", "runtime-patch"}
+    if passthrough and passthrough[0] == "start":
+        return main(["claude-code", "start", *passthrough[1:]])
+    if passthrough and passthrough[0] in claude_runtime_commands:
+        return main(["claude-code", *passthrough])
+    return main(["claude-code", "start", "--", *passthrough])
 
 def handle_codex_capture(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="zhumeng-agent codex capture")
@@ -1937,3 +3444,7 @@ def managed_restore_conflict(config_manager: CodexConfigManager, state: dict[str
         if current_hash != expected_hash:
             conflicts.append({"target": name, "path": str(path), "expected_hash": expected_hash, "current_hash": current_hash})
     return conflicts
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

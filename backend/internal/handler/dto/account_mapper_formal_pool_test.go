@@ -183,9 +183,10 @@ func TestAccountFromService_FormalPoolFieldsDoNotExposeSecrets(t *testing.T) {
 	require.NotContains(t, body, "x-api-key")
 	require.NotContains(t, body, "raw_cch")
 	require.NotContains(t, body, "proxy_password")
-	require.NotContains(t, body, "refresh_token")
-	require.NotContains(t, body, "access_token")
 	require.NotContains(t, body, "refresh-token-raw")
+	require.Empty(t, AccountFromService(account).Credentials)
+	require.True(t, AccountFromService(account).CredentialsStatus["has_access_token"])
+	require.True(t, AccountFromService(account).CredentialsStatus["has_refresh_token"])
 	require.NotContains(t, body, "user@example.com")
 	require.NotContains(t, body, "99999999-8888-4777-8666-555555555555")
 }
@@ -292,11 +293,13 @@ func TestAccountFromService_FormalPoolHardGateFieldsDoNotExposeUnsafeDirectValue
 		"proxy-user",
 		"proxy-secret",
 		"raw_prompt",
-		"access_token",
+		"sk-ant-sid02-raw-secret",
 		"raw-token",
 	} {
 		require.NotContains(t, body, strings.ToLower(unsafe))
 	}
+	require.Empty(t, got.Credentials)
+	require.True(t, got.CredentialsStatus["has_access_token"])
 }
 
 func TestAccountFromService_FormalPoolDTOOnlyExposesSafeGatewayRefs(t *testing.T) {

@@ -1,0 +1,40 @@
+{
+  "input_messages": [
+    {
+      "content": "compact safe visible summary",
+      "reasoning_content": "should be stripped",
+      "role": "assistant"
+    }
+  ],
+  "name": "resume_continue_compact_checkpoint_history_replay",
+  "provenance_snapshot": {
+    "conversation_ref": "cp3b-replay",
+    "source_hash": "sha256:84ada11c105b69804de4f19a262636aac38ed983c7977c9a976a6ffb521c1f4b",
+    "source_message_count": 1,
+    "turns": [
+      {
+        "provider": "deepseek",
+        "range": [
+          5,
+          8
+        ],
+        "replay_class": "summary_only",
+        "route": "deepseek_bridge"
+      }
+    ]
+  },
+  "source_profile": {
+    "client_type": "claude_code_bridge_deepseek",
+    "model_id": "deepseek-v4-flash",
+    "native_replay_allowed": false,
+    "provider": "deepseek",
+    "route": "deepseek_bridge"
+  },
+  "target_profile": {
+    "client_type": "claude_code_native",
+    "model_id": "claude-sonnet-4-6",
+    "native_replay_allowed": true,
+    "provider": "claude",
+    "route": "claude_native"
+  }
+}

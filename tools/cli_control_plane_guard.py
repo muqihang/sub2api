@@ -33,6 +33,19 @@ from tools.cli_guard_attestation import (
     build_guard_attestation,
     guard_attestation_config_from_env,
 )
+from tools.claude_code_route_trust import (
+    RouteCatalog,
+    RouteCatalogEntry,
+    RouteDecision,
+    RouteHintReplayCache,
+    body_model_id,
+    build_signed_route_hint_headers,
+    cp4_fixture_route_catalog,
+    route_catalog_content_hash,
+    route_hint_signature_diagnostic,
+    verify_signed_route_hint_headers,
+    verify_signed_route_hint_headers_with_bridge_body_rebinding,
+)
 from tools.cli_control_plane_policy import (
     ControlPlanePolicy,
     PolicyConfigError,
@@ -42,24 +55,40 @@ from tools.cli_control_plane_policy import (
 from tools.cli_session_budget import SessionBudgetLedger, SessionBudgetPolicy, session_key_from_headers
 
 SENSITIVE_HEADERS = {"authorization", "x-api-key", "proxy-authorization", "cookie", "set-cookie"}
-SELECTED_HEADERS = {
+CLAUDE_CODE_UPSTREAM_HEADER_ALLOWLIST = {
     "accept",
+    "accept-encoding",
     "content-type",
     "user-agent",
     "anthropic-beta",
     "anthropic-version",
     "x-app",
-    "x-claude-code-session-id",
     "x-stainless-lang",
     "x-stainless-runtime",
     "x-stainless-package-version",
     "x-stainless-runtime-version",
 }
+SELECTED_HEADERS = CLAUDE_CODE_UPSTREAM_HEADER_ALLOWLIST | {"x-claude-code-session-id"}
 SENSITIVE_BODY_KEYS = {"messages", "prompt", "body", "cch"}
 NATIVE_CLIENT_TYPE = "claude_code_native"
 NATIVE_ATTESTATION_SCOPE = "claude_code_native_takeover"
 NATIVE_HEALTHCHECK_PROFILE = "real_claude_code_native_takeover_v1"
+NATIVE_ROUTE = "claude_code_native"
+NATIVE_PROVIDER_OWNER = "zhumeng_managed"
+NATIVE_CREDENTIAL_SCOPE = "formal_pool"
+NATIVE_GATEWAY_LOCATION = "cloud"
+NATIVE_UNKNOWN_HASH = "sha256:" + ("0" * 64)
 CAPTURE_LEVELS = {"summary", "deep", "local-raw"}
+MODEL_DISPLAY_NAMES = {
+    "claude-code-bridge-gpt-5.5": "GPT 5.5 (Claude Code Bridge)",
+    "claude-code-bridge-gpt-5.4": "GPT 5.4 (Claude Code Bridge)",
+    "claude-code-bridge-gpt-5.4-mini": "GPT 5.4 Mini (Claude Code Bridge)",
+    "claude-code-bridge-deepseek-v4-pro": "DeepSeek V4 Pro (Claude Code Bridge)",
+    "claude-code-bridge-deepseek-v4-flash": "DeepSeek V4 Flash (Claude Code Bridge)",
+    "claude-code-bridge-agnes-2.0-flash": "AGNES 2.0 Flash (Claude Code Bridge)",
+    "claude-code-bridge-glm-5.2-1m": "GLM 5.2 1M (Claude Code Bridge)",
+    "claude-code-bridge-kimi-k2.7-code": "Kimi K2.7 Code (Claude Code Bridge)",
+}
 SAFE_VALUE_KEYS = {
     "event_name",
     "event_type",
@@ -171,6 +200,14 @@ class GuardConfig:
     local_raw_dir: Path | None = None
     allow_nonloopback_upstream: bool = False
     native_attestation_secret: str | None = None
+    native_managed_access_token: str | None = None
+    native_managed_state_path: Path | None = None
+    route_hint_secret: str | None = None
+    route_hint_catalog: RouteCatalog | None = None
+    route_hint_replay_cache: RouteHintReplayCache | None = None
+    managed_session_id: str | None = None
+    device_id: str | None = None
+    agent_version: str | None = None
 
     def __post_init__(self) -> None:
         policy = self.policy or default_policy()
@@ -198,6 +235,10 @@ class GuardConfig:
                 object.__setattr__(self, "control_plane_intent_auth", default_intent_auth or None)
         if self.max_messages is None:
             object.__setattr__(self, "max_messages", _policy_messages_config(policy).get("max_messages", 0))
+        if bool(self.route_hint_secret) != bool(self.route_hint_catalog):
+            raise ValueError("route_hint_secret and route_hint_catalog must be configured together")
+        if self.route_hint_secret and self.route_hint_catalog is not None and self.route_hint_replay_cache is None:
+            object.__setattr__(self, "route_hint_replay_cache", RouteHintReplayCache())
 
 
 @dataclass(frozen=True)
@@ -206,6 +247,14 @@ class CostEnvelopeDecision:
     status: int
     reason: str
     metrics: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class NativeReplaySafetyDecision:
+    allowed: bool
+    body: bytes
+    audit: dict[str, Any]
+    reason: str | None = None
 
 
 def default_policy() -> ControlPlanePolicy:
@@ -395,6 +444,345 @@ def redact_headers(headers: Mapping[str, str]) -> dict[str, Any]:
             else:
                 selected[lower] = _sanitize_selected_header_value(value)
     return {"header_names": names, "selected": selected, "auth_shape": auth_shape}
+
+
+
+_REPLAY_SAFE_BOUNDARY = "replay_safe_anthropic_transcript"
+_FOREIGN_RAW_KEYS = {
+    "reasoning_content",
+    "reasoning_details",
+    "provider_private",
+    "provider_private_history",
+    "hidden_reasoning",
+    "provider_reasoning",
+    "encrypted_reasoning",
+    "previous_response_id",
+    "provider_private_state_ref",
+    "raw_provider_request",
+    "raw_provider_response",
+    "raw_tool_input",
+    "raw_tool_output",
+    "raw_tool_runner_state",
+}
+_PROVIDER_PRIVATE_TEXT_MARKERS = (
+    "<task-notification>",
+    "<tool-use-id>",
+    "<output-file>",
+    "<subagent_tokens>",
+    "agentid:",
+    "internal id - do not mention to user",
+    "[tool result missing due to internal error]",
+)
+
+
+def native_replay_safety_decision(body: bytes, route_decision: RouteDecision) -> NativeReplaySafetyDecision:
+    """Last local guard before Claude formal-pool replay; never records raw text."""
+    if not route_decision.native_attestation_allowed or route_decision.provider != "claude":
+        return NativeReplaySafetyDecision(
+            allowed=True,
+            body=body,
+            audit={
+                "boundary": _REPLAY_SAFE_BOUNDARY,
+                "target_provider": route_decision.provider,
+                "applied": False,
+                "allowed": True,
+                "raw_body_persisted": False,
+            },
+        )
+    try:
+        payload = json.loads(body.decode("utf-8")) if body else {}
+    except Exception:
+        return NativeReplaySafetyDecision(
+            allowed=False,
+            body=body,
+            reason="json_body_required",
+            audit=_native_replay_safety_audit(
+                allowed=False,
+                sanitized=False,
+                forbidden_path_kinds=("body.json",),
+                messages_count=0,
+            ),
+        )
+    if not isinstance(payload, dict):
+        return NativeReplaySafetyDecision(
+            allowed=False,
+            body=body,
+            reason="json_object_required",
+            audit=_native_replay_safety_audit(
+                allowed=False,
+                sanitized=False,
+                forbidden_path_kinds=("body",),
+                messages_count=0,
+            ),
+        )
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return NativeReplaySafetyDecision(
+            allowed=True,
+            body=body,
+            audit=_native_replay_safety_audit(
+                allowed=True,
+                sanitized=False,
+                forbidden_path_kinds=(),
+                messages_count=0,
+            ),
+        )
+
+    sanitized_messages: list[Any] = []
+    forbidden_paths: list[str] = []
+    provider_private_count = 0
+    bridge_tool_count = 0
+    sanitized_count = 0
+    for message in messages:
+        if not isinstance(message, dict):
+            sanitized_messages.append(message)
+            continue
+        sanitized_message, paths, counts = _sanitize_native_replay_message(message)
+        sanitized_messages.append(sanitized_message)
+        if sanitized_message is not message:
+            sanitized_count += 1
+        forbidden_paths.extend(paths)
+        provider_private_count += counts.get("provider_private", 0)
+        bridge_tool_count += counts.get("bridge_tool", 0)
+
+    sanitized = bool(forbidden_paths)
+    next_body = body
+    if sanitized:
+        next_payload = dict(payload)
+        next_payload["messages"] = sanitized_messages
+        next_body = json.dumps(next_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    audit = _native_replay_safety_audit(
+        allowed=True,
+        sanitized=sanitized,
+        forbidden_path_kinds=tuple(forbidden_paths),
+        messages_count=len(messages),
+        sanitized_messages_count=sanitized_count,
+        provider_private_markers_count=provider_private_count,
+        bridge_tool_markers_count=bridge_tool_count,
+        sanitized_body_shape_hash=_native_body_shape_hash(next_body) if sanitized else _native_body_shape_hash(body),
+    )
+    return NativeReplaySafetyDecision(allowed=True, body=next_body, audit=audit)
+
+
+def _native_replay_safety_audit(
+    *,
+    allowed: bool,
+    sanitized: bool,
+    forbidden_path_kinds: tuple[str, ...],
+    messages_count: int,
+    sanitized_messages_count: int = 0,
+    provider_private_markers_count: int = 0,
+    bridge_tool_markers_count: int = 0,
+    sanitized_body_shape_hash: str | None = None,
+) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    for path in forbidden_path_kinds:
+        counts[path] = counts.get(path, 0) + 1
+    audit: dict[str, Any] = {
+        "boundary": _REPLAY_SAFE_BOUNDARY,
+        "target_provider": "claude",
+        "applied": True,
+        "allowed": bool(allowed),
+        "sanitized": bool(sanitized),
+        "raw_body_persisted": False,
+        "forbidden_paths_count": len(forbidden_path_kinds),
+        "forbidden_path_kinds": sorted(counts),
+        "forbidden_path_histogram": counts,
+        "messages_count": messages_count,
+        "sanitized_messages_count": sanitized_messages_count,
+        "provider_private_markers_count": provider_private_markers_count,
+        "bridge_tool_markers_count": bridge_tool_markers_count,
+    }
+    if sanitized_body_shape_hash is not None:
+        audit["sanitized_body_shape_hash"] = sanitized_body_shape_hash
+    return audit
+
+
+def _sanitize_native_replay_message(message: dict[str, Any]) -> tuple[dict[str, Any], list[str], dict[str, int]]:
+    paths: list[str] = []
+    counts = {"provider_private": 0, "bridge_tool": 0}
+    changed = False
+    next_message = dict(message)
+    message_tainted = any(key in _FOREIGN_RAW_KEYS for key in next_message)
+    for key in tuple(next_message):
+        if key in _FOREIGN_RAW_KEYS:
+            paths.append(f"messages[].{key}")
+            counts["provider_private"] += 1
+            next_message.pop(key, None)
+            changed = True
+            message_tainted = True
+    for key in ("thinking", "signature"):
+        if key in next_message:
+            paths.append(f"messages[].{key}")
+            counts["provider_private"] += 1
+            next_message.pop(key, None)
+            changed = True
+            message_tainted = True
+    content = next_message.get("content")
+    if isinstance(content, str):
+        sanitized_text, text_changed, text_paths, marker_count = _sanitize_native_replay_text(content)
+        if text_changed:
+            next_message["content"] = sanitized_text
+            paths.extend(f"messages[].content.{path}" for path in text_paths)
+            counts["provider_private"] += marker_count
+            changed = True
+    elif isinstance(content, list):
+        message_tainted = message_tainted or _native_replay_content_has_foreign_marker(content)
+        next_content: list[Any] = []
+        for block in content:
+            if not isinstance(block, dict):
+                next_content.append(block)
+                continue
+            sanitized_block, block_changed, block_paths, block_counts = _sanitize_native_replay_block(block, message_tainted=message_tainted)
+            next_content.append(sanitized_block)
+            if block_changed:
+                changed = True
+                paths.extend(f"messages[].content[].{path}" for path in block_paths)
+                counts["provider_private"] += block_counts.get("provider_private", 0)
+                counts["bridge_tool"] += block_counts.get("bridge_tool", 0)
+        if changed:
+            next_message["content"] = next_content
+    return (next_message if changed else message), paths, counts
+
+
+def _sanitize_native_replay_block(block: dict[str, Any], *, message_tainted: bool = False) -> tuple[dict[str, Any], bool, list[str], dict[str, int]]:
+    paths: list[str] = []
+    counts = {"provider_private": 0, "bridge_tool": 0}
+    next_block = dict(block)
+    changed = False
+    for key in tuple(next_block):
+        if key in _FOREIGN_RAW_KEYS:
+            paths.append(key)
+            counts["provider_private"] += 1
+            next_block.pop(key, None)
+            changed = True
+    block_type = next_block.get("type")
+    if block_type == "thinking" or "thinking" in next_block or "signature" in next_block:
+        paths.append("type:thinking")
+        counts["provider_private"] += 1
+        next_block = _foreign_thinking_safe_text()
+        changed = True
+    elif _is_bridge_agent_tool_use(next_block):
+        paths.append("type:tool_use:bridge_model")
+        counts["bridge_tool"] += 1
+        next_block = _bridge_agent_tool_use_safe_text(next_block)
+        changed = True
+    elif message_tainted and block_type == "tool_use":
+        paths.append("type:tool_use:foreign_tainted_message")
+        counts["bridge_tool"] += 1
+        next_block = _foreign_tool_use_safe_text(next_block)
+        changed = True
+    elif block_type == "tool_result" and (_native_tool_result_has_provider_private(next_block) or message_tainted):
+        paths.append("type:tool_result:provider_private")
+        counts["provider_private"] += 1
+        next_block = _tool_result_safe_text(next_block)
+        changed = True
+    text = next_block.get("text")
+    if isinstance(text, str):
+        sanitized_text, text_changed, text_paths, marker_count = _sanitize_native_replay_text(text)
+        if text_changed:
+            next_block["text"] = sanitized_text
+            paths.extend(text_paths)
+            counts["provider_private"] += marker_count
+            changed = True
+    return next_block, changed, paths, counts
+
+
+
+def _native_replay_content_has_foreign_marker(content: list[Any]) -> bool:
+    for block in content:
+        if not isinstance(block, Mapping):
+            continue
+        if any(key in _FOREIGN_RAW_KEYS for key in block):
+            return True
+        if block.get("type") == "thinking" or "thinking" in block or "signature" in block:
+            return True
+        if _is_bridge_agent_tool_use(block):
+            return True
+        if block.get("type") == "tool_result" and _native_tool_result_has_provider_private(block):
+            return True
+        text = block.get("text")
+        if isinstance(text, str) and _contains_provider_private_marker(text):
+            return True
+    return False
+
+
+def _foreign_thinking_safe_text() -> dict[str, str]:
+    return {
+        "type": "text",
+        "text": "[ReplaySafeAnthropicTranscript] Cross-provider reasoning/signature block was withheld before Claude native replay.",
+    }
+
+
+def _foreign_tool_use_safe_text(block: Mapping[str, Any]) -> dict[str, str]:
+    name = str(block.get("name") or "tool").strip()
+    provider_class = _safe_bridge_provider_class(name)
+    return {
+        "type": "text",
+        "text": "[ReplaySafeAnthropicTranscript] Cross-provider tool invocation was summarized before Claude native replay. target_provider_class=" + provider_class,
+    }
+
+def _is_bridge_agent_tool_use(block: Mapping[str, Any]) -> bool:
+    if block.get("type") != "tool_use" or block.get("name") != "Agent":
+        return False
+    tool_input = block.get("input")
+    if not isinstance(tool_input, Mapping):
+        return False
+    model = str(tool_input.get("model") or "")
+    return model.startswith("claude-code-bridge-") or model in {"deepseek", "gpt", "openai", "agnes", "glm", "kimi"}
+
+
+def _bridge_agent_tool_use_safe_text(block: Mapping[str, Any]) -> dict[str, str]:
+    tool_input = block.get("input") if isinstance(block.get("input"), Mapping) else {}
+    model = _sanitize_model_value(tool_input.get("model") if isinstance(tool_input, Mapping) else None)
+    safe_parts = ["[ReplaySafeAnthropicTranscript] Cross-provider Agent tool invocation was summarized before Claude native replay."]
+    if isinstance(model, str) and model:
+        safe_parts.append(f"target_provider_class={_safe_bridge_provider_class(model)}")
+    return {"type": "text", "text": " ".join(safe_parts)}
+
+
+
+def _safe_bridge_provider_class(model: str) -> str:
+    normalized = model.lower()
+    for provider in ("deepseek", "openai", "gpt", "agnes", "glm", "kimi"):
+        if provider in normalized:
+            return "gpt" if provider == "openai" else provider
+    return "bridge"
+
+def _native_tool_result_has_provider_private(block: Mapping[str, Any]) -> bool:
+    content = block.get("content")
+    if isinstance(content, str):
+        return _contains_provider_private_marker(content)
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, Mapping):
+                text = item.get("text")
+                if isinstance(text, str) and _contains_provider_private_marker(text):
+                    return True
+    return False
+
+
+def _tool_result_safe_text(block: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        "type": "text",
+        "text": "[ReplaySafeAnthropicTranscript] Cross-provider tool result was summarized; internal launch metadata was withheld before Claude native replay.",
+    }
+
+
+def _sanitize_native_replay_text(text: str) -> tuple[str, bool, list[str], int]:
+    if not _contains_provider_private_marker(text):
+        return text, False, [], 0
+    return (
+        "[ReplaySafeAnthropicTranscript] Internal subagent/control metadata was withheld before Claude native replay.",
+        True,
+        ["text:provider_private_marker"],
+        1,
+    )
+
+
+def _contains_provider_private_marker(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in _PROVIDER_PRIVATE_TEXT_MARKERS)
 
 
 def body_summary(body: bytes) -> dict[str, Any]:
@@ -626,6 +1014,42 @@ def _safe_artifact_name(value: str) -> str:
     return cleaned[:80] or "capture"
 
 
+def _managed_jwt_seconds_until_expiry(token: str) -> int | None:
+    parts = str(token or "").strip().split(".")
+    if len(parts) < 2:
+        return None
+    payload_segment = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(payload_segment.encode("ascii")))
+        exp = int(payload["exp"])
+    except Exception:  # noqa: BLE001 - opaque legacy tokens cannot be decoded.
+        return None
+    return exp - int(time.time())
+
+
+def _managed_jwt_expiring_soon(token: str, *, refresh_window_seconds: int = 300) -> bool:
+    seconds = _managed_jwt_seconds_until_expiry(token)
+    return seconds is not None and seconds <= refresh_window_seconds
+
+
+def _managed_jwt_is_expired(token: str) -> bool:
+    seconds = _managed_jwt_seconds_until_expiry(token)
+    return seconds is not None and seconds <= 0
+
+
+def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        temp_path.write_text(json.dumps(dict(payload), ensure_ascii=True, indent=2), encoding="utf-8")
+        os.replace(temp_path, path)
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 class RedactingForwarder:
     def __init__(self, config: GuardConfig, execution_controller: ExecutionController | None = None):
         self.config = config
@@ -638,6 +1062,7 @@ class RedactingForwarder:
         self._message_lock = threading.Lock()
         self._artifact_count = 0
         self._artifact_lock = threading.Lock()
+        self._native_token_lock = threading.Lock()
 
     def start_background(self) -> None:
         handler = self._make_handler()
@@ -659,10 +1084,192 @@ class RedactingForwarder:
             self._message_count += 1
             return True
 
+    def _managed_forward_headers(self, *, use_managed_access: bool) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if not use_managed_access:
+            return headers
+        state = self._read_native_managed_state() if self.config.native_managed_state_path is not None else None
+        managed_session_id = str((state or {}).get("claude_code_native_managed_session_id") or self.config.managed_session_id or "").strip()
+        device_id = str((state or {}).get("claude_code_native_device_id") or self.config.device_id or "").strip()
+        if managed_session_id:
+            headers["X-Zhumeng-Managed-Session"] = managed_session_id
+        if device_id:
+            headers["X-Zhumeng-Device-ID"] = device_id
+        if self.config.agent_version:
+            headers["X-Zhumeng-Agent-Version"] = self.config.agent_version
+        return headers
+
+    def _auth_token_for_route(self, route_decision: RouteDecision) -> str | None:
+        if route_decision.native_attestation_allowed:
+            managed_token = self._fresh_native_managed_access_token()
+            if managed_token is None:
+                managed_token = str(self.config.native_managed_access_token or "").strip()
+            if not managed_token:
+                return None
+            token = str(self.config.sub2api_auth or "").strip()
+            return token or None
+        return self.config.sub2api_auth
+
+    def _fresh_native_managed_access_token(self) -> str | None:
+        state_path = self.config.native_managed_state_path
+        if state_path is None:
+            return None
+        with self._native_token_lock:
+            state = self._read_native_managed_state()
+            if state is None:
+                return None
+            token = str(state.get("claude_code_native_access_token") or "").strip()
+            if token and not _managed_jwt_expiring_soon(token):
+                return token
+            refreshed = self._refresh_native_managed_state(state)
+            if refreshed is None:
+                return token if token and not _managed_jwt_is_expired(token) else None
+            next_token = str(refreshed.get("claude_code_native_access_token") or "").strip()
+            return next_token or None
+
+    def _read_native_managed_state(self) -> dict[str, Any] | None:
+        state_path = self.config.native_managed_state_path
+        if state_path is None:
+            return None
+        try:
+            payload = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _refresh_native_managed_state(self, state: dict[str, Any]) -> dict[str, Any] | None:
+        state_path = self.config.native_managed_state_path
+        if state_path is None:
+            return None
+        refresh_token = str(state.get("claude_code_native_refresh_token") or "").strip()
+        raw_device_id = state.get("claude_code_native_device_id")
+        server_base = str(
+            state.get("claude_code_native_server_base_url")
+            or state.get("server_base_url")
+            or state.get("gateway_base_url")
+            or self.config.upstream_base
+            or ""
+        ).strip()
+        if not refresh_token or raw_device_id in {None, ""} or not server_base:
+            return None
+        try:
+            device_id = int(raw_device_id)
+        except (TypeError, ValueError):
+            return None
+        url = server_base.rstrip("/") + "/api/v1/codex/devices/refresh"
+        body = json.dumps({"device_id": device_id, "refresh_token": refresh_token}).encode("utf-8")
+        request = urllib.request.Request(
+            url,
+            data=body,
+            method="POST",
+            headers={"content-type": "application/json"},
+        )
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(request, timeout=10) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (OSError, urllib.error.URLError, json.JSONDecodeError):
+            self._record({
+                "ts": time.time(),
+                "event": "native_managed_token_refresh",
+                "decision": "refresh_failed",
+                "status": "error",
+            })
+            return None
+        refreshed = payload.get("data", payload) if isinstance(payload, dict) else {}
+        if not isinstance(refreshed, Mapping):
+            return None
+        next_access_token = str(refreshed.get("access_token") or "").strip()
+        next_refresh_token = str(refreshed.get("refresh_token") or "").strip()
+        next_session = str(refreshed.get("managed_session_id") or "").strip()
+        if not next_access_token or not next_refresh_token or not next_session:
+            return None
+        updated = dict(state)
+        updated.update({
+            "claude_code_native_access_token": next_access_token,
+            "claude_code_native_refresh_token": next_refresh_token,
+            "claude_code_native_managed_session_id": next_session,
+            "claude_code_native_device_id": device_id,
+            "claude_code_native_status": "configured",
+        })
+        expires_at = refreshed.get("expires_at")
+        if expires_at:
+            updated["claude_code_native_expires_at"] = str(expires_at)
+            updated["claude_code_native_token_expires_at"] = str(expires_at)
+        try:
+            _write_json_atomic(state_path, updated)
+        except OSError:
+            return None
+        self._record({
+            "ts": time.time(),
+            "event": "native_managed_token_refresh",
+            "decision": "refreshed",
+            "status": "ok",
+            "device_id": str(device_id),
+        })
+        return updated
+
     def _record(self, obj: Mapping[str, Any]) -> None:
         self.config.summary_path.parent.mkdir(parents=True, exist_ok=True)
         with self.config.summary_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(dict(obj), ensure_ascii=False, sort_keys=True) + "\n")
+
+    def _messages_route_decision(self, body: bytes, request_path: str, headers: Mapping[str, str]) -> RouteDecision | None:
+        if self.config.route_hint_secret and self.config.route_hint_catalog is not None:
+            try:
+                return verify_signed_route_hint_headers_with_bridge_body_rebinding(
+                    source_headers=headers,
+                    body=body,
+                    request_path=request_path,
+                    catalog=self.config.route_hint_catalog,
+                    session_ref=_route_hint_session_ref(headers),
+                    secret=self.config.route_hint_secret,
+                    replay_cache=self.config.route_hint_replay_cache,
+                )
+            except RuntimeError as exc:
+                if not _has_route_hint_headers(headers):
+                    fallback = _native_catalog_fallback_route_decision(
+                        body=body,
+                        catalog=self.config.route_hint_catalog,
+                        session_ref=_route_hint_session_ref(headers),
+                    )
+                    if fallback is not None:
+                        self._record({
+                            "ts": time.time(),
+                            "event": "messages_route_decision",
+                            "decision": "native_catalog_fallback",
+                            "reason": "route_hint_unavailable_but_catalog_native",
+                            "path": request_path,
+                            **messages_route_summary_markers(fallback, headers),
+                        })
+                        return fallback
+                record = {
+                    "ts": time.time(),
+                    "event": "messages_gate_block",
+                    "decision": "block_403",
+                    "reason": "route_hint_invalid" if _has_route_hint_headers(headers) else "route_hint_unavailable",
+                    "route_hint_error": _safe_route_hint_error(str(exc)),
+                    "path": request_path,
+                    "error_type": type(exc).__name__,
+                    **body_summary(body),
+                }
+                if _has_route_hint_headers(headers):
+                    record["route_hint_signature_diagnostic"] = route_hint_signature_diagnostic(
+                        source_headers=headers,
+                        body=body,
+                        request_path=request_path,
+                        secret=self.config.route_hint_secret,
+                    )
+                self._record(record)
+                return None
+        self._record({
+            "ts": time.time(),
+            "event": "messages_gate_block",
+            "decision": "block_403",
+            "reason": "route_hint_required",
+            "path": request_path,
+        })
+        return None
 
     def _capture_record(
         self,
@@ -867,6 +1474,44 @@ class RedactingForwarder:
                 length = int(self.headers.get("content-length", "0") or 0)
                 body = self.rfile.read(length) if length else b""
                 if decision.action == "forward_messages":
+                    route_decision = parent._messages_route_decision(body, request_path, dict(self.headers))
+                    if route_decision is None:
+                        self.send_response(403)
+                        self.send_header("content-length", "0")
+                        self.end_headers()
+                        return
+                    validation_error = validate_cp5_bridge_body(route_decision, body)
+                    if validation_error:
+                        parent._record({
+                            "ts": time.time(),
+                            "event": "messages_gate_block",
+                            "decision": "block_403",
+                            "reason": "messages_body_invalid",
+                            "validation_error": validation_error,
+                            "path": request_path,
+                            **messages_route_summary_markers(route_decision, dict(self.headers)),
+                        })
+                        self.send_response(403)
+                        self.send_header("content-length", "0")
+                        self.end_headers()
+                        return
+                    replay_safety = native_replay_safety_decision(body, route_decision)
+                    if not replay_safety.allowed:
+                        parent._record({
+                            "ts": time.time(),
+                            "event": "messages_gate_block",
+                            "decision": "block_403",
+                            "reason": "native_replay_safety_violation",
+                            "path": request_path,
+                            "replay_safety": replay_safety.audit,
+                            **messages_route_summary_markers(route_decision, dict(self.headers)),
+                            **body_summary(body),
+                        })
+                        self.send_response(403)
+                        self.send_header("content-length", "0")
+                        self.end_headers()
+                        return
+                    body = replay_safety.body
                     envelope = evaluate_cost_envelope(body, parent.config)
                     request_record = {
                         "ts": time.time(),
@@ -875,9 +1520,10 @@ class RedactingForwarder:
                         "path": request_path,
                         "decision": decision.action,
                         "reason": decision.reason,
-                        **native_messages_summary_markers(dict(self.headers)),
+                        **messages_route_summary_markers(route_decision, dict(self.headers)),
                         **redact_headers(dict(self.headers)),
                         **body_summary(body),
+                        "replay_safety": replay_safety.audit,
                     }
                     if parent.config.capture_level in {"deep", "local-raw"}:
                         request_record["deep_body_summary"] = deep_body_summary(body)
@@ -930,7 +1576,7 @@ class RedactingForwarder:
                         self.send_header("content-length", "0")
                         self.end_headers()
                         return
-                    self._forward_messages(body, request_path)
+                    self._forward_messages(body, request_path, route_decision, replay_safety.audit)
                     return
                 record, effective_decision = parent._evaluate_control_plane(
                     event="request",
@@ -976,37 +1622,125 @@ class RedactingForwarder:
                 self.send_header("content-length", "0")
                 self.end_headers()
 
-            def _forward_messages(self, body: bytes, request_path: str) -> None:
+            def _forward_messages(self, body: bytes, request_path: str, route_decision: RouteDecision, replay_safety_audit: Mapping[str, Any] | None = None) -> None:
+                if not route_decision.native_attestation_allowed and not route_decision.live_request_allowed:
+                    if urlsplit(_request_target_path(request_path)).path == "/v1/messages/count_tokens":
+                        parent._record({
+                            "ts": time.time(),
+                            "event": "messages_gate_block",
+                            "decision": "block_403",
+                            "reason": "bridge_count_tokens_unavailable",
+                            "path": request_path,
+                            **bridge_skeleton_audit_markers(route_decision),
+                        })
+                        self.send_response(403)
+                        self.send_header("content-length", "0")
+                        self.end_headers()
+                        return
+                    self._respond_cp5_bridge_skeleton(body, request_path, route_decision)
+                    return
+                auxiliary = _native_auxiliary_messages_stub_response(body, route_decision)
+                if auxiliary is not None:
+                    data, reason = auxiliary
+                    parent._record({
+                        "ts": time.time(),
+                        "event": "native_auxiliary_messages_stub",
+                        "decision": "local_stub",
+                        "reason": reason,
+                        "path": request_path,
+                        "status": 200,
+                        "response_content_type": "application/json",
+                        "response_body_size": len(data),
+                        **messages_route_summary_markers(route_decision, dict(self.headers)),
+                        **body_summary(body),
+                    })
+                    self.send_response(200)
+                    self.send_header("content-type", "application/json")
+                    self.send_header("content-length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    stop_event = parent.execution_controller.on_message_completed()
+                    if stop_event is not None:
+                        parent._record({"ts": time.time(), **stop_event})
+                    return
                 url = parent.config.upstream_base.rstrip("/") + request_path
                 headers = {
                     key: value
                     for key, value in self.headers.items()
-                    if key.lower() not in (SENSITIVE_HEADERS | {"host", "content-length"})
+                    if key.lower() in CLAUDE_CODE_UPSTREAM_HEADER_ALLOWLIST
                 }
-                headers["Authorization"] = f"Bearer {parent.config.sub2api_auth}"
-                try:
-                    headers.update(build_native_messages_attestation_headers(
-                        body,
-                        request_path,
-                        dict(self.headers),
-                        secret=parent.config.native_attestation_secret,
-                    ))
-                except RuntimeError as exc:
+                use_managed_access = route_decision.native_attestation_allowed
+                auth_token = parent._auth_token_for_route(route_decision)
+                if auth_token is None:
                     parent._record({
                         "ts": time.time(),
                         "event": "messages_gate_block",
                         "decision": "block_403",
-                        "reason": "native_attestation_unavailable",
+                        "reason": "native_managed_access_token_required",
                         "path": request_path,
-                        "error_type": type(exc).__name__,
+                        **messages_route_summary_markers(route_decision, dict(self.headers)),
                     })
                     self.send_response(403)
                     self.send_header("content-length", "0")
                     self.end_headers()
                     return
+                headers["Authorization"] = f"Bearer {auth_token}"
+                if route_decision.native_attestation_allowed:
+                    try:
+                        headers.update(build_native_messages_attestation_headers(
+                            body,
+                            request_path,
+                            dict(self.headers),
+                            secret=parent.config.native_attestation_secret,
+                            route_decision=route_decision,
+                            replay_safety_audit=replay_safety_audit,
+                        ))
+                    except RuntimeError as exc:
+                        parent._record({
+                            "ts": time.time(),
+                            "event": "messages_gate_block",
+                            "decision": "block_403",
+                            "reason": "native_attestation_unavailable",
+                            "path": request_path,
+                            "error_type": type(exc).__name__,
+                        })
+                        self.send_response(403)
+                        self.send_header("content-length", "0")
+                        self.end_headers()
+                        return
+                    headers["x-sub2api-route"] = route_decision.route
+                    headers["x-sub2api-route-catalog-version"] = route_decision.catalog_version
+                else:
+                    headers["x-sub2api-client-type"] = route_decision.client_type
+                    headers["x-sub2api-route"] = route_decision.route
+                    headers["x-sub2api-route-catalog-version"] = route_decision.catalog_version
+                    try:
+                        headers.update(_bridge_rebound_route_hint_headers(
+                            body=body,
+                            request_path=request_path,
+                            route_decision=route_decision,
+                            secret=parent.config.route_hint_secret,
+                        ))
+                    except RuntimeError as exc:
+                        parent._record({
+                            "ts": time.time(),
+                            "event": "messages_gate_block",
+                            "decision": "block_403",
+                            "reason": "bridge_route_hint_rebind_unavailable",
+                            "path": request_path,
+                            "error_type": type(exc).__name__,
+                            **messages_route_summary_markers(route_decision, dict(self.headers)),
+                            **body_summary(body),
+                        })
+                        self.send_response(403)
+                        self.send_header("content-length", "0")
+                        self.end_headers()
+                        return
+                for key, value in parent._managed_forward_headers(use_managed_access=use_managed_access).items():
+                    headers[key] = value
                 if parent.config.extra_forward_headers:
                     for key, value in parent.config.extra_forward_headers.items():
-                        if key.lower() not in SENSITIVE_HEADERS:
+                        if key.lower() in CLAUDE_CODE_UPSTREAM_HEADER_ALLOWLIST:
                             headers[key] = value
                 request = urllib.request.Request(url, data=body, method="POST", headers=headers)
                 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -1089,6 +1823,46 @@ class RedactingForwarder:
                     if stop_event is not None:
                         parent._record({"ts": time.time(), **stop_event})
 
+            def _respond_cp5_bridge_skeleton(self, body: bytes, request_path: str, route_decision: RouteDecision) -> None:
+                validation_error = validate_cp5_bridge_body(route_decision, body)
+                if validation_error:
+                    parent._record({
+                        "ts": time.time(),
+                        "event": "messages_gate_block",
+                        "decision": "block_403",
+                        "reason": "bridge_body_invalid",
+                        "validation_error": validation_error,
+                        "path": request_path,
+                        **bridge_skeleton_audit_markers(route_decision),
+                    })
+                    self.send_response(403)
+                    self.send_header("content-length", "0")
+                    self.end_headers()
+                    stop_event = parent.execution_controller.on_message_completed()
+                    if stop_event is not None:
+                        parent._record({"ts": time.time(), **stop_event})
+                    return
+
+                data = cp5_bridge_skeleton_sse_body(route_decision, body=body)
+                parent._record({
+                    "ts": time.time(),
+                    "event": "messages_bridge_skeleton_response",
+                    "decision": "bridge_skeleton_cp5",
+                    "path": request_path,
+                    "status": 200,
+                    **bridge_skeleton_audit_markers(route_decision),
+                    "response_content_type": "text/event-stream",
+                    "response_body_size": len(data),
+                })
+                self.send_response(200)
+                self.send_header("content-type", "text/event-stream")
+                self.send_header("content-length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                stop_event = parent.execution_controller.on_message_completed()
+                if stop_event is not None:
+                    parent._record({"ts": time.time(), **stop_event})
+
         return Handler
 
     def _is_allowed_stub_target(self, target: str) -> bool:
@@ -1096,6 +1870,36 @@ class RedactingForwarder:
             return False
         allowed = {value.lower() for value in self.config.policy.connect.get("allowed_stub_targets", [])}
         return target.lower() in allowed
+
+    def _model_discovery_decision(self) -> PolicyDecision:
+        catalog = self.config.route_hint_catalog
+        data = []
+        if catalog is not None:
+            for entry in sorted(catalog.entries.values(), key=lambda item: (item.provider != "claude", item.provider, item.model_id)):
+                if entry.model_id.endswith("-placeholder"):
+                    continue
+                if entry.provider == "claude":
+                    continue
+                data.append({
+                    "type": "model",
+                    "id": entry.model_id,
+                    "display_name": MODEL_DISPLAY_NAMES.get(entry.model_id, entry.model_id),
+                    "created_at": "2026-06-18T00:00:00Z",
+                    "x_zhumeng_provider": entry.provider,
+                    "x_zhumeng_route": entry.route,
+                    "x_zhumeng_client_type": entry.client_type,
+                    "x_zhumeng_live_enabled": bool(entry.live_enabled),
+                    "x_zhumeng_formal_pool_allowed": bool(entry.formal_pool_allowed),
+                    "x_zhumeng_native_attestation_allowed": bool(entry.native_attestation_allowed),
+                    "x_zhumeng_credential_scope": entry.credential_scope,
+                })
+        body = {
+            "object": "list",
+            "data": data,
+            "x_zhumeng_overlay_mode": "route_catalog_overlay_proof",
+            "x_zhumeng_bridge_live_feature_flag": False,
+        }
+        return PolicyDecision(action="stub_json", reason="model_discovery_overlay", status=200, content_type="application/json", body=body)
 
     def _evaluate_control_plane(
         self,
@@ -1109,6 +1913,8 @@ class RedactingForwarder:
         target: str | None = None,
         declared_content_length: int | None = None,
     ) -> tuple[dict[str, Any], PolicyDecision]:
+        if method.upper() == "GET" and urlsplit(path).path == "/v1/models":
+            decision = self._model_discovery_decision()
         defaults = self.config.policy.control_plane_defaults
         routing_intent = "local_stub_or_suppress" if decision.action in {"suppress_204", "stub_json"} else "local_block_403"
         if decision.reason == "direct_messages_route_blocked":
@@ -1150,7 +1956,7 @@ class RedactingForwarder:
                 path=path,
                 headers=headers,
                 body=body,
-                classification=_decision_classification(decision),
+                classification=_decision_classification(decision, path),
                 policy_version=defaults["policy_version"],
                 strategy_version=defaults["strategy_version"],
                 response_schema_version=defaults["response_schema_version"],
@@ -1160,19 +1966,36 @@ class RedactingForwarder:
             if self.config.control_plane_intent_url is not None:
                 effective_decision = self._submit_control_plane_intent(intent, source_headers=headers)
         except IntentValidationError:
-            effective_decision = PolicyDecision(
-                action="quarantine_block",
-                reason="intent_validation_failed",
-                status=403,
-            )
-            intent = _quarantine_control_plane_intent(
-                method=method,
-                path=path,
-                body=body,
-                classification="intent_validation_failed",
-                defaults=defaults,
-                routing_intent="local_quarantine_block",
-            )
+            if decision.action in {"suppress_204", "stub_json"}:
+                effective_decision = PolicyDecision(
+                    action=decision.action,
+                    reason="intent_validation_failed_local_stub_preserved",
+                    status=decision.status,
+                    content_type=decision.content_type,
+                    body=decision.body,
+                )
+                intent = _quarantine_control_plane_intent(
+                    method=method,
+                    path=path,
+                    body=body,
+                    classification="intent_validation_failed_local_stub_preserved",
+                    defaults=defaults,
+                    routing_intent="local_stub_or_suppress",
+                )
+            else:
+                effective_decision = PolicyDecision(
+                    action="quarantine_block",
+                    reason="intent_validation_failed",
+                    status=403,
+                )
+                intent = _quarantine_control_plane_intent(
+                    method=method,
+                    path=path,
+                    body=body,
+                    classification="intent_validation_failed",
+                    defaults=defaults,
+                    routing_intent="local_quarantine_block",
+                )
         record: dict[str, Any] = {
             "ts": time.time(),
             "event": event,
@@ -1368,9 +2191,13 @@ def _policy_messages_config(policy: ControlPlanePolicy) -> dict[str, Any]:
     return messages if isinstance(messages, dict) else {}
 
 
-def _decision_classification(decision: PolicyDecision) -> str:
+def _decision_classification(decision: PolicyDecision, path: str = "") -> str:
     if decision.reason == "direct_messages_route_blocked":
         return "direct_messages_route_blocked"
+    path_template = _intent_path_template(path)
+    explicit = _EXPLICIT_CONTROL_PLANE_CLASSIFICATIONS.get((path_template, decision.action))
+    if explicit is not None:
+        return explicit
     if decision.action == "suppress_204":
         return "telemetry_or_eval_suppressed"
     if decision.action == "stub_json":
@@ -1378,6 +2205,45 @@ def _decision_classification(decision: PolicyDecision) -> str:
             return "bootstrap_settings_or_feature_flag_stubbed"
         return "mcp_or_registry_stubbed"
     return "unknown_quarantined"
+
+
+_EXPLICIT_CONTROL_PLANE_CLASSIFICATIONS = {
+    ("/v1/mcp_servers", "stub_json"): "mcp_servers_stubbed",
+    ("/mcp-registry/v0/servers", "stub_json"): "mcp_registry_public_stubbed",
+    ("/v1/models", "stub_json"): "model_capabilities_stubbed",
+    ("/api/claude_code_penguin_mode", "stub_json"): "claude_code_feature_flags_stubbed",
+    ("/api/claude_code_feature_flags", "stub_json"): "claude_code_feature_flags_stubbed",
+    ("/api/claude_code_grove", "stub_json"): "claude_code_feature_flags_stubbed",
+    ("/api/claude_code/organizations/metrics_enabled", "stub_json"): "claude_code_feature_flags_stubbed",
+    ("/api/oauth/account/settings", "quarantine_block"): "account_settings_sensitive",
+    ("/api/claude_code/policy_limits", "quarantine_block"): "policy_limits_sensitive",
+    ("/api/claude_code/remote_managed_settings", "quarantine_block"): "remote_managed_settings_sensitive",
+    ("/api/claude_code/settings_sync", "quarantine_block"): "settings_sync_sensitive",
+    ("/api/claude_code/team_memory", "quarantine_block"): "team_memory_sensitive",
+    ("/api/claude_code/model_capabilities", "quarantine_block"): "model_capabilities_sensitive",
+    ("/api/claude_code/growthbook", "quarantine_block"): "growthbook_sensitive",
+    ("/api/oauth/organizations/{org}/referral/eligibility", "quarantine_block"): "oauth_org_settings_sensitive",
+}
+_EXACT_INTENT_PATH_TEMPLATES = {
+    "/api/claude_code/organizations/metrics_enabled",
+}
+
+
+def _intent_path_template(path: str) -> str:
+    parsed = urlsplit(path)
+    if parsed.path in _EXACT_INTENT_PATH_TEMPLATES:
+        return parsed.path
+    parts = parsed.path.split("/")
+    templated = [""]
+    for index, segment in enumerate(parts[1:], start=1):
+        if not segment:
+            templated.append(segment)
+            continue
+        if parts[index - 1] == "organizations":
+            templated.append("{org}")
+            continue
+        templated.append(segment)
+    return "/".join(templated)
 
 
 def _quarantine_control_plane_intent(
@@ -1608,16 +2474,32 @@ def _scoped_hmac_ref(value: str, *, scope: str) -> dict[str, Any]:
     }
 
 
-def build_native_messages_attestation_headers(body: bytes, request_path: str, source_headers: Mapping[str, str], *, secret: str | None = None) -> dict[str, str]:
+def build_native_messages_attestation_headers(
+    body: bytes,
+    request_path: str,
+    source_headers: Mapping[str, str],
+    *,
+    secret: str | None = None,
+    route_decision: RouteDecision | None = None,
+    replay_safety_audit: Mapping[str, Any] | None = None,
+) -> dict[str, str]:
     """Attach internal native takeover markers; never include raw prompt/body."""
     now = int(time.time())
     key_id = os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_CURRENT_KEY_ID", "guard_v1")
     version = int(os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_VERSION", "1"))
-    secret = secret or os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "")
+    if secret is None:
+        secret = os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "")
     if not secret:
         raise RuntimeError("explicit Claude Code native attestation secret is required")
     local_session_ref = session_key_from_headers(source_headers)
     local_session_value = str(local_session_ref.get("value", ""))
+    model_id = _native_attestation_model_id(body)
+    body_shape_hash = _native_body_shape_hash(body)
+    replay_safety_contract = _native_replay_safety_attestation_contract(body, replay_safety_audit)
+    runtime_hash = route_decision.runtime_hash if route_decision is not None else _native_env_hash("ZHUMENG_CLAUDE_RUNTIME_HASH")
+    overlay_hash = route_decision.overlay_hash if route_decision is not None else _native_env_hash("ZHUMENG_CLAUDE_OVERLAY_HASH")
+    catalog_hash = route_decision.catalog_hash if route_decision is not None else _native_env_hash("ZHUMENG_CLAUDE_CATALOG_HASH")
+    catalog_version = route_decision.catalog_version if route_decision is not None else "legacy-native"
     payload = {
         "key_id": key_id,
         "scope": os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SCOPE", NATIVE_ATTESTATION_SCOPE),
@@ -1633,6 +2515,18 @@ def build_native_messages_attestation_headers(body: bytes, request_path: str, so
         "local_session_ref": local_session_value,
         "netwatch_required": True,
         "shape_healthcheck_profile": NATIVE_HEALTHCHECK_PROFILE,
+        "route": NATIVE_ROUTE,
+        "model_id": model_id,
+        "provider_owner": NATIVE_PROVIDER_OWNER,
+        "credential_scope": NATIVE_CREDENTIAL_SCOPE,
+        "gateway_location": NATIVE_GATEWAY_LOCATION,
+        "runtime_hash": runtime_hash,
+        "overlay_hash": overlay_hash,
+        "catalog_hash": catalog_hash,
+        "catalog_version": catalog_version,
+        "session_ref": local_session_value,
+        "body_shape_hash": body_shape_hash,
+        **replay_safety_contract,
     }
     encoded = base64.urlsafe_b64encode(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).decode("ascii").rstrip("=")
     signature = _sign_native_messages_attestation(encoded, "POST", request_path, body, secret)
@@ -1648,6 +2542,129 @@ def build_native_messages_attestation_headers(body: bytes, request_path: str, so
     }
 
 
+
+def _native_replay_safety_attestation_contract(body: bytes, audit: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Bind the backend native attestation to the replay-safety decision."""
+    body_shape_hash = _native_body_shape_hash(body)
+    if audit is None:
+        raise RuntimeError("native replay safety audit is required")
+    required = {"boundary", "applied", "sanitized", "forbidden_paths_count", "sanitized_body_shape_hash"}
+    if any(key not in audit for key in required):
+        raise RuntimeError("native replay safety contract is invalid")
+    boundary = str(audit.get("boundary"))
+    applied = audit.get("applied")
+    sanitized = audit.get("sanitized")
+    if not isinstance(applied, bool) or not isinstance(sanitized, bool):
+        raise RuntimeError("native replay safety contract is invalid")
+    forbidden_paths_count = audit.get("forbidden_paths_count", 0)
+    if not isinstance(forbidden_paths_count, int) or isinstance(forbidden_paths_count, bool) or forbidden_paths_count < 0:
+        raise RuntimeError("native replay safety contract is invalid")
+    replay_body_shape_hash_raw = audit.get("sanitized_body_shape_hash")
+    if not isinstance(replay_body_shape_hash_raw, str):
+        raise RuntimeError("native replay safety contract is invalid")
+    replay_body_shape_hash = replay_body_shape_hash_raw
+    if boundary != _REPLAY_SAFE_BOUNDARY or not applied:
+        raise RuntimeError("native replay safety contract is invalid")
+    if sanitized and forbidden_paths_count <= 0:
+        raise RuntimeError("native replay safety contract is invalid")
+    if not sanitized and forbidden_paths_count != 0:
+        raise RuntimeError("native replay safety contract is invalid")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", replay_body_shape_hash) or replay_body_shape_hash != body_shape_hash:
+        raise RuntimeError("native replay safety body binding mismatch")
+    return {
+        "replay_safety_boundary": boundary,
+        "replay_safety_applied": applied,
+        "replay_safety_sanitized": sanitized,
+        "replay_safety_forbidden_paths_count": forbidden_paths_count,
+        "replay_safety_body_shape_hash": replay_body_shape_hash,
+    }
+
+def _native_attestation_model_id(body: bytes) -> str:
+    try:
+        obj = json.loads(body.decode("utf-8")) if body else {}
+    except Exception:
+        return "unknown"
+    if not isinstance(obj, dict):
+        return "unknown"
+    model = _sanitize_model_value(obj.get("model"))
+    return model if isinstance(model, str) and model else "unknown"
+
+
+def _native_body_shape_hash(body: bytes) -> str:
+    try:
+        decoded = json.loads(body.decode("utf-8")) if body else {}
+    except Exception:
+        decoded = {"body_size": len(body), "type": "invalid_json"}
+    shape = _native_shape_value(decoded)
+    digest = sha256(json.dumps(shape, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return "sha256:" + digest
+
+
+def _native_shape_value(value: object) -> object:
+    if isinstance(value, dict):
+        children: dict[str, object] = {}
+        for key, child in value.items():
+            safe_key = _native_shape_key(str(key))
+            children[safe_key] = _native_shape_value(child)
+        return {"children": children, "keys": sorted(children), "type": "object"}
+    if isinstance(value, list):
+        limit = min(len(value), 32)
+        return {
+            "items": [_native_shape_value(value[index]) for index in range(limit)],
+            "len": len(value),
+            "truncated": len(value) > 32,
+            "type": "array",
+        }
+    if isinstance(value, str):
+        return {"type": "string"}
+    if isinstance(value, bool):
+        return {"type": "bool"}
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return {"type": "number"}
+    if value is None:
+        return {"type": "null"}
+    return {"type": "unknown"}
+
+
+def _native_shape_key(key: str) -> str:
+    key = key.strip()
+    if not key or len(key) > 128 or _looks_sensitive_text(key):
+        return "redacted-key"
+    return key if re.fullmatch(r"[A-Za-z0-9_.-]+", key) else "redacted-key"
+
+
+def _native_env_hash(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if re.fullmatch(r"sha256:[0-9a-fA-F]{64}", value):
+        return "sha256:" + value.split(":", 1)[1].lower()
+    return NATIVE_UNKNOWN_HASH
+
+
+def _native_bridge_live_models_from_env() -> tuple[str, ...]:
+    raw = os.environ.get("ZHUMENG_CLAUDE_BRIDGE_LIVE_MODELS", "")
+    models = [item.strip() for item in raw.split(",") if item.strip()]
+    return tuple(dict.fromkeys(models))
+
+
+def _native_bridge_provider_release_statuses_from_env() -> dict[str, str]:
+    raw = os.environ.get("ZHUMENG_CLAUDE_BRIDGE_PROVIDER_RELEASE_STATUSES_JSON", "").strip()
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, Mapping):
+        return {}
+    return {str(key): str(value) for key, value in payload.items()}
+
+
+def _native_bridge_live_expanded_providers_from_env() -> tuple[str, ...]:
+    raw = os.environ.get("ZHUMENG_CLAUDE_BRIDGE_LIVE_EXPANDED_PROVIDERS", "")
+    providers = [item.strip() for item in raw.split(",") if item.strip()]
+    return tuple(dict.fromkeys(providers))
+
+
 def native_messages_summary_markers(source_headers: Mapping[str, str]) -> dict[str, Any]:
     local_session = session_key_from_headers(source_headers)
     return {
@@ -1659,6 +2676,454 @@ def native_messages_summary_markers(source_headers: Mapping[str, str]) -> dict[s
         "raw_body_persisted": False,
         "raw_attestation_persisted": False,
     }
+
+
+def messages_route_summary_markers(route_decision: RouteDecision, source_headers: Mapping[str, str]) -> dict[str, Any]:
+    local_session = session_key_from_headers(source_headers)
+    return {
+        "client_type": route_decision.client_type,
+        "route": route_decision.route,
+        "provider": route_decision.provider,
+        "live_request_allowed": bool(route_decision.live_request_allowed),
+        "native_attested": bool(route_decision.native_attestation_allowed),
+        "formal_pool_allowed": bool(route_decision.formal_pool_allowed),
+        "netwatch_required": bool(route_decision.native_attestation_allowed),
+        "shape_healthcheck_profile": NATIVE_HEALTHCHECK_PROFILE if route_decision.native_attestation_allowed else "bridge_skeleton_cp5",
+        "runtime_hash": route_decision.runtime_hash,
+        "overlay_hash": route_decision.overlay_hash,
+        "catalog_hash": route_decision.catalog_hash,
+        "catalog_version": route_decision.catalog_version,
+        "provider_owner": route_decision.provider_owner,
+        "credential_scope": route_decision.credential_scope,
+        "gateway_location": route_decision.gateway_location,
+        "local_session_ref": local_session.get("value", ""),
+        "raw_body_persisted": False,
+        "raw_attestation_persisted": False,
+    }
+
+
+def bridge_skeleton_audit_markers(route_decision: RouteDecision) -> dict[str, Any]:
+    return {
+        "route": route_decision.route,
+        "client_type": route_decision.client_type,
+        "provider": route_decision.provider,
+        "model": route_decision.model_id,
+        "live_request_allowed": bool(route_decision.live_request_allowed),
+        "native_attested": False,
+        "formal_pool_allowed": False,
+        "runtime_hash": route_decision.runtime_hash,
+        "overlay_hash": route_decision.overlay_hash,
+        "catalog_hash": route_decision.catalog_hash,
+        "catalog_version": route_decision.catalog_version,
+        "provider_owner": route_decision.provider_owner,
+        "credential_scope": route_decision.credential_scope,
+        "gateway_location": route_decision.gateway_location,
+    }
+
+
+OPENAI_ONLY_BRIDGE_TOP_LEVEL_FIELDS = {
+    "audio",
+    "frequency_penalty",
+    "background",
+    "conversation",
+    "function_call",
+    "functions",
+    "include",
+    "input",
+    "instructions",
+    "logit_bias",
+    "logprobs",
+    "max_completion_tokens",
+    "max_output_tokens",
+    "modalities",
+    "n",
+    "parallel_tool_calls",
+    "presence_penalty",
+    "previous_response_id",
+    "prompt",
+    "prompt_cache_key",
+    "reasoning",
+    "response_format",
+    "seed",
+    "stop",
+    "store",
+    "stream_options",
+    "text",
+    "top_logprobs",
+    "truncation",
+    "user",
+}
+
+
+def validate_cp5_bridge_body(route_decision: RouteDecision, body: bytes) -> str | None:
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except Exception:  # noqa: BLE001 - fail closed without echoing malformed input
+        return "json_body_required"
+    if not isinstance(payload, dict):
+        return "json_object_required"
+    model = payload.get("model")
+    if not isinstance(model, str) or model.strip() != route_decision.model_id:
+        return "model_binding_mismatch"
+    for field in OPENAI_ONLY_BRIDGE_TOP_LEVEL_FIELDS:
+        if field in payload:
+            return "openai_only_body_shape"
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return "messages_required"
+    for item in messages:
+        if not isinstance(item, dict):
+            return "message_shape_invalid"
+        if item.get("role") not in {"system", "user", "assistant"}:
+            return "message_role_invalid"
+    tool_names: set[str] = set()
+    tools = payload.get("tools")
+    if tools is not None:
+        if not isinstance(tools, list):
+            return "tool_shape_invalid"
+        for item in tools:
+            if not isinstance(item, dict):
+                return "tool_shape_invalid"
+            if item.get("type") == "function" or "function" in item:
+                return "openai_function_tool_shape"
+            name = item.get("name")
+            schema = item.get("input_schema")
+            if not isinstance(name, str) or not _safe_bridge_tool_name(name.strip()) or not isinstance(schema, dict):
+                return "tool_shape_invalid"
+            tool_names.add(name.strip())
+    if "tool_choice" in payload:
+        choice = payload.get("tool_choice")
+        if not isinstance(choice, dict):
+            return "tool_choice_shape_invalid"
+        if choice.get("type") == "function" or "function" in choice:
+            return "openai_function_tool_shape"
+        choice_type = choice.get("type")
+        if choice_type == "tool":
+            name = choice.get("name")
+            if not isinstance(name, str) or not _safe_bridge_tool_name(name.strip()):
+                return "tool_choice_shape_invalid"
+            if name.strip() not in tool_names:
+                return "tool_choice_shape_invalid"
+        elif choice_type not in {"auto", "any", "none"}:
+            return "tool_choice_shape_invalid"
+    return None
+
+
+def cp5_bridge_skeleton_sse_body(route_decision: RouteDecision, *, body: bytes | None) -> bytes:
+    model = json.dumps(route_decision.model_id, separators=(",", ":"))
+    if _bridge_skeleton_requires_live(body):
+        return _cp5_bridge_error_sse_body(
+            "invalid_request_error",
+            "Claude Code bridge live required for multi_tool_use.parallel or Agent tool execution",
+        )
+    tool_name = _bridge_skeleton_tool_name(body)
+    if tool_name:
+        return _cp5_bridge_tool_use_sse_body(model=model, tool_name=tool_name)
+    content = "bridge skeleton"
+    return (
+        "event: message_start\n"
+        f"data: {{\"type\":\"message_start\",\"message\":{{\"id\":\"msg_bridge_skeleton_cp5\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":{model},\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{{\"input_tokens\":1,\"output_tokens\":1}}}}}}\n\n"
+        "event: content_block_start\n"
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"
+        "event: content_block_delta\n"
+        f"data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":{json.dumps(content)}}}}}\n\n"
+        "event: content_block_stop\n"
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+        "event: message_delta\n"
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\n"
+        "event: message_stop\n"
+        "data: {\"type\":\"message_stop\"}\n\n"
+    ).encode("utf-8")
+
+
+def _native_auxiliary_messages_stub_response(body: bytes, route_decision: RouteDecision) -> tuple[bytes, str] | None:
+    if not route_decision.native_attestation_allowed:
+        return None
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except Exception:  # noqa: BLE001 - malformed native messages should continue to normal validation/fail-closed.
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    stream = bool(payload.get("stream"))
+    if stream:
+        return None
+    model = str(payload.get("model") or route_decision.model_id).strip() or route_decision.model_id
+    max_tokens = payload.get("max_tokens")
+    if isinstance(max_tokens, (int, float)) and int(max_tokens) == 1 and "haiku" in model.lower():
+        return _native_auxiliary_message_json(model=model, text="#", stop_reason="max_tokens", input_tokens=1, output_tokens=1), "max_tokens_one_haiku_probe"
+    if _is_title_or_warmup_auxiliary_payload(payload):
+        return _native_auxiliary_message_json(model=model, text="New Conversation", stop_reason="end_turn", input_tokens=10, output_tokens=2), "title_or_warmup"
+    return None
+
+
+def _native_auxiliary_message_json(*, model: str, text: str, stop_reason: str, input_tokens: int, output_tokens: int) -> bytes:
+    return json.dumps({
+        "id": "msg_native_auxiliary_stub",
+        "type": "message",
+        "role": "assistant",
+        "model": model,
+        "content": [{"type": "text", "text": text}],
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": input_tokens,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 0,
+            },
+            "output_tokens": output_tokens,
+        },
+    }, separators=(",", ":")).encode("utf-8")
+
+
+def _is_title_or_warmup_auxiliary_payload(payload: Mapping[str, Any]) -> bool:
+    texts = list(_iter_anthropic_text_values(payload.get("messages")))
+    texts.extend(_iter_anthropic_text_values(payload.get("system")))
+    for text in texts:
+        normalized = " ".join(text.split()).lower()
+        if normalized == "warmup":
+            return True
+        if "please write a 5-10 word title for the following conversation:" in normalized:
+            return True
+        if "indicates a new conversation topic" in normalized and "extract a 2-3 word title" in normalized:
+            return True
+        if normalized.startswith("[suggestion mode:"):
+            return True
+    return False
+
+
+def _iter_anthropic_text_values(value: Any):
+    if isinstance(value, str):
+        yield value
+        return
+    if isinstance(value, Mapping):
+        if isinstance(value.get("text"), str):
+            yield value["text"]
+        content = value.get("content")
+        if content is not None:
+            yield from _iter_anthropic_text_values(content)
+        return
+    if isinstance(value, list):
+        for item in value:
+            yield from _iter_anthropic_text_values(item)
+
+
+def cp4_bridge_stub_sse_body(route_decision: RouteDecision) -> bytes:
+    return cp5_bridge_skeleton_sse_body(route_decision, body=None)
+
+
+def _bridge_skeleton_requires_live(body: bytes | None) -> bool:
+    if not body:
+        return False
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except Exception:  # noqa: BLE001 - skeleton falls back to text on malformed body
+        return False
+    if not isinstance(payload, dict):
+        return False
+    choice = payload.get("tool_choice")
+    if isinstance(choice, dict) and choice.get("type") == "tool" and str(choice.get("name") or "").strip() == "multi_tool_use.parallel":
+        return True
+    tools = payload.get("tools")
+    if isinstance(tools, list):
+        if len(tools) > 1:
+            return True
+        for item in tools:
+            if isinstance(item, dict) and str(item.get("name") or "").strip() in {"multi_tool_use.parallel", "Agent"}:
+                return True
+    return False
+
+
+def _bridge_skeleton_tool_name(body: bytes | None) -> str:
+    if not body:
+        return ""
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except Exception:  # noqa: BLE001 - skeleton falls back to text on malformed body
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    choice = payload.get("tool_choice")
+    if isinstance(choice, dict) and choice.get("type") == "tool" and isinstance(choice.get("name"), str):
+        name = choice["name"].strip()
+        if _safe_bridge_tool_name(name):
+            return name
+    tools = payload.get("tools")
+    if isinstance(tools, list) and tools:
+        first = tools[0]
+        if isinstance(first, dict) and isinstance(first.get("name"), str):
+            name = first["name"].strip()
+            if _safe_bridge_tool_name(name):
+                return name
+    return ""
+
+
+def _safe_bridge_tool_name(value: str) -> bool:
+    value = value.strip()
+    return re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value) is not None or value == "multi_tool_use.parallel"
+
+
+def _cp5_bridge_error_sse_body(error_type: str, message: str) -> bytes:
+    data = json.dumps({
+        "type": "error",
+        "error": {"type": _sanitize_sse_label(error_type), "message": _sanitize_bridge_error_message(message)},
+    }, separators=(",", ":"))
+    return f"event: error\ndata: {data}\n\n".encode("utf-8")
+
+
+def _sanitize_sse_label(value: str) -> str:
+    value = str(value or "").strip()
+    return value if re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", value) else "invalid_request_error"
+
+
+def _sanitize_bridge_error_message(value: str) -> str:
+    value = str(value or "").strip()
+    return value or "provider bridge request failed"
+
+
+def _cp5_bridge_tool_use_sse_body(*, model: str, tool_name: str) -> bytes:
+    escaped_tool = json.dumps(tool_name, separators=(",", ":"))
+    partial_json = json.dumps(json.dumps({"city": "San Francisco"}, separators=(",", ":")), separators=(",", ":"))
+    return (
+        "event: message_start\n"
+        f"data: {{\"type\":\"message_start\",\"message\":{{\"id\":\"msg_bridge_skeleton_cp5\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":{model},\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{{\"input_tokens\":1,\"output_tokens\":1}}}}}}\n\n"
+        "event: content_block_start\n"
+        f"data: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"tool_use\",\"id\":\"toolu_bridge_skeleton_cp5\",\"name\":{escaped_tool},\"input\":{{}}}}}}\n\n"
+        "event: content_block_delta\n"
+        f"data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":{partial_json}}}}}\n\n"
+        "event: content_block_stop\n"
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+        "event: message_delta\n"
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\n"
+        "event: message_stop\n"
+        "data: {\"type\":\"message_stop\"}\n\n"
+    ).encode("utf-8")
+
+
+
+def _native_catalog_fallback_route_decision(*, body: bytes, catalog: RouteCatalog, session_ref: str) -> RouteDecision | None:
+    try:
+        model_id = body_model_id(body)
+    except RuntimeError:
+        return None
+    entry = catalog.entry_for(model_id)
+    if entry is None:
+        return None
+    if entry.provider != "claude" or entry.route != NATIVE_ROUTE or entry.client_type != NATIVE_CLIENT_TYPE:
+        return None
+    if not (entry.live_enabled and entry.formal_pool_allowed and entry.native_attestation_allowed):
+        return None
+    return RouteDecision(
+        model_id=entry.model_id,
+        provider=entry.provider,
+        route=entry.route,
+        client_type=entry.client_type,
+        live_request_allowed=entry.live_enabled,
+        formal_pool_allowed=entry.formal_pool_allowed,
+        native_attestation_allowed=entry.native_attestation_allowed,
+        provider_owner=entry.provider_owner,
+        credential_scope=entry.credential_scope,
+        gateway_location=entry.gateway_location,
+        runtime_hash=catalog.runtime_hash,
+        overlay_hash=catalog.overlay_hash,
+        catalog_hash=catalog.catalog_hash,
+        catalog_version=catalog.catalog_version,
+        session_ref=str(session_ref),
+        nonce="native-catalog-fallback",
+    )
+
+def _route_hint_session_ref(headers: Mapping[str, str]) -> str:
+    for key, value in headers.items():
+        if key.lower() == "x-claude-code-session-id" and isinstance(value, str) and value.strip():
+            return value.strip()
+    return str(session_key_from_headers(headers).get("value", ""))
+
+
+def _has_route_hint_headers(headers: Mapping[str, str]) -> bool:
+    return any(key.lower() in {
+        "x-zhumeng-claude-code-route-hint",
+        "x-zhumeng-claude-code-route-signature",
+    } for key in headers)
+
+
+def _bridge_rebound_route_hint_headers(
+    *,
+    body: bytes,
+    request_path: str,
+    route_decision: RouteDecision,
+    secret: str | None,
+) -> dict[str, str]:
+    if not secret:
+        raise RuntimeError("route hint secret is required")
+    if route_decision.native_attestation_allowed or route_decision.formal_pool_allowed or route_decision.client_type == NATIVE_CLIENT_TYPE:
+        raise RuntimeError("route hint bridge cannot claim native")
+    catalog = RouteCatalog(
+        runtime_hash=route_decision.runtime_hash,
+        overlay_hash=route_decision.overlay_hash,
+        catalog_hash=route_decision.catalog_hash,
+        catalog_version=route_decision.catalog_version,
+        entries={
+            route_decision.model_id: RouteCatalogEntry(
+                model_id=route_decision.model_id,
+                provider=route_decision.provider,
+                route=route_decision.route,
+                client_type=route_decision.client_type,
+                live_enabled=route_decision.live_request_allowed,
+                formal_pool_allowed=route_decision.formal_pool_allowed,
+                native_attestation_allowed=route_decision.native_attestation_allowed,
+                provider_owner=route_decision.provider_owner,
+                credential_scope=route_decision.credential_scope,
+                gateway_location=route_decision.gateway_location,
+            ),
+        },
+    )
+    return build_signed_route_hint_headers(
+        body=body,
+        request_path=request_path,
+        catalog=catalog,
+        model_id=route_decision.model_id,
+        session_ref=route_decision.session_ref,
+        secret=secret,
+        nonce=route_decision.nonce,
+    )
+
+
+def _safe_route_hint_error(message: str) -> str:
+    normalized = str(message or "").strip().lower()
+    known = {
+        "route hint is required": "missing",
+        "route hint signature mismatch": "signature_mismatch",
+        "route hint stale": "stale",
+        "route hint request binding mismatch": "request_binding_mismatch",
+        "route hint body binding mismatch": "body_binding_mismatch",
+        "route hint session binding mismatch": "session_binding_mismatch",
+        "route hint runtime binding mismatch": "runtime_binding_mismatch",
+        "route hint overlay binding mismatch": "overlay_binding_mismatch",
+        "route hint catalog binding mismatch": "catalog_binding_mismatch",
+        "route hint unknown model": "unknown_model",
+        "route hint bridge cannot claim native": "bridge_claimed_native",
+        "route hint native attestation binding mismatch": "native_attestation_binding_mismatch",
+        "route hint model binding mismatch": "model_binding_mismatch",
+        "route hint body must be valid json": "invalid_json_body",
+        "route hint body must be a json object": "invalid_json_body",
+        "route hint body model is required": "missing_body_model",
+        "route hint payload decode failed": "payload_decode_failed",
+        "route hint payload must be an object": "payload_shape_mismatch",
+        "route hint payload shape mismatch": "payload_shape_mismatch",
+        "route hint scope/version mismatch": "scope_version_mismatch",
+    }
+    if normalized in known:
+        return known[normalized]
+    if normalized.startswith("route hint catalog route binding mismatch for "):
+        return "catalog_route_binding_mismatch"
+    if normalized.startswith("route hint nonce replayed"):
+        return "replay"
+    if normalized.startswith("route hint ") and normalized.endswith(" is invalid"):
+        return "payload_shape_mismatch"
+    return "unknown"
 
 
 def _sign_native_messages_attestation(encoded: str, method: str, request_path: str, body: bytes, secret: str) -> str:
@@ -1712,6 +3177,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--upstream-base", required=True)
     parser.add_argument("--sub2api-auth")
     parser.add_argument("--sub2api-auth-env", default="ZHUMENG_API_KEY")
+    parser.add_argument("--native-attestation", action="store_true", help="Enable request-bound Claude Code native attestation for /v1/messages.")
+    parser.add_argument("--route-hint-secret-env", help="Enable CP4 signed per-request route hints with the secret from this env var.")
+    parser.add_argument("--route-hint-catalog-version", default="cp4-cli-fixture-v1")
     parser.add_argument("--summary-path", type=Path, required=True)
     parser.add_argument("--control-plane-intent-url")
     parser.add_argument("--control-plane-intent-auth")
@@ -1747,6 +3215,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Allow forwarding /v1/messages to a non-loopback Zhumeng/Sub2API upstream. Claude/Anthropic hosts remain forbidden.",
     )
+    parser.add_argument("--managed-session")
+    parser.add_argument("--device-id")
+    parser.add_argument("--agent-version", default="0.1.0")
+    parser.add_argument("--native-managed-access-token-env", help="Env var holding zhumeng managed-device access token for Claude formal-pool native requests.")
+    parser.add_argument("--native-managed-state-path", type=Path, help="Local zhumeng-agent state.json path for reading the latest Claude Code native token.")
     args = parser.parse_args(argv)
     sub2api_auth = args.sub2api_auth or os.environ.get(args.sub2api_auth_env or "")
     if not sub2api_auth:
@@ -1761,6 +3234,35 @@ def main(argv: list[str] | None = None) -> int:
 
     cost_limits = _cli_cost_envelope_limits(args)
     session_budget_ledger = _cli_session_budget_ledger(args)
+    route_hint_secret = os.environ.get(args.route_hint_secret_env or "") if args.route_hint_secret_env else None
+    native_managed_access_token = os.environ.get(args.native_managed_access_token_env or "") if args.native_managed_access_token_env else None
+    route_hint_catalog = None
+    if route_hint_secret:
+        catalog_version = args.route_hint_catalog_version
+        bridge_live_models = _native_bridge_live_models_from_env()
+        bridge_provider_statuses = _native_bridge_provider_release_statuses_from_env()
+        bridge_expanded_providers = _native_bridge_live_expanded_providers_from_env()
+        route_hint_catalog = cp4_fixture_route_catalog(
+            runtime_hash=_native_env_hash("ZHUMENG_CLAUDE_RUNTIME_HASH"),
+            overlay_hash=_native_env_hash("ZHUMENG_CLAUDE_OVERLAY_HASH"),
+            catalog_hash=NATIVE_UNKNOWN_HASH,
+            catalog_version=catalog_version,
+            bridge_live_models=bridge_live_models,
+            bridge_live_provider_statuses=bridge_provider_statuses,
+            bridge_live_expanded_providers=bridge_expanded_providers,
+        )
+        route_hint_catalog = cp4_fixture_route_catalog(
+            runtime_hash=route_hint_catalog.runtime_hash,
+            overlay_hash=route_hint_catalog.overlay_hash,
+            catalog_hash=route_catalog_content_hash(route_hint_catalog),
+            catalog_version=catalog_version,
+            bridge_live_models=bridge_live_models,
+            bridge_live_provider_statuses=bridge_provider_statuses,
+            bridge_live_expanded_providers=bridge_expanded_providers,
+        )
+        if _native_env_hash("ZHUMENG_CLAUDE_CATALOG_HASH") != route_hint_catalog.catalog_hash:
+            print("invalid guard config: route hint catalog hash mismatch", file=os.sys.stderr)
+            return 2
 
     try:
         forwarder = RedactingForwarder(
@@ -1782,7 +3284,14 @@ def main(argv: list[str] | None = None) -> int:
                 capture_level=args.capture_level,
                 local_raw_dir=args.local_raw_dir,
                 allow_nonloopback_upstream=args.allow_nonloopback_upstream,
-                native_attestation_secret=os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET"),
+                native_attestation_secret=os.environ.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET") if args.native_attestation else "",
+                native_managed_access_token=native_managed_access_token,
+                native_managed_state_path=args.native_managed_state_path,
+                route_hint_secret=route_hint_secret,
+                route_hint_catalog=route_hint_catalog,
+                managed_session_id=args.managed_session,
+                device_id=args.device_id,
+                agent_version=args.agent_version,
             )
         )
     except ValueError as exc:

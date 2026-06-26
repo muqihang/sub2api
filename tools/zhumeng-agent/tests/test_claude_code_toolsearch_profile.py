@@ -10,9 +10,11 @@ from zhumeng_agent.adapters.claude_code.profile import (
     CaptureMode,
     ClaudeCodeCapabilityProfile,
     ClaudeCodeProfile,
+    FgtsMode,
     ToolSearchMode,
     build_safe_env,
     apply_capability_profile,
+    evaluate_fgts_profile,
 )
 
 
@@ -242,6 +244,63 @@ def test_standard_toolsearch_mode_disables_native_toolsearch():
     assert decision.env_value == "false"
     assert decision.status == "ready"
     assert decision.degraded is False
+
+
+
+def test_fgts_enabled_request_stays_observe_only_without_experimental_env(tmp_path: Path):
+    capability = ClaudeCodeCapabilityProfile(
+        profile_id="native-prod",
+        claude_code_version_family="2.1.x",
+        persona_profile_id="claude-code-native-prod",
+        fgts_mode=FgtsMode.ENABLED,
+        control_plane_policy_version="cp-v1",
+        server_shape_healthcheck_version="shape-v1",
+    )
+    base = ClaudeCodeProfile(
+        profile_id="prod",
+        guard_base_url="http://127.0.0.1:43117",
+        zhumeng_entry_api_key="entry-key",
+        config_dir=tmp_path / "config",
+        capture_mode=CaptureMode.PRODUCTION,
+    )
+
+    decision = evaluate_fgts_profile(capability)
+    env = build_safe_env(apply_capability_profile(base, capability), inherited_env={})
+
+    assert decision.status == "fgts_observe_only"
+    assert decision.env_value == "unset"
+    assert decision.degraded is True
+    assert decision.requested_mode == "enabled"
+    assert "awaiting_verified_local_injection" in decision.reasons
+    assert "CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING" not in env
+    assert env["ZHUMENG_CLAUDE_FGTS_MODE"] == "observe_only"
+
+
+def test_fgts_disabled_sets_safe_zero_env(tmp_path: Path):
+    capability = ClaudeCodeCapabilityProfile(
+        profile_id="native-standard",
+        claude_code_version_family="2.1.x",
+        persona_profile_id="claude-code-native-standard",
+        fgts_mode=FgtsMode.DISABLED,
+        control_plane_policy_version="cp-v1",
+        server_shape_healthcheck_version="shape-v1",
+    )
+    base = ClaudeCodeProfile(
+        profile_id="prod",
+        guard_base_url="http://127.0.0.1:43117",
+        zhumeng_entry_api_key="entry-key",
+        config_dir=tmp_path / "config",
+        capture_mode=CaptureMode.PRODUCTION,
+    )
+
+    decision = evaluate_fgts_profile(capability)
+    env = build_safe_env(apply_capability_profile(base, capability), inherited_env={})
+
+    assert decision.status == "disabled"
+    assert decision.env_value == "0"
+    assert decision.degraded is False
+    assert env["CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING"] == "0"
+    assert env["ZHUMENG_CLAUDE_FGTS_MODE"] == "disabled"
 
 
 def test_doctor_degrades_profile_version_family_mismatch():

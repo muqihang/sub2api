@@ -44,6 +44,15 @@ class ClaudeCodeCapabilityProfile:
 
 
 @dataclass(frozen=True, slots=True)
+class FgtsDecision:
+    env_value: str
+    status: str
+    degraded: bool
+    requested_mode: str
+    reasons: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True, slots=True)
 class ClaudeCodeProfile:
     profile_id: str
     guard_base_url: str
@@ -54,6 +63,7 @@ class ClaudeCodeProfile:
     node_extra_ca_certs: Path | None = None
     enable_tool_search: str | None = None
     fgts_enabled: bool | None = None
+    fgts_mode: str | None = None
     anthropic_betas: tuple[str, ...] = field(default_factory=tuple)
     disable_experimental_betas: bool | None = None
     capability_profile_id: str | None = None
@@ -68,10 +78,14 @@ _MANAGED_NO_PROXY = "127.0.0.1,localhost,::1"
 
 
 def build_isolated_config_dir(root: Path, *, profile_id: str) -> Path:
-    safe_profile_id = _SAFE_PROFILE_SEGMENT_RE.sub("-", profile_id).strip(".-_") or "default"
+    safe_profile_id = safe_profile_segment(profile_id)
     config_dir = root.expanduser() / "claude-code" / safe_profile_id / "config"
     _validate_isolated_config_dir(config_dir)
     return config_dir
+
+
+def safe_profile_segment(profile_id: str) -> str:
+    return _SAFE_PROFILE_SEGMENT_RE.sub("-", profile_id).strip(".-_") or "default"
 
 
 def validate_loopback_guard_base_url(base_url: str) -> str:
@@ -116,6 +130,7 @@ def build_safe_env(
             "ANTHROPIC_BASE_URL": guard_base_url,
             "CLAUDE_CODE_API_BASE_URL": guard_base_url,
             "ANTHROPIC_API_KEY": profile.zhumeng_entry_api_key,
+            "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
             "HTTP_PROXY": guard_base_url,
             "HTTPS_PROXY": guard_base_url,
             "NO_PROXY": _MANAGED_NO_PROXY,
@@ -131,6 +146,8 @@ def build_safe_env(
     env["ENABLE_TOOL_SEARCH"] = tool_search_env_value
     if profile.fgts_enabled is not None:
         env["CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING"] = "1" if profile.fgts_enabled else "0"
+    if profile.fgts_mode is not None:
+        env["ZHUMENG_CLAUDE_FGTS_MODE"] = profile.fgts_mode
     if profile.anthropic_betas:
         env["ANTHROPIC_BETAS"] = ",".join(profile.anthropic_betas)
     if profile.disable_experimental_betas is not None:
@@ -155,10 +172,11 @@ def apply_capability_profile(
     tool_search_env_value: str | None = None,
 ) -> ClaudeCodeProfile:
     enable_tool_search = tool_search_env_value or _toolsearch_env_value(capability)
+    fgts_decision = evaluate_fgts_profile(capability)
     fgts_enabled = None
-    if capability.fgts_mode == FgtsMode.ENABLED:
+    if fgts_decision.env_value == "1":
         fgts_enabled = True
-    elif capability.fgts_mode == FgtsMode.DISABLED:
+    elif fgts_decision.env_value == "0":
         fgts_enabled = False
     return ClaudeCodeProfile(
         profile_id=profile.profile_id,
@@ -170,12 +188,38 @@ def apply_capability_profile(
         node_extra_ca_certs=profile.node_extra_ca_certs,
         enable_tool_search=enable_tool_search,
         fgts_enabled=fgts_enabled,
+        fgts_mode=fgts_decision.status if fgts_decision.status == "disabled" else "observe_only",
         anthropic_betas=profile.anthropic_betas,
         disable_experimental_betas=profile.disable_experimental_betas,
         capability_profile_id=capability.profile_id,
         persona_profile_id=capability.persona_profile_id,
         control_plane_policy_version=capability.control_plane_policy_version,
         server_shape_healthcheck_version=capability.server_shape_healthcheck_version,
+    )
+
+
+def evaluate_fgts_profile(capability: ClaudeCodeCapabilityProfile) -> FgtsDecision:
+    requested = capability.fgts_mode.value
+    if capability.fgts_mode == FgtsMode.DISABLED:
+        return FgtsDecision(
+            env_value="0",
+            status="disabled",
+            degraded=False,
+            requested_mode=requested,
+        )
+    if capability.fgts_mode == FgtsMode.ENABLED:
+        return FgtsDecision(
+            env_value="unset",
+            status="fgts_observe_only",
+            degraded=True,
+            requested_mode=requested,
+            reasons=("awaiting_verified_local_injection",),
+        )
+    return FgtsDecision(
+        env_value="unset",
+        status="fgts_observe_only",
+        degraded=False,
+        requested_mode=requested,
     )
 
 

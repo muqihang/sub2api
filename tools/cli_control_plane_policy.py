@@ -56,6 +56,7 @@ _DEFAULT_POLICY_DICT = {
         "allowed_routes": [
             {"method": "POST", "path": "/v1/messages", "query": "beta=true"},
             {"method": "POST", "path": "/v1/messages/count_tokens", "query": ""},
+            {"method": "POST", "path": "/v1/messages/count_tokens", "query": "beta=true"},
         ],
         "max_messages": 1,
         "stop_cli_after_first_response": False,
@@ -80,6 +81,7 @@ _DEFAULT_POLICY_DICT = {
         },
         "telemetry": {
             "match": [
+                {"method": "POST", "path": "/api/event_logging/batch"},
                 {"method": "POST", "path": "/api/event_logging/v2/batch"},
                 {"method": "POST", "path_prefix": "/api/eval/"},
             ],
@@ -88,6 +90,7 @@ _DEFAULT_POLICY_DICT = {
         "mcp": {
             "match": [
                 {"method": "GET", "path": "/v1/mcp_servers"},
+                {"method": "GET", "path_regex": r"/mcp-registry/v0/servers"},
             ],
             "action": "stub_json",
             "response": {
@@ -100,7 +103,12 @@ _DEFAULT_POLICY_DICT = {
             "match": [
                 {"method": "GET", "path": "/api/hello"},
                 {"method": "GET", "path": "/v1/oauth/hello"},
+                {"method": "GET", "path": "/v1/models"},
                 {"method": "GET", "path": "/api/claude_cli/bootstrap"},
+                {"method": "GET", "path_regex": r"/api/claude_code_penguin_mode"},
+                {"method": "GET", "path_regex": r"/api/claude_code_feature_flags"},
+                {"method": "GET", "path_regex": r"/api/claude_code_grove"},
+                {"method": "GET", "path_regex": r"/api/claude_code/organizations/metrics_enabled"},
             ],
             "action": "stub_json",
             "response": {
@@ -112,6 +120,13 @@ _DEFAULT_POLICY_DICT = {
         "sensitive_get_candidates": {
             "match": [
                 {"method": "GET", "path": "/api/oauth/account/settings"},
+                {"method": "GET", "path": "/api/claude_code/policy_limits"},
+                {"method": "GET", "path": "/api/claude_code/remote_managed_settings"},
+                {"method": "GET", "path": "/api/claude_code/settings_sync"},
+                {"method": "GET", "path": "/api/claude_code/team_memory"},
+                {"method": "GET", "path": "/api/claude_code/model_capabilities"},
+                {"method": "GET", "path": "/api/claude_code/growthbook"},
+                {"method": "GET", "path_regex": r"/api/oauth/organizations/[^/]+/referral/eligibility"},
             ],
             "action": "quarantine_block",
         },

@@ -1,5 +1,6 @@
 from pathlib import Path
 import plistlib
+import tomllib
 
 from zhumeng_agent.macos_bundle import default_repo_root
 
@@ -24,3 +25,11 @@ def test_macos_bundle_default_repo_root_resolves_current_checkout():
 
     assert default_repo_root() == expected
     assert (default_repo_root() / "tools" / "zhumeng-agent").is_dir()
+
+
+
+def test_pyproject_exposes_zhumeng_claude_script():
+    path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+
+    assert data["project"]["scripts"]["zhumeng-claude"] == "zhumeng_agent.cli:zhumeng_claude_main"

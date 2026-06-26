@@ -236,7 +236,7 @@ func parseControlPlaneIntentStrict(body []byte) (*ControlPlaneIntent, error) {
 }
 
 func (s *ControlPlaneIntentService) validateIntent(intent *ControlPlaneIntent) error {
-	if s == nil || s.matrix == nil || intent == nil || intent.Method != "GET" {
+	if s == nil || s.matrix == nil || intent == nil {
 		return validateControlPlaneIntent(intent)
 	}
 	if _, exists := s.matrix.policies[controlPlanePolicyKey(intent.Method, intent.PathTemplate)]; !exists {
@@ -252,6 +252,9 @@ func (s *ControlPlaneIntentService) validateIntent(intent *ControlPlaneIntent) e
 	decision := s.matrix.Evaluate(intent.Method, intent.PathTemplate, rawQuery.Encode())
 	if decision.Policy == nil {
 		return fmt.Errorf("control-plane intent path is not allowlisted")
+	}
+	if intent.Classification != decision.Policy.Classification {
+		return fmt.Errorf("control-plane intent classification does not match configured policy")
 	}
 	if len(intent.NormalizedQuery) > 0 {
 		if !controlPlaneEqualStringMaps(decision.NormalizedQuery, intent.NormalizedQuery) {
@@ -346,7 +349,7 @@ func (s *ControlPlaneIntentService) decide(intent *ControlPlaneIntent) *ControlP
 	if s == nil {
 		s = NewControlPlaneIntentService()
 	}
-	if s.matrix != nil && intent.Method == "GET" {
+	if s.matrix != nil {
 		query := url.Values{}
 		for key, value := range intent.NormalizedQuery {
 			query.Set(key, value)
@@ -363,13 +366,6 @@ func (s *ControlPlaneIntentService) decide(intent *ControlPlaneIntent) *ControlP
 				decision.Body = safeControlPlaneStubBody(matrixDecision.Policy)
 			}
 			return decision
-		}
-	}
-	if intent.Method == "POST" && (intent.PathTemplate == "/api/event_logging/v2/batch" || strings.HasPrefix(intent.PathTemplate, "/api/eval/")) {
-		return &ControlPlaneIntentDecision{
-			Decision: "suppress_204",
-			Reason:   "control_plane:telemetry_or_eval:path",
-			Status:   204,
 		}
 	}
 	if intent.Method == "GET" {
@@ -421,6 +417,9 @@ func safeControlPlaneStubBody(policy *ControlPlanePathPolicy) map[string]any {
 	}
 	if _, ok := policy.AllowedResponseKeys["features"]; ok {
 		body["features"] = []any{}
+	}
+	if _, ok := policy.AllowedResponseKeys["models"]; ok {
+		body["models"] = []any{}
 	}
 	if _, ok := policy.AllowedResponseKeys["profile"]; ok {
 		body["profile"] = map[string]any{}
@@ -531,6 +530,9 @@ func validatePathTemplate(pathTemplate string) error {
 	}
 	for _, segment := range strings.Split(pathTemplate, "/")[1:] {
 		if segment == "" {
+			continue
+		}
+		if segment == "*" && pathTemplate == "/api/eval/*" {
 			continue
 		}
 		if strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}") {

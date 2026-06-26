@@ -155,6 +155,25 @@ func TestCodexGatewayOpenAIResponsesAdapter_CompletePreservesNativeRequestAndMap
 	require.NotContains(t, string(upstreamResponseShape), "pk_123")
 }
 
+func TestCodexGatewayOpenAIResponsesAdapter_CompleteMapsPromptTokensDetailsCacheFallback(t *testing.T) {
+	adapter, _ := newCodexGatewayNativeResponsesAdapterForTest(&http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_prompt_cache","object":"response","model":"gpt-5.5","status":"completed","usage":{"input_tokens":11,"output_tokens":7,"prompt_tokens_details":{"cached_tokens":4}}}`)),
+	}, nil)
+
+	result, err := adapter.Complete(context.Background(), newCodexGatewayOpenAIAccountForTest("http://openai.local"), CodexGatewayProviderRequest{
+		Request: CodexGatewayResponsesRequest{
+			Body: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+		},
+		Model: CodexGatewayModel{Slug: "gpt-5.5", Provider: "openai", UpstreamModel: "gpt-5.5"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 11, result.ProviderResult.Usage.InputTokens)
+	require.Equal(t, 7, result.ProviderResult.Usage.OutputTokens)
+	require.Equal(t, 4, result.ProviderResult.Usage.CacheReadInputTokens)
+}
+
 func TestCodexGatewayOpenAIResponsesAdapter_CompleteSupportsUpstreamAccountType(t *testing.T) {
 	adapter, _ := newCodexGatewayNativeResponsesAdapterForTest(&http.Response{
 		StatusCode: http.StatusOK,
@@ -471,7 +490,7 @@ func TestCodexGatewayOpenAIResponsesAdapter_StreamDrainsUpstreamAfterClientDisco
 		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","status":"in_progress"}}` + "\n\n" +
 		`data: {"type":"response.output_text.delta","response_id":"resp_1","item_id":"msg_1","output_index":0,"content_index":0,"delta":"hello"}` + "\n\n" +
 		`data: {"type":"response.function_call_arguments.done","item_id":"call_1","output_index":1,"arguments":"{}"}` + "\n\n" +
-		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","model":"gpt-5.5","status":"completed","output":[],"usage":{"input_tokens":9,"output_tokens":3,"total_tokens":12}}}` + "\n\n"
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","model":"gpt-5.5","status":"completed","output":[],"usage":{"input_tokens":9,"output_tokens":3,"total_tokens":12,"prompt_tokens_details":{"cached_tokens":4}}}}` + "\n\n"
 	adapter, _ := newCodexGatewayNativeResponsesAdapterForTest(&http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
@@ -490,6 +509,7 @@ func TestCodexGatewayOpenAIResponsesAdapter_StreamDrainsUpstreamAfterClientDisco
 	require.Equal(t, "resp_1", result.ResponseID)
 	require.Equal(t, 9, result.Usage.InputTokens)
 	require.Equal(t, 3, result.Usage.OutputTokens)
+	require.Equal(t, 4, result.Usage.CacheReadInputTokens)
 	require.Equal(t, 2, writer.writeCalls, "first visible frame writes, second detects disconnect; later upstream events are drained without writing")
 	require.Contains(t, writer.String(), `response.created`)
 	require.NotContains(t, writer.String(), `response.output_text.delta`)

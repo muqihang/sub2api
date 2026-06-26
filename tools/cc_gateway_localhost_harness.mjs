@@ -1,6 +1,8 @@
 import { createServer } from 'http'
 import { createConnection } from 'net'
+import { createHmac } from 'crypto'
 import { writeFileSync, mkdirSync } from 'fs'
+import { join } from 'path'
 import { startProxy } from '/Users/muqihang/chelingxi_workspace/cc-gateway/src/proxy.ts'
 import { baseConfig } from '/Users/muqihang/chelingxi_workspace/cc-gateway/tests/helpers.ts'
 
@@ -8,6 +10,31 @@ function listen(server) { return new Promise(resolve => server.listen(0, '127.0.
 function addr(server) { return server.address().port }
 const outDir = process.env.CC_HARNESS_OUT || '/tmp/cc-harness'
 mkdirSync(outDir, { recursive: true, mode: 0o700 })
+const attestationSecret = 'scheduler-hmac-material-v1-local-harness-ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+const internalControlToken = 'internal-control-material-v1-local-harness-ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+const selectedCredential = 'Bearer selected-oauth-credential-fixture'
+const accountRef = `hmac-sha256:${'a'.repeat(64)}`
+const credentialRef = 'opaque:credential-ref:v1:local-harness-credential'
+const proxyIdentityRef = 'opaque:proxy-ref:v1:harness'
+const personaProfile = 'claude_code_2_1_179_native_degraded'
+
+const policyVersion = process.env.CC_HARNESS_POLICY_VERSION || '2.1.179'
+const trustedEgressProfileRef = process.env.CC_HARNESS_EGRESS_PROFILE_REF || 'strip_attribution'
+const billingShapePolicy = process.env.CC_HARNESS_BILLING_SHAPE_POLICY || 'strip'
+const enableNoCchProof = process.env.CC_HARNESS_ENABLE_NO_CCH_PROOF === '1'
+const enableSignedCchProof = process.env.CC_HARNESS_ENABLE_SIGNED_CCH_PROOF === '1'
+const profilePolicyVersion = 'claude_code_2_1_179_cp1_degraded_v1'
+const requestShapeProfileRef = 'claude_code_2_1_179_messages_streaming_tooldefs_degraded_v1'
+const cacheParityProfileRef = 'claude_code_2_1_179_cache_parity_degraded_v1'
+function credentialBindingHmac(rawCredential, tokenType = 'oauth') {
+  return `hmac-sha256:${createHmac('sha256', attestationSecret)
+    .update('formal_pool_credential_binding_v1')
+    .update('\0')
+    .update(tokenType)
+    .update('\0')
+    .update(rawCredential)
+    .digest('hex')}`
+}
 const summaries = []
 const mock = createServer((req, res) => {
   const chunks = []
@@ -22,7 +49,7 @@ const mock = createServer((req, res) => {
       method: req.method,
       url: req.url,
       headers_names: Object.keys(headers).sort(),
-      auth_shape: { authorization: headers.authorization ? String(headers.authorization).split(' ')[0] : null, x_api_key: headers['x-api-key'] ? 'present' : null },
+      auth_presence: { authorization_present: headers.authorization !== undefined, x_api_key_present: headers['x-api-key'] !== undefined },
       user_agent: headers['user-agent'] || null,
       beta: headers['anthropic-beta'] || null,
       beta_contains_context_1m: String(headers['anthropic-beta'] || '').includes('context-1m'),
@@ -74,16 +101,44 @@ proxy.on('connect', (req, clientSocket, head) => {
   upstreamSocket.on('error', () => clientSocket.destroy())
 })
 await listen(proxy)
+const ledgerFile = join(outDir, 'formal-pool-session-ledger.json')
+const previousLedgerFile = process.env.CC_GATEWAY_FORMAL_POOL_SESSION_LEDGER_FILE
+process.env.CC_GATEWAY_FORMAL_POOL_SESSION_LEDGER_FILE = ledgerFile
 const config = baseConfig({
   mode: 'sub2api',
   server: { port: 0, host: '127.0.0.1', tls: { cert: '', key: '' } },
   upstream: { url: `http://127.0.0.1:${addr(mock)}` },
-  auth: { gateway_token: 'ccg-token', tokens: [] },
+  auth: { gateway_token: 'ccg-token', internal_control_token: internalControlToken, tokens: [] },
   oauth: undefined,
-  env: { ...baseConfig().env, version: '2.1.150', version_base: '2.1.150' },
-  shared_pool: { upstream_mode: 'preflight', billing_cch_mode: 'sign', signing_enabled: true, signing_evidence_gates_approved: true, message_beta_profile: 'claude_code_2_1_150_subscription_1m' },
-  account_identities: { 'hmac-sha256:local-harness-account': { device_id: 'b'.repeat(64), account_uuid_hash: 'hmac-sha256:local-harness-account-uuid', email_hash: 'hmac-sha256:local-harness-email', account_hash: 'hmac-sha256:local-harness-account', persona_variant: 'claude-code-2.1.150-macos-local', session_policy: 'preserve_downstream_session_id', policy_version: '2.1.150' } },
-  egress_buckets: { 'bucket-a': { enabled: true, proxy_url: `http://127.0.0.1:${addr(proxy)}`, proxy_identity_hash: 'opaque:proxy-ref:v1:harness', allowed_account_ids: ['hmac-sha256:local-harness-account'] } },
+  env: { ...baseConfig().env, version: policyVersion, version_base: policyVersion },
+  shared_pool: {
+    upstream_mode: 'production',
+    production_upstream_enabled: true,
+    billing_cch_mode: billingShapePolicy === 'signed_cch' ? 'sign' : billingShapePolicy,
+    signing_enabled: true,
+    signing_evidence_gates_approved: true,
+    context_attestation_secret_ref: 'opaque:attestation-ref:v1:test',
+    context_attestation_secret: attestationSecret,
+    message_beta_profile: personaProfile,
+    no_cch_2179_oracle_profile_approved: enableNoCchProof,
+    no_cch_2179_oracle_profile_ref: enableNoCchProof ? 'claude_code_2_1_179_custom_base_no_cch_oracle_cp1_degraded_v1' : undefined,
+    signed_cch_2179_oracle_profile_approved: enableSignedCchProof,
+    signed_cch_2179_oracle_profile_ref: enableSignedCchProof ? 'claude_code_2_1_179_first_party_signed_cch_oracle_cp1_degraded_v1' : undefined,
+  },
+  account_identities: {
+    [accountRef]: {
+      device_id: 'b'.repeat(64),
+      account_uuid_hash: 'hmac-sha256:local-harness-account-uuid',
+      email_hash: 'hmac-sha256:local-harness-email',
+      account_hash: accountRef,
+      credential_ref: credentialRef,
+      credential_binding_hmac: credentialBindingHmac(selectedCredential),
+      persona_variant: 'claude-code-2.1.179-macos-local',
+      session_policy: 'preserve_downstream_session_id',
+      policy_version: policyVersion,
+    },
+  },
+  egress_buckets: { 'bucket-a': { enabled: true, proxy_url: `http://127.0.0.1:${addr(proxy)}`, proxy_identity_ref: proxyIdentityRef, allowed_account_ids: [accountRef] } },
   logging: { level: 'error', audit: false },
 })
 const gateway = startProxy(config)
@@ -92,9 +147,9 @@ const ccGatewayUrl = serverUrl(gateway)
 const mockUrl = `http://127.0.0.1:${addr(mock)}`
 function serverUrl(server) { return `http://127.0.0.1:${server.address().port}` }
 function writeSummary() {
-  const safe = { cc_gateway_url: ccGatewayUrl, mock_url: mockUrl, proxy_connect_targets: proxyTargets, mock_request_count: summaries.length, mock_requests: summaries }
+  const safe = { cc_gateway_url: ccGatewayUrl, mock_url: mockUrl, formal_pool_attested: true, persistent_ledger_configured: true, profile: { policy_version: policyVersion, trusted_egress_profile_ref: trustedEgressProfileRef, billing_shape_policy: billingShapePolicy, profile_policy_version: profilePolicyVersion, request_shape_profile_ref: requestShapeProfileRef, cache_parity_profile_ref: cacheParityProfileRef, no_cch_oracle_proof_enabled: enableNoCchProof, signed_cch_oracle_proof_enabled: enableSignedCchProof }, proxy_connect_targets: proxyTargets, mock_request_count: summaries.length, mock_requests: summaries }
   writeFileSync(`${outDir}/cc_safe_summary.json`, JSON.stringify(safe, null, 2), { mode: 0o600 })
 }
 setInterval(writeSummary, 500).unref()
-process.on('SIGTERM', () => { writeSummary(); gateway.close(()=>{}); mock.close(()=>{}); proxy.close(()=>{}); setTimeout(()=>process.exit(0), 100) })
+process.on('SIGTERM', () => { writeSummary(); if (previousLedgerFile === undefined) delete process.env.CC_GATEWAY_FORMAL_POOL_SESSION_LEDGER_FILE; else process.env.CC_GATEWAY_FORMAL_POOL_SESSION_LEDGER_FILE = previousLedgerFile; gateway.close(()=>{}); mock.close(()=>{}); proxy.close(()=>{}); setTimeout(()=>process.exit(0), 100) })
 console.log(JSON.stringify({ cc_gateway_url: ccGatewayUrl, out_dir: outDir, mock_url: mockUrl }))

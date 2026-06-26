@@ -1132,12 +1132,14 @@ type OpenAIGatewayBucketTLSConfig struct {
 // GatewayCCGatewayConfig controls forwarding selected Anthropic/Antigravity
 // account credentials through cc-gateway for identity rewriting.
 type GatewayCCGatewayConfig struct {
-	Enabled             bool                            `mapstructure:"enabled"`
-	BaseURL             string                          `mapstructure:"base_url"`
-	Token               string                          `mapstructure:"token"`
-	TimeoutSeconds      int                             `mapstructure:"timeout_seconds"`
-	DefaultEgressBucket string                          `mapstructure:"default_egress_bucket"`
-	Providers           GatewayCCGatewayProvidersConfig `mapstructure:"providers"`
+	Enabled                  bool                            `mapstructure:"enabled"`
+	BaseURL                  string                          `mapstructure:"base_url"`
+	Token                    string                          `mapstructure:"token"`
+	InternalControlToken     string                          `mapstructure:"internal_control_token"`
+	ContextAttestationSecret string                          `mapstructure:"context_attestation_secret"`
+	TimeoutSeconds           int                             `mapstructure:"timeout_seconds"`
+	DefaultEgressBucket      string                          `mapstructure:"default_egress_bucket"`
+	Providers                GatewayCCGatewayProvidersConfig `mapstructure:"providers"`
 }
 
 type GatewayCCGatewayProvidersConfig struct {
@@ -2122,7 +2124,6 @@ func setDefaults() {
 		"deepseek-v4-pro",
 		"deepseek-v4-flash",
 		"claude-opus-4-8",
-		"claude-opus-4-7",
 		"claude-sonnet-4-6",
 		"claude-haiku-4-5-20251001",
 		"agnes-2.0-flash",
@@ -2175,6 +2176,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.cc_gateway.enabled", false)
 	viper.SetDefault("gateway.cc_gateway.base_url", "")
 	viper.SetDefault("gateway.cc_gateway.token", "")
+	viper.SetDefault("gateway.cc_gateway.internal_control_token", "")
+	viper.SetDefault("gateway.cc_gateway.context_attestation_secret", "")
 	viper.SetDefault("gateway.cc_gateway.timeout_seconds", 600)
 	viper.SetDefault("gateway.cc_gateway.default_egress_bucket", "default")
 	viper.SetDefault("gateway.cc_gateway.providers.anthropic", false)
@@ -3030,6 +3033,23 @@ func (c *Config) Validate() error {
 		}
 		if strings.TrimSpace(c.Gateway.CCGateway.Token) == "" {
 			return fmt.Errorf("gateway.cc_gateway.token is required when gateway.cc_gateway.enabled=true")
+		}
+		internalControlToken := strings.TrimSpace(c.Gateway.CCGateway.InternalControlToken)
+		if internalControlToken == "" {
+			return fmt.Errorf("gateway.cc_gateway.internal_control_token is required when gateway.cc_gateway.enabled=true")
+		}
+		contextAttestationSecret := strings.TrimSpace(c.Gateway.CCGateway.ContextAttestationSecret)
+		if contextAttestationSecret == "" {
+			return fmt.Errorf("gateway.cc_gateway.context_attestation_secret is required when gateway.cc_gateway.enabled=true")
+		}
+		if internalControlToken == strings.TrimSpace(c.Gateway.CCGateway.Token) {
+			return fmt.Errorf("gateway.cc_gateway.internal_control_token must be independent from gateway.cc_gateway.token")
+		}
+		if contextAttestationSecret == strings.TrimSpace(c.Gateway.CCGateway.Token) {
+			return fmt.Errorf("gateway.cc_gateway.context_attestation_secret must be independent from gateway.cc_gateway.token")
+		}
+		if contextAttestationSecret == internalControlToken {
+			return fmt.Errorf("gateway.cc_gateway.context_attestation_secret must be independent from gateway.cc_gateway.internal_control_token")
 		}
 		if c.Gateway.CCGateway.TimeoutSeconds <= 0 {
 			return fmt.Errorf("gateway.cc_gateway.timeout_seconds must be positive")

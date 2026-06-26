@@ -1,0 +1,516 @@
+package service
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
+)
+
+func TestCP8AgnesBridgeResponsesUsesDedicatedRouteAndKey(t *testing.T) {
+	var upstreamPath string
+	var upstreamAuth string
+	var upstreamClientType string
+	var upstreamBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamPath = r.URL.Path
+		upstreamAuth = r.Header.Get("Authorization")
+		upstreamClientType = r.Header.Get("X-Sub2API-Client-Type")
+		body, _ := io.ReadAll(r.Body)
+		upstreamBody = string(body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.created\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.created","response":{"id":"resp_agnes","model":"agnes-2.0-flash"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.output_text.delta\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"vision ok"}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_agnes","model":"agnes-2.0-flash","status":"completed","usage":{"input_tokens":5,"output_tokens":2}}}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_AGNES_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY", "")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_AGNES_API_KEY", "sk-agnes-test")
+
+	body := []byte(`{"model":"claude-code-bridge-agnes-2.0-flash","messages":[{"role":"user","content":"describe image"}],"stream":true}`)
+	result, err := ExecuteClaudeCodeBridgeOpenAILive(context.Background(), upstream.Client(), cp6LiveAgnesDecision(upstream.URL+"/v1"), body, ClaudeCodeBridgeOpenAICompatibleAPIKeyFromEnv("agnes"))
+
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, result.StatusCode)
+	require.Equal(t, "/v1/responses", upstreamPath)
+	require.Equal(t, "Bearer sk-agnes-test", upstreamAuth)
+	require.Equal(t, "claude_code_bridge_agnes", upstreamClientType)
+	require.Contains(t, upstreamBody, `"model":"agnes-2.0-flash"`)
+	require.NotContains(t, upstreamBody, "claude-code-bridge-agnes-2.0-flash")
+	stream := string(result.Body)
+	require.Contains(t, stream, "message_start")
+	require.Contains(t, stream, "vision ok")
+	require.False(t, result.Audit.NativeAttested)
+	require.False(t, result.Audit.FormalPoolAllowed)
+	require.Equal(t, "claude_code_bridge_agnes", result.Audit.ClientType)
+	require.Equal(t, "responses", result.Audit.PreferredProtocol)
+	require.Equal(t, "responses", result.Audit.SelectedProtocol)
+	require.Equal(t, "/v1/responses", result.Audit.UpstreamPathKind)
+	require.Equal(t, "openai_responses_compatible_cache_unverified", result.Audit.ProviderCacheMechanism)
+	require.False(t, result.Audit.PromptCacheKeyPresent)
+	rawAudit, err := json.Marshal(result.Audit)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(rawAudit, "prompt_cache_key_present").Bool())
+	require.NotContains(t, string(rawAudit), "describe image")
+}
+
+func TestCP8AgnesBridgeDoesNotUseOpenAIChatCompletionsFallback(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_AGNES_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_AGNES_API_KEY", "sk-agnes-test")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_CHAT_COMPLETIONS_FALLBACK_ENABLED", "1")
+	var paths []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path == "/v1/chat/completions" {
+			t.Fatalf("AGNES must not inherit GPT/OpenAI chat completions fallback")
+		}
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error":{"message":"responses unsupported"}}`))
+	}))
+	defer upstream.Close()
+
+	body := []byte(`{"model":"claude-code-bridge-agnes-2.0-flash","messages":[{"role":"user","content":"describe image"}],"stream":true}`)
+	_, err := ExecuteClaudeCodeBridgeOpenAILive(context.Background(), upstream.Client(), cp6LiveAgnesDecision(upstream.URL+"/v1"), body, ClaudeCodeBridgeOpenAICompatibleAPIKeyFromEnv("agnes"))
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "upstream status 502")
+	require.Equal(t, []string{"/v1/responses"}, paths)
+}
+
+func TestCP6OpenAIBridgeResponsesStreamMapsToolCallUsageCacheAndCleansReasoning(t *testing.T) {
+	var upstreamPath string
+	var upstreamAuth string
+	var upstreamAPIKey string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamPath = r.URL.Path
+		upstreamAuth = r.Header.Get("Authorization")
+		upstreamAPIKey = r.Header.Get("x-api-key")
+		body, _ := io.ReadAll(r.Body)
+		require.Contains(t, string(body), `"input"`)
+		require.NotContains(t, string(body), `"messages"`)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.created\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.created","response":{"id":"resp_tool","model":"gpt-5.5"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.reasoning_summary_text.delta\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"foreign hidden reasoning"}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.output_item.added\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"toolu_openai_bridge","name":"get_weather","status":"in_progress"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.function_call_arguments.delta\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"city\":\"SF\"}","item_id":"fc_1"}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_tool","model":"gpt-5.5","status":"completed","usage":{"input_tokens":21,"output_tokens":8,"input_tokens_details":{"cached_tokens":9}}}}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY", "sk-openai-test")
+
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"weather"}],"stream":true,"tools":[{"name":"get_weather","input_schema":{"type":"object"}}]}`)
+	result, err := ExecuteClaudeCodeBridgeOpenAILive(context.Background(), upstream.Client(), cp6LiveOpenAIDecision(upstream.URL+"/v1"), body, ClaudeCodeBridgeOpenAIAPIKeyFromEnv())
+
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, result.StatusCode)
+	require.Equal(t, "/v1/responses", upstreamPath)
+	require.Equal(t, "Bearer sk-openai-test", upstreamAuth)
+	require.Empty(t, upstreamAPIKey)
+	stream := string(result.Body)
+	require.Contains(t, stream, "event: message_start")
+	require.Contains(t, stream, `"type":"tool_use"`)
+	require.Contains(t, stream, `"type":"input_json_delta"`)
+	require.Contains(t, stream, `"partial_json":"{\"city\":\"SF\"}"`)
+	require.Contains(t, stream, `"stop_reason":"tool_use"`)
+	require.Contains(t, stream, `"cache_read_input_tokens":9`)
+	require.NotContains(t, stream, "foreign hidden reasoning")
+	require.NotContains(t, stream, "response.reasoning")
+	require.False(t, result.Audit.NativeAttested)
+	require.False(t, result.Audit.FormalPoolAllowed)
+	require.Equal(t, "responses", result.Audit.PreferredProtocol)
+}
+
+func TestCP6OpenAIBridgeResponsesStreamErrorAfterCreatedDoesNotFinalizeAsSuccess(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.created\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.created","response":{"id":"resp_created_then_failed","model":"gpt-5.5"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.failed\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.failed","response":{"id":"resp_created_then_failed","model":"gpt-5.5","status":"failed","error":{"code":"api_error","message":"provider failed"}}}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY", "sk-openai-test")
+
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	result, err := ExecuteClaudeCodeBridgeOpenAILive(context.Background(), upstream.Client(), cp6LiveOpenAIDecision(upstream.URL+"/v1"), body, ClaudeCodeBridgeOpenAIAPIKeyFromEnv())
+
+	require.NoError(t, err)
+	stream := string(result.Body)
+	require.Contains(t, stream, "event: message_start")
+	require.Contains(t, stream, "event: error")
+	require.NotContains(t, stream, "event: message_stop")
+	require.NotContains(t, stream, `"stop_reason":"end_turn"`)
+}
+
+func TestCP6OpenAIBridgeResponsesStreamErrorIsSafeAnthropicError(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.failed\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.failed","response":{"id":"resp_secret","model":"gpt-5.5","status":"failed","error":{"code":"rate_limit_error","message":"request req_abc123 failed with sk-live-secret at https://api.openai.com/v1/responses"}}}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY", "sk-openai-test")
+
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	result, err := ExecuteClaudeCodeBridgeOpenAILive(context.Background(), upstream.Client(), cp6LiveOpenAIDecision(upstream.URL+"/v1"), body, ClaudeCodeBridgeOpenAIAPIKeyFromEnv())
+
+	require.NoError(t, err)
+	stream := string(result.Body)
+	require.Contains(t, stream, "event: error")
+	require.Contains(t, stream, `"type":"rate_limit_error"`)
+	require.NotContains(t, stream, "req_abc123")
+	require.NotContains(t, stream, "sk-live-secret")
+	require.NotContains(t, stream, "api.openai.com")
+	require.NotContains(t, stream, "event: message_stop")
+}
+
+func TestCP6OpenAIBridgeResponsesStreamMissingTerminalDoesNotFinalizeAsSuccess(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.created\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.created","response":{"id":"resp_missing_terminal","model":"gpt-5.5"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.reasoning_summary_text.delta\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"summary_index":0,"delta":"hidden reasoning only"}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY", "sk-openai-test")
+
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	result, err := ExecuteClaudeCodeBridgeOpenAILive(context.Background(), upstream.Client(), cp6LiveOpenAIDecision(upstream.URL+"/v1"), body, ClaudeCodeBridgeOpenAIAPIKeyFromEnv())
+
+	require.NoError(t, err)
+	stream := string(result.Body)
+	require.Contains(t, stream, "event: message_start")
+	require.Contains(t, stream, "event: error")
+	require.NotContains(t, stream, "hidden reasoning only")
+	require.NotContains(t, stream, "event: message_stop")
+	require.NotContains(t, stream, `"stop_reason":"end_turn"`)
+}
+
+func TestCP6OpenAIBridgeResponsesTopLevelErrorPassthroughIsSafe(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: error\n"))
+		_, _ = w.Write([]byte(`data: {"type":"error","error":{"type":"rate_limit_error","code":"rate_limit_error","message":"request req_top_123 failed with sk-live-secret at https://api.openai.com/v1/responses"}}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY", "sk-openai-test")
+
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	result, err := ExecuteClaudeCodeBridgeOpenAILive(context.Background(), upstream.Client(), cp6LiveOpenAIDecision(upstream.URL+"/v1"), body, ClaudeCodeBridgeOpenAIAPIKeyFromEnv())
+
+	require.NoError(t, err)
+	stream := string(result.Body)
+	require.Contains(t, stream, "event: error")
+	require.Contains(t, stream, `"type":"rate_limit_error"`)
+	require.NotContains(t, stream, "req_top_123")
+	require.NotContains(t, stream, "sk-live-secret")
+	require.NotContains(t, stream, "api.openai.com")
+	require.NotContains(t, stream, "event: message_stop")
+}
+
+func TestCP6OpenAIBridgeRejectsDeferredToolSearchBeforeUpstreamDispatch(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY", "sk-openai-test")
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_unreachable","model":"gpt-5.5","output":[]}}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"stream":true,"tools":[{"name":"ToolSearchTool","input_schema":{"type":"object"}}]}`)
+
+	_, err := ExecuteClaudeCodeBridgeOpenAILive(context.Background(), upstream.Client(), cp6LiveOpenAIDecision(upstream.URL+"/v1"), body, ClaudeCodeBridgeOpenAIAPIKeyFromEnv())
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unresolved deferred tool")
+	require.False(t, upstreamCalled)
+}
+
+func TestCP6OpenAICompatibleBridgePreservesToolUseToolResultPairing(t *testing.T) {
+	tests := []struct {
+		name     string
+		envKey   string
+		envValue string
+		liveEnv  string
+		body     string
+		decision func(string) ClaudeCodeBridgeRouteDecision
+		apiKey   func() string
+	}{
+		{
+			name:     "gpt responses",
+			envKey:   "SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY",
+			envValue: "sk-openai-test",
+			liveEnv:  "SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED",
+			body:     `{"model":"gpt-5.5","messages":[{"role":"user","content":"weather?"},{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bridge_loop_1","name":"get_weather","input":{"city":"SF"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_bridge_loop_1","content":"Sunny"}]}],"tools":[{"name":"get_weather","description":"Get weather","input_schema":{"type":"object","properties":{"city":{"type":"string"}}}}],"stream":true}`,
+			decision: cp6LiveOpenAIDecision,
+			apiKey:   ClaudeCodeBridgeOpenAIAPIKeyFromEnv,
+		},
+		{
+			name:     "agnes responses",
+			envKey:   "SUB2API_CLAUDE_CODE_BRIDGE_AGNES_API_KEY",
+			envValue: "sk-agnes-test",
+			liveEnv:  "SUB2API_CLAUDE_CODE_BRIDGE_AGNES_LIVE_ENABLED",
+			body:     `{"model":"claude-code-bridge-agnes-2.0-flash","messages":[{"role":"user","content":"weather?"},{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bridge_loop_1","name":"get_weather","input":{"city":"SF"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_bridge_loop_1","content":"Sunny"}]}],"tools":[{"name":"get_weather","description":"Get weather","input_schema":{"type":"object","properties":{"city":{"type":"string"}}}}],"stream":true}`,
+			decision: cp6LiveAgnesDecision,
+			apiKey: func() string {
+				return ClaudeCodeBridgeOpenAICompatibleAPIKeyFromEnv("agnes")
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+			t.Setenv(tt.liveEnv, "1")
+			t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+			t.Setenv(tt.envKey, tt.envValue)
+			var gotBody string
+			upstreamModel := "gpt-5.5"
+			if tt.name == "agnes responses" {
+				upstreamModel = "agnes-2.0-flash"
+			}
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				gotBody = string(body)
+				require.Equal(t, "/v1/responses", r.URL.Path)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("event: response.completed\n"))
+				_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_tool_loop","model":"` + upstreamModel + `","status":"completed","usage":{"input_tokens":10,"output_tokens":1}}}` + "\n\n"))
+			}))
+			defer upstream.Close()
+
+			result, err := ExecuteClaudeCodeBridgeOpenAILive(context.Background(), upstream.Client(), tt.decision(upstream.URL+"/v1"), []byte(tt.body), tt.apiKey())
+
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, result.StatusCode)
+			input := gjson.Parse(gotBody).Get("input").Array()
+			require.Len(t, input, 3)
+			functionCall := input[1]
+			functionOutput := input[2]
+			require.Equal(t, "function_call", functionCall.Get("type").String())
+			require.Equal(t, "toolu_bridge_loop_1", functionCall.Get("call_id").String())
+			require.Equal(t, "get_weather", functionCall.Get("name").String())
+			require.JSONEq(t, `{"city":"SF"}`, functionCall.Get("arguments").String())
+			require.Equal(t, "function_call_output", functionOutput.Get("type").String())
+			require.Equal(t, functionCall.Get("call_id").String(), functionOutput.Get("call_id").String())
+			require.Equal(t, "Sunny", functionOutput.Get("output").String())
+			require.False(t, result.Audit.NativeAttested)
+			require.False(t, result.Audit.FormalPoolAllowed)
+		})
+	}
+}
+
+func TestCP6OpenAIBridgeRequestsUseSyntheticCodexHeadersForLocalSub2API(t *testing.T) {
+	var userAgent string
+	var originator string
+	var stainlessLang string
+	var bridgeClient string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		userAgent = r.Header.Get("User-Agent")
+		originator = r.Header.Get("originator")
+		stainlessLang = r.Header.Get("X-Stainless-Lang")
+		bridgeClient = r.Header.Get("X-Sub2API-Client-Type")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.created\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.created","response":{"id":"resp_headers","model":"gpt-5.5"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_headers","model":"gpt-5.5","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}` + "\n\n"))
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY", "sk-openai-test")
+
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	_, err := ExecuteClaudeCodeBridgeOpenAILive(context.Background(), upstream.Client(), cp6LiveOpenAIDecision(upstream.URL+"/v1"), body, ClaudeCodeBridgeOpenAIAPIKeyFromEnv())
+
+	require.NoError(t, err)
+	require.Contains(t, userAgent, "codex_cli_rs/")
+	require.NotContains(t, strings.ToLower(userAgent), "claude")
+	require.Equal(t, "codex_cli_rs", originator)
+	require.Equal(t, "go", stainlessLang)
+	require.Equal(t, "claude_code_bridge_openai", bridgeClient)
+}
+
+func TestCP6OpenAIBridgeResponsesBadGatewayDoesNotFallbackToChatByDefault(t *testing.T) {
+	var paths []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error":{"message":"upstream 502"}}`))
+	}))
+	defer upstream.Close()
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY", "sk-openai-test")
+
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	_, err := ExecuteClaudeCodeBridgeOpenAILive(context.Background(), upstream.Client(), cp6LiveOpenAIDecision(upstream.URL+"/v1"), body, ClaudeCodeBridgeOpenAIAPIKeyFromEnv())
+
+	require.Error(t, err)
+	require.Equal(t, []string{"/v1/responses"}, paths)
+	require.NotContains(t, err.Error(), "chat completions")
+}
+
+func TestCP6OpenAIBridgeLiveRejectsExternalBaseURLAndNativeFormalPool(t *testing.T) {
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_LIVE_ENABLED", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_LIVE_UNSAFE_BILLING_BYPASS_FOR_LAB", "1")
+	t.Setenv("SUB2API_CLAUDE_CODE_BRIDGE_OPENAI_API_KEY", "sk-openai-test")
+
+	external := cp6LiveOpenAIDecision("https://api.openai.com/v1")
+	require.False(t, ClaudeCodeBridgeOpenAILiveEligible(external))
+	_, err := ExecuteClaudeCodeBridgeOpenAILive(context.Background(), http.DefaultClient, external, []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"stream":true}`), ClaudeCodeBridgeOpenAIAPIKeyFromEnv())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "loopback")
+
+	native := cp6LiveOpenAIDecision("http://127.0.0.1:1234/v1")
+	native.ClientType = ClaudeCodeNativeClientType
+	native.FormalPoolAllowed = true
+	native.NativeAttestationAllowed = true
+	native.CredentialScope = ClaudeCodeNativeCredentialScope
+	require.False(t, ClaudeCodeBridgeOpenAILiveEligible(native))
+}
+
+func cp6LiveAgnesDecision(baseURL string) ClaudeCodeBridgeRouteDecision {
+	decision := cp6LiveOpenAIDecision(baseURL)
+	decision.ModelID = "claude-code-bridge-agnes-2.0-flash"
+	decision.UpstreamModel = "agnes-2.0-flash"
+	decision.Provider = "agnes"
+	decision.Route = "agnes_bridge"
+	decision.ClientType = "claude_code_bridge_agnes"
+	decision.SupportsReasoningMapping = false
+	decision.ReasoningEffortLevels = nil
+	decision.CachePolicy = "provider_cache_audit_required"
+	return decision
+}
+
+func cp6LiveOpenAIDecision(baseURL string) ClaudeCodeBridgeRouteDecision {
+	return ClaudeCodeBridgeRouteDecision{
+		ModelID:                  "gpt-5.5",
+		Provider:                 "openai",
+		Route:                    "openai_bridge",
+		ClientType:               "claude_code_bridge_openai",
+		CatalogVersion:           "cp6-test-v1",
+		ProviderOwner:            "zhumeng_managed",
+		CredentialScope:          ClaudeCodeBridgeCredentialScope,
+		GatewayLocation:          "cloud",
+		FormalPoolAllowed:        false,
+		NativeAttestationAllowed: false,
+		PreferredProtocol:        "responses",
+		OpenAIBaseURL:            strings.TrimRight(baseURL, "/"),
+		CapabilitiesVerified:     true,
+		SupportsText:             true,
+		SupportsTools:            true,
+		SupportsStreaming:        true,
+		SupportsUsage:            true,
+		SupportsCacheAudit:       true,
+		SupportsReasoningMapping: true,
+		SupportsErrorPassthrough: true,
+		ReasoningEffortLevels:    []string{"low", "medium", "high", "xhigh"},
+		CachePolicy:              "prompt_cache_key_required_or_recommended_for_coding_agents",
+	}
+}
+
+func TestClaudeCodeOpenAIResponsesBodyOmitsReasoningForNoEffortProvider(t *testing.T) {
+	decision := cp6LiveAgnesDecision("http://127.0.0.1:1")
+	body := []byte(`{"model":"claude-code-bridge-agnes-2.0-flash","messages":[{"role":"user","content":"hi"}]}`)
+
+	upstream, err := buildClaudeCodeOpenAIResponsesBody(decision, body)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(upstream, &payload))
+	require.NotContains(t, payload, "reasoning")
+}
+
+func TestClaudeCodeOpenAIResponsesBodyDoesNotMapClaudeMaxToGPTXHigh(t *testing.T) {
+	decision := cp6LiveOpenAIDecision("http://127.0.0.1:1")
+	body := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"max"}}`)
+
+	upstream, err := buildClaudeCodeOpenAIResponsesBody(decision, body)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(upstream, &payload))
+	require.NotContains(t, payload, "reasoning")
+}
+
+func TestClaudeCodeDeepSeekChatFallbackMapsMaxToProviderMax(t *testing.T) {
+	decision := cp6LiveDeepSeekDecision("http://127.0.0.1:1")
+	decision.PreferredProtocol = "openai_compatible_chat"
+	decision.FallbackProtocol = "openai_compatible_chat"
+	decision.FallbackReason = "anthropic_messages_fixture_failed"
+	decision.AnthropicBaseURL = ""
+	decision.OpenAIBaseURL = "http://127.0.0.1:1"
+	decision.SupportsReasoningMapping = true
+	decision.ReasoningEffortLevels = []string{"high", "max"}
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"output_config":{"effort":"max"}}`)
+
+	upstream, err := buildClaudeCodeDeepSeekChatCompletionsBody(decision, body)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(upstream, &payload))
+	require.Equal(t, "max", payload["reasoning_effort"])
+}
+
+func TestClaudeCodeDeepSeekChatFallbackOmitsDefaultMediumEffort(t *testing.T) {
+	decision := cp6LiveDeepSeekDecision("http://127.0.0.1:1")
+	decision.PreferredProtocol = "openai_compatible_chat"
+	decision.FallbackProtocol = "openai_compatible_chat"
+	decision.FallbackReason = "anthropic_messages_fixture_failed"
+	decision.AnthropicBaseURL = ""
+	decision.OpenAIBaseURL = "http://127.0.0.1:1"
+	decision.SupportsReasoningMapping = true
+	decision.ReasoningEffortLevels = []string{"high", "max"}
+	body := []byte(`{"model":"claude-code-bridge-deepseek-v4-pro","messages":[{"role":"user","content":"hi"}]}`)
+
+	upstream, err := buildClaudeCodeDeepSeekChatCompletionsBody(decision, body)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(upstream, &payload))
+	require.NotContains(t, payload, "reasoning_effort")
+}

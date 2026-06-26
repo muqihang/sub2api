@@ -11,6 +11,8 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,28 +30,43 @@ const (
 	ClaudeCodeNativeInboundCountTokens = "/v1/messages/count_tokens"
 	ClaudeCodeNativeCCGatewayCount     = "/v1/messages/count_tokens?beta=true"
 
-	ClaudeCodeNativeClientTypeHeader         = "x-sub2api-client-type"
-	ClaudeCodeNativeGuardAttestedHeader      = "x-sub2api-guard-attested"
-	ClaudeCodeNativeGuardVersionHeader       = "x-sub2api-guard-version"
-	ClaudeCodeNativeClaudeCodeVersionHeader  = "x-sub2api-claude-code-version"
-	ClaudeCodeNativeLocalSessionRefHeader    = "x-sub2api-local-session-ref"
-	ClaudeCodeNativeNetwatchRequiredHeader   = "x-sub2api-netwatch-required"
-	ClaudeCodeNativeAttestationHeader        = "x-sub2api-native-attestation"
-	ClaudeCodeNativeSignatureHeader          = "x-sub2api-native-signature"
-	ClaudeCodeNativeInboundRouteHeader       = "x-sub2api-native-inbound-route"
-	ClaudeCodeNativeCCGatewayRouteHeader     = "x-sub2api-native-cc-gateway-route"
-	ClaudeCodeNativeServerFilledShapeHeader  = "x-sub2api-native-server-filled-shape"
-	ClaudeCodeNativeHealthcheckProfileHeader = "x-sub2api-native-shape-healthcheck-profile"
-	ClaudeCodeNativeToolSearchModeHeader     = "x-sub2api-native-tool-search-mode"
-	ClaudeCodeNativeToolReferenceHeader      = "x-sub2api-native-tool-reference-present"
-	ClaudeCodeNativeDeferLoadingHeader       = "x-sub2api-native-defer-loading-present"
-	ClaudeCodeNativeEagerInputHeader         = "x-sub2api-native-eager-input-streaming-present"
+	ClaudeCodeNativeClientTypeHeader                 = "x-sub2api-client-type"
+	ClaudeCodeNativeGuardAttestedHeader              = "x-sub2api-guard-attested"
+	ClaudeCodeNativeGuardVersionHeader               = "x-sub2api-guard-version"
+	ClaudeCodeNativeClaudeCodeVersionHeader          = "x-sub2api-claude-code-version"
+	ClaudeCodeNativeLocalSessionRefHeader            = "x-sub2api-local-session-ref"
+	ClaudeCodeNativeNetwatchRequiredHeader           = "x-sub2api-netwatch-required"
+	ClaudeCodeNativeAttestationHeader                = "x-sub2api-native-attestation"
+	ClaudeCodeNativeSignatureHeader                  = "x-sub2api-native-signature"
+	ClaudeCodeNativeInboundRouteHeader               = "x-sub2api-native-inbound-route"
+	ClaudeCodeNativeCCGatewayRouteHeader             = "x-sub2api-native-cc-gateway-route"
+	ClaudeCodeNativeServerFilledShapeHeader          = "x-sub2api-native-server-filled-shape"
+	ClaudeCodeNativeHealthcheckProfileHeader         = "x-sub2api-native-shape-healthcheck-profile"
+	ClaudeCodeNativeToolSearchModeHeader             = "x-sub2api-native-tool-search-mode"
+	ClaudeCodeNativeToolReferenceHeader              = "x-sub2api-native-tool-reference-present"
+	ClaudeCodeNativeDeferLoadingHeader               = "x-sub2api-native-defer-loading-present"
+	ClaudeCodeNativeEagerInputHeader                 = "x-sub2api-native-eager-input-streaming-present"
+	ClaudeCodeNativeRuntimeHashHeader                = "x-sub2api-native-runtime-hash"
+	ClaudeCodeNativeOverlayHashHeader                = "x-sub2api-native-overlay-hash"
+	ClaudeCodeNativeCatalogHashHeader                = "x-sub2api-native-catalog-hash"
+	ClaudeCodeNativeCatalogVersionHeader             = "x-sub2api-route-catalog-version"
+	ClaudeCodeNativeReplaySafetyBoundaryHeader       = "x-sub2api-native-replay-safety-boundary"
+	ClaudeCodeNativeReplaySafetyAppliedHeader        = "x-sub2api-native-replay-safety-applied"
+	ClaudeCodeNativeReplaySafetySanitizedHeader      = "x-sub2api-native-replay-safety-sanitized"
+	ClaudeCodeNativeReplaySafetyForbiddenPathsHeader = "x-sub2api-native-replay-safety-forbidden-paths-count"
+	ClaudeCodeNativeReplaySafetyBodyShapeHashHeader  = "x-sub2api-native-replay-safety-body-shape-hash"
 
 	ClaudeCodeNativeDefaultScope              = "claude_code_native_takeover"
 	ClaudeCodeNativeTakeoverHealthProfile     = "real_claude_code_native_takeover_v1"
 	ClaudeCodeNativeToolSearchHealthProfile   = "real_claude_code_native_toolsearch_v1"
 	ClaudeCodeNativeControlPlaneHealthProfile = "real_claude_code_native_control_plane_shadow_v1"
 	ClaudeCodeNativeNetwatchHealthProfile     = "real_claude_code_native_netwatch_v1"
+
+	ClaudeCodeNativeRoute                = "claude_code_native"
+	ClaudeCodeNativeProviderOwner        = "zhumeng_managed"
+	ClaudeCodeNativeCredentialScope      = "formal_pool"
+	ClaudeCodeNativeGatewayLocation      = "cloud"
+	ClaudeCodeNativeReplaySafetyBoundary = "replay_safe_anthropic_transcript"
 )
 
 type ClaudeCodeNativeAuditSummary struct {
@@ -67,32 +84,95 @@ type ClaudeCodeNativeAuditSummary struct {
 	ToolReferencePresent       bool   `json:"tool_reference_present"`
 	DeferLoadingPresent        bool   `json:"defer_loading_present"`
 	EagerInputStreamingPresent bool   `json:"eager_input_streaming_present"`
+	RuntimeHash                string `json:"runtime_hash,omitempty"`
+	OverlayHash                string `json:"overlay_hash,omitempty"`
+	CatalogHash                string `json:"catalog_hash,omitempty"`
+	CatalogVersion             string `json:"catalog_version,omitempty"`
+	ReplaySafetyBoundary       string `json:"replay_safety_boundary,omitempty"`
+	ReplaySafetyApplied        bool   `json:"replay_safety_applied"`
+	ReplaySafetySanitized      bool   `json:"replay_safety_sanitized"`
+	ReplaySafetyForbiddenPaths int    `json:"replay_safety_forbidden_paths_count"`
+	ReplaySafetyBodyShapeHash  string `json:"replay_safety_body_shape_hash,omitempty"`
 }
 
 type claudeCodeNativeAuditSummaryContextKey struct{}
 
 type ClaudeCodeNativeAttestationPayload struct {
-	KeyID                   string `json:"key_id"`
-	Scope                   string `json:"scope"`
-	Version                 int    `json:"version"`
-	IssuedAt                int64  `json:"issued_at"`
-	Nonce                   string `json:"nonce"`
-	Method                  string `json:"method"`
-	RequestURI              string `json:"request_uri"`
-	ClientType              string `json:"client_type"`
-	GuardAttested           bool   `json:"guard_attested"`
-	GuardVersion            string `json:"guard_version"`
-	ClaudeCodeVersion       string `json:"claude_code_version"`
-	LocalSessionRef         string `json:"local_session_ref"`
-	NetwatchRequired        bool   `json:"netwatch_required"`
-	ShapeHealthcheckProfile string `json:"shape_healthcheck_profile"`
+	KeyID                           string `json:"key_id"`
+	Scope                           string `json:"scope"`
+	Version                         int    `json:"version"`
+	IssuedAt                        int64  `json:"issued_at"`
+	Nonce                           string `json:"nonce"`
+	Method                          string `json:"method"`
+	RequestURI                      string `json:"request_uri"`
+	ClientType                      string `json:"client_type"`
+	GuardAttested                   bool   `json:"guard_attested"`
+	GuardVersion                    string `json:"guard_version"`
+	ClaudeCodeVersion               string `json:"claude_code_version"`
+	LocalSessionRef                 string `json:"local_session_ref"`
+	NetwatchRequired                bool   `json:"netwatch_required"`
+	ShapeHealthcheckProfile         string `json:"shape_healthcheck_profile"`
+	Route                           string `json:"route"`
+	ModelID                         string `json:"model_id"`
+	ProviderOwner                   string `json:"provider_owner"`
+	CredentialScope                 string `json:"credential_scope"`
+	GatewayLocation                 string `json:"gateway_location"`
+	RuntimeHash                     string `json:"runtime_hash"`
+	OverlayHash                     string `json:"overlay_hash"`
+	CatalogHash                     string `json:"catalog_hash"`
+	CatalogVersion                  string `json:"catalog_version"`
+	SessionRef                      string `json:"session_ref"`
+	BodyShapeHash                   string `json:"body_shape_hash"`
+	ReplaySafetyBoundary            string `json:"replay_safety_boundary"`
+	ReplaySafetyApplied             bool   `json:"replay_safety_applied"`
+	ReplaySafetySanitized           bool   `json:"replay_safety_sanitized"`
+	ReplaySafetyForbiddenPathsCount int    `json:"replay_safety_forbidden_paths_count"`
+	ReplaySafetyBodyShapeHash       string `json:"replay_safety_body_shape_hash"`
+}
+
+type ClaudeCodeRouteHintPayload struct {
+	KeyID                    string `json:"key_id"`
+	Scope                    string `json:"scope"`
+	Version                  int    `json:"version"`
+	IssuedAt                 int64  `json:"issued_at"`
+	ExpiresAt                int64  `json:"expires_at"`
+	Nonce                    string `json:"nonce"`
+	Method                   string `json:"method"`
+	RequestURI               string `json:"request_uri"`
+	ModelID                  string `json:"model_id"`
+	BodyModel                string `json:"body_model"`
+	BodySHA256               string `json:"body_sha256"`
+	RuntimeHash              string `json:"runtime_hash"`
+	OverlayHash              string `json:"overlay_hash"`
+	CatalogHash              string `json:"catalog_hash"`
+	CatalogVersion           string `json:"catalog_version"`
+	SessionRef               string `json:"session_ref"`
+	Route                    string `json:"route"`
+	ClientType               string `json:"client_type"`
+	Provider                 string `json:"provider"`
+	LiveRequestAllowed       bool   `json:"live_request_allowed"`
+	FormalPoolAllowed        bool   `json:"formal_pool_allowed"`
+	NativeAttestationAllowed bool   `json:"native_attestation_allowed"`
+	ProviderOwner            string `json:"provider_owner"`
+	CredentialScope          string `json:"credential_scope"`
+	GatewayLocation          string `json:"gateway_location"`
 }
 
 type ClaudeCodeNativeAttestationConfig struct {
+	CurrentKeyID  string
+	Keys          map[string]string
+	Scope         string
+	Version       int
+	NonceTTL      time.Duration
+	ClockSkew     time.Duration
+	RuntimeHashes map[string]struct{}
+	OverlayHashes map[string]struct{}
+	CatalogHashes map[string]struct{}
+}
+
+type ClaudeCodeRouteHintConfig struct {
 	CurrentKeyID string
 	Keys         map[string]string
-	Scope        string
-	Version      int
 	NonceTTL     time.Duration
 	ClockSkew    time.Duration
 }
@@ -105,33 +185,103 @@ type ClaudeCodeNativeNonceReplayCache struct {
 }
 
 type ClaudeCodeNativeAttestationService struct {
-	nowFn       func() time.Time
-	replayCache *ClaudeCodeNativeNonceReplayCache
+	nowFn                    func() time.Time
+	replayCache              *ClaudeCodeNativeNonceReplayCache
+	routeHintReplayCache     *ClaudeCodeNativeNonceReplayCache
+	catalogAdmissionResolver claudeCodeNativeCatalogAdmissionResolver
 }
 
 type ClaudeCodeNativeAttestationOption func(*ClaudeCodeNativeAttestationService)
 
+type claudeCodeNativeCatalogAdmissionDecision struct {
+	ModelID         string `json:"model_id"`
+	Route           string `json:"route"`
+	ProviderOwner   string `json:"provider_owner"`
+	CredentialScope string `json:"credential_scope"`
+	GatewayLocation string `json:"gateway_location"`
+	RuntimeHash     string `json:"runtime_hash,omitempty"`
+	OverlayHash     string `json:"overlay_hash,omitempty"`
+	CatalogHash     string `json:"catalog_hash,omitempty"`
+	CatalogVersion  string `json:"catalog_version,omitempty"`
+	CatalogFresh    bool   `json:"catalog_fresh"`
+}
+
+type claudeCodeNativeCatalogAdmissionResolver interface {
+	ResolveClaudeCodeNativeCatalogAdmission(model string) (claudeCodeNativeCatalogAdmissionDecision, error)
+}
+
+type claudeCodeNativeEnvCatalogAdmissionResolver struct{}
+
 var claudeCodeNativeAttestationPayloadAllowedFields = map[string]struct{}{
-	"key_id":                    {},
-	"scope":                     {},
-	"version":                   {},
-	"issued_at":                 {},
-	"nonce":                     {},
-	"method":                    {},
-	"request_uri":               {},
-	"client_type":               {},
-	"guard_attested":            {},
-	"guard_version":             {},
-	"claude_code_version":       {},
-	"local_session_ref":         {},
-	"netwatch_required":         {},
-	"shape_healthcheck_profile": {},
+	"key_id":                              {},
+	"scope":                               {},
+	"version":                             {},
+	"issued_at":                           {},
+	"nonce":                               {},
+	"method":                              {},
+	"request_uri":                         {},
+	"client_type":                         {},
+	"guard_attested":                      {},
+	"guard_version":                       {},
+	"claude_code_version":                 {},
+	"local_session_ref":                   {},
+	"netwatch_required":                   {},
+	"shape_healthcheck_profile":           {},
+	"route":                               {},
+	"model_id":                            {},
+	"provider_owner":                      {},
+	"credential_scope":                    {},
+	"gateway_location":                    {},
+	"runtime_hash":                        {},
+	"overlay_hash":                        {},
+	"catalog_hash":                        {},
+	"catalog_version":                     {},
+	"session_ref":                         {},
+	"body_shape_hash":                     {},
+	"replay_safety_boundary":              {},
+	"replay_safety_applied":               {},
+	"replay_safety_sanitized":             {},
+	"replay_safety_forbidden_paths_count": {},
+	"replay_safety_body_shape_hash":       {},
+}
+
+var claudeCodeRouteHintPayloadAllowedFields = map[string]struct{}{
+	"key_id":                     {},
+	"scope":                      {},
+	"version":                    {},
+	"issued_at":                  {},
+	"expires_at":                 {},
+	"nonce":                      {},
+	"method":                     {},
+	"request_uri":                {},
+	"model_id":                   {},
+	"body_model":                 {},
+	"body_sha256":                {},
+	"runtime_hash":               {},
+	"overlay_hash":               {},
+	"catalog_hash":               {},
+	"catalog_version":            {},
+	"session_ref":                {},
+	"route":                      {},
+	"client_type":                {},
+	"provider":                   {},
+	"live_request_allowed":       {},
+	"formal_pool_allowed":        {},
+	"native_attestation_allowed": {},
+	"provider_owner":             {},
+	"credential_scope":           {},
+	"gateway_location":           {},
 }
 
 var (
-	claudeCodeNativeReplayCacheMu  sync.Mutex
-	claudeCodeNativeReplayCacheTTL time.Duration
-	claudeCodeNativeReplayCache    *ClaudeCodeNativeNonceReplayCache
+	claudeCodeNativeSafeHashRe        = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	claudeCodeNativeUnknownHash       = "sha256:" + strings.Repeat("0", 64)
+	claudeCodeNativeReplayCacheMu     sync.Mutex
+	claudeCodeNativeReplayCacheTTL    time.Duration
+	claudeCodeNativeReplayCache       *ClaudeCodeNativeNonceReplayCache
+	claudeCodeRouteHintReplayCacheMu  sync.Mutex
+	claudeCodeRouteHintReplayCacheTTL time.Duration
+	claudeCodeRouteHintReplayCache    *ClaudeCodeNativeNonceReplayCache
 )
 
 func NewClaudeCodeNativeAttestationService(opts ...ClaudeCodeNativeAttestationOption) *ClaudeCodeNativeAttestationService {
@@ -156,6 +306,14 @@ func WithClaudeCodeNativeAttestationReplayCache(cache *ClaudeCodeNativeNonceRepl
 	return func(svc *ClaudeCodeNativeAttestationService) {
 		if cache != nil {
 			svc.replayCache = cache
+		}
+	}
+}
+
+func withClaudeCodeNativeCatalogAdmissionResolver(resolver claudeCodeNativeCatalogAdmissionResolver) ClaudeCodeNativeAttestationOption {
+	return func(svc *ClaudeCodeNativeAttestationService) {
+		if resolver != nil {
+			svc.catalogAdmissionResolver = resolver
 		}
 	}
 }
@@ -206,8 +364,10 @@ func IsClaudeCodeNativeMarkerPresent(headers http.Header) bool {
 	if headers == nil {
 		return false
 	}
+	if strings.TrimSpace(headers.Get(ClaudeCodeNativeClientTypeHeader)) == ClaudeCodeNativeClientType {
+		return true
+	}
 	for _, key := range []string{
-		ClaudeCodeNativeClientTypeHeader,
 		ClaudeCodeNativeGuardAttestedHeader,
 		ClaudeCodeNativeGuardVersionHeader,
 		ClaudeCodeNativeClaudeCodeVersionHeader,
@@ -215,12 +375,24 @@ func IsClaudeCodeNativeMarkerPresent(headers http.Header) bool {
 		ClaudeCodeNativeNetwatchRequiredHeader,
 		ClaudeCodeNativeAttestationHeader,
 		ClaudeCodeNativeSignatureHeader,
+		ClaudeCodeNativeReplaySafetyBoundaryHeader,
+		ClaudeCodeNativeReplaySafetyAppliedHeader,
+		ClaudeCodeNativeReplaySafetySanitizedHeader,
+		ClaudeCodeNativeReplaySafetyForbiddenPathsHeader,
+		ClaudeCodeNativeReplaySafetyBodyShapeHashHeader,
 	} {
 		if strings.TrimSpace(headers.Get(key)) != "" {
 			return true
 		}
 	}
 	return false
+}
+
+func IsClaudeCodeBridgeMarkerPresent(headers http.Header) bool {
+	if headers == nil {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(headers.Get(ClaudeCodeNativeClientTypeHeader)), "claude_code_bridge_")
 }
 
 func (s *ClaudeCodeNativeAttestationService) VerifyMessagesRequest(method, rawRoute string, headers http.Header, body []byte) (ClaudeCodeNativeAuditSummary, error) {
@@ -283,10 +455,116 @@ func (s *ClaudeCodeNativeAttestationService) VerifyMessagesRequest(method, rawRo
 	if err := compareClaudeCodeNativeRequest(method, rawRoute, payload); err != nil {
 		return ClaudeCodeNativeAuditSummary{}, err
 	}
+	if err := validateClaudeCodeNativeTrustedBindings(payload, cfg); err != nil {
+		return ClaudeCodeNativeAuditSummary{}, err
+	}
 	if err := validateClaudeCodeNativeSafeRefs(payload, headers); err != nil {
 		return ClaudeCodeNativeAuditSummary{}, err
 	}
-	return buildClaudeCodeNativeAuditSummary(payload, body), nil
+	if err := validateClaudeCodeNativeBodyBinding(payload, body); err != nil {
+		return ClaudeCodeNativeAuditSummary{}, err
+	}
+	catalogAdmission, err := s.resolveClaudeCodeNativeCatalogAdmission(strings.TrimSpace(gjson.GetBytes(body, "model").String()))
+	if err != nil {
+		return ClaudeCodeNativeAuditSummary{}, err
+	}
+	if err := validateClaudeCodeNativeCatalogAdmission(payload.ModelID, payload, headers, catalogAdmission); err != nil {
+		return ClaudeCodeNativeAuditSummary{}, err
+	}
+	return buildClaudeCodeNativeAuditSummaryWithHeaders(payload, headers, body), nil
+}
+
+func (s *ClaudeCodeNativeAttestationService) VerifyBridgeRouteHintRequest(method, rawRoute string, headers http.Header, body []byte, decision ClaudeCodeProviderRouteDecision) (*ClaudeCodeRouteHintPayload, error) {
+	if s == nil {
+		s = NewClaudeCodeNativeAttestationService()
+	}
+	if bridgeRequestHasNativeAttestationHeaders(headers) {
+		return nil, fmt.Errorf("claude code route hint bridge request cannot carry native attestation")
+	}
+	encoded := strings.TrimSpace(headers.Get(ClaudeCodeRouteHintHeader))
+	signature := strings.TrimSpace(headers.Get(ClaudeCodeRouteHintSignatureHeader))
+	if encoded == "" || signature == "" {
+		return nil, fmt.Errorf("claude code route hint is required")
+	}
+	cfg, err := loadClaudeCodeRouteHintConfigFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	if s.routeHintReplayCache == nil {
+		s.routeHintReplayCache = sharedClaudeCodeRouteHintNonceReplayCache(cfg.NonceTTL, s.nowFn)
+	}
+	payload, err := decodeClaudeCodeRouteHintPayload(encoded)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateClaudeCodeRouteHintPayloadShape(payload); err != nil {
+		return nil, err
+	}
+	if payload.Scope != ClaudeCodeRouteHintScope || payload.Version != ClaudeCodeRouteHintVersion {
+		return nil, fmt.Errorf("claude code route hint scope/version mismatch")
+	}
+	secret, ok := cfg.Keys[payload.KeyID]
+	if !ok {
+		return nil, fmt.Errorf("claude code route hint key id is not configured")
+	}
+	if !hmac.Equal([]byte(signClaudeCodeRouteHint(encoded, method, rawRoute, body, secret)), []byte(signature)) {
+		return nil, fmt.Errorf("claude code route hint signature mismatch")
+	}
+	current := s.nowFn()
+	if current.IsZero() {
+		current = time.Now()
+	}
+	issuedAt := time.Unix(payload.IssuedAt, 0)
+	expiresAt := time.Unix(payload.ExpiresAt, 0)
+	if payload.ExpiresAt <= current.Unix() ||
+		payload.IssuedAt > current.Add(cfg.ClockSkew).Unix() ||
+		issuedAt.Before(current.Add(-cfg.NonceTTL)) ||
+		expiresAt.After(issuedAt.Add(cfg.NonceTTL)) {
+		return nil, fmt.Errorf("claude code route hint stale")
+	}
+	if err := s.routeHintReplayCache.CheckAndRecord(payload.KeyID, payload.Scope, payload.Nonce, current); err != nil {
+		return nil, err
+	}
+	if err := validateClaudeCodeRouteHintBinding(method, rawRoute, body, payload, decision); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func bridgeRequestHasNativeAttestationHeaders(headers http.Header) bool {
+	if headers == nil {
+		return false
+	}
+	for _, key := range []string{
+		ClaudeCodeNativeGuardAttestedHeader,
+		ClaudeCodeNativeGuardVersionHeader,
+		ClaudeCodeNativeClaudeCodeVersionHeader,
+		ClaudeCodeNativeLocalSessionRefHeader,
+		ClaudeCodeNativeNetwatchRequiredHeader,
+		ClaudeCodeNativeAttestationHeader,
+		ClaudeCodeNativeSignatureHeader,
+		ClaudeCodeNativeInboundRouteHeader,
+		ClaudeCodeNativeCCGatewayRouteHeader,
+		ClaudeCodeNativeServerFilledShapeHeader,
+		ClaudeCodeNativeHealthcheckProfileHeader,
+		ClaudeCodeNativeToolSearchModeHeader,
+		ClaudeCodeNativeToolReferenceHeader,
+		ClaudeCodeNativeDeferLoadingHeader,
+		ClaudeCodeNativeEagerInputHeader,
+		ClaudeCodeNativeRuntimeHashHeader,
+		ClaudeCodeNativeOverlayHashHeader,
+		ClaudeCodeNativeCatalogHashHeader,
+		ClaudeCodeNativeReplaySafetyBoundaryHeader,
+		ClaudeCodeNativeReplaySafetyAppliedHeader,
+		ClaudeCodeNativeReplaySafetySanitizedHeader,
+		ClaudeCodeNativeReplaySafetyForbiddenPathsHeader,
+		ClaudeCodeNativeReplaySafetyBodyShapeHashHeader,
+	} {
+		if strings.TrimSpace(headers.Get(key)) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func ApplyClaudeCodeNativeAuditHeaders(headers http.Header, audit ClaudeCodeNativeAuditSummary) error {
@@ -295,6 +573,9 @@ func ApplyClaudeCodeNativeAuditHeaders(headers http.Header, audit ClaudeCodeNati
 	}
 	if audit.ClientType != ClaudeCodeNativeClientType || !audit.NativeAttested {
 		return fmt.Errorf("claude code native audit summary is not attested")
+	}
+	if err := validateClaudeCodeNativeAuditReplaySafetyContract(audit); err != nil {
+		return err
 	}
 	setHeaderRaw(headers, ClaudeCodeNativeClientTypeHeader, ClaudeCodeNativeClientType)
 	setHeaderRaw(headers, ClaudeCodeNativeGuardAttestedHeader, strconv.FormatBool(audit.NativeAttested))
@@ -310,6 +591,35 @@ func ApplyClaudeCodeNativeAuditHeaders(headers http.Header, audit ClaudeCodeNati
 	setHeaderRaw(headers, ClaudeCodeNativeToolReferenceHeader, strconv.FormatBool(audit.ToolReferencePresent))
 	setHeaderRaw(headers, ClaudeCodeNativeDeferLoadingHeader, strconv.FormatBool(audit.DeferLoadingPresent))
 	setHeaderRaw(headers, ClaudeCodeNativeEagerInputHeader, strconv.FormatBool(audit.EagerInputStreamingPresent))
+	setHeaderRaw(headers, ClaudeCodeNativeRuntimeHashHeader, audit.RuntimeHash)
+	setHeaderRaw(headers, ClaudeCodeNativeOverlayHashHeader, audit.OverlayHash)
+	setHeaderRaw(headers, ClaudeCodeNativeCatalogHashHeader, audit.CatalogHash)
+	setHeaderRaw(headers, ClaudeCodeNativeCatalogVersionHeader, audit.CatalogVersion)
+	setHeaderRaw(headers, ClaudeCodeNativeReplaySafetyBoundaryHeader, audit.ReplaySafetyBoundary)
+	setHeaderRaw(headers, ClaudeCodeNativeReplaySafetyAppliedHeader, strconv.FormatBool(audit.ReplaySafetyApplied))
+	setHeaderRaw(headers, ClaudeCodeNativeReplaySafetySanitizedHeader, strconv.FormatBool(audit.ReplaySafetySanitized))
+	setHeaderRaw(headers, ClaudeCodeNativeReplaySafetyForbiddenPathsHeader, strconv.Itoa(audit.ReplaySafetyForbiddenPaths))
+	setHeaderRaw(headers, ClaudeCodeNativeReplaySafetyBodyShapeHashHeader, audit.ReplaySafetyBodyShapeHash)
+	return nil
+}
+
+func validateClaudeCodeNativeAuditReplaySafetyContract(audit ClaudeCodeNativeAuditSummary) error {
+	if audit.ReplaySafetyBoundary != ClaudeCodeNativeReplaySafetyBoundary || !audit.ReplaySafetyApplied {
+		return fmt.Errorf("claude code native replay safety contract is invalid")
+	}
+	if audit.ReplaySafetyForbiddenPaths < 0 {
+		return fmt.Errorf("claude code native replay safety contract is invalid")
+	}
+	if audit.ReplaySafetySanitized && audit.ReplaySafetyForbiddenPaths <= 0 {
+		return fmt.Errorf("claude code native replay safety contract is invalid")
+	}
+	if !audit.ReplaySafetySanitized && audit.ReplaySafetyForbiddenPaths != 0 {
+		return fmt.Errorf("claude code native replay safety contract is invalid")
+	}
+	hash := audit.ReplaySafetyBodyShapeHash
+	if !claudeCodeNativeSafeHashRe.MatchString(hash) || hash == claudeCodeNativeUnknownHash {
+		return fmt.Errorf("claude code native replay safety contract is invalid")
+	}
 	return nil
 }
 
@@ -337,7 +647,6 @@ func preserveClaudeCodeNativeWireBody(ctx context.Context, req *http.Request, or
 		return
 	}
 	claudeCodeReplaceRequestBody(req, originalBody)
-	deleteHeaderAllForms(req.Header, "X-Claude-Code-Session-Id")
 }
 
 type ClaudeCodeNativeDirectedHealthcheckEvidence struct {
@@ -396,13 +705,56 @@ func loadClaudeCodeNativeAttestationConfigFromEnv() (*ClaudeCodeNativeAttestatio
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("claude code native attestation key set is empty")
 	}
+	runtimeHashes, err := parseClaudeCodeNativeHashAllowlistEnv("SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES")
+	if err != nil {
+		return nil, err
+	}
+	overlayHashes, err := parseClaudeCodeNativeHashAllowlistEnv("SUB2API_CLAUDE_CODE_NATIVE_OVERLAY_HASHES")
+	if err != nil {
+		return nil, err
+	}
+	catalogHashes, err := parseClaudeCodeNativeHashAllowlistEnv("SUB2API_CLAUDE_CODE_NATIVE_CATALOG_HASHES")
+	if err != nil {
+		return nil, err
+	}
 	return &ClaudeCodeNativeAttestationConfig{
+		CurrentKeyID:  currentKeyID,
+		Keys:          keys,
+		Scope:         controlPlaneAttestationFirstNonEmpty(strings.TrimSpace(os.Getenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SCOPE")), ClaudeCodeNativeDefaultScope),
+		Version:       controlPlaneAttestationFirstPositiveEnvInt("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_VERSION", 1),
+		NonceTTL:      time.Duration(controlPlaneAttestationFirstPositiveEnvInt("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_NONCE_TTL_SECONDS", 120)) * time.Second,
+		ClockSkew:     time.Duration(controlPlaneAttestationFirstPositiveEnvInt("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_CLOCK_SKEW_SECONDS", 30)) * time.Second,
+		RuntimeHashes: runtimeHashes,
+		OverlayHashes: overlayHashes,
+		CatalogHashes: catalogHashes,
+	}, nil
+}
+
+func loadClaudeCodeRouteHintConfigFromEnv() (*ClaudeCodeRouteHintConfig, error) {
+	currentKeyID := strings.TrimSpace(os.Getenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_CURRENT_KEY_ID"))
+	if currentKeyID == "" {
+		currentKeyID = "route_hint_v1"
+	}
+	keys := map[string]string{}
+	if raw := strings.TrimSpace(os.Getenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_KEYS_JSON")); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &keys); err != nil {
+			return nil, fmt.Errorf("claude code route hint key set is invalid")
+		}
+	} else {
+		secret := strings.TrimSpace(os.Getenv("SUB2API_CLAUDE_CODE_ROUTE_HINT_SECRET"))
+		if secret == "" {
+			return nil, fmt.Errorf("claude code route hint explicit secret is required")
+		}
+		keys[currentKeyID] = secret
+	}
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("claude code route hint key set is empty")
+	}
+	return &ClaudeCodeRouteHintConfig{
 		CurrentKeyID: currentKeyID,
 		Keys:         keys,
-		Scope:        controlPlaneAttestationFirstNonEmpty(strings.TrimSpace(os.Getenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SCOPE")), ClaudeCodeNativeDefaultScope),
-		Version:      controlPlaneAttestationFirstPositiveEnvInt("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_VERSION", 1),
-		NonceTTL:     time.Duration(controlPlaneAttestationFirstPositiveEnvInt("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_NONCE_TTL_SECONDS", 120)) * time.Second,
-		ClockSkew:    time.Duration(controlPlaneAttestationFirstPositiveEnvInt("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_CLOCK_SKEW_SECONDS", 30)) * time.Second,
+		NonceTTL:     time.Duration(controlPlaneAttestationFirstPositiveEnvInt("SUB2API_CLAUDE_CODE_ROUTE_HINT_NONCE_TTL_SECONDS", 60)) * time.Second,
+		ClockSkew:    time.Duration(controlPlaneAttestationFirstPositiveEnvInt("SUB2API_CLAUDE_CODE_ROUTE_HINT_CLOCK_SKEW_SECONDS", 30)) * time.Second,
 	}, nil
 }
 
@@ -420,6 +772,14 @@ func decodeClaudeCodeNativeAttestationPayload(encoded string) (*ClaudeCodeNative
 			return nil, fmt.Errorf("claude code native attestation payload must match the strict allowlist schema")
 		}
 	}
+	for _, field := range []string{"replay_safety_boundary", "replay_safety_applied", "replay_safety_sanitized", "replay_safety_forbidden_paths_count", "replay_safety_body_shape_hash"} {
+		if _, ok := fieldSet[field]; !ok {
+			return nil, fmt.Errorf("claude code native replay safety contract is required")
+		}
+	}
+	if err := validateClaudeCodeNativeReplaySafetyFieldTypes(fieldSet); err != nil {
+		return nil, err
+	}
 	if len(fieldSet) != len(claudeCodeNativeAttestationPayloadAllowedFields) {
 		return nil, fmt.Errorf("claude code native attestation payload must match the strict allowlist schema")
 	}
@@ -428,6 +788,229 @@ func decodeClaudeCodeNativeAttestationPayload(encoded string) (*ClaudeCodeNative
 		return nil, fmt.Errorf("claude code native attestation payload is malformed")
 	}
 	return &payload, nil
+}
+
+func validateClaudeCodeNativeReplaySafetyFieldTypes(fieldSet map[string]json.RawMessage) error {
+	stringFields := []string{"replay_safety_boundary", "replay_safety_body_shape_hash"}
+	for _, field := range stringFields {
+		if strings.TrimSpace(string(fieldSet[field])) == "null" {
+			return fmt.Errorf("claude code native replay safety contract is invalid")
+		}
+		var value string
+		if err := json.Unmarshal(fieldSet[field], &value); err != nil || strings.TrimSpace(value) == "" {
+			return fmt.Errorf("claude code native replay safety contract is invalid")
+		}
+	}
+	boolFields := []string{"replay_safety_applied", "replay_safety_sanitized"}
+	for _, field := range boolFields {
+		if strings.TrimSpace(string(fieldSet[field])) == "null" {
+			return fmt.Errorf("claude code native replay safety contract is invalid")
+		}
+		var value bool
+		if err := json.Unmarshal(fieldSet[field], &value); err != nil {
+			return fmt.Errorf("claude code native replay safety contract is invalid")
+		}
+	}
+	if strings.TrimSpace(string(fieldSet["replay_safety_forbidden_paths_count"])) == "null" {
+		return fmt.Errorf("claude code native replay safety contract is invalid")
+	}
+	var count int
+	if err := json.Unmarshal(fieldSet["replay_safety_forbidden_paths_count"], &count); err != nil {
+		return fmt.Errorf("claude code native replay safety contract is invalid")
+	}
+	return nil
+}
+
+func decodeClaudeCodeRouteHintPayload(encoded string) (*ClaudeCodeRouteHintPayload, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("claude code route hint payload is malformed")
+	}
+	var fieldSet map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fieldSet); err != nil {
+		return nil, fmt.Errorf("claude code route hint payload is malformed")
+	}
+	for field := range fieldSet {
+		if _, ok := claudeCodeRouteHintPayloadAllowedFields[field]; !ok {
+			return nil, fmt.Errorf("claude code route hint payload must match the strict allowlist schema")
+		}
+	}
+	if len(fieldSet) != len(claudeCodeRouteHintPayloadAllowedFields) {
+		return nil, fmt.Errorf("claude code route hint payload must match the strict allowlist schema")
+	}
+	var payload ClaudeCodeRouteHintPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, fmt.Errorf("claude code route hint payload is malformed")
+	}
+	return &payload, nil
+}
+
+func parseClaudeCodeNativeHashAllowlistEnv(name string) (map[string]struct{}, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return nil, nil
+	}
+	result := map[string]struct{}{}
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == '\n' || r == '\t' || r == ' ' }) {
+		value := strings.ToLower(strings.TrimSpace(part))
+		if claudeCodeNativeSafeHashRe.MatchString(value) && value != claudeCodeNativeUnknownHash {
+			result[value] = struct{}{}
+		}
+	}
+	if len(result) == 0 {
+		label := strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(name, "SUB2API_CLAUDE_CODE_NATIVE_"), "_HASHES"))
+		return nil, fmt.Errorf("claude code native %s hash allowlist is invalid", label)
+	}
+	return result, nil
+}
+
+func claudeCodeNativeHashAllowed(value string, allowlist map[string]struct{}) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	if !claudeCodeNativeSafeHashRe.MatchString(trimmed) || trimmed == claudeCodeNativeUnknownHash {
+		return false
+	}
+	if len(allowlist) == 0 {
+		return true
+	}
+	_, ok := allowlist[trimmed]
+	return ok
+}
+
+func (claudeCodeNativeEnvCatalogAdmissionResolver) ResolveClaudeCodeNativeCatalogAdmission(model string) (claudeCodeNativeCatalogAdmissionDecision, error) {
+	model = strings.TrimSpace(model)
+	if model == "" || looksSensitiveText(model) {
+		return claudeCodeNativeCatalogAdmissionDecision{}, nil
+	}
+	if strings.TrimSpace(os.Getenv("SUB2API_CLAUDE_CODE_PROVIDER_CATALOG_JSON")) != "" {
+		decision, err := LoadClaudeCodeProviderRegistryFromEnv().Resolve(context.Background(), model)
+		if err != nil {
+			return claudeCodeNativeCatalogAdmissionDecision{}, nil
+		}
+		return decision.NativeCatalogAdmissionDecision(), nil
+	}
+	decisions, err := loadClaudeCodeNativeCatalogAdmissionDecisionsFromEnv()
+	if err != nil {
+		return claudeCodeNativeCatalogAdmissionDecision{}, err
+	}
+	decision, ok := decisions[model]
+	if !ok {
+		return claudeCodeNativeCatalogAdmissionDecision{}, nil
+	}
+	return decision, nil
+}
+
+func loadClaudeCodeNativeCatalogAdmissionDecisionsFromEnv() (map[string]claudeCodeNativeCatalogAdmissionDecision, error) {
+	decisions := map[string]claudeCodeNativeCatalogAdmissionDecision{}
+	if raw := strings.TrimSpace(os.Getenv("SUB2API_CLAUDE_CODE_NATIVE_ROUTE_CATALOG_JSON")); raw != "" {
+		parsed, err := parseClaudeCodeNativeCatalogAdmissionJSON(raw)
+		if err != nil {
+			return nil, err
+		}
+		for model, decision := range parsed {
+			decisions[model] = decision
+		}
+	}
+	for _, model := range splitClaudeCodeNativeCatalogModels(os.Getenv("SUB2API_CLAUDE_CODE_NATIVE_FORMAL_POOL_MODELS")) {
+		if _, exists := decisions[model]; exists {
+			continue
+		}
+		decisions[model] = claudeCodeNativeCatalogAdmissionDecision{
+			ModelID:         model,
+			Route:           ClaudeCodeNativeRoute,
+			ProviderOwner:   ClaudeCodeNativeProviderOwner,
+			CredentialScope: ClaudeCodeNativeCredentialScope,
+			GatewayLocation: ClaudeCodeNativeGatewayLocation,
+			CatalogFresh:    true,
+		}
+	}
+	if len(decisions) == 0 {
+		return nil, fmt.Errorf("claude code native catalog admission is not configured")
+	}
+	return decisions, nil
+}
+
+func parseClaudeCodeNativeCatalogAdmissionJSON(raw string) (map[string]claudeCodeNativeCatalogAdmissionDecision, error) {
+	var entries []claudeCodeNativeCatalogAdmissionDecision
+	if err := json.Unmarshal([]byte(raw), &entries); err == nil {
+		return normalizeClaudeCodeNativeCatalogAdmissionEntries(entries)
+	}
+	var byModel map[string]claudeCodeNativeCatalogAdmissionDecision
+	if err := json.Unmarshal([]byte(raw), &byModel); err != nil {
+		return nil, fmt.Errorf("claude code native catalog admission JSON is invalid")
+	}
+	entries = make([]claudeCodeNativeCatalogAdmissionDecision, 0, len(byModel))
+	for model, decision := range byModel {
+		if strings.TrimSpace(decision.ModelID) == "" {
+			decision.ModelID = model
+		}
+		entries = append(entries, decision)
+	}
+	return normalizeClaudeCodeNativeCatalogAdmissionEntries(entries)
+}
+
+func normalizeClaudeCodeNativeCatalogAdmissionEntries(entries []claudeCodeNativeCatalogAdmissionDecision) (map[string]claudeCodeNativeCatalogAdmissionDecision, error) {
+	decisions := make(map[string]claudeCodeNativeCatalogAdmissionDecision, len(entries))
+	for _, decision := range entries {
+		decision.ModelID = strings.TrimSpace(decision.ModelID)
+		decision.Route = strings.TrimSpace(decision.Route)
+		decision.ProviderOwner = strings.TrimSpace(decision.ProviderOwner)
+		decision.CredentialScope = strings.TrimSpace(decision.CredentialScope)
+		decision.GatewayLocation = strings.TrimSpace(decision.GatewayLocation)
+		if decision.ModelID == "" || looksSensitiveText(decision.ModelID) {
+			return nil, fmt.Errorf("claude code native catalog admission model is invalid")
+		}
+		if !strings.HasPrefix(decision.ModelID, "claude-") {
+			continue
+		}
+		decisions[decision.ModelID] = decision
+	}
+	return decisions, nil
+}
+
+func splitClaudeCodeNativeCatalogModels(raw string) []string {
+	models := []string{}
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == '\n' || r == '\t' || r == ' ' }) {
+		model := strings.TrimSpace(part)
+		if model != "" && strings.HasPrefix(model, "claude-") && !looksSensitiveText(model) {
+			models = append(models, model)
+		}
+	}
+	return models
+}
+
+func (s *ClaudeCodeNativeAttestationService) resolveClaudeCodeNativeCatalogAdmission(model string) (claudeCodeNativeCatalogAdmissionDecision, error) {
+	resolver := s.catalogAdmissionResolver
+	if resolver == nil {
+		resolver = claudeCodeNativeEnvCatalogAdmissionResolver{}
+	}
+	return resolver.ResolveClaudeCodeNativeCatalogAdmission(model)
+}
+
+func validateClaudeCodeNativeCatalogAdmission(model string, payload *ClaudeCodeNativeAttestationPayload, headers http.Header, decision claudeCodeNativeCatalogAdmissionDecision) error {
+	model = strings.TrimSpace(model)
+	if payload == nil || model == "" || looksSensitiveText(model) || strings.TrimSpace(decision.ModelID) != model || !decision.CatalogFresh {
+		return fmt.Errorf("claude code native catalog admission is invalid")
+	}
+	if decision.Route != ClaudeCodeNativeRoute || decision.ProviderOwner != ClaudeCodeNativeProviderOwner || decision.CredentialScope != ClaudeCodeNativeCredentialScope || decision.GatewayLocation != ClaudeCodeNativeGatewayLocation {
+		return fmt.Errorf("claude code native catalog admission is invalid")
+	}
+	if !claudeCodeNativeCatalogBindingMatches(payload.RuntimeHash, decision.RuntimeHash) || !claudeCodeNativeCatalogBindingMatches(payload.OverlayHash, decision.OverlayHash) || !claudeCodeNativeCatalogBindingMatches(payload.CatalogHash, decision.CatalogHash) {
+		return fmt.Errorf("claude code native catalog admission hash binding is invalid")
+	}
+	if strings.TrimSpace(decision.CatalogVersion) != "" {
+		if payload.CatalogVersion != decision.CatalogVersion || strings.TrimSpace(headers.Get(ClaudeCodeNativeCatalogVersionHeader)) != decision.CatalogVersion {
+			return fmt.Errorf("claude code native catalog admission version binding is invalid")
+		}
+	}
+	return nil
+}
+
+func claudeCodeNativeCatalogBindingMatches(payloadValue, catalogValue string) bool {
+	catalogValue = strings.ToLower(strings.TrimSpace(catalogValue))
+	if catalogValue == "" {
+		return true
+	}
+	return strings.ToLower(strings.TrimSpace(payloadValue)) == catalogValue
 }
 
 func validateClaudeCodeNativeAttestationPayloadShape(payload *ClaudeCodeNativeAttestationPayload) error {
@@ -442,6 +1025,77 @@ func validateClaudeCodeNativeAttestationPayloadShape(payload *ClaudeCodeNativeAt
 	}
 	if !isKnownClaudeCodeNativeHealthProfile(payload.ShapeHealthcheckProfile) {
 		return fmt.Errorf("claude code native healthcheck profile is invalid")
+	}
+	if payload.Route != ClaudeCodeNativeRoute || payload.ProviderOwner != ClaudeCodeNativeProviderOwner || payload.CredentialScope != ClaudeCodeNativeCredentialScope || payload.GatewayLocation != ClaudeCodeNativeGatewayLocation {
+		return fmt.Errorf("claude code native attestation route binding is invalid")
+	}
+	if strings.TrimSpace(payload.ModelID) == "" || looksSensitiveText(payload.ModelID) {
+		return fmt.Errorf("claude code native attestation model binding is invalid")
+	}
+	for _, value := range []string{payload.RuntimeHash, payload.OverlayHash, payload.CatalogHash, payload.BodyShapeHash, payload.ReplaySafetyBodyShapeHash} {
+		trimmed := strings.TrimSpace(value)
+		if !claudeCodeNativeSafeHashRe.MatchString(trimmed) || trimmed == claudeCodeNativeUnknownHash {
+			return fmt.Errorf("claude code native attestation hash binding is invalid")
+		}
+	}
+	if err := validateClaudeCodeNativeReplaySafetyContract(payload); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateClaudeCodeNativeReplaySafetyContract(payload *ClaudeCodeNativeAttestationPayload) error {
+	if payload == nil {
+		return fmt.Errorf("claude code native replay safety contract is required")
+	}
+	if payload.ReplaySafetyBoundary != ClaudeCodeNativeReplaySafetyBoundary || !payload.ReplaySafetyApplied {
+		return fmt.Errorf("claude code native replay safety contract is invalid")
+	}
+	if payload.ReplaySafetyForbiddenPathsCount < 0 {
+		return fmt.Errorf("claude code native replay safety contract is invalid")
+	}
+	if payload.ReplaySafetySanitized && payload.ReplaySafetyForbiddenPathsCount <= 0 {
+		return fmt.Errorf("claude code native replay safety contract is invalid")
+	}
+	if !payload.ReplaySafetySanitized && payload.ReplaySafetyForbiddenPathsCount != 0 {
+		return fmt.Errorf("claude code native replay safety contract is invalid")
+	}
+	if payload.ReplaySafetyBodyShapeHash != payload.BodyShapeHash {
+		return fmt.Errorf("claude code native replay safety body binding mismatch")
+	}
+	return nil
+}
+
+func validateClaudeCodeRouteHintPayloadShape(payload *ClaudeCodeRouteHintPayload) error {
+	if payload == nil {
+		return fmt.Errorf("claude code route hint payload is required")
+	}
+	if strings.TrimSpace(payload.KeyID) == "" || strings.TrimSpace(payload.Nonce) == "" || payload.IssuedAt <= 0 || payload.ExpiresAt <= payload.IssuedAt || payload.Version <= 0 {
+		return fmt.Errorf("claude code route hint payload shape is invalid")
+	}
+	for _, value := range []string{payload.BodySHA256, payload.RuntimeHash, payload.OverlayHash, payload.CatalogHash} {
+		trimmed := strings.TrimSpace(value)
+		if !claudeCodeNativeSafeHashRe.MatchString(trimmed) || trimmed == claudeCodeNativeUnknownHash {
+			return fmt.Errorf("claude code route hint hash binding is invalid")
+		}
+	}
+	for _, value := range []string{
+		payload.Method,
+		payload.RequestURI,
+		payload.ModelID,
+		payload.BodyModel,
+		payload.CatalogVersion,
+		payload.SessionRef,
+		payload.Route,
+		payload.ClientType,
+		payload.Provider,
+		payload.ProviderOwner,
+		payload.CredentialScope,
+		payload.GatewayLocation,
+	} {
+		if strings.TrimSpace(value) == "" || looksSensitiveText(value) {
+			return fmt.Errorf("claude code route hint payload shape is invalid")
+		}
 	}
 	return nil
 }
@@ -465,9 +1119,49 @@ func compareClaudeCodeNativeRequest(method, rawRoute string, payload *ClaudeCode
 	return nil
 }
 
+func validateClaudeCodeRouteHintBinding(method, rawRoute string, body []byte, payload *ClaudeCodeRouteHintPayload, decision ClaudeCodeProviderRouteDecision) error {
+	if strings.ToUpper(strings.TrimSpace(method)) != http.MethodPost || strings.ToUpper(strings.TrimSpace(payload.Method)) != http.MethodPost {
+		return fmt.Errorf("claude code route hint method mismatch")
+	}
+	if payload.RequestURI != rawRoute {
+		return fmt.Errorf("claude code route hint route mismatch")
+	}
+	path, query := splitCompatRoute(rawRoute)
+	if (path != ClaudeCodeNativeInboundMessages && path != ClaudeCodeNativeInboundCountTokens) || (query != "" && query != "beta=true") {
+		return fmt.Errorf("claude code route hint route unsupported")
+	}
+	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if model == "" || looksSensitiveText(model) || payload.ModelID != model || payload.BodyModel != model || decision.ModelID != model {
+		return fmt.Errorf("claude code route hint model binding mismatch")
+	}
+	digest := sha256.Sum256(body)
+	if payload.BodySHA256 != "sha256:"+hex.EncodeToString(digest[:]) {
+		return fmt.Errorf("claude code route hint body binding mismatch")
+	}
+	if payload.Provider != decision.Provider || payload.Route != decision.Route || payload.ClientType != decision.ClientType {
+		return fmt.Errorf("claude code route hint catalog route binding mismatch")
+	}
+	if payload.ProviderOwner != decision.ProviderOwner || payload.CredentialScope != decision.CredentialScope || payload.GatewayLocation != decision.GatewayLocation {
+		return fmt.Errorf("claude code route hint catalog account binding mismatch")
+	}
+	if payload.RuntimeHash != decision.RuntimeHash || payload.OverlayHash != decision.OverlayHash || payload.CatalogHash != decision.CatalogHash || payload.CatalogVersion != decision.CatalogVersion {
+		return fmt.Errorf("claude code route hint catalog hash binding mismatch")
+	}
+	if payload.FormalPoolAllowed || payload.NativeAttestationAllowed || payload.ClientType == ClaudeCodeNativeClientType || payload.Route == ClaudeCodeNativeRoute {
+		return fmt.Errorf("claude code route hint bridge cannot claim native")
+	}
+	if payload.LiveRequestAllowed && path != ClaudeCodeNativeInboundCountTokens && !ClaudeCodeProviderBridgeLiveRequestAllowed(decision) {
+		return fmt.Errorf("claude code route hint bridge live request is not enabled")
+	}
+	return nil
+}
+
 func validateClaudeCodeNativeSafeRefs(payload *ClaudeCodeNativeAttestationPayload, headers http.Header) error {
 	if !isSafeLedgerRef(payload.LocalSessionRef) {
 		return fmt.Errorf("claude code native local session ref must be opaque")
+	}
+	if payload.SessionRef != payload.LocalSessionRef || !isSafeLedgerRef(payload.SessionRef) {
+		return fmt.Errorf("claude code native session binding mismatch")
 	}
 	if strings.TrimSpace(headers.Get(ClaudeCodeNativeLocalSessionRefHeader)) != "" && headers.Get(ClaudeCodeNativeLocalSessionRefHeader) != payload.LocalSessionRef {
 		return fmt.Errorf("claude code native session ref header mismatch")
@@ -478,7 +1172,110 @@ func validateClaudeCodeNativeSafeRefs(payload *ClaudeCodeNativeAttestationPayloa
 	return nil
 }
 
+func validateClaudeCodeNativeTrustedBindings(payload *ClaudeCodeNativeAttestationPayload, cfg *ClaudeCodeNativeAttestationConfig) error {
+	if payload == nil {
+		return fmt.Errorf("claude code native attestation payload is required")
+	}
+	if !claudeCodeNativeHashAllowed(payload.RuntimeHash, cfg.RuntimeHashes) {
+		return fmt.Errorf("claude code native runtime hash binding is invalid")
+	}
+	if !claudeCodeNativeHashAllowed(payload.OverlayHash, cfg.OverlayHashes) {
+		return fmt.Errorf("claude code native overlay hash binding is invalid")
+	}
+	if !claudeCodeNativeHashAllowed(payload.CatalogHash, cfg.CatalogHashes) {
+		return fmt.Errorf("claude code native catalog hash binding is invalid")
+	}
+	return nil
+}
+
+func validateClaudeCodeNativeBodyBinding(payload *ClaudeCodeNativeAttestationPayload, body []byte) error {
+	if payload == nil {
+		return fmt.Errorf("claude code native attestation payload is required")
+	}
+	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if model == "" || looksSensitiveText(model) || payload.ModelID != model {
+		return fmt.Errorf("claude code native attestation model binding mismatch")
+	}
+	bodyShapeHash := claudeCodeNativeBodyShapeHash(body)
+	if payload.BodyShapeHash != bodyShapeHash {
+		return fmt.Errorf("claude code native attestation body shape binding mismatch")
+	}
+	if payload.ReplaySafetyBodyShapeHash != bodyShapeHash {
+		return fmt.Errorf("claude code native replay safety body binding mismatch")
+	}
+	return nil
+}
+
+func claudeCodeNativeBodyShapeHash(body []byte) string {
+	var decoded any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		decoded = map[string]any{"body_size": len(body), "type": "invalid_json"}
+	}
+	shape := claudeCodeNativeShapeValue(decoded)
+	raw, _ := json.Marshal(shape)
+	digest := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func claudeCodeNativeShapeValue(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		children := map[string]any{}
+		keys := make([]string, 0, len(v))
+		for key, child := range v {
+			safeKey := sanitizeClaudeCodeNativeShapeKey(key)
+			if safeKey == "" {
+				safeKey = "redacted-key"
+			}
+			if _, exists := children[safeKey]; !exists {
+				keys = append(keys, safeKey)
+			}
+			children[safeKey] = claudeCodeNativeShapeValue(child)
+		}
+		sort.Strings(keys)
+		return map[string]any{"children": children, "keys": keys, "type": "object"}
+	case []any:
+		items := make([]any, 0, len(v))
+		limit := len(v)
+		if limit > 32 {
+			limit = 32
+		}
+		for i := 0; i < limit; i++ {
+			items = append(items, claudeCodeNativeShapeValue(v[i]))
+		}
+		return map[string]any{"items": items, "len": len(v), "truncated": len(v) > 32, "type": "array"}
+	case string:
+		return map[string]any{"type": "string"}
+	case bool:
+		return map[string]any{"type": "bool"}
+	case float64, float32, int, int64, int32, json.Number:
+		return map[string]any{"type": "number"}
+	case nil:
+		return map[string]any{"type": "null"}
+	default:
+		return map[string]any{"type": "unknown"}
+	}
+}
+
+func sanitizeClaudeCodeNativeShapeKey(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" || looksSensitiveText(key) || len(key) > 128 {
+		return "redacted-key"
+	}
+	for _, r := range key {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
+			continue
+		}
+		return "redacted-key"
+	}
+	return key
+}
+
 func buildClaudeCodeNativeAuditSummary(payload *ClaudeCodeNativeAttestationPayload, body []byte) ClaudeCodeNativeAuditSummary {
+	return buildClaudeCodeNativeAuditSummaryWithHeaders(payload, nil, body)
+}
+
+func buildClaudeCodeNativeAuditSummaryWithHeaders(payload *ClaudeCodeNativeAttestationPayload, headers http.Header, body []byte) ClaudeCodeNativeAuditSummary {
 	root := gjson.ParseBytes(body)
 	toolMode := "not_present"
 	if tools := root.Get("tools"); tools.IsArray() && len(tools.Array()) > 0 {
@@ -499,10 +1296,32 @@ func buildClaudeCodeNativeAuditSummary(payload *ClaudeCodeNativeAttestationPaylo
 		ToolReferencePresent:       root.Get("..tool_reference").Exists() || toolMode == "truthful_pass_through",
 		DeferLoadingPresent:        root.Get("..defer_loading").Exists(),
 		EagerInputStreamingPresent: root.Get("..eager_input_streaming").Exists(),
+		RuntimeHash:                payload.RuntimeHash,
+		OverlayHash:                payload.OverlayHash,
+		CatalogHash:                payload.CatalogHash,
+		CatalogVersion:             safeClaudeCodeNativeLabel(headers.Get(ClaudeCodeNativeCatalogVersionHeader)),
+		ReplaySafetyBoundary:       payload.ReplaySafetyBoundary,
+		ReplaySafetyApplied:        payload.ReplaySafetyApplied,
+		ReplaySafetySanitized:      payload.ReplaySafetySanitized,
+		ReplaySafetyForbiddenPaths: payload.ReplaySafetyForbiddenPathsCount,
+		ReplaySafetyBodyShapeHash:  payload.ReplaySafetyBodyShapeHash,
 	}
 }
 
 func signClaudeCodeNativeAttestation(encoded, method, rawRoute string, body []byte, secret string) string {
+	digest := sha256.Sum256(body)
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(encoded))
+	_, _ = mac.Write([]byte("\n"))
+	_, _ = mac.Write([]byte(strings.ToUpper(strings.TrimSpace(method))))
+	_, _ = mac.Write([]byte("\n"))
+	_, _ = mac.Write([]byte(rawRoute))
+	_, _ = mac.Write([]byte("\n"))
+	_, _ = mac.Write([]byte(hex.EncodeToString(digest[:])))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func signClaudeCodeRouteHint(encoded, method, rawRoute string, body []byte, secret string) string {
 	digest := sha256.Sum256(body)
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(encoded))
@@ -565,4 +1384,14 @@ func sharedClaudeCodeNativeNonceReplayCache(ttl time.Duration, nowFn func() time
 		claudeCodeNativeReplayCacheTTL = ttl
 	}
 	return claudeCodeNativeReplayCache
+}
+
+func sharedClaudeCodeRouteHintNonceReplayCache(ttl time.Duration, nowFn func() time.Time) *ClaudeCodeNativeNonceReplayCache {
+	claudeCodeRouteHintReplayCacheMu.Lock()
+	defer claudeCodeRouteHintReplayCacheMu.Unlock()
+	if claudeCodeRouteHintReplayCache == nil || claudeCodeRouteHintReplayCacheTTL != ttl {
+		claudeCodeRouteHintReplayCache = NewClaudeCodeNativeNonceReplayCache(ttl, nowFn)
+		claudeCodeRouteHintReplayCacheTTL = ttl
+	}
+	return claudeCodeRouteHintReplayCache
 }

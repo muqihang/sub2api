@@ -486,20 +486,8 @@ func firstNonBlankString(values ...string) string {
 }
 
 func extractOpenAIUsageFromUsageJSONBytes(body []byte) (OpenAIUsage, bool) {
-	if len(body) == 0 {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return OpenAIUsage{}, false
 	}
-	values := gjson.GetManyBytes(
-		body,
-		"input_tokens",
-		"output_tokens",
-		"input_tokens_details.cached_tokens",
-		"output_tokens_details.image_tokens",
-	)
-	return OpenAIUsage{
-		InputTokens:          int(values[0].Int()),
-		OutputTokens:         int(values[1].Int()),
-		CacheReadInputTokens: int(values[2].Int()),
-		ImageOutputTokens:    int(values[3].Int()),
-	}, true
+	return openAIUsageFromGJSON(gjson.ParseBytes(body))
 }

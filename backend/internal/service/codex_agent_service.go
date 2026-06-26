@@ -131,14 +131,16 @@ type ExchangeCodexSetupGrantRequest struct {
 }
 
 type ExchangeCodexSetupGrantResponse struct {
-	AccessToken      string             `json:"access_token"`
-	RefreshToken     string             `json:"refresh_token"`
-	ManagedSessionID string             `json:"managed_session_id"`
-	ExpiresAt        time.Time          `json:"expires_at"`
-	DeviceID         int64              `json:"device_id"`
-	ServerBaseURL    string             `json:"server_base_url"`
-	GatewayBaseURL   string             `json:"gateway_base_url"`
-	ConfigProfile    CodexConfigProfile `json:"config_profile"`
+	AccessToken                       string             `json:"access_token"`
+	RefreshToken                      string             `json:"refresh_token"`
+	ManagedSessionID                  string             `json:"managed_session_id"`
+	ExpiresAt                         time.Time          `json:"expires_at"`
+	DeviceID                          int64              `json:"device_id"`
+	ServerBaseURL                     string             `json:"server_base_url"`
+	GatewayBaseURL                    string             `json:"gateway_base_url"`
+	ConfigProfile                     CodexConfigProfile `json:"config_profile"`
+	ClaudeCodeNativeAttestationSecret string             `json:"claude_code_native_attestation_secret,omitempty"`
+	ClaudeCodeRouteHintSecret         string             `json:"claude_code_route_hint_secret,omitempty"`
 }
 
 type RefreshCodexDeviceTokenRequest struct {
@@ -320,14 +322,16 @@ func (s *CodexAgentService) ExchangeSetupGrant(ctx context.Context, req Exchange
 	}
 
 	return &ExchangeCodexSetupGrantResponse{
-		AccessToken:      accessToken,
-		RefreshToken:     refreshToken,
-		ManagedSessionID: managedSessionID,
-		ExpiresAt:        expiresAt,
-		DeviceID:         device.ID,
-		ServerBaseURL:    grant.ServerOrigin,
-		GatewayBaseURL:   grant.GatewayOrigin,
-		ConfigProfile:    s.DefaultCodexConfigProfile(),
+		AccessToken:                       accessToken,
+		RefreshToken:                      refreshToken,
+		ManagedSessionID:                  managedSessionID,
+		ExpiresAt:                         expiresAt,
+		DeviceID:                          device.ID,
+		ServerBaseURL:                     grant.ServerOrigin,
+		GatewayBaseURL:                    grant.GatewayOrigin,
+		ConfigProfile:                     s.DefaultCodexConfigProfile(),
+		ClaudeCodeNativeAttestationSecret: claudeCodeNativeAttestationSecretForManagedSetup(),
+		ClaudeCodeRouteHintSecret:         claudeCodeRouteHintSecretForManagedSetup(),
 	}, nil
 }
 
@@ -606,4 +610,26 @@ func extractBearerToken(raw string) (string, error) {
 func hashManagedSecret(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
+}
+
+func claudeCodeNativeAttestationSecretForManagedSetup() string {
+	cfg, err := loadClaudeCodeNativeAttestationConfigFromEnv()
+	if err != nil || cfg == nil {
+		return ""
+	}
+	if secret := strings.TrimSpace(cfg.Keys[cfg.CurrentKeyID]); secret != "" {
+		return secret
+	}
+	return ""
+}
+
+func claudeCodeRouteHintSecretForManagedSetup() string {
+	cfg, err := loadClaudeCodeRouteHintConfigFromEnv()
+	if err != nil || cfg == nil {
+		return ""
+	}
+	if secret := strings.TrimSpace(cfg.Keys[cfg.CurrentKeyID]); secret != "" {
+		return secret
+	}
+	return ""
 }

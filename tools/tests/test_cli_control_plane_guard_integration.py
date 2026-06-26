@@ -12,7 +12,9 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from tools.cli_control_plane_intent import IntentValidationError
 from tools.cli_control_plane_guard import ExecutionController, GuardConfig, RedactingForwarder
+from tools.claude_code_route_trust import RouteHintReplayCache, build_signed_route_hint_headers, cp4_fixture_route_catalog
 from tools.cli_session_budget import SessionBudgetLedger, SessionBudgetPolicy
 
 STRICT_LOCAL_CANARY_LIMITS = {
@@ -30,6 +32,11 @@ STRICT_LOCAL_CANARY_LIMITS = {
     'allow_assistant_messages': False,
     'allow_tool_content': False,
 }
+
+_ROUTE_HINT_SECRET = 'route-hint-secret'
+_ROUTE_HINT_CATALOG = cp4_fixture_route_catalog(catalog_version='cp4-cli-fixture-v1')
+_DEFAULT_SESSION_REF = '11111111-2222-4333-8444-555555555555'
+
 
 class CliControlPlaneGuardIntegrationTest(unittest.TestCase):
     def _assert_cost_envelope_block(self, payload, *, reason, cost_envelope_limits=None):
@@ -154,6 +161,69 @@ class CliControlPlaneGuardIntegrationTest(unittest.TestCase):
         finally:
             endpoint_server.shutdown()
             capture.stop()
+
+    def test_native_title_helper_messages_stub_before_upstream_without_prompt_leak(self):
+        capture = UpstreamCaptureServer([ResponsePlan(status=200, body=b'{"should":"not be called"}')])
+        capture.start()
+        try:
+            with GuardHarness(capture.server_url) as harness:
+                payload = {
+                    'model': 'claude-sonnet-4-6',
+                    'messages': [{
+                        'role': 'user',
+                        'content': 'Please write a 5-10 word title for the following conversation: raw-title-prompt-must-not-leak',
+                    }],
+                    'max_tokens': 16,
+                    'stream': False,
+                }
+                result = harness.request(
+                    'POST',
+                    '/v1/messages?beta=true',
+                    body=json.dumps(payload).encode('utf-8'),
+                    headers={'content-type': 'application/json'},
+                )
+                self.assertEqual(result['status'], 200)
+                self.assertEqual(capture.count, 0)
+                response = json.loads(result['body'].decode('utf-8'))
+                self.assertEqual(response['type'], 'message')
+                self.assertEqual(response['role'], 'assistant')
+                self.assertEqual(response['content'][0]['type'], 'text')
+                self.assertNotIn('raw-title-prompt-must-not-leak', result['body'].decode('utf-8'))
+                summary = harness.summary_text()
+                self.assertIn('native_auxiliary_messages_stub', summary)
+                self.assertIn('title_or_warmup', summary)
+                self.assertNotIn('raw-title-prompt-must-not-leak', summary)
+        finally:
+            capture.stop()
+
+
+    def test_native_compact_summary_messages_still_forward_to_formal_pool(self):
+        capture = UpstreamCaptureServer([ResponsePlan(status=200, body=b'{"ok":true}')])
+        capture.start()
+        try:
+            with GuardHarness(capture.server_url) as harness:
+                payload = {
+                    'model': 'claude-sonnet-4-6',
+                    'system': [{'type': 'text', 'text': 'Compact the conversation into a detailed summary for continuation.'}],
+                    'messages': [{'role': 'user', 'content': 'summarize this session without helper stub'}],
+                    'max_tokens': 512,
+                    'stream': False,
+                }
+                result = harness.request(
+                    'POST',
+                    '/v1/messages?beta=true',
+                    body=json.dumps(payload).encode('utf-8'),
+                    headers={'content-type': 'application/json'},
+                )
+                self.assertEqual(result['status'], 200)
+                self.assertEqual(capture.count, 1)
+                summary = harness.summary_text()
+                self.assertIn('messages_upstream_response', summary)
+                self.assertNotIn('native_auxiliary_messages_stub', summary)
+                self.assertNotIn('summarize this session without helper stub', summary)
+        finally:
+            capture.stop()
+
     def test_messages_forward_only_replacement_auth_and_summary_redacted(self):
         capture = UpstreamCaptureServer([ResponsePlan(status=200, body=b'{"ok":true}')])
         capture.start()
@@ -163,7 +233,7 @@ class CliControlPlaneGuardIntegrationTest(unittest.TestCase):
                     'model': 'claude-sonnet-4-6',
                     'messages': [{'role': 'user', 'content': 'raw-prompt-marker'}],
                     'max_tokens': 32,
-                    'tools': [{'name': 'lookup'}],
+                    'tools': [{'name': 'lookup', 'input_schema': {'type': 'object'}}],
                     'output_config': {'format': 'json'},
                 }
                 result = harness.request(
@@ -212,12 +282,25 @@ class CliControlPlaneGuardIntegrationTest(unittest.TestCase):
                     'stream': True,
                 }
                 body = json.dumps(payload).encode('utf-8')
+                request_path = '/v1/messages?beta=true'
+                route_headers = build_signed_route_hint_headers(
+                    body=body,
+                    request_path=request_path,
+                    catalog=_ROUTE_HINT_CATALOG,
+                    model_id='claude-sonnet-4-6',
+                    session_ref=_DEFAULT_SESSION_REF,
+                    secret=_ROUTE_HINT_SECRET,
+                    nonce='absolute-form-route-hint',
+                )
+                route_header_lines = ''.join(f'{key}: {value}\r\n' for key, value in route_headers.items())
                 with socket.create_connection(('127.0.0.1', harness.listen_port), timeout=5) as sock:
                     sock.sendall(
                         (
-                            f'POST http://127.0.0.1:{harness.listen_port}/v1/messages?beta=true HTTP/1.1\r\n'
+                            f'POST http://127.0.0.1:{harness.listen_port}{request_path} HTTP/1.1\r\n'
                             f'Host: 127.0.0.1:{harness.listen_port}\r\n'
                             'content-type: application/json\r\n'
+                            f'x-claude-code-session-id: {_DEFAULT_SESSION_REF}\r\n'
+                            f'{route_header_lines}'
                             f'content-length: {len(body)}\r\n'
                             'connection: close\r\n\r\n'
                         ).encode('ascii') + body
@@ -241,7 +324,7 @@ class CliControlPlaneGuardIntegrationTest(unittest.TestCase):
         try:
             with GuardHarness(capture.server_url) as harness:
                 payload = {
-                    'model': 'secret-token-marker',
+                    'model': 'claude-sonnet-4-6',
                     'secret-token-marker': 'x',
                     'messages': [{'role': 'user', 'content': 'raw-prompt-marker'}],
                 }
@@ -260,6 +343,30 @@ class CliControlPlaneGuardIntegrationTest(unittest.TestCase):
                 self.assertNotIn('secret-token-marker', summary)
                 self.assertNotIn('raw-prompt-marker', summary)
                 self.assertNotIn('x-secret-token-marker', summary)
+        finally:
+            capture.stop()
+
+    def test_native_messages_fail_closed_without_native_managed_access_token(self):
+        capture = UpstreamCaptureServer([ResponsePlan(status=200, body=b'{"ok":true}')])
+        capture.start()
+        try:
+            with GuardHarness(capture.server_url, native_managed_access_token=None) as harness:
+                payload = {
+                    'model': 'claude-sonnet-4-6',
+                    'messages': [{'role': 'user', 'content': 'raw-prompt-marker'}],
+                    'max_tokens': 32,
+                }
+                result = harness.request(
+                    'POST',
+                    '/v1/messages?beta=true',
+                    body=json.dumps(payload).encode('utf-8'),
+                    headers={'content-type': 'application/json'},
+                )
+                self.assertEqual(result['status'], 403)
+                self.assertEqual(capture.count, 0)
+                summary = harness.summary_text()
+                self.assertIn('native_managed_access_token_required', summary)
+                self.assertNotIn('raw-prompt-marker', summary)
         finally:
             capture.stop()
 
@@ -290,10 +397,10 @@ class CliControlPlaneGuardIntegrationTest(unittest.TestCase):
                 'messages': [{'role': 'user', 'content': 'hello'}],
                 'max_tokens': 32,
                 'tools': [
-                    {'name': 'tool-1'},
-                    {'name': 'tool-2'},
-                    {'name': 'tool-3'},
-                    {'name': 'tool-4'},
+                    {'name': 'tool-1', 'input_schema': {'type': 'object'}},
+                    {'name': 'tool-2', 'input_schema': {'type': 'object'}},
+                    {'name': 'tool-3', 'input_schema': {'type': 'object'}},
+                    {'name': 'tool-4', 'input_schema': {'type': 'object'}},
                 ],
             },
             reason='tools_limit_exceeded',
@@ -573,6 +680,33 @@ class CliControlPlaneGuardIntegrationTest(unittest.TestCase):
                 self.assertNotIn('raw-prompt-marker', summary)
         finally:
             capture.stop()
+
+    def test_connect_tls_stub_preserves_bootstrap_and_mcp_when_intent_validation_fails(self):
+        capture = UpstreamCaptureServer([])
+        capture.start()
+        try:
+            with GuardHarness(capture.server_url, connect_mode='stub') as harness:
+                with unittest.mock.patch(
+                    'tools.cli_control_plane_guard.build_control_plane_intent',
+                    side_effect=IntentValidationError('forced safe-intent fallback'),
+                ):
+                    for payload in (
+                        b'GET /api/claude_cli/bootstrap HTTP/1.1\r\n'
+                        b'Host: api.anthropic.com\r\n'
+                        b'Connection: close\r\n\r\n',
+                        b'GET /mcp-registry/v0/servers?version=latest HTTP/1.1\r\n'
+                        b'Host: api.anthropic.com\r\n'
+                        b'Connection: close\r\n\r\n',
+                    ):
+                        result = harness.connect_tls_request('api.anthropic.com:443', payload)
+                        self.assertIn(b'200 OK', result)
+                self.assertEqual(capture.count, 0)
+                summary = harness.summary_text()
+                self.assertIn('intent_validation_failed_local_stub_preserved', summary)
+                self.assertNotIn('"decision": "quarantine_block"', summary)
+        finally:
+            capture.stop()
+
     def test_direct_messages_inside_connect_is_blocked_and_not_forwarded(self):
         capture = UpstreamCaptureServer([])
         capture.start()
@@ -833,6 +967,7 @@ class GuardHarness:
         patch_ssl_failure=False,
         cost_envelope_limits=None,
         session_budget_ledger=None,
+        native_managed_access_token='native-managed-access-token',
     ):
         self._temp_dir_ctx = None
         if temp_dir is None:
@@ -857,6 +992,10 @@ class GuardHarness:
             cost_envelope_limits=cost_envelope_limits,
             session_budget_ledger=session_budget_ledger,
             native_attestation_secret='native-attestation-test-secret',
+            native_managed_access_token=native_managed_access_token,
+            route_hint_secret=_ROUTE_HINT_SECRET,
+            route_hint_catalog=_ROUTE_HINT_CATALOG,
+            route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
         ), execution_controller=execution_controller)
         self.patch_ssl_failure = patch_ssl_failure
         self._original_ssl_context = None
@@ -876,11 +1015,25 @@ class GuardHarness:
         if self._temp_dir_ctx is not None:
             self._temp_dir_ctx.cleanup()
     def request(self, method, path, *, body=None, headers=None):
+        headers = dict(headers or {})
+        if method == 'POST' and path.startswith('/v1/messages') and body is not None and not any(key.lower() == 'x-zhumeng-claude-code-route-hint' for key in headers):
+            session_ref = headers.get('X-Claude-Code-Session-Id') or headers.get('x-claude-code-session-id') or _DEFAULT_SESSION_REF
+            headers.setdefault('x-claude-code-session-id', session_ref)
+            route_headers = build_signed_route_hint_headers(
+                body=body,
+                request_path=path,
+                catalog=_ROUTE_HINT_CATALOG,
+                model_id='claude-sonnet-4-6',
+                session_ref=session_ref,
+                secret=_ROUTE_HINT_SECRET,
+                nonce=f'harness-{time.time_ns()}',
+            )
+            headers.update(route_headers)
         req = urllib.request.Request(
             f'http://127.0.0.1:{self.listen_port}{path}',
             data=body,
             method=method,
-            headers=headers or {},
+            headers=headers,
         )
         try:
             with urllib.request.urlopen(req, timeout=5) as resp:

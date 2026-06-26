@@ -1,0 +1,2 @@
+{"event":"messages_upstream_response","client_type":"claude_code_native","route":"claude_code_native","formal_pool_allowed":true,"native_attested":true,"model":"claude-opus-4-6","raw_sensitive_stored":false}
+{"event":"messages_upstream_response","client_type":"claude_code_native","route":"claude_code_native","formal_pool_allowed":true,"native_attested":true,"model":"claude-sonnet-4-6","raw_sensitive_stored":false}

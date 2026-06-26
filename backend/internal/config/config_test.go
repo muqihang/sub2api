@@ -90,6 +90,8 @@ func TestLoadDefaultCCGatewayConfig(t *testing.T) {
 	require.False(t, cfg.Gateway.CCGateway.Enabled)
 	require.Equal(t, "", cfg.Gateway.CCGateway.BaseURL)
 	require.Equal(t, "", cfg.Gateway.CCGateway.Token)
+	require.Equal(t, "", cfg.Gateway.CCGateway.InternalControlToken)
+	require.Equal(t, "", cfg.Gateway.CCGateway.ContextAttestationSecret)
 	require.Equal(t, 600, cfg.Gateway.CCGateway.TimeoutSeconds)
 	require.Equal(t, "default", cfg.Gateway.CCGateway.DefaultEgressBucket)
 	require.False(t, cfg.Gateway.CCGateway.Providers.Anthropic)
@@ -101,6 +103,8 @@ func TestLoadCCGatewayConfigFromEnv(t *testing.T) {
 	t.Setenv("GATEWAY_CC_GATEWAY_ENABLED", "true")
 	t.Setenv("GATEWAY_CC_GATEWAY_BASE_URL", "http://cc-gateway:8443")
 	t.Setenv("GATEWAY_CC_GATEWAY_TOKEN", "ccg-token")
+	t.Setenv("GATEWAY_CC_GATEWAY_INTERNAL_CONTROL_TOKEN", "internal-control-material-test")
+	t.Setenv("GATEWAY_CC_GATEWAY_CONTEXT_ATTESTATION_SECRET", "formal-pool-attestation-secret-test")
 	t.Setenv("GATEWAY_CC_GATEWAY_TIMEOUT_SECONDS", "30")
 	t.Setenv("GATEWAY_CC_GATEWAY_DEFAULT_EGRESS_BUCKET", "bucket-a")
 	t.Setenv("GATEWAY_CC_GATEWAY_PROVIDERS_ANTHROPIC", "true")
@@ -112,10 +116,79 @@ func TestLoadCCGatewayConfigFromEnv(t *testing.T) {
 	require.True(t, cfg.Gateway.CCGateway.Enabled)
 	require.Equal(t, "http://cc-gateway:8443", cfg.Gateway.CCGateway.BaseURL)
 	require.Equal(t, "ccg-token", cfg.Gateway.CCGateway.Token)
+	require.Equal(t, "internal-control-material-test", cfg.Gateway.CCGateway.InternalControlToken)
+	require.Equal(t, "formal-pool-attestation-secret-test", cfg.Gateway.CCGateway.ContextAttestationSecret)
 	require.Equal(t, 30, cfg.Gateway.CCGateway.TimeoutSeconds)
 	require.Equal(t, "bucket-a", cfg.Gateway.CCGateway.DefaultEgressBucket)
 	require.True(t, cfg.Gateway.CCGateway.Providers.Anthropic)
 	require.True(t, cfg.Gateway.CCGateway.Providers.Antigravity)
+}
+
+func TestLoadRejectsCCGatewayWithoutIndependentInternalControlToken(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_CC_GATEWAY_ENABLED", "true")
+	t.Setenv("GATEWAY_CC_GATEWAY_BASE_URL", "http://cc-gateway:8443")
+	t.Setenv("GATEWAY_CC_GATEWAY_TOKEN", "ccg-token")
+	t.Setenv("GATEWAY_CC_GATEWAY_CONTEXT_ATTESTATION_SECRET", "formal-pool-attestation-secret-test")
+	t.Setenv("GATEWAY_CC_GATEWAY_DEFAULT_EGRESS_BUCKET", "bucket-a")
+	t.Setenv("GATEWAY_CC_GATEWAY_PROVIDERS_ANTHROPIC", "true")
+
+	_, err := Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.cc_gateway.internal_control_token")
+
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_CC_GATEWAY_ENABLED", "true")
+	t.Setenv("GATEWAY_CC_GATEWAY_BASE_URL", "http://cc-gateway:8443")
+	t.Setenv("GATEWAY_CC_GATEWAY_TOKEN", "same-secret")
+	t.Setenv("GATEWAY_CC_GATEWAY_INTERNAL_CONTROL_TOKEN", "same-secret")
+	t.Setenv("GATEWAY_CC_GATEWAY_CONTEXT_ATTESTATION_SECRET", "formal-pool-attestation-secret-test")
+	t.Setenv("GATEWAY_CC_GATEWAY_DEFAULT_EGRESS_BUCKET", "bucket-a")
+	t.Setenv("GATEWAY_CC_GATEWAY_PROVIDERS_ANTHROPIC", "true")
+
+	_, err = Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "internal_control_token must be independent")
+}
+
+func TestLoadRejectsCCGatewayWithoutIndependentContextAttestationSecret(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_CC_GATEWAY_ENABLED", "true")
+	t.Setenv("GATEWAY_CC_GATEWAY_BASE_URL", "http://cc-gateway:8443")
+	t.Setenv("GATEWAY_CC_GATEWAY_TOKEN", "ccg-token")
+	t.Setenv("GATEWAY_CC_GATEWAY_INTERNAL_CONTROL_TOKEN", "internal-control-material-test")
+	t.Setenv("GATEWAY_CC_GATEWAY_DEFAULT_EGRESS_BUCKET", "bucket-a")
+	t.Setenv("GATEWAY_CC_GATEWAY_PROVIDERS_ANTHROPIC", "true")
+
+	_, err := Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.cc_gateway.context_attestation_secret")
+
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_CC_GATEWAY_ENABLED", "true")
+	t.Setenv("GATEWAY_CC_GATEWAY_BASE_URL", "http://cc-gateway:8443")
+	t.Setenv("GATEWAY_CC_GATEWAY_TOKEN", "same-secret")
+	t.Setenv("GATEWAY_CC_GATEWAY_INTERNAL_CONTROL_TOKEN", "internal-control-material-test")
+	t.Setenv("GATEWAY_CC_GATEWAY_CONTEXT_ATTESTATION_SECRET", "same-secret")
+	t.Setenv("GATEWAY_CC_GATEWAY_DEFAULT_EGRESS_BUCKET", "bucket-a")
+	t.Setenv("GATEWAY_CC_GATEWAY_PROVIDERS_ANTHROPIC", "true")
+
+	_, err = Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must be independent")
+
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_CC_GATEWAY_ENABLED", "true")
+	t.Setenv("GATEWAY_CC_GATEWAY_BASE_URL", "http://cc-gateway:8443")
+	t.Setenv("GATEWAY_CC_GATEWAY_TOKEN", "ccg-token")
+	t.Setenv("GATEWAY_CC_GATEWAY_INTERNAL_CONTROL_TOKEN", "same-secret")
+	t.Setenv("GATEWAY_CC_GATEWAY_CONTEXT_ATTESTATION_SECRET", "same-secret")
+	t.Setenv("GATEWAY_CC_GATEWAY_DEFAULT_EGRESS_BUCKET", "bucket-a")
+	t.Setenv("GATEWAY_CC_GATEWAY_PROVIDERS_ANTHROPIC", "true")
+
+	_, err = Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "context_attestation_secret must be independent")
 }
 
 func TestLoadRejectsCCGatewayNonHTTPBaseURL(t *testing.T) {
@@ -123,6 +196,7 @@ func TestLoadRejectsCCGatewayNonHTTPBaseURL(t *testing.T) {
 	t.Setenv("GATEWAY_CC_GATEWAY_ENABLED", "true")
 	t.Setenv("GATEWAY_CC_GATEWAY_BASE_URL", "ftp://cc-gateway")
 	t.Setenv("GATEWAY_CC_GATEWAY_TOKEN", "ccg-token")
+	t.Setenv("GATEWAY_CC_GATEWAY_CONTEXT_ATTESTATION_SECRET", "formal-pool-attestation-secret-test")
 
 	_, err := Load()
 	require.Error(t, err)
@@ -247,6 +321,18 @@ func TestLoadDefaultAugmentGatewayConfig(t *testing.T) {
 	}, cfg.Gateway.Augment.EnabledModels)
 	require.NotContains(t, cfg.Gateway.Augment.EnabledModels, "claude-sonnet-4-5")
 	require.NotContains(t, cfg.Gateway.Augment.EnabledModels, "gemini-2.5-pro")
+}
+
+func TestLoadDefaultCodexGatewayCurrentClaudeModels(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Contains(t, cfg.Gateway.Codex.EnabledModels, "claude-opus-4-8")
+	require.Contains(t, cfg.Gateway.Codex.EnabledModels, "claude-sonnet-4-6")
+	require.Contains(t, cfg.Gateway.Codex.EnabledModels, "claude-haiku-4-5-20251001")
+	require.NotContains(t, cfg.Gateway.Codex.EnabledModels, "claude-opus-4-7")
+	require.NotContains(t, cfg.Gateway.Codex.EnabledModels, "claude-opus-4-5-20251101")
 }
 
 func TestLoadDefaultOpenAIHTTP2Enabled(t *testing.T) {

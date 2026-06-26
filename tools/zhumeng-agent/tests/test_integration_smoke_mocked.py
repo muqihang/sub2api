@@ -24,6 +24,7 @@ def test_setup_writes_managed_state_and_codex_config(tmp_path: Path, capsys):
                     "requires_openai_auth": True,
                     "supports_websockets": True,
                 },
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
             }
 
         def list_codex_models(self, **kwargs):

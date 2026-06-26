@@ -10,11 +10,12 @@ import (
 )
 
 const (
-	ControlPlaneStaleNoStale  = "no_stale"
-	ControlPlaneStaleSafe     = "stale_safe"
-	ControlPlaneActionForward = "forward_dry_run"
-	ControlPlaneActionStub    = "stub_json"
-	ControlPlaneActionBlock   = "quarantine_block"
+	ControlPlaneStaleNoStale   = "no_stale"
+	ControlPlaneStaleSafe      = "stale_safe"
+	ControlPlaneActionForward  = "forward_dry_run"
+	ControlPlaneActionStub     = "stub_json"
+	ControlPlaneActionSuppress = "suppress_204"
+	ControlPlaneActionBlock    = "quarantine_block"
 )
 
 type ControlPlaneQueryRule struct {
@@ -58,6 +59,54 @@ type ControlPlanePolicyDecision struct {
 func NewDefaultControlPlanePathPolicyMatrix() *ControlPlanePathPolicyMatrix {
 	policies := []ControlPlanePathPolicy{
 		{
+			Method: "POST", PathTemplate: "/v1/messages", Classification: "native_messages_sensitive",
+			Action: ControlPlaneActionForward, Cacheable: false, TTL: 0, StaleMode: ControlPlaneStaleNoStale,
+			RequiresUserPartition: true, RequiresSessionPartition: true, Sensitive: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{"beta": {Kind: "enum", EnumValues: []string{"true"}}},
+			AllowedResponseKeys:  stringSet("ok"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
+			Method: "POST", PathTemplate: "/v1/messages/count_tokens", Classification: "native_count_tokens_stubbed",
+			Action: ControlPlaneActionStub, Cacheable: false, TTL: 0, StaleMode: ControlPlaneStaleNoStale,
+			RequiresUserPartition: true, RequiresSessionPartition: true, Sensitive: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{"beta": {Kind: "enum", EnumValues: []string{"true"}}},
+			AllowedResponseKeys:  stringSet("input_tokens", "model"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
+			Method: "POST", PathTemplate: "/api/event_logging/v2/batch", Classification: "telemetry_or_eval_suppressed",
+			Action: ControlPlaneActionSuppress, Cacheable: false, TTL: 0, StaleMode: ControlPlaneStaleNoStale,
+			RequiresUserPartition: true, RequiresSessionPartition: true, Sensitive: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{},
+			AllowedResponseKeys:  stringSet("ok"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
+			Method: "POST", PathTemplate: "/api/event_logging/batch", Classification: "telemetry_or_eval_suppressed",
+			Action: ControlPlaneActionSuppress, Cacheable: false, TTL: 0, StaleMode: ControlPlaneStaleNoStale,
+			RequiresUserPartition: true, RequiresSessionPartition: true, Sensitive: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{},
+			AllowedResponseKeys:  stringSet("ok"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
+			Method: "POST", PathTemplate: "/api/eval/*", Classification: "telemetry_or_eval_suppressed",
+			Action: ControlPlaneActionSuppress, Cacheable: false, TTL: 0, StaleMode: ControlPlaneStaleNoStale,
+			RequiresUserPartition: true, RequiresSessionPartition: true, Sensitive: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{},
+			AllowedResponseKeys:  stringSet("ok"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
+			Method: "CONNECT", PathTemplate: "api.anthropic.com:443", Classification: "connect_direct_bypass_quarantine",
+			Action: ControlPlaneActionBlock, Cacheable: false, TTL: 0, StaleMode: ControlPlaneStaleNoStale,
+			RequiresUserPartition: true, RequiresSessionPartition: true, Sensitive: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{},
+			AllowedResponseKeys:  stringSet("ok"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
 			Method: "GET", PathTemplate: "/api/claude_cli/bootstrap", Classification: "bootstrap_settings_or_feature_flag_stubbed",
 			Action: ControlPlaneActionStub, Cacheable: true, TTL: 5 * time.Minute, StaleMode: ControlPlaneStaleSafe,
 			RequiresUserPartition: true, RequiresSessionPartition: true, ResponseSchemaVersion: 1,
@@ -84,6 +133,150 @@ func NewDefaultControlPlanePathPolicyMatrix() *ControlPlanePathPolicyMatrix {
 			AllowedResponseKeys:  stringSet("settings", "ok"),
 			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
 		},
+		{
+			Method: "GET", PathTemplate: "/api/hello", Classification: "bootstrap_settings_or_feature_flag_stubbed",
+			Action: ControlPlaneActionStub, Cacheable: true, TTL: 5 * time.Minute, StaleMode: ControlPlaneStaleSafe,
+			RequiresUserPartition: true, RequiresSessionPartition: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{},
+			AllowedResponseKeys:  stringSet("ok"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
+			Method: "GET", PathTemplate: "/v1/oauth/hello", Classification: "bootstrap_settings_or_feature_flag_stubbed",
+			Action: ControlPlaneActionStub, Cacheable: true, TTL: 5 * time.Minute, StaleMode: ControlPlaneStaleSafe,
+			RequiresUserPartition: true, RequiresSessionPartition: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{},
+			AllowedResponseKeys:  stringSet("ok"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
+			Method: "GET", PathTemplate: "/v1/models", Classification: "model_capabilities_stubbed",
+			Action: ControlPlaneActionStub, Cacheable: true, TTL: 5 * time.Minute, StaleMode: ControlPlaneStaleSafe,
+			RequiresUserPartition: true, RequiresSessionPartition: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{"limit": {Kind: "int", Min: 1, Max: 1000}},
+			AllowedResponseKeys:  stringSet("data", "models"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
+			Method: "GET", PathTemplate: "/mcp-registry/v0/servers", Classification: "mcp_registry_public_stubbed",
+			Action: ControlPlaneActionStub, Cacheable: true, TTL: time.Hour, StaleMode: ControlPlaneStaleSafe,
+			RequiresUserPartition: true, RequiresSessionPartition: false, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{"version": {Kind: "enum", EnumValues: []string{"latest"}}},
+			AllowedResponseKeys:  stringSet("data", "servers"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
+			Method: "GET", PathTemplate: "/api/claude_code_penguin_mode", Classification: "claude_code_feature_flags_stubbed",
+			Action: ControlPlaneActionStub, Cacheable: true, TTL: time.Minute, StaleMode: ControlPlaneStaleSafe,
+			RequiresUserPartition: true, RequiresSessionPartition: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{},
+			AllowedResponseKeys:  stringSet("features", "ok"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
+			Method: "GET", PathTemplate: "/api/claude_code_feature_flags", Classification: "claude_code_feature_flags_stubbed",
+			Action: ControlPlaneActionStub, Cacheable: true, TTL: time.Minute, StaleMode: ControlPlaneStaleSafe,
+			RequiresUserPartition: true, RequiresSessionPartition: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{},
+			AllowedResponseKeys:  stringSet("features", "ok"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
+			Method: "GET", PathTemplate: "/api/claude_code_grove", Classification: "claude_code_feature_flags_stubbed",
+			Action: ControlPlaneActionStub, Cacheable: true, TTL: time.Minute, StaleMode: ControlPlaneStaleSafe,
+			RequiresUserPartition: true, RequiresSessionPartition: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{},
+			AllowedResponseKeys:  stringSet("features", "ok"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
+			Method: "GET", PathTemplate: "/api/claude_code/organizations/metrics_enabled", Classification: "claude_code_feature_flags_stubbed",
+			Action: ControlPlaneActionStub, Cacheable: true, TTL: time.Minute, StaleMode: ControlPlaneStaleSafe,
+			RequiresUserPartition: true, RequiresSessionPartition: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{},
+			AllowedResponseKeys:  stringSet("features", "ok"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
+			Method: "GET", PathTemplate: "/api/claude_code/policy_limits", Classification: "policy_limits_sensitive",
+			Action: ControlPlaneActionBlock, Cacheable: false, TTL: 0, StaleMode: ControlPlaneStaleNoStale,
+			RequiresUserPartition: true, RequiresSessionPartition: true, Sensitive: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{},
+			AllowedResponseKeys:  stringSet("ok"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
+			Method: "GET", PathTemplate: "/api/claude_code/remote_managed_settings", Classification: "remote_managed_settings_sensitive",
+			Action: ControlPlaneActionBlock, Cacheable: false, TTL: 0, StaleMode: ControlPlaneStaleNoStale,
+			RequiresUserPartition: true, RequiresSessionPartition: true, Sensitive: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{},
+			AllowedResponseKeys:  stringSet("ok"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
+			Method: "GET", PathTemplate: "/api/claude_code/settings_sync", Classification: "settings_sync_sensitive",
+			Action: ControlPlaneActionBlock, Cacheable: false, TTL: 0, StaleMode: ControlPlaneStaleNoStale,
+			RequiresUserPartition: true, RequiresSessionPartition: true, Sensitive: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{},
+			AllowedResponseKeys:  stringSet("ok"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
+			Method: "GET", PathTemplate: "/api/claude_code/team_memory", Classification: "team_memory_sensitive",
+			Action: ControlPlaneActionBlock, Cacheable: false, TTL: 0, StaleMode: ControlPlaneStaleNoStale,
+			RequiresUserPartition: true, RequiresSessionPartition: true, Sensitive: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{},
+			AllowedResponseKeys:  stringSet("ok"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
+			Method: "GET", PathTemplate: "/api/claude_code/model_capabilities", Classification: "model_capabilities_sensitive",
+			Action: ControlPlaneActionBlock, Cacheable: false, TTL: 0, StaleMode: ControlPlaneStaleNoStale,
+			RequiresUserPartition: true, RequiresSessionPartition: true, Sensitive: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{},
+			AllowedResponseKeys:  stringSet("ok"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
+			Method: "GET", PathTemplate: "/api/claude_code/growthbook", Classification: "growthbook_sensitive",
+			Action: ControlPlaneActionBlock, Cacheable: false, TTL: 0, StaleMode: ControlPlaneStaleNoStale,
+			RequiresUserPartition: true, RequiresSessionPartition: true, Sensitive: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{},
+			AllowedResponseKeys:  stringSet("ok"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
+			Method: "GET", PathTemplate: "/api/web/domain_info", Classification: "webfetch_websearch_degraded",
+			Action: ControlPlaneActionBlock, Cacheable: false, TTL: 0, StaleMode: ControlPlaneStaleNoStale,
+			RequiresUserPartition: true, RequiresSessionPartition: true, Sensitive: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{},
+			AllowedResponseKeys:  stringSet("ok"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
+			Method: "POST", PathTemplate: "/api/web_search", Classification: "webfetch_websearch_degraded",
+			Action: ControlPlaneActionBlock, Cacheable: false, TTL: 0, StaleMode: ControlPlaneStaleNoStale,
+			RequiresUserPartition: true, RequiresSessionPartition: true, Sensitive: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{},
+			AllowedResponseKeys:  stringSet("ok"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
+			Method: "POST", PathTemplate: "/api/web_fetch", Classification: "webfetch_websearch_degraded",
+			Action: ControlPlaneActionBlock, Cacheable: false, TTL: 0, StaleMode: ControlPlaneStaleNoStale,
+			RequiresUserPartition: true, RequiresSessionPartition: true, Sensitive: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{},
+			AllowedResponseKeys:  stringSet("ok"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
+		{
+			Method: "GET", PathTemplate: "/api/oauth/organizations/{org}/referral/eligibility", Classification: "oauth_org_settings_sensitive",
+			Action: ControlPlaneActionBlock, Cacheable: false, TTL: 0, StaleMode: ControlPlaneStaleNoStale,
+			RequiresUserPartition: true, RequiresSessionPartition: true, Sensitive: true, ResponseSchemaVersion: 1,
+			QueryAllowlist:       map[string]ControlPlaneQueryRule{},
+			AllowedResponseKeys:  stringSet("ok"),
+			PrivateFieldDenylist: defaultControlPlanePrivateFieldDenylist(),
+		},
 	}
 	matrix := &ControlPlanePathPolicyMatrix{policies: map[string]ControlPlanePathPolicy{}}
 	for _, policy := range policies {
@@ -107,7 +300,11 @@ func (m *ControlPlanePathPolicyMatrix) Evaluate(method, pathTemplate, rawQuery s
 	if policy.Action == ControlPlaneActionBlock {
 		return ControlPlanePolicyDecision{Allowed: false, Decision: ControlPlaneActionBlock, Reason: "control_plane:path_sensitive_no_upstream", Status: 403, Policy: &policy, NormalizedQuery: normalized}
 	}
-	return ControlPlanePolicyDecision{Allowed: true, Decision: policy.Action, Reason: "control_plane:path_policy_allow", Status: 200, Policy: &policy, NormalizedQuery: normalized}
+	status := 200
+	if policy.Action == ControlPlaneActionSuppress {
+		status = 204
+	}
+	return ControlPlanePolicyDecision{Allowed: true, Decision: policy.Action, Reason: "control_plane:path_policy_allow", Status: status, Policy: &policy, NormalizedQuery: normalized}
 }
 
 func CanonicalizeControlPlaneQuery(pathTemplate, rawQuery string, allowlist map[string]ControlPlaneQueryRule) (map[string]string, error) {

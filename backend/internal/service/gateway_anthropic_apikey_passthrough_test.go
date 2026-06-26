@@ -22,11 +22,14 @@ import (
 )
 
 type anthropicHTTPUpstreamRecorder struct {
-	lastReq  *http.Request
-	lastBody []byte
-	requests int
-	resp     *http.Response
-	err      error
+	lastReq        *http.Request
+	lastBody       []byte
+	requests       int
+	doCalls        int
+	doWithTLSCalls int
+	lastTLSProfile *tlsfingerprint.Profile
+	resp           *http.Response
+	err            error
 }
 
 func newAnthropicAPIKeyAccountForTest() *Account {
@@ -49,6 +52,17 @@ func newAnthropicAPIKeyAccountForTest() *Account {
 }
 
 func (u *anthropicHTTPUpstreamRecorder) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	u.doCalls++
+	return u.doRequest(req)
+}
+
+func (u *anthropicHTTPUpstreamRecorder) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	u.doWithTLSCalls++
+	u.lastTLSProfile = profile
+	return u.doRequest(req)
+}
+
+func (u *anthropicHTTPUpstreamRecorder) doRequest(req *http.Request) (*http.Response, error) {
 	u.requests++
 	u.lastReq = req
 	if req != nil && req.Body != nil {
@@ -61,10 +75,6 @@ func (u *anthropicHTTPUpstreamRecorder) Do(req *http.Request, proxyURL string, a
 		return nil, u.err
 	}
 	return u.resp, nil
-}
-
-func (u *anthropicHTTPUpstreamRecorder) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
-	return u.Do(req, proxyURL, accountID, accountConcurrency)
 }
 
 type streamReadCloser struct {
@@ -192,6 +202,120 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardStreamPreservesBodyAnd
 	require.NotContains(t, rec.Body.String(), `"cache_read_input_tokens":7`, "透传输出不应被网关改写")
 	require.Equal(t, 7, result.Usage.CacheReadInputTokens, "计费 usage 解析应保留 cached_tokens 兼容")
 	require.Empty(t, rec.Header().Get("Set-Cookie"), "响应头应经过安全过滤")
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_ClaudeCodeBridgeRuntimeUsesStandardHTTP(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	body := []byte(`{"model":"deepseek-v4-pro","stream":false,"messages":[{"role":"user","content":"hello"}]}`)
+	parsed := &ParsedRequest{
+		Body:   NewRequestBodyRef(body),
+		Model:  "deepseek-v4-pro",
+		Stream: false,
+	}
+	upstream := &anthropicHTTPUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-deepseek-bridge"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"msg_ds","type":"message","role":"assistant","model":"deepseek-v4-pro","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":5,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}`)),
+		},
+	}
+	svc := &GatewayService{
+		cfg:                  &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}, Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
+		responseHeaderFilter: compileResponseHeaderFilter(&config.Config{}),
+		httpUpstream:         upstream,
+		rateLimitService:     &RateLimitService{},
+		deferredService:      &DeferredService{},
+	}
+	account := &Account{
+		ID:          134,
+		Name:        "zhumeng-claude-code-bridge-deepseek-anthropic",
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 3,
+		Credentials: map[string]any{
+			"api_key":  "upstream-deepseek-key",
+			"base_url": "https://api.deepseek.com/anthropic",
+		},
+		Extra: map[string]any{
+			"anthropic_passthrough":      true,
+			"claude_code_bridge_runtime": true,
+			"provider_role":              "deepseek",
+		},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, parsed)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 1, upstream.doCalls)
+	require.Equal(t, 0, upstream.doWithTLSCalls)
+	require.Equal(t, "https://api.deepseek.com/anthropic/v1/messages?beta=true", upstream.lastReq.URL.String())
+	require.Equal(t, "upstream-deepseek-key", getHeaderRaw(upstream.lastReq.Header, "x-api-key"))
+	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeClientTypeHeader))
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_ClaudeCodeNativeRemoteSub2APIUsesStandardHTTP(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_REMOTE_SUB2API_ACCOUNT_NAMES", "zhumeng-claude-code-native-upstream")
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request.Header.Set("User-Agent", "Claude-Code/2.1.177")
+	c.Request.Header.Set("X-App", "claude-code")
+	c.Request.Header.Set("Anthropic-Version", "2023-06-01")
+	c.Request.Header.Set("Anthropic-Beta", "claude-code-20250219")
+
+	body := []byte(`{"model":"claude-haiku-4-5-20251001","stream":false,"max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`)
+	parsed := &ParsedRequest{
+		Body:   NewRequestBodyRef(body),
+		Model:  "claude-haiku-4-5-20251001",
+		Stream: false,
+	}
+	upstream := &anthropicHTTPUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-native-remote-sub2api"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"msg_native","type":"message","role":"assistant","model":"claude-haiku-4-5-20251001","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":5,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}`)),
+		},
+	}
+	svc := &GatewayService{
+		cfg:                  &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}, Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false, AllowInsecureHTTP: true}}},
+		responseHeaderFilter: compileResponseHeaderFilter(&config.Config{}),
+		httpUpstream:         upstream,
+		rateLimitService:     &RateLimitService{},
+		deferredService:      &DeferredService{},
+	}
+	account := &Account{
+		ID:          132,
+		Name:        "zhumeng-claude-code-native-upstream",
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 3,
+		Credentials: map[string]any{
+			"api_key":  "remote-sub2api-key",
+			"base_url": "http://198.12.67.185:18080",
+		},
+		Extra: map[string]any{
+			"anthropic_passthrough": true,
+		},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, parsed)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 1, upstream.doCalls)
+	require.Equal(t, 0, upstream.doWithTLSCalls)
+	require.Equal(t, "http://198.12.67.185:18080/v1/messages?beta=true", upstream.lastReq.URL.String())
+	require.Equal(t, "remote-sub2api-key", getHeaderRaw(upstream.lastReq.Header, "x-api-key"))
+	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeClientTypeHeader))
 }
 
 func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardCountTokensPreservesBody(t *testing.T) {
@@ -723,6 +847,38 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_BuildRequestRejectsInvalidBas
 	require.Error(t, err)
 }
 
+func TestGatewayService_AnthropicAPIKeyPassthrough_BaseURLPathPreservedForAnthropicCompatibleProviders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	svc := &GatewayService{
+		cfg: &config.Config{
+			Security: config.SecurityConfig{
+				URLAllowlist: config.URLAllowlistConfig{Enabled: false},
+			},
+		},
+	}
+	account := &Account{
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "k",
+			"base_url": "https://api.deepseek.com/anthropic",
+		},
+		Extra: map[string]any{"anthropic_passthrough": true},
+	}
+
+	req, _, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{"model":"deepseek-v4-pro"}`), "k")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.deepseek.com/anthropic/v1/messages?beta=true", req.URL.String())
+
+	countReq, err := svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{"model":"deepseek-v4-pro"}`), "k")
+	require.NoError(t, err)
+	require.Equal(t, "https://api.deepseek.com/anthropic/v1/messages/count_tokens?beta=true", countReq.URL.String())
+}
+
 func TestGatewayService_AnthropicOAuth_NotAffectedByAPIKeyPassthroughToggle(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
@@ -1136,6 +1292,122 @@ func TestParseClaudeUsageFromResponseBody(t *testing.T) {
 	})
 }
 
+func TestGatewayService_ParseSSEUsagePassthrough_DeepSeekPromptCacheFields(t *testing.T) {
+	svc := &GatewayService{}
+	usage := &ClaudeUsage{}
+	data := `{"type":"message_start","message":{"usage":{"input_tokens":20,"prompt_cache_hit_tokens":7,"prompt_cache_miss_tokens":13}}}`
+
+	svc.parseSSEUsagePassthrough(data, usage)
+
+	require.Equal(t, 20, usage.InputTokens)
+	require.Equal(t, 7, usage.CacheReadInputTokens, "DeepSeek Anthropic prompt_cache_hit_tokens 应折算为 cache_read_tokens")
+	require.Equal(t, 13, usage.CacheCreationInputTokens, "DeepSeek Anthropic prompt_cache_miss_tokens 应折算为 cache_creation_input_tokens")
+	require.NotNil(t, usage.ProviderUsageExtra)
+	require.Equal(t, float64(7), usage.ProviderUsageExtra["prompt_cache_hit_tokens"])
+	require.Equal(t, float64(13), usage.ProviderUsageExtra["prompt_cache_miss_tokens"])
+}
+
+func TestParseClaudeUsageFromResponseBody_DeepSeekPromptCacheFields(t *testing.T) {
+	body := []byte(`{"usage":{"input_tokens":20,"output_tokens":3,"prompt_cache_hit_tokens":7,"prompt_cache_miss_tokens":13}}`)
+
+	got := parseClaudeUsageFromResponseBody(body)
+
+	require.Equal(t, 20, got.InputTokens)
+	require.Equal(t, 3, got.OutputTokens)
+	require.Equal(t, 7, got.CacheReadInputTokens)
+	require.Equal(t, 13, got.CacheCreationInputTokens)
+	require.NotNil(t, got.ProviderUsageExtra)
+	require.Equal(t, float64(7), got.ProviderUsageExtra["prompt_cache_hit_tokens"])
+	require.Equal(t, float64(13), got.ProviderUsageExtra["prompt_cache_miss_tokens"])
+}
+
+func TestGatewayService_AnthropicPassthroughCacheUsageAudit(t *testing.T) {
+	t.Run("anthropic style zero fields are present", func(t *testing.T) {
+		usageNode := gjson.Parse(`{"cache_read_input_tokens":0,"cache_creation_input_tokens":0}`)
+		var obs AnthropicPassthroughCacheUsageObservation
+
+		observeAnthropicPassthroughCacheUsage("message.usage", usageNode, &obs)
+		audit := anthropicPassthroughCacheUsageAudit(&Account{ID: 42}, "deepseek-v4-pro", &ClaudeUsage{}, obs)
+
+		require.True(t, audit["anthropic_cache_read_input_tokens_present"].(bool))
+		require.True(t, audit["anthropic_cache_creation_input_tokens_present"].(bool))
+		require.False(t, audit["provider_prompt_cache_hit_tokens_present"].(bool))
+		require.False(t, audit["provider_prompt_cache_miss_tokens_present"].(bool))
+		require.Equal(t, 0, audit["cache_read_input_tokens"])
+		require.Equal(t, 0, audit["cache_creation_input_tokens"])
+		require.ElementsMatch(t, []string{"message.usage.cache_read_input_tokens", "message.usage.cache_creation_input_tokens"}, audit["cache_usage_field_paths"])
+	})
+
+	t.Run("cache fields absent stays absent", func(t *testing.T) {
+		usageNode := gjson.Parse(`{"input_tokens":20}`)
+		var obs AnthropicPassthroughCacheUsageObservation
+
+		observeAnthropicPassthroughCacheUsage("message.usage", usageNode, &obs)
+		audit := anthropicPassthroughCacheUsageAudit(&Account{ID: 42}, "deepseek-v4-pro", &ClaudeUsage{}, obs)
+
+		require.False(t, audit["anthropic_cache_read_input_tokens_present"].(bool))
+		require.False(t, audit["anthropic_cache_creation_input_tokens_present"].(bool))
+		require.False(t, audit["provider_prompt_cache_hit_tokens_present"].(bool))
+		require.False(t, audit["provider_prompt_cache_miss_tokens_present"].(bool))
+		require.Empty(t, audit["cache_usage_field_paths"])
+	})
+
+	t.Run("official deepseek zero fields are present", func(t *testing.T) {
+		usageNode := gjson.Parse(`{"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":0}`)
+		var obs AnthropicPassthroughCacheUsageObservation
+
+		observeAnthropicPassthroughCacheUsage("usage", usageNode, &obs)
+		audit := anthropicPassthroughCacheUsageAudit(&Account{ID: 42}, "deepseek-v4-pro", &ClaudeUsage{}, obs)
+
+		require.False(t, audit["anthropic_cache_read_input_tokens_present"].(bool))
+		require.False(t, audit["anthropic_cache_creation_input_tokens_present"].(bool))
+		require.True(t, audit["provider_prompt_cache_hit_tokens_present"].(bool))
+		require.True(t, audit["provider_prompt_cache_miss_tokens_present"].(bool))
+		require.Equal(t, 0, audit["provider_prompt_cache_hit_tokens"])
+		require.Equal(t, 0, audit["provider_prompt_cache_miss_tokens"])
+		require.ElementsMatch(t, []string{"usage.prompt_cache_hit_tokens", "usage.prompt_cache_miss_tokens"}, audit["cache_usage_field_paths"])
+	})
+
+	t.Run("official miss does not prove anthropic creation field", func(t *testing.T) {
+		usageNode := gjson.Parse(`{"prompt_cache_hit_tokens":7,"prompt_cache_miss_tokens":13}`)
+		var obs AnthropicPassthroughCacheUsageObservation
+
+		observeAnthropicPassthroughCacheUsage("usage", usageNode, &obs)
+		audit := anthropicPassthroughCacheUsageAudit(&Account{ID: 42}, "deepseek-v4-pro", &ClaudeUsage{CacheCreationInputTokens: 13}, obs)
+
+		require.False(t, audit["anthropic_cache_creation_input_tokens_present"].(bool))
+		require.True(t, audit["provider_prompt_cache_miss_tokens_present"].(bool))
+		require.Equal(t, 13, audit["provider_prompt_cache_miss_tokens"])
+		require.Equal(t, 0, audit["cache_creation_input_tokens"])
+		require.ElementsMatch(t, []string{"usage.prompt_cache_hit_tokens", "usage.prompt_cache_miss_tokens"}, audit["cache_usage_field_paths"])
+	})
+}
+
+func TestGatewayService_AnthropicPassthroughCacheUsageLogFieldsAreSafe(t *testing.T) {
+	usageNode := gjson.Parse(`{"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":0}`)
+	usage := &ClaudeUsage{}
+	var obs AnthropicPassthroughCacheUsageObservation
+	observeAnthropicPassthroughCacheUsage("usage", usageNode, &obs)
+	usage.ProviderUsageExtra = map[string]any{
+		"anthropic_passthrough_cache_usage": anthropicPassthroughCacheUsageAudit(&Account{ID: 7}, "deepseek-v4-pro", usage, obs),
+	}
+
+	fields := anthropicPassthroughCacheUsageLogFields(&Account{ID: 7}, "deepseek-v4-pro", usage)
+
+	require.Equal(t, int64(7), fields["account_id"])
+	require.Equal(t, "deepseek-v4-pro", fields["model"])
+	require.True(t, fields["provider_prompt_cache_hit_tokens_present"].(bool))
+	require.True(t, fields["provider_prompt_cache_miss_tokens_present"].(bool))
+	require.Equal(t, 0, fields["provider_prompt_cache_hit_tokens"])
+	require.Equal(t, 0, fields["provider_prompt_cache_miss_tokens"])
+	dumped, err := json.Marshal(fields)
+	require.NoError(t, err)
+	require.NotContains(t, string(dumped), "Authorization")
+	require.NotContains(t, string(dumped), "Bearer")
+	require.NotContains(t, string(dumped), "raw")
+	require.NotContains(t, string(dumped), "prompt text")
+}
+
 func TestGatewayService_AnthropicAPIKeyPassthrough_StreamingErrTooLong(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
@@ -1422,4 +1694,75 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_StreamingUpstreamReadErrorAft
 	require.NotNil(t, result)
 	require.True(t, result.clientDisconnect)
 	require.Equal(t, 8, result.usage.InputTokens)
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_StripsLocalClaudeCodeInternalHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request.Header.Set("Anthropic-Version", "2023-06-01")
+	c.Request.Header.Set("Anthropic-Beta", "interleaved-thinking-2025-05-14")
+	c.Request.Header.Set("X-App", "cli")
+	c.Request.Header.Set("X-Stainless-Lang", "js")
+	c.Request.Header.Set(ClaudeCodeNativeClientTypeHeader, ClaudeCodeNativeClientType)
+	c.Request.Header.Set(ClaudeCodeNativeGuardAttestedHeader, "true")
+	c.Request.Header.Set(ClaudeCodeNativeAttestationHeader, "encoded-native-attestation")
+	c.Request.Header.Set(ClaudeCodeNativeSignatureHeader, "encoded-native-signature")
+	c.Request.Header.Set(ClaudeCodeNativeLocalSessionRefHeader, "hmac-sha256:"+strings.Repeat("a", 64))
+	c.Request.Header.Set(ClaudeCodeNativeInboundRouteHeader, ClaudeCodeNativeRoute)
+	c.Request.Header.Set(ClaudeCodeNativeHealthcheckProfileHeader, ClaudeCodeNativeTakeoverHealthProfile)
+	c.Request.Header.Set(ClaudeCodeNativeRuntimeHashHeader, "sha256:"+strings.Repeat("1", 64))
+	c.Request.Header.Set(ClaudeCodeNativeOverlayHashHeader, "sha256:"+strings.Repeat("2", 64))
+	c.Request.Header.Set(ClaudeCodeNativeCatalogHashHeader, "sha256:"+strings.Repeat("3", 64))
+	c.Request.Header.Set(ClaudeCodeNativeCatalogVersionHeader, "cp4-cli-fixture-v1")
+	c.Request.Header.Set("x-sub2api-route", "claude_code_native")
+	c.Request.Header.Set("x-sub2api-route-catalog-version", "cp4-cli-fixture-v1")
+	c.Request.Header.Set("x-sub2api-bridge-forged", "claude_code_native")
+	c.Request.Header.Set(ClaudeCodeRouteHintHeader, "signed-route-hint")
+	c.Request.Header.Set(ClaudeCodeRouteHintSignatureHeader, "signed-route-signature")
+
+	svc := &GatewayService{
+		cfg: &config.Config{
+			Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}},
+		},
+	}
+	account := &Account{
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "upstream-key",
+			"base_url": "https://upstream.example",
+		},
+	}
+
+	req, _, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{"model":"claude-haiku-4-5-20251001"}`), "upstream-key")
+	require.NoError(t, err)
+
+	for _, header := range []string{
+		ClaudeCodeNativeClientTypeHeader,
+		ClaudeCodeNativeGuardAttestedHeader,
+		ClaudeCodeNativeAttestationHeader,
+		ClaudeCodeNativeSignatureHeader,
+		ClaudeCodeNativeLocalSessionRefHeader,
+		ClaudeCodeNativeInboundRouteHeader,
+		ClaudeCodeNativeHealthcheckProfileHeader,
+		ClaudeCodeNativeRuntimeHashHeader,
+		ClaudeCodeNativeOverlayHashHeader,
+		ClaudeCodeNativeCatalogHashHeader,
+		ClaudeCodeNativeCatalogVersionHeader,
+		"x-sub2api-route",
+		"x-sub2api-route-catalog-version",
+		"x-sub2api-bridge-forged",
+		ClaudeCodeRouteHintHeader,
+		ClaudeCodeRouteHintSignatureHeader,
+	} {
+		require.Empty(t, getHeaderRaw(req.Header, header), "ordinary Anthropic passthrough must not leak local internal header %s", header)
+	}
+	require.Equal(t, "2023-06-01", getHeaderRaw(req.Header, "anthropic-version"))
+	require.Equal(t, "interleaved-thinking-2025-05-14", getHeaderRaw(req.Header, "anthropic-beta"))
+	require.Equal(t, "cli", getHeaderRaw(req.Header, "x-app"))
+	require.Equal(t, "js", getHeaderRaw(req.Header, "x-stainless-lang"))
+	require.Equal(t, "upstream-key", getHeaderRaw(req.Header, "x-api-key"))
+	require.Empty(t, getHeaderRaw(req.Header, "authorization"))
 }

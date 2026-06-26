@@ -1,0 +1,10 @@
+{
+  "name": "subagent_cross_provider_result",
+  "parent_profile": {"provider": "claude", "route": "claude_native", "client_type": "claude_code_native", "model_id": "claude-opus-4-8", "native_replay_allowed": true},
+  "child_profile": {"provider": "deepseek", "route": "deepseek_bridge", "client_type": "claude_code_bridge_deepseek", "model_id": "deepseek-v4-pro", "native_replay_allowed": false},
+  "child_final_answer": {"content": "safe final answer", "reasoning_content": "deepseek hidden reasoning", "provider_private_state_ref": "child-local"},
+  "child_tool_results": [
+    {"tool_use_id": "toolu_sub_1", "summary": "safe patch summary", "raw_tool_runner_state": {"stdout": "secret raw"}}
+  ],
+  "child_evidence": {"files": ["b.py", "a.py"], "commands": ["pytest tests/test_x.py -q"], "provider_private_state_ref": "deepseek-private", "raw_provider_response": {"reasoning_content": "raw hidden"}}
+}

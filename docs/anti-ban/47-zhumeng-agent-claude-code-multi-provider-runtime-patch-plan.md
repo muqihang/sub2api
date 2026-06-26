@@ -6,7 +6,7 @@
 前置依赖：46 号 Claude Code native takeover、CC Gateway formal pool、Sub2API Codex/Claude/DeepSeek/AGNES 网关调优
 说明：本文继承 46 号文档中预留的“47 号多模型混合注入”方向；若历史材料中出现旧文件名 `47-zhumeng-agent-multi-provider-in-claude-code-plan.md`，以本文为准。
 范围说明：本文只定义 Claude Code CLI takeover 的 47 号多模型方案；Codex Desktop takeover 是独立主线，但两者共享云端 gateway/catalog/provider abstraction，47 号不得降低既有 Codex Gateway 能力。
-当前代码事实：截至本文修订时，`build_native_guard_plan()` 仍缺 `--native-attestation`、`start_native_guard()` 只有测试调用者、`cli_control_plane_guard.py` 对 `/v1/messages` 尚无 native/bridge route 分支、后端也未出现 `claude_code_bridge_*` route。因此 47 号实施不是在现成 bridge 地基上加功能，而是要先补 native guard 接入和 per-request routing trust contract。
+当前代码事实：本文初稿指出 `build_native_guard_plan()` 缺 `--native-attestation`、`start_native_guard()` 只有测试调用者、`cli_control_plane_guard.py` 对 `/v1/messages` 尚无 native/bridge route 分支、后端也未出现 `claude_code_bridge_*` route。因此 47 号实施不是在现成 bridge 地基上加功能，而是要先补 native guard 接入和 per-request routing trust contract。CP0 落地后，native guard 已接入 `zhumeng-claude start` / launcher / desktop 启动流，后续 checkpoint 仍不得在 CP4 routing trust contract 绿之前开启 bridge live path。
 
 ## 0. 执行结论
 
@@ -1463,6 +1463,21 @@ CP5 exit gate：
 - 测试；
 - 测试和审查通过后再 commit；
 - 清理不再使用的后台代理/进程。
+
+CP8 外部 live 证据组装流程：
+
+0. 产品验收主路径必须是 Claude Code Runtime -> 逐梦/Sub2API Gateway（例如 `http://127.0.0.1:3012`）-> Sub2API 内部 provider routing。Claude/GPT/DeepSeek/后续模型的官方 API Key、订阅账号或自定义 provider URL 均配置在 Sub2API/逐梦 Agent 的 ProviderRegistry/账号池中，Claude Code Runtime 不直接要求操作者输入或直连 `api.anthropic.com`、`api.openai.com`、`api.deepseek.com` 等官网端点。
+1. 使用专用证据目录收集 Sub2API gateway-backed provider provenance，不能指向源码 worktree：
+   `zhumeng-agent claude-code live-matrix --collect-sub2api-provenance --run-id <run-id> --output-root <evidence-root>`。
+   该命令的 Claude/GPT/DeepSeek probe 均进入同一个 Sub2API `/v1/messages`；Claude 携带 native attestation，GPT/DeepSeek 携带签名 bridge route hint，不得进入 Claude formal-pool native path。
+2. 将上一步输出的 `live_provenance` 保存为 JSON，并与已完成的 live matrix scenario 证据组装：
+   `zhumeng-agent claude-code live-matrix --assemble-external --evidence <matrix.json> --provenance <provenance.json> --out <external-matrix.json>`。
+3. 组装器只绑定 provider provenance 并设置 `mode=external_provider_live_matrix`；它不得把 loopback/mock fixture 提升为 `live_provider_verified=true`，不得生成 scenario artifact。
+4. `--collect-sub2api-provenance`、`--collect-provider-provenance`、`--assemble-external`、`--strict-live` 是互斥模式；组装输入若包含 inline headers/body/prompt/token/secret/payload 等敏感或 raw 字段必须 fail closed，不能写出外部矩阵。
+5. 严格验收必须再次运行：
+   `zhumeng-agent claude-code live-matrix --evidence <external-matrix.json> --strict-live`。
+   只有当 Claude/GPT/DeepSeek provider provenance 与全部 CP8 scenario live artifacts 均为同一 `run_id`、hash 校验通过且无敏感内容时，才能进入 `external_live_passed`。Sub2API 模式下若 evidence 出现官方 provider endpoint、route/client_type 不匹配或 bridge 伪造 native，必须 fail closed。
+6. `--collect-provider-provenance` 仅保留为隔离实验室/故障定位 fallback，用于官方直连对照；它不是 47 号逐梦版 CP8 产品验收路径。
 
 ## 16. 风险与缓解
 

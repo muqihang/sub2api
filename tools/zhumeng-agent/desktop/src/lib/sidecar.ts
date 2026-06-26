@@ -11,6 +11,7 @@ export interface SidecarClient {
   modelsStatus(): Promise<Record<string, unknown>>;
   modelsSync(): Promise<Record<string, unknown>>;
   openCodex(): Promise<Record<string, unknown>>;
+  openClaude(): Promise<Record<string, unknown>>;
   setup(client: string, code: string, server: string): Promise<DesktopStatus>;
   reauth(client: string, code: string, server: string): Promise<DesktopStatus>;
   enhancementsStatus(appPath: string): Promise<Record<string, unknown>>;
@@ -79,6 +80,7 @@ export function createSidecarClient(invokeFn: InvokeFn = tauriInvoke as InvokeFn
     modelsStatus: () => run<Record<string, unknown>>(["desktop", "models", "status", "--client", "codex", "--json"], 15000),
     modelsSync: () => run<Record<string, unknown>>(["desktop", "models", "sync", "--client", "codex", "--json"], 20000),
     openCodex: () => run<Record<string, unknown>>(["desktop", "open", "--app", "codex", "--json"], 10000),
+    openClaude: () => run<Record<string, unknown>>(["desktop", "open", "--app", "zhumeng-claude", "--json"], 10000),
     setup: (client, code, server) => run<DesktopStatus>(["desktop", "setup", "--client", client, "--code", code, "--server", server, "--json"], 30000),
     reauth: (client, code, server) => run<DesktopStatus>(["desktop", "reauth", "--client", client, "--code", code, "--server", server, "--json"], 30000),
     enhancementsStatus: (appPath) =>

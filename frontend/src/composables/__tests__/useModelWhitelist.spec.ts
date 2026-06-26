@@ -42,6 +42,17 @@ describe('useModelWhitelist', () => {
     expect(getModelsByPlatform('antigravity')).toContain('claude-fable-5')
   })
 
+  it('zhipu 模型列表跟随 GLM-5.2 官方快照且不暴露 glm-4.6', () => {
+    const models = getModelsByPlatform('zhipu')
+
+    expect(models).toContain('glm-5.2')
+    expect(models).toContain('glm-5.2[1m]')
+    expect(models).toContain('glm-5-turbo')
+    expect(models).toContain('glm-4.7')
+    expect(models).toContain('glm-4.5-air')
+    expect(models).not.toContain('glm-4.6')
+  })
+
   it('gemini 模型列表包含原生生图模型', () => {
     const models = getModelsByPlatform('gemini')
 

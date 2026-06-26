@@ -71,32 +71,36 @@ func TestClaudeCodeEndpointSpecificBetas(t *testing.T) {
 	require.Equal(t, strings.Join(ClaudeCodeCountTokensOAuthBetas(), ","), CountTokensBetaHeader)
 }
 
-func TestDefaultModels_ContainsOpus48(t *testing.T) {
+func TestDefaultModels_ExposeCurrentClaudeCodeNativeSetOnly(t *testing.T) {
 	t.Parallel()
 
+	ids := make([]string, 0, len(DefaultModels))
+	byID := make(map[string]Model, len(DefaultModels))
 	for _, model := range DefaultModels {
-		if model.ID == "claude-opus-4-8" {
-			if model.DisplayName != "Claude Opus 4.8" {
-				t.Fatalf("unexpected display name: %q", model.DisplayName)
-			}
-			return
-		}
+		ids = append(ids, model.ID)
+		byID[model.ID] = model
 	}
-	t.Fatalf("expected claude-opus-4-8 in DefaultModels")
+
+	require.Equal(t, []string{
+		"claude-opus-4-8",
+		"claude-sonnet-4-6",
+		"claude-haiku-4-5-20251001",
+	}, ids)
+	require.Equal(t, "Claude Opus 4.8", byID["claude-opus-4-8"].DisplayName)
+	require.NotContains(t, byID, "claude-opus-4-7")
+	require.NotContains(t, byID, "claude-opus-4-6")
+	require.NotContains(t, byID, "claude-opus-4-5-20251101")
+	require.NotContains(t, byID, "claude-fable-5")
 }
 
-func TestDefaultModels_ContainsFable5(t *testing.T) {
-	t.Parallel()
-
-	for _, model := range DefaultModels {
-		if model.ID == "claude-fable-5" {
-			if model.DisplayName != "Claude Fable 5" {
-				t.Fatalf("unexpected display name: %q", model.DisplayName)
-			}
-			return
-		}
-	}
-	t.Fatalf("expected claude-fable-5 in DefaultModels")
+func TestDefaultModelAliasesDoNotResurrectStaleOpusOrSonnetModels(t *testing.T) {
+	require.Equal(t, "claude-sonnet-4-6", DefaultTestModel)
+	require.NotContains(t, ModelIDOverrides, "claude-opus-4-5")
+	require.NotContains(t, ModelIDOverrides, "claude-sonnet-4-5")
+	require.NotContains(t, ModelIDReverseOverrides, "claude-opus-4-5-20251101")
+	require.NotContains(t, ModelIDReverseOverrides, "claude-sonnet-4-5-20250929")
+	require.Equal(t, "claude-opus-4-5", NormalizeModelID("claude-opus-4-5"))
+	require.Equal(t, "claude-sonnet-4-5", NormalizeModelID("claude-sonnet-4-5"))
 }
 
 func TestClaudeCode2175ProfileBetasAreExplicit(t *testing.T) {

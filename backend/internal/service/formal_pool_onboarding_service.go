@@ -224,13 +224,18 @@ type FormalPoolAcceptanceInput struct {
 }
 
 type FormalPoolCCGatewayRuntimeRegistration struct {
-	AccountRef     string
-	EgressBucket   string
-	ProxyURL       string
-	ProxyRef       string
-	PolicyVersion  string
-	PersonaVariant string
-	SessionPolicy  string
+	AccountRef            string
+	CredentialRef         string
+	CredentialBindingHMAC string
+	TokenType             string
+	CredentialProof       string
+	EgressBucket          string
+	ProxyURL              string
+	ProxyRef              string
+	PolicyVersion         string
+	PersonaVariant        string
+	SessionPolicy         string
+	DeviceID              string
 }
 
 type FormalPoolAcceptanceCheck struct {
@@ -716,25 +721,32 @@ func (s *FormalPoolOnboardingService) ExchangeCodeAndCreate(ctx context.Context,
 		return nil, infraerrors.BadRequest("REFRESH_TOKEN_REQUIRED", "formal pool OAuth account requires refresh token")
 	}
 	accountRef := formalPoolSafeRef("account", rec.ID+":"+rec.ProxyRef+":"+rec.AccountName)
+	runtimeIdentity := formalPoolRuntimeIdentityExtra(accountRef, rec.ProxyRef, credentials, s.ccGatewayRuntimeBindingSecret(), "1")
 	runtimeRegistered := false
 	if s.ccGatewayRuntime != nil {
 		if strings.TrimSpace(rec.NormalizedProxyURL) == "" {
 			return nil, infraerrors.BadRequest("CC_GATEWAY_RUNTIME_PROXY_URL_MISSING", "cc gateway runtime registration requires a normalized proxy url")
 		}
+		tokenType, credentialProof := ccGatewayCredentialBindingMaterialFromCredentials(AccountTypeOAuth, credentials)
 		if err := s.ccGatewayRuntime.RegisterCCGatewayRuntime(ctx, FormalPoolCCGatewayRuntimeRegistration{
-			AccountRef:     accountRef,
-			EgressBucket:   rec.EgressBucket,
-			ProxyURL:       rec.NormalizedProxyURL,
-			ProxyRef:       rec.ProxyRef,
-			PolicyVersion:  ccGatewayAnthropicPolicyVersion,
-			PersonaVariant: fmt.Sprintf("claude-code-%s-macos-local", ccGatewayAnthropicPolicyVersion),
-			SessionPolicy:  "preserve_downstream_session_id",
+			AccountRef:            accountRef,
+			CredentialRef:         stringFromMap(runtimeIdentity, ccGatewayExtraCredentialRef),
+			CredentialBindingHMAC: stringFromMap(runtimeIdentity, ccGatewayExtraCredentialBindingHMAC),
+			TokenType:             tokenType,
+			CredentialProof:       credentialProof,
+			EgressBucket:          rec.EgressBucket,
+			ProxyURL:              rec.NormalizedProxyURL,
+			ProxyRef:              rec.ProxyRef,
+			PolicyVersion:         ccGatewayAnthropicPolicyVersion,
+			PersonaVariant:        fmt.Sprintf("claude-code-%s-macos-local", ccGatewayAnthropicPolicyVersion),
+			SessionPolicy:         "preserve_downstream_session_id",
+			DeviceID:              stringFromMap(runtimeIdentity, "claude_code_device_id"),
 		}); err != nil {
 			return nil, err
 		}
 		runtimeRegistered = true
 	}
-	extra := FormalPoolImportedAccountExtra(formalPoolDefaultExtra(rec, accountRef), s.store.now())
+	extra := FormalPoolImportedAccountExtra(formalPoolDefaultExtra(rec, accountRef, runtimeIdentity), s.store.now())
 	formalPoolMarkRuntimeRegisteredExtra(extra, runtimeRegistered, s.store.now())
 	account, err := s.accounts.CreateFormalPoolAccount(ctx, FormalPoolAccountCreateInput{
 		Type: AccountTypeOAuth, Name: rec.AccountName, Notes: rec.Notes, Credentials: credentials, Extra: extra,
@@ -795,25 +807,32 @@ func (s *FormalPoolOnboardingService) SetupTokenCookieAuthAndCreate(ctx context.
 		return nil, infraerrors.BadRequest("REFRESH_TOKEN_REQUIRED", "formal pool setup-token account requires refresh token")
 	}
 	accountRef := formalPoolSafeRef("account", rec.ID+":"+rec.ProxyRef+":"+rec.AccountName)
+	runtimeIdentity := formalPoolRuntimeIdentityExtra(accountRef, rec.ProxyRef, credentials, s.ccGatewayRuntimeBindingSecret(), "1")
 	runtimeRegistered := false
 	if s.ccGatewayRuntime != nil {
 		if strings.TrimSpace(rec.NormalizedProxyURL) == "" {
 			return nil, infraerrors.BadRequest("CC_GATEWAY_RUNTIME_PROXY_URL_MISSING", "cc gateway runtime registration requires a normalized proxy url")
 		}
+		tokenType, credentialProof := ccGatewayCredentialBindingMaterialFromCredentials(AccountTypeSetupToken, credentials)
 		if err := s.ccGatewayRuntime.RegisterCCGatewayRuntime(ctx, FormalPoolCCGatewayRuntimeRegistration{
-			AccountRef:     accountRef,
-			EgressBucket:   rec.EgressBucket,
-			ProxyURL:       rec.NormalizedProxyURL,
-			ProxyRef:       rec.ProxyRef,
-			PolicyVersion:  ccGatewayAnthropicPolicyVersion,
-			PersonaVariant: fmt.Sprintf("claude-code-%s-macos-local", ccGatewayAnthropicPolicyVersion),
-			SessionPolicy:  "preserve_downstream_session_id",
+			AccountRef:            accountRef,
+			CredentialRef:         stringFromMap(runtimeIdentity, ccGatewayExtraCredentialRef),
+			CredentialBindingHMAC: stringFromMap(runtimeIdentity, ccGatewayExtraCredentialBindingHMAC),
+			TokenType:             tokenType,
+			CredentialProof:       credentialProof,
+			EgressBucket:          rec.EgressBucket,
+			ProxyURL:              rec.NormalizedProxyURL,
+			ProxyRef:              rec.ProxyRef,
+			PolicyVersion:         ccGatewayAnthropicPolicyVersion,
+			PersonaVariant:        fmt.Sprintf("claude-code-%s-macos-local", ccGatewayAnthropicPolicyVersion),
+			SessionPolicy:         "preserve_downstream_session_id",
+			DeviceID:              stringFromMap(runtimeIdentity, "claude_code_device_id"),
 		}); err != nil {
 			return nil, err
 		}
 		runtimeRegistered = true
 	}
-	extra := FormalPoolImportedAccountExtra(formalPoolDefaultExtra(rec, accountRef), s.store.now())
+	extra := FormalPoolImportedAccountExtra(formalPoolDefaultExtra(rec, accountRef, runtimeIdentity), s.store.now())
 	formalPoolMarkRuntimeRegisteredExtra(extra, runtimeRegistered, s.store.now())
 	account, err := s.accounts.CreateFormalPoolAccount(ctx, FormalPoolAccountCreateInput{
 		Type: AccountTypeSetupToken, Name: rec.AccountName, Notes: rec.Notes, Credentials: credentials, Extra: extra,
@@ -1120,15 +1139,52 @@ func formalPoolRuntimeRegistration(rec *formalPoolOnboardingSessionRecord) Forma
 	if rec == nil {
 		return FormalPoolCCGatewayRuntimeRegistration{}
 	}
+	credentialRef := ccGatewayGeneratedCredentialRef(rec.AccountRef, "1")
 	return FormalPoolCCGatewayRuntimeRegistration{
 		AccountRef:     rec.AccountRef,
+		CredentialRef:  credentialRef,
 		EgressBucket:   rec.EgressBucket,
 		ProxyURL:       rec.NormalizedProxyURL,
 		ProxyRef:       rec.ProxyRef,
 		PolicyVersion:  ccGatewayAnthropicPolicyVersion,
 		PersonaVariant: fmt.Sprintf("claude-code-%s-macos-local", ccGatewayAnthropicPolicyVersion),
 		SessionPolicy:  "preserve_downstream_session_id",
+		DeviceID:       ccGatewayGeneratedDeviceID(rec.AccountRef),
 	}
+}
+
+func (s *FormalPoolOnboardingService) ccGatewayRuntimeBindingSecret() string {
+	if s == nil {
+		return ""
+	}
+	if secret := strings.TrimSpace(s.config.CCGatewayContextAttestationSecret); secret != "" {
+		return secret
+	}
+	return "formal-pool-runtime-binding-local-test-secret"
+}
+
+func formalPoolRuntimeIdentityExtra(accountRef, proxyRef string, credentials map[string]any, bindingSecret string, generation string) map[string]any {
+	accountRef = strings.TrimSpace(accountRef)
+	proxyRef = strings.TrimSpace(proxyRef)
+	generation = strings.TrimSpace(generation)
+	if generation == "" {
+		generation = "1"
+	}
+	return map[string]any{
+		ccGatewayExtraCredentialRef:         ccGatewayGeneratedCredentialRef(accountRef, generation),
+		ccGatewayExtraCredentialBindingHMAC: ccGatewayOAuthCredentialBindingHMAC(bindingSecret, ccGatewayCredentialString(credentials, "access_token")),
+		ccGatewayExtraProxyIdentityRef:      proxyRef,
+		ccGatewayExtraPersonaProfile:        ccGatewayDefaultPersonaProfile,
+		"claude_code_device_id":             ccGatewayGeneratedDeviceID(accountRef),
+		FormalPoolExtraCredentialGeneration: generation,
+	}
+}
+
+func stringFromMap(values map[string]any, key string) string {
+	if values == nil {
+		return ""
+	}
+	return strings.TrimSpace(formalPoolStringFromAny(values[key]))
 }
 
 func (s *FormalPoolOnboardingService) RefreshOnly(ctx context.Context, id string) (*FormalPoolOnboardingSession, error) {
@@ -1169,17 +1225,15 @@ func (s *FormalPoolOnboardingService) RefreshOnly(ctx context.Context, id string
 	if strings.TrimSpace(formalPoolStringFromAny(credentials["access_token"])) == "" || strings.TrimSpace(formalPoolStringFromAny(credentials["refresh_token"])) == "" {
 		return nil, infraerrors.BadRequest("REFRESH_ONLY_CREDENTIALS_INCOMPLETE", "refresh-only must return access and refresh tokens")
 	}
-	if _, err := s.accounts.UpdateFormalPoolAccountCredentials(ctx, rec.AccountID, credentials); err != nil {
+	if updatedCredentialsAccount, err := s.accounts.UpdateFormalPoolAccountCredentials(ctx, rec.AccountID, credentials); err != nil {
 		return nil, err
+	} else if updatedCredentialsAccount != nil {
+		account = updatedCredentialsAccount
 	}
 	stamp := formalPoolTimestamp(s.store.now())
 	targetStage := FormalPoolStageRefreshed
 	targetStatus := FormalPoolOnboardingStatusRefreshed
-	if rec.CCGatewayRuntimeRegistered || formalPoolStringFromAny(account.Extra[FormalPoolExtraRuntimeRegistered]) == "true" {
-		targetStage = FormalPoolStageRuntimeRegistered
-		targetStatus = FormalPoolOnboardingStatusRuntimeRegistered
-	}
-	updated, err := s.accounts.UpdateFormalPoolAccountState(ctx, rec.AccountID, false, StatusActive, map[string]any{
+	extra := map[string]any{
 		"onboarding_state":                       targetStatus,
 		FormalPoolExtraOnboardingStage:           targetStage,
 		FormalPoolExtraOnboardingStageUpdatedAt:  stamp,
@@ -1187,14 +1241,20 @@ func (s *FormalPoolOnboardingService) RefreshOnly(ctx context.Context, id string
 		FormalPoolExtraOnboardingLastCheckAt:     stamp,
 		FormalPoolExtraOnboardingLastErrorCode:   "",
 		FormalPoolExtraOnboardingLastErrorBucket: "",
-	})
+		FormalPoolExtraRuntimeRegistered:         "false",
+		FormalPoolExtraRuntimeRegisteredAt:       "",
+	}
+	for k, v := range formalPoolRuntimeIdentityExtra(rec.AccountRef, rec.ProxyRef, account.Credentials, s.ccGatewayRuntimeBindingSecret(), formalPoolNextCredentialGeneration(account)) {
+		extra[k] = v
+	}
+	updated, err := s.accounts.UpdateFormalPoolAccountState(ctx, rec.AccountID, false, StatusActive, extra)
 	if err != nil {
 		return nil, err
 	}
 	s.syncRefreshedFormalPoolAccountCaches(ctx, updated)
 	rec, err = s.store.update(id, func(rec *formalPoolOnboardingSessionRecord) error {
 		rec.Status = targetStatus
-		rec.CCGatewayRuntimeRegistered = rec.CCGatewayRuntimeRegistered || targetStage == FormalPoolStageRuntimeRegistered
+		rec.CCGatewayRuntimeRegistered = false
 		rec.OAuthSummary = &summary
 		return nil
 	})
@@ -1240,7 +1300,23 @@ func (s *FormalPoolOnboardingService) RegisterRuntime(ctx context.Context, id st
 	if s.ccGatewayRuntime == nil {
 		return nil, infraRuntimeRegistrationUnavailable()
 	}
-	if err := s.ccGatewayRuntime.RegisterCCGatewayRuntime(ctx, formalPoolRuntimeRegistration(rec)); err != nil {
+	var account *Account
+	if s.accounts != nil {
+		var accountErr error
+		account, accountErr = s.accounts.GetFormalPoolAccount(ctx, rec.AccountID)
+		if accountErr != nil {
+			return nil, accountErr
+		}
+	}
+	reg := formalPoolRuntimeRegistration(rec)
+	if account != nil {
+		reg.CredentialRef = ccGatewayCredentialRef(account)
+		reg.CredentialBindingHMAC = ccGatewayCredentialBindingHMAC(account)
+		reg.TokenType, reg.CredentialProof = ccGatewaySelectedCredentialBindingMaterial(account)
+		reg.ProxyRef = ccGatewayProxyIdentityRef(account)
+		reg.DeviceID = ccGatewayDeviceID(account)
+	}
+	if err := s.ccGatewayRuntime.RegisterCCGatewayRuntime(ctx, reg); err != nil {
 		if s.accounts != nil {
 			_, _ = s.accounts.UpdateFormalPoolAccountState(ctx, rec.AccountID, false, StatusError, map[string]any{
 				FormalPoolExtraOnboardingStage:          FormalPoolStageQuarantined,
@@ -1309,8 +1385,8 @@ func (s *FormalPoolOnboardingService) PromoteProduction(ctx context.Context, id 
 	return s.sessionResponse(rec, nil), nil
 }
 
-func formalPoolDefaultExtra(rec *formalPoolOnboardingSessionRecord, accountRef string) map[string]any {
-	return map[string]any{
+func formalPoolDefaultExtra(rec *formalPoolOnboardingSessionRecord, accountRef string, runtimeIdentity map[string]any) map[string]any {
+	extra := map[string]any{
 		"cc_gateway_enabled":                "true",
 		"cc_gateway_canary_only":            "false",
 		"cc_gateway_policy_version":         ccGatewayAnthropicPolicyVersion,
@@ -1325,6 +1401,10 @@ func formalPoolDefaultExtra(rec *formalPoolOnboardingSessionRecord, accountRef s
 		"oauth_refresh_fail_closed":         "true",
 		"onboarding_state":                  FormalPoolOnboardingStatusPendingAcceptance,
 	}
+	for k, v := range runtimeIdentity {
+		extra[k] = v
+	}
+	return extra
 }
 
 func formalPoolAcceptanceInput(rec *formalPoolOnboardingSessionRecord) FormalPoolAcceptanceInput {

@@ -10,7 +10,7 @@ from unittest import mock
 from tools.cli_control_plane_guard import GuardConfig, validate_loopback_url
 
 
-WORKTREE = '/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-antiban-implementation'
+WORKTREE = str(Path(__file__).resolve().parents[2])
 
 
 @contextlib.contextmanager
@@ -29,6 +29,9 @@ def loopback_only_tripwire():
 
 
 class CliControlPlaneNetworkSafetyTest(unittest.TestCase):
+    def test_worktree_constant_is_current_repo_root(self):
+        self.assertEqual(Path(WORKTREE).resolve(), Path(__file__).resolve().parents[2])
+
     def test_validate_loopback_url_allows_loopback_hosts_only(self):
         self.assertEqual(validate_loopback_url('http://127.0.0.1:8080'), 'http://127.0.0.1:8080')
         self.assertEqual(validate_loopback_url('http://localhost:8080/base'), 'http://localhost:8080/base')

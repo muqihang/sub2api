@@ -34,6 +34,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
 
@@ -185,13 +186,24 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 
+	if c.Request.URL != nil && c.Request.URL.Path == service.AnthropicCompatInboundMessages && service.IsClaudeCodeBridgeMarkerPresent(c.Request.Header) {
+		h.handleClaudeCodeBridgeMessagesSkeleton(c, body)
+		return
+	}
+	if h.rejectClaudeCodeCatalogBridgeMessagesWithoutMarker(c, body) {
+		return
+	}
+
 	if c.Request.URL != nil && c.Request.URL.Path == service.AnthropicCompatInboundMessages {
 		if service.IsClaudeCodeNativeMarkerPresent(c.Request.Header) {
 			if !h.applyClaudeCodeNativeMessagesAttestation(c, body) {
 				return
 			}
 		} else {
-			decision, err := service.ValidateAnthropicOnlyCompatIngress(c.Request.Method, c.Request.URL.RequestURI(), body)
+			compatOpts := service.AnthropicCompatIngressOptions{
+				AllowBridgeRuntimeModels: apiKey.IsClientProduct("claude_code_runtime"),
+			}
+			decision, err := service.ValidateAnthropicOnlyCompatIngressWithOptions(c.Request.Method, c.Request.URL.RequestURI(), body, compatOpts)
 			if err != nil {
 				if protocolErr, ok := err.(*service.AnthropicCompatProtocolError); ok {
 					h.errorResponse(c, protocolErr.Status, protocolErr.Code, protocolErr.Message)
@@ -252,6 +264,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	// 检查是否为 Claude Code 客户端，设置到 context 中（复用已解析请求，避免二次反序列化）。
 	SetClaudeCodeClientContext(c, body, parsedReq)
 	forceAnthropicCompatNonNative(c)
+	preserveClaudeCodeRuntimeBridgeClient(c, apiKey)
 	isClaudeCodeClient := service.IsClaudeCodeClient(c.Request.Context())
 
 	// 版本检查：仅对 Claude Code 客户端，拒绝低于最低版本的请求
@@ -1216,6 +1229,10 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		availableModels = h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, platform)
 	}
 	if apiKey != nil && apiKey.Group != nil && apiKey.Group.CustomModelsListEnabled() {
+		if apiKey.Group.ClaudeCodeOnly {
+			writeCustomModelsList(c, platform, apiKey.Group.ModelsListConfig.Models)
+			return
+		}
 		availableModels = filterModelsByCustomList(availableModels, defaultModelIDsForPlatform(platform), apiKey.Group.ModelsListConfig.Models)
 		writeCustomModelsList(c, platform, availableModels)
 		return
@@ -1989,6 +2006,29 @@ func (h *GatewayHandler) errorResponse(c *gin.Context, status int, errType, mess
 	})
 }
 
+func (h *GatewayHandler) rejectClaudeCodeCatalogBridgeMessagesWithoutMarker(c *gin.Context, body []byte) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil || c.Request.URL.Path != service.AnthropicCompatInboundMessages {
+		return false
+	}
+	if service.IsClaudeCodeBridgeMarkerPresent(c.Request.Header) {
+		return false
+	}
+	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if model == "" {
+		return false
+	}
+	if service.IsClaudeCodeBridgeDisplayModelID(model) {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Claude Code bridge messages require a signed bridge route")
+		return true
+	}
+	decision, err := service.LoadClaudeCodeProviderRegistryFromEnv().Resolve(c.Request.Context(), model)
+	if err != nil || decision.Route == service.ClaudeCodeNativeRoute {
+		return false
+	}
+	h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Claude Code bridge messages require a signed bridge route")
+	return true
+}
+
 func (h *GatewayHandler) applyClaudeCodeNativeMessagesAttestation(c *gin.Context, body []byte) bool {
 	if c == nil || c.Request == nil || c.Request.URL == nil {
 		return false
@@ -2006,6 +2046,150 @@ func (h *GatewayHandler) applyClaudeCodeNativeMessagesAttestation(c *gin.Context
 	}
 	c.Request = c.Request.WithContext(ctx)
 	return true
+}
+
+func (h *GatewayHandler) handleClaudeCodeBridgeMessagesSkeleton(c *gin.Context, body []byte) {
+	if c == nil || c.Request == nil {
+		return
+	}
+	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	decision, err := service.LoadClaudeCodeProviderRegistryFromEnv().Resolve(c.Request.Context(), model)
+	if err != nil {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")
+		return
+	}
+	clientType := strings.TrimSpace(c.GetHeader(service.ClaudeCodeNativeClientTypeHeader))
+	route := strings.TrimSpace(c.GetHeader("x-sub2api-route"))
+	catalogVersion := strings.TrimSpace(c.GetHeader(service.ClaudeCodeNativeCatalogVersionHeader))
+	if clientType != decision.ClientType || route != decision.Route || catalogVersion == "" || catalogVersion != decision.CatalogVersion {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")
+		return
+	}
+	routeHint, err := service.NewClaudeCodeNativeAttestationService().VerifyBridgeRouteHintRequest(c.Request.Method, c.Request.URL.RequestURI(), c.Request.Header, body, decision)
+	if err != nil {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")
+		return
+	}
+	bridgeDecision := decision.BridgeRouteDecision()
+	if routeHint.LiveRequestAllowed && service.ClaudeCodeBridgeAnthropicLiveEligible(bridgeDecision) {
+		result, err := service.StreamClaudeCodeBridgeAnthropicLive(c.Request.Context(), nil, bridgeDecision, body, service.ClaudeCodeBridgeAnthropicAPIKeyFromEnv(bridgeDecision.Provider), c.Writer)
+		if err != nil {
+			if c.Writer.Written() {
+				_, _ = c.Writer.Write([]byte("\nevent: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Claude Code bridge upstream request failed\"}}\n\n"))
+				return
+			}
+			h.errorResponse(c, http.StatusBadGateway, "api_error", "Claude Code bridge upstream request failed")
+			return
+		}
+		setClaudeCodeBridgeAuditSummary(c, result.Audit)
+		if !c.Writer.Written() {
+			c.Status(http.StatusOK)
+		}
+		return
+	}
+	if routeHint.LiveRequestAllowed && service.ClaudeCodeBridgeOpenAILiveEligible(bridgeDecision) {
+		result, err := service.StreamClaudeCodeBridgeOpenAILive(c.Request.Context(), nil, bridgeDecision, body, service.ClaudeCodeBridgeOpenAICompatibleAPIKeyFromEnv(bridgeDecision.Provider), c.Writer)
+		if err != nil {
+			if c.Writer.Written() {
+				_, _ = c.Writer.Write([]byte("\nevent: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Claude Code bridge upstream request failed\"}}\n\n"))
+				return
+			}
+			h.errorResponse(c, http.StatusBadGateway, "api_error", "Claude Code bridge upstream request failed")
+			return
+		}
+		setClaudeCodeBridgeAuditSummary(c, result.Audit)
+		if !c.Writer.Written() {
+			c.Status(http.StatusOK)
+		}
+		return
+	}
+	if routeHint.LiveRequestAllowed && service.ClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLiveEligible(bridgeDecision) {
+		result, err := service.StreamClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLive(c.Request.Context(), nil, bridgeDecision, body, service.ClaudeCodeBridgeDeepSeekAPIKeyFromEnv(), c.Writer)
+		if err != nil {
+			if c.Writer.Written() {
+				_, _ = c.Writer.Write([]byte("\nevent: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Claude Code bridge upstream request failed\"}}\n\n"))
+				return
+			}
+			h.errorResponse(c, http.StatusBadGateway, "api_error", "Claude Code bridge upstream request failed")
+			return
+		}
+		setClaudeCodeBridgeAuditSummary(c, result.Audit)
+		if !c.Writer.Written() {
+			c.Status(http.StatusOK)
+		}
+		return
+	}
+	result, err := service.BuildClaudeCodeBridgeSkeletonSSE(bridgeDecision, body)
+	if err != nil {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")
+		return
+	}
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("X-Accel-Buffering", "no")
+	c.Status(http.StatusOK)
+	_, _ = c.Writer.Write(result.Body)
+}
+
+func setClaudeCodeBridgeAuditSummary(c *gin.Context, summary service.ClaudeCodeBridgeAuditSummary) {
+	if c == nil {
+		return
+	}
+	c.Set("claude_code_bridge_audit_summary", summary)
+	if c.Request != nil {
+		c.Request = c.Request.WithContext(service.WithClaudeCodeBridgeAuditSummary(c.Request.Context(), summary))
+	}
+	logClaudeCodeBridgeCacheAuditSummary(c, summary)
+}
+
+func logClaudeCodeBridgeCacheAuditSummary(c *gin.Context, summary service.ClaudeCodeBridgeAuditSummary) {
+	row := summary.CacheAuditRow()
+	if row.Provider == "" || row.SelectedProtocol == "" {
+		return
+	}
+	fields := []zap.Field{
+		zap.String("schema_version", row.SchemaVersion),
+		zap.String("provider", row.Provider),
+		zap.String("route", row.Route),
+		zap.String("client_type", row.ClientType),
+		zap.String("model_id", row.ModelID),
+		zap.String("preferred_protocol", row.PreferredProtocol),
+		zap.String("selected_protocol", row.SelectedProtocol),
+		zap.String("fallback_protocol", row.FallbackProtocol),
+		zap.String("fallback_reason", row.FallbackReason),
+		zap.Bool("fallback_used", row.FallbackUsed),
+		zap.String("provider_cache_mechanism", row.ProviderCacheMechanism),
+		zap.String("upstream_path_kind", row.UpstreamPathKind),
+		zap.Bool("upstream_body_has_cache_control", row.CacheControlPresent),
+		zap.Bool("cache_control_present", row.CacheControlPresent),
+		zap.Strings("cache_control_locations", row.CacheControlLocations),
+		zap.Bool("cache_control_provider_ignored", row.CacheControlProviderIgnored),
+		zap.Bool("prompt_cache_key_present", row.PromptCacheKeyPresent),
+		zap.String("prompt_cache_key_strategy", row.PromptCacheKeyStrategy),
+		zap.Strings("cache_usage_fields", row.CacheUsageFields),
+		zap.Strings("response_usage_field_paths", row.ResponseUsageFieldPaths),
+		zap.Strings("response_usage_cache_field_paths", row.ResponseUsageCacheFieldPaths),
+		zap.Bool("response_usage_cache_fields_present", row.ResponseUsageCacheFieldsPresent),
+		zap.Strings("stable_prefix_component_hmacs", row.StablePrefixComponentHMACs),
+		zap.Int("cache_read_tokens", row.CacheReadTokens),
+		zap.Int("cache_write_tokens", row.CacheWriteTokens),
+		zap.Int("cache_miss_tokens", row.CacheMissTokens),
+		zap.Int("cached_tokens", row.CachedTokens),
+		zap.Bool("raw_sensitive_stored", row.RawSensitiveStored),
+	}
+	if row.StablePrefixHMAC != "" {
+		fields = append(fields, zap.String("stable_prefix_hmac", row.StablePrefixHMAC))
+	}
+	if row.StablePrefixTokenBucket != "" {
+		fields = append(fields, zap.String("stable_prefix_token_bucket", row.StablePrefixTokenBucket))
+	}
+	if row.Provider == "deepseek" && row.ProviderCacheMechanism == "deepseek_prefix_kv" && row.SelectedProtocol == "anthropic_messages" {
+		fields = append(fields,
+			zap.Int("prompt_cache_hit_tokens", row.CacheReadTokens),
+			zap.Int("prompt_cache_miss_tokens", row.CacheMissTokens),
+		)
+	}
+	requestLogger(c, "handler.gateway.claude_code_bridge_cache_audit").Info("gateway.claude_code_bridge_cache_audit", fields...)
 }
 
 // CountTokens handles token counting endpoint
@@ -2049,10 +2233,30 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		return
 	}
 
+	countTokensModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if service.IsClaudeCodeBridgeMarkerPresent(c.Request.Header) {
+		if !h.handleClaudeCodeBridgeCountTokensLocal(c, body, countTokensModel) {
+			return
+		}
+		return
+	}
+	if countTokensModel != "" {
+		if service.IsClaudeCodeBridgeDisplayModelID(countTokensModel) {
+			h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Claude Code bridge count_tokens is not available")
+			return
+		}
+		if decision, err := service.LoadClaudeCodeProviderRegistryFromEnv().Resolve(c.Request.Context(), countTokensModel); err == nil && decision.Route != service.ClaudeCodeNativeRoute {
+			h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Claude Code bridge count_tokens is not available")
+			return
+		}
+	}
+
+	nativeClaudeCodeAttested := false
 	if service.IsClaudeCodeNativeMarkerPresent(c.Request.Header) {
 		if !h.applyClaudeCodeNativeMessagesAttestation(c, body) {
 			return
 		}
+		nativeClaudeCodeAttested = true
 	}
 
 	setOpsRequestContext(c, "", false)
@@ -2072,6 +2276,11 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 	// 验证 model 必填
 	if parsedReq.Model == "" {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "model is required")
+		return
+	}
+
+	if nativeClaudeCodeAttested {
+		sendNativeCountTokensLocalResponse(c, parsedReq.Model, body)
 		return
 	}
 
@@ -2116,6 +2325,35 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		// 错误响应已在 ForwardCountTokens 中处理
 		return
 	}
+}
+
+func (h *GatewayHandler) handleClaudeCodeBridgeCountTokensLocal(c *gin.Context, body []byte, model string) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "model is required")
+		return false
+	}
+	decision, err := service.LoadClaudeCodeProviderRegistryFromEnv().Resolve(c.Request.Context(), model)
+	if err != nil || decision.Route == service.ClaudeCodeNativeRoute {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")
+		return false
+	}
+	clientType := strings.TrimSpace(c.GetHeader(service.ClaudeCodeNativeClientTypeHeader))
+	route := strings.TrimSpace(c.GetHeader("x-sub2api-route"))
+	catalogVersion := strings.TrimSpace(c.GetHeader(service.ClaudeCodeNativeCatalogVersionHeader))
+	if clientType != decision.ClientType || route != decision.Route || catalogVersion == "" || catalogVersion != decision.CatalogVersion {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")
+		return false
+	}
+	if _, err := service.NewClaudeCodeNativeAttestationService().VerifyBridgeRouteHintRequest(c.Request.Method, c.Request.URL.RequestURI(), c.Request.Header, body, decision); err != nil {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")
+		return false
+	}
+	sendNativeCountTokensLocalResponse(c, model, body)
+	return true
 }
 
 // InterceptType 表示请求拦截类型
@@ -2329,6 +2567,86 @@ func sendMockInterceptResponse(c *gin.Context, model string, interceptType Inter
 	}
 
 	c.JSON(http.StatusOK, response)
+}
+
+func sendNativeCountTokensProbeResponse(c *gin.Context, model string) {
+	// Claude Code performs a max_tokens=1 Haiku count_tokens probe during startup.
+	// Some managed Anthropic-compatible upstreams do not implement count_tokens, so
+	// answer this attested connectivity probe locally without touching the account.
+	c.JSON(http.StatusOK, gin.H{
+		"input_tokens": 1,
+		"model":        model,
+	})
+}
+
+func sendNativeCountTokensLocalResponse(c *gin.Context, model string, body []byte) {
+	c.JSON(http.StatusOK, buildNativeCountTokensLocalResponse(model, body))
+}
+
+func buildNativeCountTokensLocalResponse(model string, body []byte) gin.H {
+	inputTokens := estimateAnthropicCountTokens(body)
+	if inputTokens < 1 {
+		inputTokens = 1
+	}
+	return gin.H{
+		"input_tokens": inputTokens,
+		"model":        model,
+	}
+}
+
+func estimateAnthropicCountTokens(body []byte) int {
+	var decoded any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return estimateTextTokensForCountTokens(string(body))
+	}
+	return estimateAnthropicValueTokens(decoded, "")
+}
+
+func estimateAnthropicValueTokens(value any, key string) int {
+	switch v := value.(type) {
+	case map[string]any:
+		total := 0
+		for childKey, child := range v {
+			total += estimateAnthropicValueTokens(child, childKey)
+		}
+		return total
+	case []any:
+		total := 0
+		for _, child := range v {
+			total += estimateAnthropicValueTokens(child, key)
+		}
+		return total
+	case string:
+		switch key {
+		case "text", "content", "system":
+			return estimateTextTokensForCountTokens(v)
+		default:
+			return 0
+		}
+	default:
+		return 0
+	}
+}
+
+func estimateTextTokensForCountTokens(text string) int {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0
+	}
+	runes := []rune(text)
+	ascii := 0
+	for _, r := range runes {
+		if r <= 0x7f {
+			ascii++
+		}
+	}
+	if len(runes) == 0 {
+		return 0
+	}
+	if float64(ascii)/float64(len(runes)) >= 0.8 {
+		return (len(runes) + 3) / 4
+	}
+	return len(runes)
 }
 
 // extractQuotaResetSeconds 从 quota 错误的 metadata 中提取 window_resets_at 并计算

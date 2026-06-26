@@ -1,0 +1,40 @@
+{
+  "input_messages": [
+    {
+      "reasoning_content": "only hidden reasoning",
+      "role": "assistant",
+      "signature": "forged-anthropic-like-signature"
+    }
+  ],
+  "name": "foreign_thinking_signature_blocked",
+  "provenance_snapshot": {
+    "conversation_ref": "cp3b-fixture",
+    "source_hash": "sha256:7a956b727445be4444f48d50ecacdee352882272d6de5fbdff3e1dc9bbd227f3",
+    "source_message_count": 1,
+    "turns": [
+      {
+        "provider": "openai",
+        "range": [
+          4,
+          4
+        ],
+        "route": "openai_bridge"
+      }
+    ]
+  },
+  "replay_context": "normal",
+  "source_profile": {
+    "client_type": "claude_code_bridge_openai",
+    "model_id": "gpt-dynamic",
+    "native_replay_allowed": false,
+    "provider": "openai",
+    "route": "openai_bridge"
+  },
+  "target_profile": {
+    "client_type": "claude_code_native",
+    "model_id": "claude-sonnet-4-6",
+    "native_replay_allowed": true,
+    "provider": "claude",
+    "route": "claude_native"
+  }
+}

@@ -24,6 +24,37 @@ func RegisterGatewayRoutes(
 	settingService *service.SettingService,
 	cfg *config.Config,
 ) {
+	registerGatewayRoutes(r, h, apiKeyAuth, nil, apiKeyService, subscriptionService, opsService, settingService, cfg)
+}
+
+// RegisterGatewayRoutesWithClaudeCodeNativeAuth keeps the public gateway API-key
+// behavior unchanged while allowing the managed Claude Code native guard to
+// authenticate only the native /v1/messages family with managed-device tokens.
+func RegisterGatewayRoutesWithClaudeCodeNativeAuth(
+	r *gin.Engine,
+	h *handler.Handlers,
+	apiKeyAuth middleware.APIKeyAuthMiddleware,
+	claudeCodeNativeAuth middleware.APIKeyAuthMiddleware,
+	apiKeyService *service.APIKeyService,
+	subscriptionService *service.SubscriptionService,
+	opsService *service.OpsService,
+	settingService *service.SettingService,
+	cfg *config.Config,
+) {
+	registerGatewayRoutes(r, h, apiKeyAuth, claudeCodeNativeAuth, apiKeyService, subscriptionService, opsService, settingService, cfg)
+}
+
+func registerGatewayRoutes(
+	r *gin.Engine,
+	h *handler.Handlers,
+	apiKeyAuth middleware.APIKeyAuthMiddleware,
+	claudeCodeNativeAuth middleware.APIKeyAuthMiddleware,
+	apiKeyService *service.APIKeyService,
+	subscriptionService *service.SubscriptionService,
+	opsService *service.OpsService,
+	settingService *service.SettingService,
+	cfg *config.Config,
+) {
 	bodyLimit := middleware.RequestBodyLimit(cfg.Gateway.MaxBodySize)
 	controlPlaneBodyLimit := bodyLimit
 	if cfg == nil || cfg.Gateway.MaxBodySize <= 0 {
@@ -90,6 +121,10 @@ func RegisterGatewayRoutes(
 	requireGroupOpenAI := middleware.RequireGroupAssignment(settingService, middleware.OpenAIErrorWriter)
 	requireGroupGoogle := middleware.RequireGroupAssignment(settingService, middleware.GoogleErrorWriter)
 	apiKeyAuthWithAugmentBearer := augmentGatewayAPIKeyAuth(apiKeyAuth, h.Auth)
+	v1GatewayAuth := apiKeyAuth
+	if claudeCodeNativeAuth != nil {
+		v1GatewayAuth = claudeCodeNativeMessagesAuth(apiKeyAuth, claudeCodeNativeAuth)
+	}
 	requireOpenAIGroup := func(c *gin.Context) bool {
 		if getGroupPlatform(c) == service.PlatformOpenAI {
 			return true
@@ -117,12 +152,12 @@ func RegisterGatewayRoutes(
 	gateway.Use(clientRequestID)
 	gateway.Use(opsErrorLogger)
 	gateway.Use(endpointNorm)
-	gateway.Use(gin.HandlerFunc(apiKeyAuth))
+	gateway.Use(gin.HandlerFunc(v1GatewayAuth))
 	gateway.Use(requireGroupAnthropic)
 	{
 		// /v1/messages: auto-route based on group platform
 		gateway.POST("/messages", func(c *gin.Context) {
-			if getGroupPlatform(c) == service.PlatformOpenAI {
+			if getGroupPlatform(c) == service.PlatformOpenAI && shouldAutoRouteOpenAIGroupToOpenAI(c.Request.Header) {
 				h.OpenAIGateway.Messages(c)
 				return
 			}
@@ -130,7 +165,7 @@ func RegisterGatewayRoutes(
 		})
 		// /v1/messages/count_tokens: OpenAI groups get 404
 		gateway.POST("/messages/count_tokens", func(c *gin.Context) {
-			if getGroupPlatform(c) == service.PlatformOpenAI {
+			if getGroupPlatform(c) == service.PlatformOpenAI && shouldRejectOpenAIGroupCountTokens(c.Request.Header) {
 				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
 				c.JSON(http.StatusNotFound, gin.H{
 					"type": "error",
@@ -347,6 +382,69 @@ func RegisterGatewayRoutes(
 		antigravityV1Beta.POST("/models/*modelAction", h.Gateway.GeminiV1BetaModels)
 	}
 
+}
+
+func claudeCodeNativeMessagesAuth(apiKeyAuth, nativeAuth middleware.APIKeyAuthMiddleware) middleware.APIKeyAuthMiddleware {
+	return middleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+		if c != nil && c.Request != nil && c.Request.URL != nil &&
+			service.IsClaudeCodeNativeMarkerPresent(c.Request.Header) &&
+			isClaudeCodeNativeMessagesPath(c.Request.URL.Path) {
+			if strings.TrimSpace(c.GetHeader("X-Zhumeng-Device-ID")) == "" || strings.TrimSpace(c.GetHeader("X-Zhumeng-Managed-Session")) == "" {
+				middleware.AnthropicErrorWriter(c, http.StatusUnauthorized, "Managed Claude Code native headers are required")
+				c.Abort()
+				return
+			}
+			if claudeCodeNativeAuthorizationLooksManagedJWT(c.GetHeader("Authorization")) {
+				gin.HandlerFunc(nativeAuth)(c)
+				return
+			}
+			gin.HandlerFunc(apiKeyAuth)(c)
+			return
+		}
+		gin.HandlerFunc(apiKeyAuth)(c)
+	})
+}
+
+func claudeCodeNativeAuthorizationLooksManagedJWT(authHeader string) bool {
+	authHeader = strings.TrimSpace(authHeader)
+	if authHeader == "" {
+		return false
+	}
+	parts := strings.Fields(authHeader)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return false
+	}
+	token := strings.TrimSpace(parts[1])
+	if !strings.HasPrefix(token, "eyJ") {
+		return false
+	}
+	segments := strings.Split(token, ".")
+	if len(segments) != 3 {
+		return false
+	}
+	for _, segment := range segments {
+		if strings.TrimSpace(segment) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func isClaudeCodeNativeMessagesPath(path string) bool {
+	switch strings.TrimRight(strings.TrimSpace(path), "/") {
+	case service.ClaudeCodeNativeInboundMessages, service.ClaudeCodeNativeInboundCountTokens:
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldAutoRouteOpenAIGroupToOpenAI(headers http.Header) bool {
+	return !service.IsClaudeCodeNativeMarkerPresent(headers) && !service.IsClaudeCodeBridgeMarkerPresent(headers)
+}
+
+func shouldRejectOpenAIGroupCountTokens(headers http.Header) bool {
+	return !service.IsClaudeCodeNativeMarkerPresent(headers)
 }
 
 // getGroupPlatform extracts the group platform from the API Key stored in context.

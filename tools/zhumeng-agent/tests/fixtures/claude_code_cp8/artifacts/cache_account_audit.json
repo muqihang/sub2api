@@ -1,0 +1,133 @@
+{
+  "audit_summary_only": true,
+  "bridge_cache_audit_rows": [
+    {
+      "cache_control_locations": [
+        "history",
+        "system",
+        "tools",
+        "top_level"
+      ],
+      "cache_control_present": true,
+      "cache_control_provider_ignored": true,
+      "cache_read_tokens": 7,
+      "cache_usage_fields": [
+        "prompt_cache_hit_tokens",
+        "prompt_cache_miss_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens"
+      ],
+      "cache_write_tokens": 13,
+      "client_type": "claude_code_bridge_deepseek",
+      "fallback_protocol": "openai_chat_completions",
+      "fallback_reason": "",
+      "fallback_used": false,
+      "model_id": "deepseek-v4-pro",
+      "preferred_protocol": "anthropic_messages",
+      "prompt_cache_key_present": false,
+      "prompt_cache_key_strategy": "absent",
+      "provider": "deepseek",
+      "provider_cache_mechanism": "deepseek_prefix_kv",
+      "raw_sensitive_stored": false,
+      "response_usage_cache_field_paths": [
+        "message.usage.cache_creation_input_tokens",
+        "message.usage.cache_read_input_tokens"
+      ],
+      "response_usage_cache_fields_present": true,
+      "response_usage_field_paths": [
+        "message.usage.cache_creation_input_tokens",
+        "message.usage.cache_read_input_tokens",
+        "message.usage.input_tokens",
+        "message.usage.output_tokens"
+      ],
+      "route": "deepseek_bridge",
+      "schema_version": "claude-code-bridge-cache-audit-row-v1",
+      "selected_protocol": "anthropic_messages",
+      "stable_prefix_component_hmacs": [
+        "model:hmac-sha256:cp8-cache:1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "system:hmac-sha256:cp8-cache:2123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "tools:hmac-sha256:cp8-cache:3123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "messages:hmac-sha256:cp8-cache:4123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      ],
+      "stable_prefix_hmac": "hmac-sha256:cp8-cache:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "stable_prefix_token_bucket": "1k_4k",
+      "upstream_path_kind": "/anthropic/v1/messages"
+    },
+    {
+      "cache_control_locations": [],
+      "cache_control_present": false,
+      "cache_control_provider_ignored": false,
+      "cache_read_tokens": 9,
+      "cache_usage_fields": [
+        "usage.prompt_tokens_details.cached_tokens"
+      ],
+      "cached_tokens": 9,
+      "client_type": "claude_code_bridge_openai",
+      "fallback_protocol": "",
+      "fallback_reason": "",
+      "fallback_used": false,
+      "model_id": "gpt-5.5",
+      "preferred_protocol": "responses",
+      "prompt_cache_key_present": true,
+      "prompt_cache_key_strategy": "present_redacted",
+      "provider": "openai",
+      "provider_cache_mechanism": "openai_prompt_cache",
+      "raw_sensitive_stored": false,
+      "route": "openai_bridge",
+      "schema_version": "claude-code-bridge-cache-audit-row-v1",
+      "selected_protocol": "responses",
+      "stable_prefix_hmac": "hmac-sha256:cp8-cache:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+      "stable_prefix_token_bucket": "1k_4k",
+      "upstream_path_kind": "/v1/responses"
+    }
+  ],
+  "cache_provider_evidence": {
+    "claude_native": {
+      "cache_usage_fields": [
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens"
+      ],
+      "live_usage_fields_observed": false,
+      "mechanism": "anthropic_cache_control",
+      "raw_sensitive_stored": false,
+      "request_shape_preserved": true
+    },
+    "deepseek": {
+      "cache_control_provider_ignored": true,
+      "cache_usage_fields": [
+        "prompt_cache_hit_tokens",
+        "prompt_cache_miss_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens"
+      ],
+      "live_cache_hit_observed": true,
+      "live_cache_miss_observed": false,
+      "live_cache_write_observed": true,
+      "live_usage_fields_observed": true,
+      "mechanism": "deepseek_prefix_kv",
+      "raw_sensitive_stored": false,
+      "request_shape_preserved": true,
+      "stable_prefix_hmac_present": true,
+      "treats_cache_control_as_cache_mechanism": false
+    },
+    "openai": {
+      "cache_usage_fields": [
+        "usage.prompt_tokens_details.cached_tokens"
+      ],
+      "live_usage_fields_observed": false,
+      "mechanism": "openai_prompt_cache",
+      "raw_sensitive_stored": false,
+      "request_shape_preserved": true
+    }
+  },
+  "checkpoint": "CP8",
+  "raw_sensitive_stored": false,
+  "safe_summary_hash_stable": true,
+  "safe_tool_result_hash_stable": true,
+  "scenario": "cache_account_audit",
+  "schema_version": "cp8-cache-account-audit-v1",
+  "stable_prefix_invalidated": false,
+  "status": "pass",
+  "ttl_fast_switch_boundary_miss_count": 1,
+  "usage_accounting_split_by_route": true
+}
