@@ -28,8 +28,29 @@ import (
 )
 
 const jointLocalCaptureArtifactSlug = "sub2api-cc-gateway-joint-local-capture"
-const jointExpectedGatewayUserAgent = "claude-cli/2.1.175 (external, sdk-cli)"
-const jointExpectedGatewayPersonaVariant = "claude-code-2.1.175-macos-local"
+
+const (
+	jointGatewayToken                    = "gateway-token"
+	jointGatewayInternalControlToken     = "internal-control-material-test"
+	jointGatewayContextAttestationSecret = "formal-pool-attestation-secret-test"
+	jointGatewayContextAttestationRef    = "opaque:ctx-ref:v1:joint-local"
+	jointOAuthAccountRef                 = "opaque:acct-ref:v1:joint-301"
+	jointAPIKeyAccountRef                = "opaque:acct-ref:v1:joint-201"
+	jointOAuthCredentialRef              = "opaque:cred-ref:v1:joint-301"
+	jointAPIKeyCredentialRef             = "opaque:cred-ref:v1:joint-201"
+	jointProxyIdentityRef                = "opaque:proxy-ref:v1:bucket-a"
+	jointOAuthAccessToken                = "oauth-token"
+	jointAPIKeyCredential                = "upstream-anthropic-key"
+	jointSignedCCHEgressProfileRef       = "claude_code_2_1_179_first_party_signed_cch"
+	jointSignedCCHOracleProfileRef       = "claude_code_2_1_179_first_party_signed_cch_oracle_cp1_degraded_v1"
+	jointClientStripSessionID            = "99999999-8888-4777-8666-555555555555"
+	jointClientSignedCCHSessionID        = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+)
+
+var (
+	jointExpectedGatewayUserAgent      = fmt.Sprintf("claude-cli/%s (external, sdk-cli)", ccGatewayAnthropicPolicyVersion)
+	jointExpectedGatewayPersonaVariant = fmt.Sprintf("claude-code-%s-macos-local", ccGatewayAnthropicPolicyVersion)
+)
 
 type jointRedactionRule struct {
 	Label  string
@@ -202,6 +223,12 @@ func (u *jointGatewayRecordingUpstream) reset() {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.requests = nil
+}
+
+func (u *jointGatewayRecordingUpstream) count() int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return len(u.requests)
 }
 
 type rawCaptureRequest struct {
@@ -531,10 +558,6 @@ func ccGatewayRepoRoot() string {
 	if root := strings.TrimSpace(os.Getenv("CC_GATEWAY_REPO_ROOT")); root != "" {
 		return root
 	}
-	worktree := "/Users/muqihang/chelingxi_workspace/cc-gateway/.worktrees/claude-code-2173-main"
-	if _, err := os.Stat(filepath.Join(worktree, "package.json")); err == nil {
-		return worktree
-	}
 	return "/Users/muqihang/chelingxi_workspace/cc-gateway"
 }
 
@@ -602,7 +625,8 @@ upstream:
 providers:
   anthropic: true
 auth:
-  gateway_token: gateway-token
+  gateway_token: %q
+  internal_control_token: %q
   tokens: []
 identity:
   device_id: "%s"
@@ -634,23 +658,31 @@ process:
   heap_total_range: [40000000, 80000000]
   heap_used_range: [100000000, 200000000]
 shared_pool:
+  context_attestation_secret_ref: "%s"
+  context_attestation_secret: "%s"
   max_body_bytes: 2097152
   billing_cch_mode: strip
-  message_beta_profile: claude_code_2_1_175_subscription_1m
+  message_beta_profile: claude_code_2_1_179_native_degraded
 account_identities:
-  "301":
+  "%s":
     device_id: "%s"
     account_uuid_hash: "scoped_hmac_ref:key_id=fixture;scope=account-ref;version=1;value=acct301"
     email_hash: "scoped_hmac_ref:key_id=fixture;scope=email-ref;version=1;value=email301"
     account_hash: "scoped_hmac_ref:key_id=fixture;scope=account-partition;version=1;value=account301"
+    credential_ref: "%s"
+    credential_binding_hmac: "%s"
+    token_type: oauth
     persona_variant: "%s"
     session_policy: preserve_downstream_session_id
     policy_version: "%s"
-  "201":
+  "%s":
     device_id: "%s"
     account_uuid_hash: "scoped_hmac_ref:key_id=fixture;scope=account-ref;version=1;value=acct201"
     email_hash: "scoped_hmac_ref:key_id=fixture;scope=email-ref;version=1;value=email201"
     account_hash: "scoped_hmac_ref:key_id=fixture;scope=account-partition;version=1;value=account201"
+    credential_ref: "%s"
+    credential_binding_hmac: "%s"
+    token_type: apikey
     persona_variant: "%s"
     session_policy: preserve_downstream_session_id
     policy_version: "%s"
@@ -658,12 +690,12 @@ egress_buckets:
   bucket-a:
     enabled: true
     proxy_url: %q
-    proxy_identity_hash: "opaque:proxy-ref:v1:bucket-a"
-    allowed_account_ids: ["301", "201"]
+    proxy_identity_ref: "%s"
+    allowed_account_ids: ["%s", "%s"]
 logging:
   level: error
   audit: false
-`, upstreamURL, strings.Repeat("a", 64), ccGatewayAnthropicPolicyVersion, ccGatewayAnthropicPolicyVersion, strings.Repeat("b", 64), jointExpectedGatewayPersonaVariant, ccGatewayAnthropicPolicyVersion, strings.Repeat("c", 64), jointExpectedGatewayPersonaVariant, ccGatewayAnthropicPolicyVersion, proxyURL)
+`, upstreamURL, jointGatewayToken, jointGatewayInternalControlToken, strings.Repeat("a", 64), ccGatewayAnthropicPolicyVersion, ccGatewayAnthropicPolicyVersion, jointGatewayContextAttestationRef, jointGatewayContextAttestationSecret, jointOAuthAccountRef, strings.Repeat("b", 64), jointOAuthCredentialRef, ccGatewayOAuthCredentialBindingHMAC(jointGatewayContextAttestationSecret, jointOAuthAccessToken), jointExpectedGatewayPersonaVariant, ccGatewayAnthropicPolicyVersion, jointAPIKeyAccountRef, strings.Repeat("c", 64), jointAPIKeyCredentialRef, ccGatewayCredentialBindingHMACForMaterial(jointGatewayContextAttestationSecret, "apikey", jointAPIKeyCredential), jointExpectedGatewayPersonaVariant, ccGatewayAnthropicPolicyVersion, proxyURL, jointProxyIdentityRef, jointOAuthAccountRef, jointAPIKeyAccountRef)
 }
 
 func jointGatewaySigningConfigYAML(upstreamURL, proxyURL string) string {
@@ -678,7 +710,8 @@ upstream:
 providers:
   anthropic: true
 auth:
-  gateway_token: gateway-token
+  gateway_token: %q
+  internal_control_token: %q
   tokens: []
 identity:
   device_id: "%s"
@@ -710,17 +743,24 @@ process:
   heap_total_range: [40000000, 80000000]
   heap_used_range: [100000000, 200000000]
 shared_pool:
+  context_attestation_secret_ref: "%s"
+  context_attestation_secret: "%s"
   max_body_bytes: 2097152
   billing_cch_mode: sign
   signing_enabled: true
   signing_evidence_gates_approved: true
-  message_beta_profile: claude_code_2_1_175_subscription_1m
+  signed_cch_2179_oracle_profile_approved: true
+  signed_cch_2179_oracle_profile_ref: %q
+  message_beta_profile: claude_code_2_1_179_native_degraded
 account_identities:
-  "301":
+  "%s":
     device_id: "%s"
     account_uuid_hash: "scoped_hmac_ref:key_id=fixture;scope=account-ref;version=1;value=acct301"
     email_hash: "scoped_hmac_ref:key_id=fixture;scope=email-ref;version=1;value=email301"
     account_hash: "scoped_hmac_ref:key_id=fixture;scope=account-partition;version=1;value=account301"
+    credential_ref: "%s"
+    credential_binding_hmac: "%s"
+    token_type: oauth
     persona_variant: "%s"
     session_policy: preserve_downstream_session_id
     policy_version: "%s"
@@ -728,12 +768,12 @@ egress_buckets:
   bucket-a:
     enabled: true
     proxy_url: %q
-    proxy_identity_hash: "opaque:proxy-ref:v1:bucket-a"
-    allowed_account_ids: ["301"]
+    proxy_identity_ref: "%s"
+    allowed_account_ids: ["%s"]
 logging:
   level: error
   audit: false
-`, upstreamURL, strings.Repeat("d", 64), ccGatewayAnthropicPolicyVersion, ccGatewayAnthropicPolicyVersion, strings.Repeat("e", 64), jointExpectedGatewayPersonaVariant, ccGatewayAnthropicPolicyVersion, proxyURL)
+`, upstreamURL, jointGatewayToken, jointGatewayInternalControlToken, strings.Repeat("d", 64), ccGatewayAnthropicPolicyVersion, ccGatewayAnthropicPolicyVersion, jointGatewayContextAttestationRef, jointGatewayContextAttestationSecret, jointSignedCCHOracleProfileRef, jointOAuthAccountRef, strings.Repeat("e", 64), jointOAuthCredentialRef, ccGatewayOAuthCredentialBindingHMAC(jointGatewayContextAttestationSecret, jointOAuthAccessToken), jointExpectedGatewayPersonaVariant, ccGatewayAnthropicPolicyVersion, proxyURL, jointProxyIdentityRef, jointOAuthAccountRef)
 }
 
 func jointGatewayDisabledConfigYAML(upstreamURL, proxyURL string) string {
@@ -748,7 +788,8 @@ upstream:
 providers:
   anthropic: true
 auth:
-  gateway_token: gateway-token
+  gateway_token: %q
+  internal_control_token: %q
   tokens: []
 identity:
   device_id: "%s"
@@ -780,15 +821,20 @@ process:
   heap_total_range: [40000000, 80000000]
   heap_used_range: [100000000, 200000000]
 shared_pool:
+  context_attestation_secret_ref: "%s"
+  context_attestation_secret: "%s"
   max_body_bytes: 2097152
   billing_cch_mode: disabled
-  message_beta_profile: claude_code_2_1_175_subscription_1m
+  message_beta_profile: claude_code_2_1_179_native_degraded
 account_identities:
-  "301":
+  "%s":
     device_id: "%s"
     account_uuid_hash: "scoped_hmac_ref:key_id=fixture;scope=account-ref;version=1;value=acct301"
     email_hash: "scoped_hmac_ref:key_id=fixture;scope=email-ref;version=1;value=email301"
     account_hash: "scoped_hmac_ref:key_id=fixture;scope=account-partition;version=1;value=account301"
+    credential_ref: "%s"
+    credential_binding_hmac: "%s"
+    token_type: oauth
     persona_variant: "%s"
     session_policy: preserve_downstream_session_id
     policy_version: "%s"
@@ -796,12 +842,12 @@ egress_buckets:
   bucket-a:
     enabled: true
     proxy_url: %q
-    proxy_identity_hash: "opaque:proxy-ref:v1:bucket-a"
-    allowed_account_ids: ["301"]
+    proxy_identity_ref: "%s"
+    allowed_account_ids: ["%s"]
 logging:
   level: error
   audit: false
-`, upstreamURL, strings.Repeat("f", 64), ccGatewayAnthropicPolicyVersion, ccGatewayAnthropicPolicyVersion, strings.Repeat("g", 64), jointExpectedGatewayPersonaVariant, ccGatewayAnthropicPolicyVersion, proxyURL)
+`, upstreamURL, jointGatewayToken, jointGatewayInternalControlToken, strings.Repeat("f", 64), ccGatewayAnthropicPolicyVersion, ccGatewayAnthropicPolicyVersion, jointGatewayContextAttestationRef, jointGatewayContextAttestationSecret, jointOAuthAccountRef, strings.Repeat("e", 64), jointOAuthCredentialRef, ccGatewayOAuthCredentialBindingHMAC(jointGatewayContextAttestationSecret, jointOAuthAccessToken), jointExpectedGatewayPersonaVariant, ccGatewayAnthropicPolicyVersion, proxyURL, jointProxyIdentityRef, jointOAuthAccountRef)
 }
 
 func newJointCaptureService(baseURL string, upstream *jointGatewayRecordingUpstream) *GatewayService {
@@ -809,7 +855,9 @@ func newJointCaptureService(baseURL string, upstream *jointGatewayRecordingUpstr
 	cfg := ccGatewayTestConfig(PlatformAnthropic)
 	cfg.Gateway.MaxLineSize = defaultMaxLineSize
 	cfg.Gateway.CCGateway.BaseURL = baseURL
-	cfg.Gateway.CCGateway.Token = "gateway-token"
+	cfg.Gateway.CCGateway.Token = jointGatewayToken
+	cfg.Gateway.CCGateway.InternalControlToken = jointGatewayInternalControlToken
+	cfg.Gateway.CCGateway.ContextAttestationSecret = jointGatewayContextAttestationSecret
 	cfg.Gateway.CCGateway.DefaultEgressBucket = ""
 	return &GatewayService{
 		cfg:             cfg,
@@ -820,18 +868,53 @@ func newJointCaptureService(baseURL string, upstream *jointGatewayRecordingUpstr
 
 func newJointOAuthAccount() *Account {
 	account := newCCGatewayBoundaryAccount()
+	formalPoolApplyCompleteSchedulingEvidenceForTest(account)
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
 	account.Extra["cc_gateway_policy_version"] = ccGatewayAnthropicPolicyVersion
+	account.Credentials["access_token"] = jointOAuthAccessToken
+	account.Extra[ccGatewayExtraAccountRef] = jointOAuthAccountRef
+	account.Extra[ccGatewayExtraCredentialRef] = jointOAuthCredentialRef
+	account.Extra[ccGatewayExtraCredentialBindingHMAC] = ccGatewayOAuthCredentialBindingHMAC(jointGatewayContextAttestationSecret, jointOAuthAccessToken)
+	account.Extra[ccGatewayExtraEgressBucket] = "bucket-a"
+	account.Extra[ccGatewayExtraEgressBucketEnabled] = "true"
+	account.Extra[ccGatewayExtraProxyIdentityRef] = jointProxyIdentityRef
+	account.Extra[ccGatewayExtraPersonaProfile] = jointExpectedGatewayPersonaVariant
+	account.Extra[ccGatewayExtraTrustedEgressProfile] = ccGatewayDefaultTrustedEgressProfileRef
+	account.Extra[ccGatewayExtraProfilePolicyVersion] = ccGatewayDefault2179ProfilePolicyVersion
+	account.Extra[ccGatewayExtraBillingShapePolicy] = ccGatewayDefaultBillingShapePolicy
+	account.Extra[ccGatewayExtraRequestShapeProfile] = ccGatewayDefault2179RequestShapeProfile
+	account.Extra[ccGatewayExtraCacheParityProfile] = ccGatewayDefault2179CacheParityProfile
+	account.Extra["claude_code_device_id"] = strings.Repeat("b", 64)
+	return account
+}
+
+func newJointSignedCCHOAuthAccount() *Account {
+	account := newJointOAuthAccount()
+	account.Extra[ccGatewayExtraTrustedEgressProfile] = jointSignedCCHEgressProfileRef
+	account.Extra[ccGatewayExtraBillingShapePolicy] = "signed_cch"
 	return account
 }
 
 func newJointAPIKeyAccount() *Account {
 	account := newAnthropicAPIKeyAccountForTest()
+	account.Credentials["api_key"] = jointAPIKeyCredential
 	account.Extra["cc_gateway_enabled"] = "true"
 	account.Extra["cc_gateway_canary_only"] = "false"
 	account.Extra["cc_gateway_policy_version"] = ccGatewayAnthropicPolicyVersion
 	account.Extra["cc_gateway_routes"] = "native_messages,native_count_tokens"
 	account.Extra["cc_gateway_egress_bucket_enabled"] = "true"
 	account.Extra["cc_gateway_egress_bucket"] = "bucket-a"
+	account.Extra[ccGatewayExtraAccountRef] = jointAPIKeyAccountRef
+	account.Extra[ccGatewayExtraCredentialRef] = jointAPIKeyCredentialRef
+	account.Extra[ccGatewayExtraCredentialBindingHMAC] = ccGatewayCredentialBindingHMACForMaterial(jointGatewayContextAttestationSecret, "apikey", jointAPIKeyCredential)
+	account.Extra[ccGatewayExtraProxyIdentityRef] = jointProxyIdentityRef
+	account.Extra[ccGatewayExtraPersonaProfile] = jointExpectedGatewayPersonaVariant
+	account.Extra[ccGatewayExtraTrustedEgressProfile] = ccGatewayDefaultTrustedEgressProfileRef
+	account.Extra[ccGatewayExtraProfilePolicyVersion] = ccGatewayDefault2179ProfilePolicyVersion
+	account.Extra[ccGatewayExtraBillingShapePolicy] = ccGatewayDefaultBillingShapePolicy
+	account.Extra[ccGatewayExtraRequestShapeProfile] = ccGatewayDefault2179RequestShapeProfile
+	account.Extra[ccGatewayExtraCacheParityProfile] = ccGatewayDefault2179CacheParityProfile
+	account.Extra["claude_code_device_id"] = strings.Repeat("c", 64)
 	return account
 }
 
@@ -841,14 +924,37 @@ func newJointContext(path string) (*gin.Context, context.Context, *httptest.Resp
 	c, _ := gin.CreateTestContext(rec)
 	ctx := context.Background()
 	c.Request = httptest.NewRequest(http.MethodPost, path, nil).WithContext(ctx)
-	c.Request.Header.Set("User-Agent", "claude-cli/99.9.9 (external, sdk-cli)")
+	c.Request.Header.Set("User-Agent", jointExpectedGatewayUserAgent)
 	c.Request.Header.Set("Anthropic-Beta", "client-beta")
 	c.Request.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
-	c.Request.Header.Set("X-Claude-Code-Session-Id", "99999999-8888-4777-8666-555555555555")
+	c.Request.Header.Set("X-Claude-Code-Session-Id", jointClientStripSessionID)
 	return c, ctx, rec
 }
 
+func useJointClientSession(c *gin.Context, body []byte, sessionID string) []byte {
+	if c != nil && c.Request != nil {
+		c.Request.Header.Set("X-Claude-Code-Session-Id", sessionID)
+	}
+	return []byte(strings.ReplaceAll(string(body), jointClientStripSessionID, sessionID))
+}
+
+func jointGatewayAllowedRichNativeBody(t *testing.T) []byte {
+	t.Helper()
+	body := loadNativeFixture(t, "messages_rich_native_shape.json")
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(body, &payload))
+	// Current CC Gateway final request-shape profile does not admit this
+	// experimental top-level field, while the rest of the rich native shape is
+	// still used for the joint final-verifier acceptance scenario.
+	delete(payload, "eager_input_streaming")
+	out, err := json.Marshal(payload)
+	require.NoError(t, err)
+	return out
+}
+
 func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
+	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
+
 	captureServer := startRawCaptureServer(t)
 	proxyServer := startConnectProxyServer(t)
 	stripGateway := startCCGatewayProcess(t, jointGatewayConfigYAML(captureServer.URL(), proxyServer.URL()))
@@ -865,6 +971,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 	}
 
 	run := func(name string, fn func() jointCaptureScenario) {
+		t.Logf("joint local capture scenario: %s", name)
 		scenario := fn()
 		scenario.Name = name
 		report.Scenarios = append(report.Scenarios, scenario)
@@ -885,8 +992,8 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		sub2apiSummary := summarizeGatewayHop(hop1, body)
 		upstreamSummary := summarizeRawCaptureHop(hop2)
 		passed := !sub2apiSummary.BodyUnchangedFromClient &&
-			sub2apiSummary.Body.BillingHeaderPresent &&
-			sub2apiSummary.Body.CCHPresent &&
+			!sub2apiSummary.Body.BillingHeaderPresent &&
+			!sub2apiSummary.Body.CCHPresent &&
 			!upstreamSummary.Body.BillingHeaderPresent &&
 			!upstreamSummary.Body.CCHPresent &&
 			upstreamSummary.HeaderValuesSummary["User-Agent"] == jointExpectedGatewayUserAgent
@@ -910,8 +1017,8 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 			CCGatewayOwnsFinalOutput: !upstreamSummary.Body.BillingHeaderPresent && !upstreamSummary.Body.CCHPresent && upstreamSummary.HeaderValuesSummary["User-Agent"] == jointExpectedGatewayUserAgent,
 			Passed:                   passed,
 			Notes: []string{
-				"sub2api->gateway rewrites metadata.user_id session to a server-issued UUID-like value before CC Gateway final-output handling",
-				"gateway final persona is canonical Claude Code 2.1.175 subscription profile",
+				"sub2api strips downstream billing/CCH and rewrites metadata.user_id session before CC Gateway final-output handling",
+				"gateway final persona is canonical current Claude Code subscription profile",
 			},
 		}
 	})
@@ -954,9 +1061,10 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 	run("oauth_native_messages_sign_primary", func() jointCaptureScenario {
 		captureServer.reset()
 		gatewayUpstream.reset()
-		account := newJointOAuthAccount()
+		account := newJointSignedCCHOAuthAccount()
 		c, ctx, rec := newJointContext("/v1/messages")
 		body := []byte(`{"model":"claude-sonnet-4-6","stream":false,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"acct-client\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello sign lane"}]}]}`)
+		body = useJointClientSession(c, body, jointClientSignedCCHSessionID)
 		result, err := signingSvc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
 		require.NoError(t, err)
 		require.NotNil(t, result)
@@ -1003,15 +1111,23 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 	run("oauth_native_messages_sign_primary_rich_shape", func() jointCaptureScenario {
 		captureServer.reset()
 		gatewayUpstream.reset()
-		account := newJointOAuthAccount()
+		account := newJointSignedCCHOAuthAccount()
 		c, ctx, rec := newJointContext("/v1/messages")
-		body := loadNativeFixture(t, "messages_rich_native_shape.json")
+		_ = useJointClientSession(c, nil, jointClientSignedCCHSessionID)
+		body := jointGatewayAllowedRichNativeBody(t)
+		bodyShapeHash := claudeCodeNativeBodyShapeHash(body)
 		ctx = WithClaudeCodeNativeAuditSummary(ctx, buildClaudeCodeNativeAuditSummary(&ClaudeCodeNativeAttestationPayload{
-			RequestURI:              ClaudeCodeNativeInboundMessages,
-			GuardVersion:            "guard_v1",
-			ClaudeCodeVersion:       ccGatewayAnthropicPolicyVersion,
-			LocalSessionRef:         "hmac-sha256:" + strings.Repeat("a", 64),
-			ShapeHealthcheckProfile: ClaudeCodeNativeTakeoverHealthProfile,
+			RequestURI:                      ClaudeCodeNativeInboundMessages,
+			GuardVersion:                    "guard_v1",
+			ClaudeCodeVersion:               ccGatewayAnthropicPolicyVersion,
+			LocalSessionRef:                 "hmac-sha256:" + strings.Repeat("a", 64),
+			ShapeHealthcheckProfile:         ClaudeCodeNativeTakeoverHealthProfile,
+			BodyShapeHash:                   bodyShapeHash,
+			ReplaySafetyBoundary:            ClaudeCodeNativeReplaySafetyBoundary,
+			ReplaySafetyApplied:             true,
+			ReplaySafetySanitized:           false,
+			ReplaySafetyForbiddenPathsCount: 0,
+			ReplaySafetyBodyShapeHash:       bodyShapeHash,
 		}, body))
 		c.Request = c.Request.WithContext(ctx)
 
@@ -1072,9 +1188,10 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		run(modelCase.name, func() jointCaptureScenario {
 			captureServer.reset()
 			gatewayUpstream.reset()
-			account := newJointOAuthAccount()
+			account := newJointSignedCCHOAuthAccount()
 			c, ctx, rec := newJointContext("/v1/messages")
 			body := []byte(fmt.Sprintf(`{"model":%q,"stream":false,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"acct-client\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello model shape"}]}]}`, modelCase.model))
+			body = useJointClientSession(c, body, jointClientSignedCCHSessionID)
 			result, err := signingSvc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
 			require.NoError(t, err)
 			require.NotNil(t, result)
@@ -1113,7 +1230,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 				CCGatewayOwnsFinalOutput: upstreamSummary.Body.BillingHeaderPresent && upstreamSummary.Body.CCHPresent && upstreamSummary.HeaderValuesSummary["User-Agent"] == jointExpectedGatewayUserAgent,
 				Passed:                   passed,
 				Notes: []string{
-					"2.1.175 sign-primary model shape reached localhost upstream with CC Gateway-owned billing/CCH",
+					"current policy sign-primary model shape reached localhost upstream with CC Gateway-owned billing/CCH",
 					"mock upstream shape pass does not prove real upstream entitlement",
 				},
 			}
@@ -1166,7 +1283,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		gatewayUpstream.reset()
 		account := newJointAPIKeyAccount()
 		c, ctx, rec := newJointContext("/v1/messages/count_tokens")
-		body := []byte(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+		body := []byte(`{"model":"claude-sonnet-4-6","metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"acct-client\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 		err := svc.ForwardCountTokens(ctx, c, account, parseAnthropicRequestForTest(t, body))
 		require.Error(t, err)
 		hop1 := gatewayUpstream.popSingle(t)
@@ -1190,6 +1307,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 			NoRealUpstream:           isLoopbackHost(hop1.Host),
 			NoNativeFallback:         captureServer.count() == 0,
 			Sub2APIFinalMutation:     sub2apiSummary.BodyUnchangedFromClient,
+			Sub2APIShapeInvariant:    "deferred_no_upstream",
 			CCGatewayOwnsFinalOutput: true,
 			Passed:                   rec.Code == http.StatusForbidden && extractErrorCodeFromBody(rec.Body.Bytes()) == "count_tokens_deferred",
 			Notes:                    []string{"anthropic api-key count_tokens remains deferred; no native fallback observed"},
@@ -1204,34 +1322,35 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		body := []byte(`{"model":"claude-sonnet-4-6","stream":false,"messages":[{"role":"user","content":"hello"}]}`)
 		parsed := &ParsedRequest{Body: NewRequestBodyRef(body), Model: "claude-sonnet-4-6", Stream: false}
 		result, err := svc.ForwardAsChatCompletions(ctx, c, account, body, parsed)
-		require.NoError(t, err)
-		require.NotNil(t, result)
-		require.Equal(t, http.StatusOK, rec.Code)
-		hop1 := gatewayUpstream.popSingle(t)
-		hop2 := captureServer.popSingle(t)
-		sub2apiSummary := summarizeGatewayHop(hop1, body)
-		upstreamSummary := summarizeRawCaptureHop(hop2)
-		passed := !sub2apiSummary.Body.BillingHeaderPresent && !sub2apiSummary.Body.CCHPresent && sub2apiSummary.Body.Metadata == nil && upstreamSummary.Body.Metadata != nil && !upstreamSummary.Body.BillingHeaderPresent
+		require.Error(t, err)
+		require.Nil(t, result)
+		require.Equal(t, http.StatusBadGateway, rec.Code)
+		require.Zero(t, gatewayUpstream.count())
+		require.Zero(t, captureServer.count())
+		passed := rec.Code == http.StatusBadGateway &&
+			extractErrorTypeFromBody(rec.Body.Bytes()) == "cc_gateway_control_plane" &&
+			gatewayUpstream.count() == 0 &&
+			captureServer.count() == 0
 		return jointCaptureScenario{
-			Category:                 "sub2api_joint",
-			Route:                    "/v1/chat/completions -> /v1/messages?beta=true",
-			PolicyDecision:           "forward_strip",
+			Category:                 "sub2api_formal_pool_gate",
+			Route:                    "/v1/chat/completions",
+			PolicyDecision:           "bridge_block",
 			SelectedAccountIDRef:     jointHashText(strconv.FormatInt(account.ID, 10)),
 			EgressBucketID:           "bucket-a",
 			PolicyVersion:            ccGatewayAnthropicPolicyVersion,
 			ResponseStatus:           rec.Code,
+			ResponseErrorKind:        extractErrorTypeFromBody(rec.Body.Bytes()),
+			ResponseErrorCode:        extractErrorCodeFromBody(rec.Body.Bytes()),
 			ClientHeaderOrder:        []string{"User-Agent", "Anthropic-Beta", "Accept-Encoding", "X-Claude-Code-Session-Id"},
 			ClientBodyRef:            jointBodyRef(body),
-			Sub2APIToGateway:         &sub2apiSummary,
-			GatewayToUpstream:        &upstreamSummary,
-			RequestCount:             hop2Count(hop1, hop2),
-			FailClosed:               false,
-			NoRealUpstream:           isLoopbackHost(hop1.Host) && isLoopbackHost(rawCaptureHost(hop2.Headers.Get("Host"))),
-			NoNativeFallback:         hop1.ProxyURL == "" && !hop1.TLSProfileUsed,
-			Sub2APIFinalMutation:     sub2apiSummary.Body.Metadata == nil,
-			CCGatewayOwnsFinalOutput: upstreamSummary.Body.Metadata != nil,
+			RequestCount:             0,
+			FailClosed:               rec.Code == http.StatusBadGateway,
+			NoRealUpstream:           true,
+			NoNativeFallback:         true,
+			Sub2APIFinalMutation:     true,
+			CCGatewayOwnsFinalOutput: false,
 			Passed:                   passed,
-			Notes:                    []string{"Sub2API performs protocol conversion only; CC Gateway injects final metadata/session binding"},
+			Notes:                    []string{"formal-pool production blocks OpenAI bridge traffic before CC Gateway/upstream; native Claude messages are required"},
 		}
 	})
 
@@ -1243,34 +1362,35 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		body := []byte(`{"model":"claude-sonnet-4-6","stream":false,"input":"hello"}`)
 		parsed := &ParsedRequest{Body: NewRequestBodyRef(body), Model: "claude-sonnet-4-6", Stream: false}
 		result, err := svc.ForwardAsResponses(ctx, c, account, body, parsed)
-		require.NoError(t, err)
-		require.NotNil(t, result)
-		require.Equal(t, http.StatusOK, rec.Code)
-		hop1 := gatewayUpstream.popSingle(t)
-		hop2 := captureServer.popSingle(t)
-		sub2apiSummary := summarizeGatewayHop(hop1, body)
-		upstreamSummary := summarizeRawCaptureHop(hop2)
-		passed := !sub2apiSummary.Body.BillingHeaderPresent && !sub2apiSummary.Body.CCHPresent && sub2apiSummary.Body.Metadata == nil && upstreamSummary.Body.Metadata != nil && !upstreamSummary.Body.BillingHeaderPresent
+		require.Error(t, err)
+		require.Nil(t, result)
+		require.Equal(t, http.StatusBadGateway, rec.Code)
+		require.Zero(t, gatewayUpstream.count())
+		require.Zero(t, captureServer.count())
+		passed := rec.Code == http.StatusBadGateway &&
+			extractErrorCodeFromBody(rec.Body.Bytes()) == "cc_gateway_control_plane" &&
+			gatewayUpstream.count() == 0 &&
+			captureServer.count() == 0
 		return jointCaptureScenario{
-			Category:                 "sub2api_joint",
-			Route:                    "/v1/responses -> /v1/messages?beta=true",
-			PolicyDecision:           "forward_strip",
+			Category:                 "sub2api_formal_pool_gate",
+			Route:                    "/v1/responses",
+			PolicyDecision:           "bridge_block",
 			SelectedAccountIDRef:     jointHashText(strconv.FormatInt(account.ID, 10)),
 			EgressBucketID:           "bucket-a",
 			PolicyVersion:            ccGatewayAnthropicPolicyVersion,
 			ResponseStatus:           rec.Code,
+			ResponseErrorKind:        extractErrorTypeFromBody(rec.Body.Bytes()),
+			ResponseErrorCode:        extractErrorCodeFromBody(rec.Body.Bytes()),
 			ClientHeaderOrder:        []string{"User-Agent", "Anthropic-Beta", "Accept-Encoding", "X-Claude-Code-Session-Id"},
 			ClientBodyRef:            jointBodyRef(body),
-			Sub2APIToGateway:         &sub2apiSummary,
-			GatewayToUpstream:        &upstreamSummary,
-			RequestCount:             hop2Count(hop1, hop2),
-			FailClosed:               false,
-			NoRealUpstream:           isLoopbackHost(hop1.Host) && isLoopbackHost(rawCaptureHost(hop2.Headers.Get("Host"))),
-			NoNativeFallback:         hop1.ProxyURL == "" && !hop1.TLSProfileUsed,
-			Sub2APIFinalMutation:     sub2apiSummary.Body.Metadata == nil,
-			CCGatewayOwnsFinalOutput: upstreamSummary.Body.Metadata != nil,
+			RequestCount:             0,
+			FailClosed:               rec.Code == http.StatusBadGateway,
+			NoRealUpstream:           true,
+			NoNativeFallback:         true,
+			Sub2APIFinalMutation:     true,
+			CCGatewayOwnsFinalOutput: false,
 			Passed:                   passed,
-			Notes:                    []string{"Sub2API responses conversion path leaves final metadata/session ownership to CC Gateway"},
+			Notes:                    []string{"formal-pool production blocks OpenAI Responses bridge traffic before CC Gateway/upstream; native Claude messages are required"},
 		}
 	})
 
@@ -1330,11 +1450,11 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 
 	run("gateway_control_plane_invalid_token_401", func() jointCaptureScenario {
 		captureServer.reset()
-		resp := doGatewayJSON(t, stripGateway.baseURL, "/v1/messages?beta=true", directGatewayHeaders("301", "oauth", true, false), map[string]any{
+		resp := doGatewayJSON(t, stripGateway.baseURL, "/v1/messages?beta=true", directGatewayHeaders(jointOAuthAccountRef, "oauth", true, false), map[string]any{
 			"metadata": map[string]any{"user_id": `{"session_id":"99999999-8888-4777-8666-555555555555"}`},
 			"messages": []map[string]any{{"role": "user", "content": "hello"}},
 		})
-		return directGatewayScenario("gateway_control_plane_invalid_token_401", "/v1/messages?beta=true", "control_plane_401", "301", resp, captureServer.count() == 0)
+		return directGatewayScenario("gateway_control_plane_invalid_token_401", "/v1/messages?beta=true", "control_plane_401", jointOAuthAccountRef, resp, captureServer.count() == 0)
 	})
 
 	run("gateway_control_plane_missing_identity_403", func() jointCaptureScenario {
@@ -1348,48 +1468,48 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 
 	run("gateway_control_plane_missing_egress_bucket_400", func() jointCaptureScenario {
 		captureServer.reset()
-		resp := doGatewayJSON(t, stripGateway.baseURL, "/v1/messages?beta=true", directGatewayHeadersWithoutBucket("301", "oauth"), map[string]any{
+		resp := doGatewayJSON(t, stripGateway.baseURL, "/v1/messages?beta=true", directGatewayHeadersWithoutBucket(jointOAuthAccountRef, "oauth"), map[string]any{
 			"metadata": map[string]any{"user_id": `{"session_id":"99999999-8888-4777-8666-555555555555"}`},
 			"messages": []map[string]any{{"role": "user", "content": "hello"}},
 		})
-		return directGatewayScenario("gateway_control_plane_missing_egress_bucket_400", "/v1/messages?beta=true", "control_plane_400", "301", resp, captureServer.count() == 0)
+		return directGatewayScenario("gateway_control_plane_missing_egress_bucket_400", "/v1/messages?beta=true", "control_plane_400", jointOAuthAccountRef, resp, captureServer.count() == 0)
 	})
 
 	run("gateway_unknown_endpoint_404", func() jointCaptureScenario {
 		captureServer.reset()
-		resp := doGatewayJSON(t, stripGateway.baseURL, "/v1/unknown?beta=true", directGatewayHeaders("301", "oauth", false, false), map[string]any{
+		resp := doGatewayJSON(t, stripGateway.baseURL, "/v1/unknown?beta=true", directGatewayHeaders(jointOAuthAccountRef, "oauth", false, false), map[string]any{
 			"metadata": map[string]any{"user_id": `{"session_id":"99999999-8888-4777-8666-555555555555"}`},
 			"messages": []map[string]any{{"role": "user", "content": "hello"}},
 		})
-		return directGatewayScenario("gateway_unknown_endpoint_404", "/v1/unknown?beta=true", "block_404", "301", resp, captureServer.count() == 0)
+		return directGatewayScenario("gateway_unknown_endpoint_404", "/v1/unknown?beta=true", "block_404", jointOAuthAccountRef, resp, captureServer.count() == 0)
 	})
 
 	run("gateway_strip_verifier_failure_400", func() jointCaptureScenario {
 		captureServer.reset()
-		resp := doGatewayJSON(t, stripGateway.baseURL, "/v1/messages?beta=true", directGatewayHeaders("301", "oauth", false, false), map[string]any{
+		resp := doGatewayJSON(t, stripGateway.baseURL, "/v1/messages?beta=true", directGatewayHeaders(jointOAuthAccountRef, "oauth", false, false), map[string]any{
 			"metadata": map[string]any{"user_id": `{"session_id":"99999999-8888-4777-8666-555555555555"}`},
 			"messages": []map[string]any{{"role": "user", "content": "literal marker retained"}},
 			"system":   []map[string]any{{"type": "text", "text": "literal cch=12345 must fail verifier"}},
 		})
-		return directGatewayScenario("gateway_strip_verifier_failure_400", "/v1/messages?beta=true", "control_plane_400", "301", resp, captureServer.count() == 0)
+		return directGatewayScenario("gateway_strip_verifier_failure_400", "/v1/messages?beta=true", "control_plane_400", jointOAuthAccountRef, resp, captureServer.count() == 0)
 	})
 
 	run("gateway_signing_untrusted_cch_fail_closed_403", func() jointCaptureScenario {
 		captureServer.reset()
-		resp := doGatewayJSON(t, signingGateway.baseURL, "/v1/messages?beta=true", directGatewayHeaders("301", "oauth", false, false), map[string]any{
+		resp := doGatewayJSON(t, signingGateway.baseURL, "/v1/messages?beta=true", directGatewayHeaders(jointOAuthAccountRef, "oauth", false, false), map[string]any{
 			"metadata": map[string]any{"user_id": `{"session_id":"99999999-8888-4777-8666-555555555555"}`},
 			"messages": []map[string]any{{"role": "user", "content": "literal cch=12345 must fail closed"}},
 		})
-		return directGatewayScenario("gateway_signing_untrusted_cch_fail_closed_403", "/v1/messages?beta=true", "control_plane_403", "301", resp, captureServer.count() == 0)
+		return directGatewayScenario("gateway_signing_untrusted_cch_fail_closed_403", "/v1/messages?beta=true", "control_plane_403", jointOAuthAccountRef, resp, captureServer.count() == 0)
 	})
 
 	run("gateway_billing_mode_disabled_403", func() jointCaptureScenario {
 		captureServer.reset()
-		resp := doGatewayJSON(t, disabledGateway.baseURL, "/v1/messages?beta=true", directGatewayHeaders("301", "oauth", false, false), map[string]any{
+		resp := doGatewayJSON(t, disabledGateway.baseURL, "/v1/messages?beta=true", directGatewayHeaders(jointOAuthAccountRef, "oauth", false, false), map[string]any{
 			"metadata": map[string]any{"user_id": `{"session_id":"99999999-8888-4777-8666-555555555555"}`},
 			"messages": []map[string]any{{"role": "user", "content": "hello"}},
 		})
-		return directGatewayScenario("gateway_billing_mode_disabled_403", "/v1/messages?beta=true", "control_plane_403", "301", resp, captureServer.count() == 0)
+		return directGatewayScenario("gateway_billing_mode_disabled_403", "/v1/messages?beta=true", "control_plane_403", jointOAuthAccountRef, resp, captureServer.count() == 0)
 	})
 
 	report.NoRealUpstream = true
@@ -1402,7 +1522,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		report.NoRealUpstream = report.NoRealUpstream && scenario.NoRealUpstream
 		report.NoNativeFallback = report.NoNativeFallback && scenario.NoNativeFallback
 		if strings.HasPrefix(scenario.Category, "sub2api_joint") {
-			shapeOK := scenario.Sub2APIFinalMutation || scenario.Sub2APIShapeInvariant == "native_body_preserved"
+			shapeOK := scenario.Sub2APIFinalMutation || scenario.Sub2APIShapeInvariant == "native_body_preserved" || scenario.Sub2APIShapeInvariant == "deferred_no_upstream"
 			report.Sub2APINotFinalMutating = report.Sub2APINotFinalMutating && shapeOK
 			report.CCGatewayFinalOwner = report.CCGatewayFinalOwner && scenario.CCGatewayOwnsFinalOutput
 		}
