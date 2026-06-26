@@ -32,7 +32,7 @@ User / unmodified Claude Code CLI
 
 Safe evidence only; no raw prompt/body/response/CCH/account identity/proxy/credential material is stored here.
 
-- Upstream Sub2API PR [Wei-Shaw/sub2api#3375](https://github.com/Wei-Shaw/sub2api/pull/3375) says newer Claude Code mimicry should not inject a zero-placeholder `cch` attribution field; `enable_cch_signing` became no-op. The PR also fixes Vertex Anthropic beta-token filtering. It clarifies that "cch canceled" means the `cch` field only; the billing block with `cc_version` and `cc_entrypoint` remains.
+- Upstream Sub2API PR [Wei-Shaw/sub2api#3375](https://github.com/Wei-Shaw/sub2api/pull/3375) says newer Claude Code mimicry should not inject a zero-placeholder `cch` attribution field; `enable_cch_signing` became no-op. This formal-pool line uses the PR only as CCH-shape background. Its Vertex Anthropic beta-token filtering is intentionally out of scope for this commit/deploy path and should land as a later small patch. The PR clarifies that "cch canceled" means the `cch` field only; the billing block with `cc_version` and `cc_entrypoint` remains.
 - Issue [Wei-Shaw/sub2api#3358](https://github.com/Wei-Shaw/sub2api/issues/3358) shows recent Claude Code clients emit beta tokens such as `advisor-tool-2026-03-01`, `prompt-caching-scope-2026-01-05`, `redact-thinking-2026-02-12`, and `thinking-token-count-2026-05-13`; non-Anthropic upstreams may reject them unless filtered.
 - Local managed `2.1.177` custom-base capture still emitted a billing block with `cch=`.
 - Isolated latest `2.1.191` custom-base localhost capture emitted a billing block without `cch=`.
@@ -220,7 +220,7 @@ Prompt caching is affected by more than CCH. The selected egress profile must al
 
 This is not only a documentation matrix. CC Gateway final verifier must enforce the selected request-shape/cache profile at the same trust boundary where it enforces account, egress, persona, session, and billing/CCH. Profile enforcement may choose pass-through, strip/downscope, stub/defer, or fail-closed, but it cannot silently accept unknown production shapes.
 
-For Anthropic upstream formal-pool, the selected native profile can pass through proven Anthropic-compatible beta tokens. For Vertex/Bedrock/non-Anthropic paths, profile-specific filtering must happen after policy evaluation and before final body/header send. The Vertex PR 3375 behavior is relevant if those accounts are in the pool, but it must not change Claude Anthropic formal-pool signer/verifier decisions.
+For Anthropic upstream formal-pool, the selected native profile can pass through proven Anthropic-compatible beta tokens. Vertex/Bedrock/non-Anthropic beta filtering is intentionally not part of this 56/58/59 formal-pool safety commit/deploy path; handle it in a separate tested patch so it cannot change Claude Anthropic formal-pool signer/verifier decisions.
 
 Cache acceptance gates:
 

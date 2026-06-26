@@ -59,7 +59,7 @@ The following deltas were observed with identical localhost mock target and `cla
 | `2.1.191 latest custom-base` | absent | Beta set added `advisor-tool-2026-03-01` and `thinking-token-count-2026-05-13`; body added/kept `output_config.effort`; still had 26 tools, 3 system blocks, 2 system cache-control blocks; no `diagnostics` top-level object in this minimal custom-base run. |
 | `2.1.191 latest first-party-assumed` | present | Beta set additionally included `advanced-tool-use-2025-11-20` and `cache-diagnosis-2026-04-07`; headers included an extra request-id family; body included top-level `diagnostics.previous_message_id`; tool schemas had `eager_input_streaming`; tool count was lower in the minimal capture; system block count increased to 4. |
 
-Implication: CCH is only one part of the version/mode drift. Beta tokens, diagnostics, tool-schema flags, system block layout, request-id header families, and output config also need profile-aware handling. Vertex/Bedrock/non-Anthropic backends must filter unsupported beta tokens after policy evaluation, and CC Gateway final verification must check the whole selected egress profile, not only the billing/CCH marker.
+Implication: CCH is only one part of the version/mode drift. Beta tokens, diagnostics, tool-schema flags, system block layout, request-id header families, and output config also need profile-aware handling. For this formal-pool safety line, CC Gateway final verification checks the selected Anthropic formal-pool egress profile, not only the billing/CCH marker. Vertex/Bedrock/non-Anthropic beta filtering remains an out-of-scope follow-up patch.
 
 ## 2.1.191 CCH Algorithm Status
 
