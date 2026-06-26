@@ -539,14 +539,22 @@ func applyCCGatewayContext1MSelection(req *http.Request, cfg *config.Config, acc
 }
 
 func ccGatewayServerSelectedContext1M(account *Account) bool {
-	profile := strings.ToLower(strings.TrimSpace(ccGatewayPersonaProfile(account)))
-	if profile == "" || strings.Contains(profile, "non_1m") || strings.Contains(profile, "non-1m") {
-		return false
+	for _, profile := range []string{
+		account.GetExtraString(FormalPoolExtraPoolProfileEffective),
+		ccGatewayPersonaProfile(account),
+	} {
+		profile = strings.ToLower(strings.TrimSpace(profile))
+		if profile == "" || strings.Contains(profile, "non_1m") || strings.Contains(profile, "non-1m") {
+			continue
+		}
+		if strings.HasSuffix(profile, "_1m") ||
+			strings.HasSuffix(profile, "-1m") ||
+			strings.Contains(profile, "subscription_1m") ||
+			strings.Contains(profile, "context_1m") {
+			return true
+		}
 	}
-	return strings.HasSuffix(profile, "_1m") ||
-		strings.HasSuffix(profile, "-1m") ||
-		strings.Contains(profile, "subscription_1m") ||
-		strings.Contains(profile, "context_1m")
+	return false
 }
 
 func applyCCGatewayAnthropicPolicyVersion(ctx context.Context, req *http.Request, account *Account) {

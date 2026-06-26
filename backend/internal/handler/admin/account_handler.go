@@ -1522,6 +1522,89 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 	})
 }
 
+// ClaudePlatformAWSBatchCreate handles safe multi-workspace imports.
+// POST /api/v1/admin/accounts/claude-platform-aws/batch
+func (h *AccountHandler) ClaudePlatformAWSBatchCreate(c *gin.Context) {
+	var req struct {
+		IdempotencyKey string  `json:"idempotency_key"`
+		GroupIDs       []int64 `json:"group_ids"`
+		Rows           []struct {
+			Name        string `json:"name"`
+			WorkspaceID string `json:"workspace_id"`
+			Region      string `json:"aws_region"`
+			APIKey      string `json:"api_key"`
+			ProxyID     int64  `json:"proxy_id"`
+			Concurrency int    `json:"concurrency"`
+			Priority    int    `json:"priority"`
+		} `json:"rows" binding:"required,min=1"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if key := service.ClaudePlatformAWSIdempotencyKey(c.GetHeader("Idempotency-Key"), req.IdempotencyKey); key != "" && c.GetHeader("Idempotency-Key") == "" {
+		c.Request.Header.Set("Idempotency-Key", key)
+	}
+
+	input := service.ClaudePlatformAWSBatchImportInput{Rows: make([]service.ClaudePlatformAWSBatchImportRow, 0, len(req.Rows))}
+	for _, row := range req.Rows {
+		input.Rows = append(input.Rows, service.ClaudePlatformAWSBatchImportRow{Name: row.Name, WorkspaceID: row.WorkspaceID, Region: row.Region, APIKey: row.APIKey, ProxyID: row.ProxyID})
+	}
+	planned, err := service.BuildClaudePlatformAWSBatchImport(input)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	executeAdminIdempotentJSON(c, "admin.accounts.claude_platform_aws.batch_create", planned, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+		rows := make([]gin.H, 0, len(planned.Rows))
+		for i, plannedRow := range planned.Rows {
+			rowResp := gin.H{
+				"index":                          plannedRow.Index,
+				"status":                         plannedRow.Status,
+				"region":                         plannedRow.Region,
+				"workspace_ref":                  plannedRow.WorkspaceRef,
+				"workspace_binding_hmac_present": plannedRow.WorkspaceBindingHMACPresent,
+				"endpoint_ref":                   plannedRow.EndpointRef,
+				"credential_ref":                 plannedRow.CredentialRef,
+				"proxy_identity_ref":             plannedRow.ProxyIdentityRef,
+				"account_ref":                    plannedRow.AccountRef,
+				"cc_gateway_runtime_registered":  false,
+				"formal_pool_schedulable":        false,
+			}
+			if plannedRow.Status == service.ClaudePlatformAWSBatchRowCreate {
+				raw := req.Rows[i]
+				proxyID := raw.ProxyID
+				schedulable := false
+				account, err := h.adminService.CreateAccount(ctx, &service.CreateAccountInput{
+					Name:                  raw.Name,
+					Platform:              service.PlatformAnthropic,
+					Type:                  service.AccountTypeClaudePlatformAWS,
+					ProxyID:               &proxyID,
+					Concurrency:           raw.Concurrency,
+					Priority:              raw.Priority,
+					GroupIDs:              req.GroupIDs,
+					SkipMixedChannelCheck: true,
+					Schedulable:           &schedulable,
+					Credentials: map[string]any{
+						"auth_mode":              "apikey",
+						"api_key":                raw.APIKey,
+						"aws_region":             raw.Region,
+						"anthropic_workspace_id": raw.WorkspaceID,
+						"base_url":               service.ClaudePlatformAWSEndpointForRegion(raw.Region),
+					},
+				})
+				if err != nil {
+					return nil, err
+				}
+				rowResp["created_account_id"] = account.ID
+			}
+			rows = append(rows, rowResp)
+		}
+		return gin.H{"rows": rows}, nil
+	})
+}
+
 // BatchUpdateCredentialsRequest represents batch credentials update request
 type BatchUpdateCredentialsRequest struct {
 	AccountIDs []int64 `json:"account_ids" binding:"required,min=1"`

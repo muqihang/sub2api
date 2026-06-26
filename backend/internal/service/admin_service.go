@@ -2677,6 +2677,30 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	if input.Schedulable != nil {
 		account.Schedulable = *input.Schedulable
 	}
+	if account.IsClaudePlatformAWS() {
+		validation, err := ValidateClaudePlatformAWSAccount(account)
+		if err != nil {
+			return nil, err
+		}
+		extra := cloneCredentials(account.Extra)
+		extra[ccGatewayExtraAccountRef] = validation.AccountRef
+		extra[ccGatewayExtraCredentialRef] = validation.CredentialRef
+		extra[ccGatewayExtraCredentialBindingHMAC] = validation.CredentialBindingHMAC
+		extra[ccGatewayExtraProxyIdentityRef] = validation.ProxyIdentityRef
+		extra[ClaudePlatformAWSExtraWorkspaceRef] = validation.WorkspaceRef
+		extra[ClaudePlatformAWSExtraWorkspaceBindingHMAC] = validation.WorkspaceBindingHMAC
+		extra[ClaudePlatformAWSExtraEndpointRef] = validation.EndpointRef
+		extra[ClaudePlatformAWSExtraRegion] = validation.Region
+		extra[ClaudePlatformAWSExtraAuthScheme] = ClaudePlatformAWSAuthProfileBlocked
+		extra[ClaudePlatformAWSExtraRequestShapeProfileRef] = "request-shape:claude-platform-aws-v1-messages"
+		extra[ClaudePlatformAWSExtraCacheParityProfileRef] = "cache-profile:claude-platform-aws-v1"
+		extra[ClaudePlatformAWSExtraBetaPolicyRef] = "beta-policy:claude-platform-aws-v1-strip"
+		extra[ClaudePlatformAWSExtraCP0AuthProfileEvidenceStatus] = ClaudePlatformAWSAuthProfileBlocked
+		extra[ClaudePlatformAWSExtraCP0RegionWorkspaceEvidenceStatus] = "blocked"
+		extra[ClaudePlatformAWSExtraProductionAdmitted] = false
+		account.Extra = extra
+		account.Schedulable = false
+	}
 	if account.Platform == PlatformAnthropic && (account.Type == AccountTypeOAuth || account.Type == AccountTypeSetupToken) && FormalPoolAccountStage(account) == FormalPoolStageLegacyUnknown {
 		account.Extra = FormalPoolImportedAccountExtra(account.Extra, time.Now().UTC())
 		account.Schedulable = false

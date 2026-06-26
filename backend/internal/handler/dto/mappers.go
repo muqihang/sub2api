@@ -405,6 +405,9 @@ func accountExtraForDTO(a *service.Account) map[string]any {
 	if a == nil {
 		return nil
 	}
+	if a.IsClaudePlatformAWS() {
+		return claudePlatformAWSExtraForDTO(a)
+	}
 	if !a.IsAnthropicOAuthOrSetupToken() || !service.IsFormalPoolAccount(a) {
 		return a.Extra
 	}
@@ -513,6 +516,87 @@ func accountExtraForDTO(a *service.Account) map[string]any {
 		}
 	}
 	return out
+}
+
+func claudePlatformAWSExtraForDTO(a *service.Account) map[string]any {
+	allowed := []string{
+		service.ClaudePlatformAWSExtraWorkspaceRef,
+		service.ClaudePlatformAWSExtraEndpointRef,
+		service.ClaudePlatformAWSExtraRegion,
+		service.ClaudePlatformAWSExtraAuthScheme,
+		service.ClaudePlatformAWSExtraRequestShapeProfileRef,
+		service.ClaudePlatformAWSExtraCacheParityProfileRef,
+		service.ClaudePlatformAWSExtraBetaPolicyRef,
+		service.ClaudePlatformAWSExtraCP0AuthProfileEvidenceStatus,
+		service.ClaudePlatformAWSExtraCP0RegionWorkspaceEvidenceStatus,
+		service.ClaudePlatformAWSExtraProductionAdmitted,
+	}
+	out := map[string]any{}
+	for _, key := range allowed {
+		v, ok := a.Extra[key]
+		if !ok {
+			continue
+		}
+		switch key {
+		case service.ClaudePlatformAWSExtraWorkspaceRef,
+			service.ClaudePlatformAWSExtraEndpointRef,
+			service.ClaudePlatformAWSExtraRequestShapeProfileRef,
+			service.ClaudePlatformAWSExtraCacheParityProfileRef,
+			service.ClaudePlatformAWSExtraBetaPolicyRef:
+			if text, ok := formalPoolDTOString(v); ok && !formalPoolDTOUnsafeText(text) {
+				out[key] = text
+			}
+		case service.ClaudePlatformAWSExtraProductionAdmitted:
+			if safe, ok := safeFormalPoolDTOBool(v); ok {
+				out[key] = safe
+			}
+		case service.ClaudePlatformAWSExtraAuthScheme:
+			if text, ok := safeClaudePlatformAWSAuthSchemeDTO(v); ok {
+				out[key] = text
+			}
+		case service.ClaudePlatformAWSExtraCP0AuthProfileEvidenceStatus,
+			service.ClaudePlatformAWSExtraCP0RegionWorkspaceEvidenceStatus:
+			if text, ok := safeClaudePlatformAWSStatusDTO(v); ok {
+				out[key] = text
+			}
+		default:
+			if text, ok := formalPoolDTOString(v); ok && !formalPoolDTOUnsafeText(text) {
+				out[key] = text
+			}
+		}
+	}
+	return out
+}
+
+func safeClaudePlatformAWSAuthSchemeDTO(v any) (string, bool) {
+	text, ok := formalPoolDTOString(v)
+	if !ok {
+		return "", false
+	}
+	switch text {
+	case service.ClaudePlatformAWSAuthProfileXAPIKey,
+		service.ClaudePlatformAWSAuthProfileBearerAPIKey,
+		service.ClaudePlatformAWSAuthProfileBlocked:
+		return text, true
+	default:
+		return "", false
+	}
+}
+
+func safeClaudePlatformAWSStatusDTO(v any) (string, bool) {
+	text, ok := formalPoolDTOString(v)
+	if !ok {
+		return "", false
+	}
+	switch strings.ToLower(text) {
+	case "pass", "blocked", "fail", "unknown":
+		return text, true
+	default:
+		if text == service.ClaudePlatformAWSAuthProfileBlocked {
+			return text, true
+		}
+		return "", false
+	}
 }
 
 var (
