@@ -21,8 +21,13 @@ func formalPoolCompleteSchedulingEvidenceForTest() map[string]any {
 		FormalPoolExtraRuntimeRegistered:           "true",
 		FormalPoolExtraRuntimeRegisteredAt:         "2026-05-30T00:00:00Z",
 		"cc_gateway_account_ref":                   "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"cc_gateway_credential_ref":                "opaque:credential-ref:v1:cred-a",
+		"cc_gateway_credential_binding_hmac":       "hmac-sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 		"cc_gateway_egress_bucket_enabled":         "true",
 		"cc_gateway_egress_bucket":                 "claude-safe-bucket",
+		"cc_gateway_proxy_identity_ref":            "opaque:proxy-ref:v1:claude-safe-bucket",
+		"cc_gateway_persona_profile":               ccGatewayDefaultPersonaProfile,
+		"claude_code_device_id":                    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 	}
 }
 
@@ -74,7 +79,7 @@ func TestFormalPoolQuarantineServiceMarksAccountUnsafeAndWritesRisk(t *testing.T
 	sink := &recordingBudgetLedgerSink{}
 	svc := NewAccountQuarantineService(repo, sink)
 
-	entry, err := svc.Quarantine(context.Background(), AccountQuarantineInput{AccountID: 7, Kind: RiskEventKindIdentityBoundaryFail, Reason: "missing_account_identity raw-token sk-ant-sid02-redacted", Source: "cc_gateway", StatusCode: http.StatusUnprocessableEntity})
+	entry, err := svc.Quarantine(context.Background(), AccountQuarantineInput{AccountID: 7, Kind: RiskEventKindIdentityBoundaryFail, Reason: "missing_account_identity raw-token unsafe-token-prefix-redacted", Source: "cc_gateway", StatusCode: http.StatusUnprocessableEntity})
 	require.NoError(t, err)
 	require.Equal(t, FormalPoolStageQuarantined, repo.accounts[7].Extra[FormalPoolExtraOnboardingStage])
 	require.False(t, repo.accounts[7].Schedulable)

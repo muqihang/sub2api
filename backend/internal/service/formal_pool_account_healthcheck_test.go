@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -49,6 +51,16 @@ func (u *formalPoolHealthcheckUpstream) DoWithTLS(req *http.Request, proxyURL st
 	return u.resp, nil
 }
 
+const (
+	formalPoolHealthcheckAccountRefForTest = "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	formalPoolHealthcheckProxyRefForTest   = "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+)
+
+func newFormalPoolHealthcheckConfig() *config.Config {
+	cfg := &config.Config{Gateway: config.GatewayConfig{CCGateway: config.GatewayCCGatewayConfig{Enabled: true, BaseURL: "http://cc-gateway:8443", Token: "ccg-token", ContextAttestationSecret: "formal-pool-attestation-secret-test", Providers: config.GatewayCCGatewayProvidersConfig{Anthropic: true}}}}
+	return cfg
+}
+
 func newFormalPoolHealthcheckAccount() *Account {
 	account := newAnthropicOAuthAccountForClaudeForwardTest()
 	account.ID = 7001
@@ -60,7 +72,11 @@ func newFormalPoolHealthcheckAccount() *Account {
 	account.Extra["cc_gateway_routes"] = "native_messages"
 	account.Extra["cc_gateway_egress_bucket_enabled"] = "true"
 	account.Extra["cc_gateway_egress_bucket"] = "bucket-a"
-	account.Extra["cc_gateway_account_ref"] = "hmac-sha256:acct-ref"
+	account.Extra["cc_gateway_account_ref"] = formalPoolHealthcheckAccountRefForTest
+	account.Extra[ccGatewayExtraCredentialRef] = "opaque:credential-ref:v1:healthcheck-cred"
+	account.Extra[ccGatewayExtraProxyIdentityRef] = formalPoolHealthcheckProxyRefForTest
+	account.Extra[ccGatewayExtraPersonaProfile] = ccGatewayHealthcheckNon1MProfile
+	account.Extra["claude_code_device_id"] = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageRuntimeRegistered
 	account.Schedulable = false
 	return account
@@ -71,9 +87,9 @@ func TestFormalPoolGatewayHealthcheckRunnerRequiresCCGatewayEvidence(t *testing.
 	account := newFormalPoolHealthcheckAccount()
 	repo := &formalPoolHealthcheckRepo{formalRateLimitRepo{accountsByID: map[int64]*Account{account.ID: account}}}
 	upstream := &formalPoolHealthcheckUpstream{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))}}
-	runner := NewFormalPoolGatewayHealthcheckRunner(repo, upstream, &config.Config{Gateway: config.GatewayConfig{CCGateway: config.GatewayCCGatewayConfig{Enabled: true, BaseURL: "http://cc-gateway:8443", Providers: config.GatewayCCGatewayProvidersConfig{Anthropic: true}}}}, nil)
+	runner := NewFormalPoolGatewayHealthcheckRunner(repo, upstream, newFormalPoolHealthcheckConfig(), nil)
 
-	got, err := runner.RunHealthcheck(context.Background(), FormalPoolAcceptanceInput{AccountID: account.ID, AccountRef: "hmac-sha256:acct-ref", EgressBucket: "bucket-a", ProxyRef: "hmac-sha256:proxy-ref", PoolProfile: PoolProfileNormal})
+	got, err := runner.RunHealthcheck(context.Background(), FormalPoolAcceptanceInput{AccountID: account.ID, AccountRef: formalPoolHealthcheckAccountRefForTest, EgressBucket: "bucket-a", ProxyRef: formalPoolHealthcheckProxyRefForTest, PoolProfile: PoolProfileNormal})
 
 	require.NoError(t, err)
 	require.Equal(t, "failed_acceptance", got.Status)
@@ -90,23 +106,63 @@ func TestFormalPoolGatewayHealthcheckRunnerPassesWithSafeEvidence(t *testing.T) 
 	account := newFormalPoolHealthcheckAccount()
 	repo := &formalPoolHealthcheckRepo{formalRateLimitRepo{accountsByID: map[int64]*Account{account.ID: account}}}
 	upstream := &formalPoolHealthcheckUpstream{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"X-Cc-Gateway-Seen": []string{"1"}, "X-Cc-Gateway-Raw-Capture-Ref": []string{"hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}, Body: io.NopCloser(strings.NewReader("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))}}
-	runner := NewFormalPoolGatewayHealthcheckRunner(repo, upstream, &config.Config{Gateway: config.GatewayConfig{CCGateway: config.GatewayCCGatewayConfig{Enabled: true, BaseURL: "http://cc-gateway:8443", Providers: config.GatewayCCGatewayProvidersConfig{Anthropic: true}}}}, nil)
+	runner := NewFormalPoolGatewayHealthcheckRunner(repo, upstream, newFormalPoolHealthcheckConfig(), nil)
 
-	got, err := runner.RunHealthcheck(context.Background(), FormalPoolAcceptanceInput{AccountID: account.ID, AccountRef: "hmac-sha256:acct-ref", EgressBucket: "bucket-a", ProxyRef: "hmac-sha256:proxy-ref", PoolProfile: PoolProfileNormal})
+	got, err := runner.RunHealthcheck(context.Background(), FormalPoolAcceptanceInput{AccountID: account.ID, AccountRef: formalPoolHealthcheckAccountRefForTest, EgressBucket: "bucket-a", ProxyRef: formalPoolHealthcheckProxyRefForTest, PoolProfile: PoolProfileNormal})
 
 	require.NoError(t, err)
 	require.True(t, got.FormalPoolHealthcheckPassed(), "%#v", got)
 	require.Equal(t, "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", got.RawCaptureRef)
 }
 
-func TestFormalPoolGatewayHealthcheckRunnerUsesClaudeCodeLiteBodyWithoutOneMillionContext(t *testing.T) {
+func TestFormalPoolGatewayHealthcheckRunnerSendsAttestedFormalPoolContext(t *testing.T) {
 	t.Parallel()
 	account := newFormalPoolHealthcheckAccount()
 	repo := &formalPoolHealthcheckRepo{formalRateLimitRepo{accountsByID: map[int64]*Account{account.ID: account}}}
 	upstream := &formalPoolHealthcheckUpstream{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"X-Cc-Gateway-Seen": []string{"1"}, "X-Cc-Gateway-Raw-Capture-Ref": []string{"hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}, Body: io.NopCloser(strings.NewReader("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))}}
-	runner := NewFormalPoolGatewayHealthcheckRunner(repo, upstream, &config.Config{Gateway: config.GatewayConfig{CCGateway: config.GatewayCCGatewayConfig{Enabled: true, BaseURL: "http://cc-gateway:8443", Providers: config.GatewayCCGatewayProvidersConfig{Anthropic: true}}}}, nil)
+	cfg := newFormalPoolHealthcheckConfig()
+	runner := NewFormalPoolGatewayHealthcheckRunner(repo, upstream, cfg, nil)
 
-	_, err := runner.RunHealthcheck(context.Background(), FormalPoolAcceptanceInput{AccountID: account.ID, AccountRef: "hmac-sha256:acct-ref", EgressBucket: "bucket-a", ProxyRef: "hmac-sha256:proxy-ref", PoolProfile: PoolProfileNormal})
+	_, err := runner.RunHealthcheck(context.Background(), FormalPoolAcceptanceInput{AccountID: account.ID, AccountRef: formalPoolHealthcheckAccountRefForTest, EgressBucket: "bucket-a", ProxyRef: formalPoolHealthcheckProxyRefForTest, PoolProfile: PoolProfileNormal})
+
+	require.NoError(t, err)
+	require.NotEmpty(t, getHeaderRaw(upstream.lastHeaders, ccGatewayFormalPoolContextHeader))
+	requireValidCCGatewayFormalPoolSignatureForTest(t, &http.Request{Header: upstream.lastHeaders}, cfg.Gateway.CCGateway.ContextAttestationSecret)
+	ctx := decodeCCGatewayFormalPoolContextForTest(t, &http.Request{Header: upstream.lastHeaders})
+	require.Equal(t, "messages", ctx["route_class"])
+	require.Equal(t, ccGatewayHealthcheckNon1MProfile, ctx["persona_profile"])
+	require.NotEmpty(t, ctx["session_id"])
+}
+
+func TestFormalPoolGatewayHealthcheckSessionLedgerBindsHealthcheckPersona(t *testing.T) {
+	resetClaudeCodeSessionBoundaryLedgerForTest()
+	t.Setenv("SUB2API_CLAUDE_CODE_SESSION_BOUNDARY_LEDGER_FILE", filepath.Join(t.TempDir(), "formal-pool-session-ledger.json"))
+	const wantPersonaProfile = "claude_code_2_1_179_native_degraded"
+	account := newFormalPoolHealthcheckAccount()
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+	account.Extra[ccGatewayExtraPersonaProfile] = ccGatewayDefaultPersonaProfile
+	repo := &formalPoolHealthcheckRepo{formalRateLimitRepo{accountsByID: map[int64]*Account{account.ID: account}}}
+	upstream := &formalPoolHealthcheckUpstream{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"X-Cc-Gateway-Seen": []string{"1"}, "X-Cc-Gateway-Raw-Capture-Ref": []string{"hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}, Body: io.NopCloser(strings.NewReader("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))}}
+	runner := NewFormalPoolGatewayHealthcheckRunner(repo, upstream, newFormalPoolHealthcheckConfig(), nil)
+
+	_, err := runner.RunHealthcheck(context.Background(), FormalPoolAcceptanceInput{AccountID: account.ID, AccountRef: formalPoolHealthcheckAccountRefForTest, EgressBucket: "bucket-a", ProxyRef: formalPoolHealthcheckProxyRefForTest, PoolProfile: PoolProfileNormal})
+
+	require.NoError(t, err)
+	raw, err := os.ReadFile(os.Getenv("SUB2API_CLAUDE_CODE_SESSION_BOUNDARY_LEDGER_FILE"))
+	require.NoError(t, err)
+	require.Contains(t, string(raw), wantPersonaProfile)
+	require.Contains(t, string(raw), `"policy_version": "2_1_179"`)
+}
+
+func TestFormalPoolGatewayHealthcheckRunnerUsesClaudeCodeLiteBodyWithoutOneMillionContext(t *testing.T) {
+	t.Parallel()
+	const wantPersonaProfile = "claude_code_2_1_179_native_degraded"
+	account := newFormalPoolHealthcheckAccount()
+	repo := &formalPoolHealthcheckRepo{formalRateLimitRepo{accountsByID: map[int64]*Account{account.ID: account}}}
+	upstream := &formalPoolHealthcheckUpstream{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"X-Cc-Gateway-Seen": []string{"1"}, "X-Cc-Gateway-Raw-Capture-Ref": []string{"hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}, Body: io.NopCloser(strings.NewReader("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))}}
+	runner := NewFormalPoolGatewayHealthcheckRunner(repo, upstream, newFormalPoolHealthcheckConfig(), nil)
+
+	_, err := runner.RunHealthcheck(context.Background(), FormalPoolAcceptanceInput{AccountID: account.ID, AccountRef: formalPoolHealthcheckAccountRefForTest, EgressBucket: "bucket-a", ProxyRef: formalPoolHealthcheckProxyRefForTest, PoolProfile: PoolProfileNormal})
 
 	require.NoError(t, err)
 	var body map[string]any
@@ -133,7 +189,7 @@ func TestFormalPoolGatewayHealthcheckRunnerUsesClaudeCodeLiteBodyWithoutOneMilli
 	require.Equal(t, "low", outputConfig["effort"])
 	require.NotContains(t, outputConfig, "format")
 	require.NotContains(t, strings.ToLower(upstream.lastHeaders.Get("anthropic-beta")), "context-1m")
-	require.Equal(t, "claude_code_2_1_175_api_key_non_1m", getHeaderRaw(upstream.lastHeaders, ccGatewayHealthcheckPersonaHeader))
+	require.Equal(t, wantPersonaProfile, getHeaderRaw(upstream.lastHeaders, ccGatewayHealthcheckPersonaHeader))
 }
 
 func TestFormalPoolGatewayHealthcheckRunnerQuarantinesAuthFailure(t *testing.T) {
@@ -141,9 +197,9 @@ func TestFormalPoolGatewayHealthcheckRunnerQuarantinesAuthFailure(t *testing.T) 
 	account := newFormalPoolHealthcheckAccount()
 	repo := &formalPoolHealthcheckRepo{formalRateLimitRepo{accountsByID: map[int64]*Account{account.ID: account}}}
 	upstream := &formalPoolHealthcheckUpstream{resp: &http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"error":{"message":"invalid credentials"}}`))}}
-	runner := NewFormalPoolGatewayHealthcheckRunner(repo, upstream, &config.Config{Gateway: config.GatewayConfig{CCGateway: config.GatewayCCGatewayConfig{Enabled: true, BaseURL: "http://cc-gateway:8443", Providers: config.GatewayCCGatewayProvidersConfig{Anthropic: true}}}}, nil)
+	runner := NewFormalPoolGatewayHealthcheckRunner(repo, upstream, newFormalPoolHealthcheckConfig(), nil)
 
-	got, err := runner.RunHealthcheck(context.Background(), FormalPoolAcceptanceInput{AccountID: account.ID, AccountRef: "hmac-sha256:acct-ref", EgressBucket: "bucket-a", ProxyRef: "hmac-sha256:proxy-ref", PoolProfile: PoolProfileNormal})
+	got, err := runner.RunHealthcheck(context.Background(), FormalPoolAcceptanceInput{AccountID: account.ID, AccountRef: formalPoolHealthcheckAccountRefForTest, EgressBucket: "bucket-a", ProxyRef: formalPoolHealthcheckProxyRefForTest, PoolProfile: PoolProfileNormal})
 
 	require.NoError(t, err)
 	require.Equal(t, "failed_acceptance", got.Status)
@@ -192,9 +248,9 @@ func TestFormalPoolGatewayHealthcheckRunnerSafeErrorClassificationMatrix(t *test
 			account := newFormalPoolHealthcheckAccount()
 			repo := &formalPoolHealthcheckRepo{formalRateLimitRepo{accountsByID: map[int64]*Account{account.ID: account}}}
 			upstream := &formalPoolHealthcheckUpstream{resp: &http.Response{StatusCode: tc.status, Header: tc.headers, Body: io.NopCloser(strings.NewReader(tc.body))}}
-			runner := NewFormalPoolGatewayHealthcheckRunner(repo, upstream, &config.Config{Gateway: config.GatewayConfig{CCGateway: config.GatewayCCGatewayConfig{Enabled: true, BaseURL: "http://cc-gateway:8443", Providers: config.GatewayCCGatewayProvidersConfig{Anthropic: true}}}}, nil)
+			runner := NewFormalPoolGatewayHealthcheckRunner(repo, upstream, newFormalPoolHealthcheckConfig(), nil)
 
-			got, err := runner.RunHealthcheck(context.Background(), FormalPoolAcceptanceInput{AccountID: account.ID, AccountRef: "hmac-sha256:acct-ref", EgressBucket: "bucket-a", ProxyRef: "hmac-sha256:proxy-ref", PoolProfile: PoolProfileNormal})
+			got, err := runner.RunHealthcheck(context.Background(), FormalPoolAcceptanceInput{AccountID: account.ID, AccountRef: formalPoolHealthcheckAccountRefForTest, EgressBucket: "bucket-a", ProxyRef: formalPoolHealthcheckProxyRefForTest, PoolProfile: PoolProfileNormal})
 
 			require.NoError(t, err)
 			payload := map[string]any{}

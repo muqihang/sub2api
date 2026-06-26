@@ -294,6 +294,9 @@ func TestFormalPoolExchangeRegistersCCGatewayRuntimeMapping(t *testing.T) {
 	if runtime.input.AccountRef != got.AccountRef || runtime.input.EgressBucket != got.EgressBucket || runtime.input.ProxyURL != "socks5h://proxy.local:1080" {
 		t.Fatalf("bad runtime registration input: %#v got=%#v", runtime.input, got)
 	}
+	if runtime.input.TokenType != "oauth" || runtime.input.CredentialProof != "Bearer access" {
+		t.Fatalf("runtime registration credential proof must come from server-side OAuth credentials: %#v", runtime.input)
+	}
 	if !got.CCGatewayRuntimeRegistered {
 		t.Fatalf("session must expose runtime registration status")
 	}
@@ -362,6 +365,9 @@ func TestFormalPoolSetupTokenCookieCreateRegistersRuntimeAndKeepsAccountUnschedu
 	}
 	if !runtime.called || runtime.input.AccountRef != got.AccountRef || runtime.input.EgressBucket != got.EgressBucket || runtime.input.ProxyURL != "http://proxy.local:443" {
 		t.Fatalf("runtime registration missing or wrong: %#v got=%#v", runtime.input, got)
+	}
+	if runtime.input.TokenType != "oauth" || runtime.input.CredentialProof != "Bearer setup-access" {
+		t.Fatalf("setup-token runtime registration proof must come from server-side setup-token credentials: %#v", runtime.input)
 	}
 	if !got.CCGatewayRuntimeRegistered || got.OAuthSummary == nil || !got.OAuthSummary.ScopeContainsUserInference || got.OAuthSummary.ScopeContainsClaudeCode {
 		t.Fatalf("bad setup-token safe summary/session: %#v", got)
@@ -649,6 +655,7 @@ func TestFormalPoolRunAcceptanceRejectsMissingPersistedRuntimeTimestampBeforeRun
 func TestFormalPoolRunAccountHealthcheckUsesExistingFormalAccountWithoutSession(t *testing.T) {
 	acct := &formalAccountFake{}
 	proxyID := int64(6)
+	accountRef := "hmac-sha256:" + strings.Repeat("a", 64)
 	acct.account = &Account{
 		ID:          2,
 		Name:        "formal-existing",
@@ -660,19 +667,24 @@ func TestFormalPoolRunAccountHealthcheckUsesExistingFormalAccountWithoutSession(
 		Concurrency: 10,
 		Credentials: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"},
 		Extra: map[string]any{
-			"cc_gateway_enabled":                "true",
-			"cc_gateway_canary_only":            "false",
-			"cc_gateway_policy_version":         ccGatewayAnthropicPolicyVersion,
-			"cc_gateway_routes":                 string(ccGatewayRouteNativeMessages),
-			"cc_gateway_egress_bucket_enabled":  "true",
-			"cc_gateway_egress_bucket":          "bucket-existing",
-			"cc_gateway_account_ref":            "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			FormalPoolExtraOnboardingStage:      FormalPoolStageRuntimeRegistered,
-			FormalPoolExtraRuntimeRegistered:    "true",
-			FormalPoolExtraRuntimeRegisteredAt:  "2026-05-29T00:00:00Z",
-			FormalPoolExtraPoolProfileRequested: PoolProfileNormal,
-			FormalPoolExtraPoolProfileEffective: PoolProfileNormal,
-			FormalPoolExtraPoolWeightMode:       FormalPoolWeightLow,
+			"cc_gateway_enabled":                 "true",
+			"cc_gateway_canary_only":             "false",
+			"cc_gateway_policy_version":          ccGatewayAnthropicPolicyVersion,
+			"cc_gateway_routes":                  string(ccGatewayRouteNativeMessages),
+			"cc_gateway_egress_bucket_enabled":   "true",
+			"cc_gateway_egress_bucket":           "bucket-existing",
+			"cc_gateway_account_ref":             accountRef,
+			"cc_gateway_credential_ref":          ccGatewayGeneratedCredentialRef(accountRef, "1"),
+			"cc_gateway_credential_binding_hmac": ccGatewayOAuthCredentialBindingHMAC("formal-pool-runtime-binding-local-test-secret", "access"),
+			"cc_gateway_proxy_identity_ref":      formalPoolSafeRef("proxy", "6"),
+			"cc_gateway_persona_profile":         ccGatewayDefaultPersonaProfile,
+			"claude_code_device_id":              ccGatewayGeneratedDeviceID(accountRef),
+			FormalPoolExtraOnboardingStage:       FormalPoolStageRuntimeRegistered,
+			FormalPoolExtraRuntimeRegistered:     "true",
+			FormalPoolExtraRuntimeRegisteredAt:   "2026-05-29T00:00:00Z",
+			FormalPoolExtraPoolProfileRequested:  PoolProfileNormal,
+			FormalPoolExtraPoolProfileEffective:  PoolProfileNormal,
+			FormalPoolExtraPoolWeightMode:        FormalPoolWeightLow,
 		},
 		GroupIDs:      []int64{42},
 		AccountGroups: []AccountGroup{{AccountID: 2, GroupID: 42}},
@@ -688,7 +700,7 @@ func TestFormalPoolRunAccountHealthcheckUsesExistingFormalAccountWithoutSession(
 	if healthcheck.calls != 1 {
 		t.Fatalf("expected one directed healthcheck call, got %d", healthcheck.calls)
 	}
-	if result.AccountID != 2 || result.AccountRef != "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" || result.EgressBucket != "bucket-existing" || result.ProxyRef == "" {
+	if result.AccountID != 2 || result.AccountRef != accountRef || result.EgressBucket != "bucket-existing" || result.ProxyRef == "" {
 		t.Fatalf("account identity was not preserved: %#v", result)
 	}
 	if result.Status != FormalPoolOnboardingStatusHealthcheckPassed || !result.CCGatewaySeen || !result.RawCapturePresent {
@@ -771,7 +783,8 @@ func TestFormalPoolRunAcceptanceWritesFailedHealthcheckEvidence(t *testing.T) {
 func TestFormalPoolRunAccountHealthcheckWritesFullFailureEvidence(t *testing.T) {
 	acct := &formalAccountFake{}
 	proxyID := int64(6)
-	acct.account = &Account{ID: 2, Name: "formal-existing", Platform: PlatformAnthropic, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: false, ProxyID: &proxyID, Credentials: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}, Extra: map[string]any{"cc_gateway_enabled": "true", "cc_gateway_routes": string(ccGatewayRouteNativeMessages), "cc_gateway_egress_bucket_enabled": "true", "cc_gateway_egress_bucket": "bucket-existing", "cc_gateway_account_ref": "hmac-sha256:" + strings.Repeat("b", 64), FormalPoolExtraOnboardingStage: FormalPoolStageRuntimeRegistered, FormalPoolExtraRuntimeRegistered: "true", FormalPoolExtraRuntimeRegisteredAt: "2026-05-29T00:00:00Z"}}
+	accountRef := "hmac-sha256:" + strings.Repeat("b", 64)
+	acct.account = &Account{ID: 2, Name: "formal-existing", Platform: PlatformAnthropic, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: false, ProxyID: &proxyID, Credentials: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}, Extra: map[string]any{"cc_gateway_enabled": "true", "cc_gateway_routes": string(ccGatewayRouteNativeMessages), "cc_gateway_egress_bucket_enabled": "true", "cc_gateway_egress_bucket": "bucket-existing", "cc_gateway_account_ref": accountRef, "cc_gateway_credential_ref": ccGatewayGeneratedCredentialRef(accountRef, "1"), "cc_gateway_credential_binding_hmac": ccGatewayOAuthCredentialBindingHMAC("formal-pool-runtime-binding-local-test-secret", "access"), "cc_gateway_proxy_identity_ref": formalPoolSafeRef("proxy", "6"), "cc_gateway_persona_profile": ccGatewayDefaultPersonaProfile, "claude_code_device_id": ccGatewayGeneratedDeviceID(accountRef), FormalPoolExtraOnboardingStage: FormalPoolStageRuntimeRegistered, FormalPoolExtraRuntimeRegistered: "true", FormalPoolExtraRuntimeRegisteredAt: "2026-05-29T00:00:00Z"}}
 	healthcheck := &formalHealthcheckFake{result: &FormalPoolAcceptanceResult{Status: "failed_acceptance", Checks: []FormalPoolAcceptanceCheck{{Name: "directed_healthcheck", Status: "fail"}}, StatusCodeBucket: "status_4xx", CCGatewaySeen: true, RawCapturePresent: true, RawCaptureRef: "https://sensitive.example/raw", FallbackDetected: true, ProxyMismatch: false, RiskTextDetected: true}}
 	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Accounts: acct, Healthcheck: healthcheck})
 
@@ -876,7 +889,7 @@ func TestFormalPoolRegisterRuntimeRequiresRefreshOnlyGate(t *testing.T) {
 	}
 }
 
-func TestFormalPoolRefreshOnlyPromotesRuntimeRegisteredWhenRuntimeAlreadyRecorded(t *testing.T) {
+func TestFormalPoolRefreshOnlyInvalidatesRuntimeRegistrationWhenCredentialRefreshes(t *testing.T) {
 	acct := &formalAccountFake{}
 	runtime := &formalRuntimeFake{}
 	oauth := &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}, refreshSummary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, refreshCreds: map[string]any{"access_token": "new-access", "refresh_token": "new-refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}
@@ -894,8 +907,11 @@ func TestFormalPoolRefreshOnlyPromotesRuntimeRegisteredWhenRuntimeAlreadyRecorde
 	if err != nil {
 		t.Fatalf("refresh-only: %v", err)
 	}
-	if got.Status != FormalPoolOnboardingStatusRuntimeRegistered || !got.CCGatewayRuntimeRegistered || acct.account.Extra[FormalPoolExtraOnboardingStage] != FormalPoolStageRuntimeRegistered || acct.account.Credentials["access_token"] != "new-access" {
-		t.Fatalf("refresh-only should promote pre-registered runtime account: session=%#v extra=%#v creds=%#v", got, acct.account.Extra, acct.account.Credentials)
+	if got.Status != FormalPoolStageRefreshed || got.CCGatewayRuntimeRegistered || acct.account.Extra[FormalPoolExtraOnboardingStage] != FormalPoolStageRefreshed || acct.account.GetExtraString(FormalPoolExtraRuntimeRegistered) != "false" || acct.account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt) != "" || acct.account.Credentials["access_token"] != "new-access" {
+		t.Fatalf("refresh-only should invalidate stale runtime registration after credential refresh: session=%#v extra=%#v creds=%#v", got, acct.account.Extra, acct.account.Credentials)
+	}
+	if acct.account.GetExtraString(FormalPoolExtraCredentialGeneration) != "2" || !ccGatewayCredentialBindingHMACRe.MatchString(acct.account.GetExtraString(ccGatewayExtraCredentialBindingHMAC)) {
+		t.Fatalf("refresh-only should rotate credential identity evidence: extra=%#v", acct.account.Extra)
 	}
 }
 
@@ -921,6 +937,9 @@ func TestFormalPoolRefreshOnlyThenRegisterRuntimePromotesRuntimeRegistered(t *te
 	}
 	if !runtime.called || got.Status != FormalPoolOnboardingStatusRuntimeRegistered || !got.CCGatewayRuntimeRegistered || acct.account.Extra[FormalPoolExtraOnboardingStage] != FormalPoolStageRuntimeRegistered {
 		t.Fatalf("runtime registration did not promote after refresh-only: called=%v session=%#v extra=%#v", runtime.called, got, acct.account.Extra)
+	}
+	if runtime.input.TokenType != "oauth" || runtime.input.CredentialProof != "Bearer new-access" {
+		t.Fatalf("runtime registration after refresh-only must use refreshed server-side credential proof: %#v", runtime.input)
 	}
 }
 

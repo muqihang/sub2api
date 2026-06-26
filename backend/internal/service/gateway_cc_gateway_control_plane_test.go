@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
@@ -31,12 +32,42 @@ func ccGatewayIOReadCloser(s string) io.ReadCloser {
 	return io.NopCloser(bytes.NewBufferString(s))
 }
 
+func TestCCGatewayControlPlaneFailurePathsRedactSensitiveMessages(t *testing.T) {
+	for _, code := range []string{"sign_primary_2177_oracle_missing", "missing_internal_control_attestation"} {
+		t.Run(code, func(t *testing.T) {
+			body := []byte(`{"error":{"type":"cc_gateway_control_plane","code":"` + code + `","message":"authorization=cp4-control-plane-token raw_prompt cp4 raw_body cp4 raw_telemetry cp4 raw_cch cp4 account acct-email-sentinel acct-uuid-sentinel proxy_credential=cp4-proxy-secret credential=hmac-input-secret"}}`)
+			resp := &http.Response{Header: http.Header{}}
+			resp.Header.Set("X-CC-Gateway-Error-Code", "authorization=cp4-control-plane-header-token")
+
+			gotCode := ccGatewayControlPlaneCode(resp, body)
+			gotMessage := ccGatewayControlPlaneMessage(body)
+
+			require.Equal(t, code, gotCode)
+			combined := strings.ToLower(gotCode + " " + gotMessage)
+			for _, forbidden := range []string{
+				"cp4-control-plane-token",
+				"authorization",
+				"raw_prompt",
+				"raw_body",
+				"raw_telemetry",
+				"raw_cch",
+				"acct-email-sentinel",
+				"acct-uuid-sentinel",
+				"cp4-proxy-secret",
+				"hmac-input-secret",
+			} {
+				require.NotContains(t, combined, strings.ToLower(forbidden))
+			}
+		})
+	}
+}
+
 func TestCCGatewayControlPlane_ForwardFailsClosedWithoutFailover(t *testing.T) {
 	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newCCGatewayControlPlaneResponse(http.StatusForbidden, "missing_identity")}
 	svc := newCCGatewayBoundaryService(upstream)
 	account := newCCGatewayBoundaryAccount()
 	c, ctx := newCCGatewayBoundaryContext("/v1/messages")
-	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 
 	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
 	require.Error(t, err)
@@ -49,7 +80,7 @@ func TestCCGatewayControlPlane_ForwardCountTokensFailsClosedWithoutHealthSideEff
 	svc := newCCGatewayBoundaryService(upstream)
 	account := newCCGatewayBoundaryAccount()
 	c, ctx := newCCGatewayBoundaryContext("/v1/messages/count_tokens")
-	body := []byte(`{"model":"claude-3-7-sonnet-20250219","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 
 	err := svc.ForwardCountTokens(ctx, c, account, parseAnthropicRequestForTest(t, body))
 	require.Error(t, err)
@@ -88,7 +119,7 @@ func TestCCGatewayControlPlane_AnthropicAPIKeyPassthroughFailsClosedWithoutTLSPr
 	c, ctx := newCCGatewayBoundaryContext("/v1/messages")
 
 	_, err := svc.forwardAnthropicAPIKeyPassthroughWithInput(ctx, c, account, anthropicPassthroughForwardInput{
-		Body:          []byte(`{"model":"claude-3-7-sonnet-20250219","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`),
+		Body:          []byte(`{"model":"claude-3-7-sonnet-20250219","metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`),
 		RequestModel:  "claude-3-7-sonnet-20250219",
 		OriginalModel: "claude-3-7-sonnet-20250219",
 		RequestStream: false,
@@ -113,7 +144,7 @@ func TestCCGatewayControlPlane_AnthropicAPIKeyCountTokensFailsClosedWithoutTLSPr
 	account.Proxy = &Proxy{ID: 902, Name: "proxy-b", Protocol: "http", Host: "127.0.0.1", Port: 8899, Status: StatusActive}
 	c, ctx := newCCGatewayBoundaryContext("/v1/messages/count_tokens")
 
-	err := svc.forwardCountTokensAnthropicAPIKeyPassthrough(ctx, c, account, []byte(`{"model":"claude-3-7-sonnet-20250219","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`))
+	err := svc.forwardCountTokensAnthropicAPIKeyPassthrough(ctx, c, account, []byte(`{"model":"claude-3-7-sonnet-20250219","metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`))
 	require.Error(t, err)
 	var failoverErr *UpstreamFailoverError
 	require.False(t, errors.As(err, &failoverErr), "API-key passthrough count_tokens control-plane errors must fail closed without account failover")
@@ -121,6 +152,7 @@ func TestCCGatewayControlPlane_AnthropicAPIKeyCountTokensFailsClosedWithoutTLSPr
 }
 
 func TestCCGatewayControlPlane_FormalPoolUntrustedModelDoesNotQuarantine(t *testing.T) {
+	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
 	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newCCGatewayControlPlaneResponse(http.StatusUnprocessableEntity, "persona_reject_untrusted_model")}
 	svc := newCCGatewayBoundaryService(upstream)
 	account := newCCGatewayBoundaryAccount()
@@ -132,7 +164,7 @@ func TestCCGatewayControlPlane_FormalPoolUntrustedModelDoesNotQuarantine(t *test
 	svc.accountRepo = repo
 	svc.sessionBudgetObserve = sink
 	c, ctx := newCCGatewayBoundaryContext("/v1/messages")
-	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 
 	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
 
@@ -209,6 +241,7 @@ func TestCCGatewayControlPlane_OnboardingProxyFailureStillQuarantines(t *testing
 }
 
 func TestCCGatewayControlPlane_FormalPoolMissingIdentityQuarantines(t *testing.T) {
+	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
 	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newCCGatewayControlPlaneResponse(http.StatusForbidden, "missing_account_identity")}
 	svc := newCCGatewayBoundaryService(upstream)
 	account := newCCGatewayBoundaryAccount()
@@ -220,7 +253,7 @@ func TestCCGatewayControlPlane_FormalPoolMissingIdentityQuarantines(t *testing.T
 	svc.accountRepo = repo
 	svc.sessionBudgetObserve = sink
 	c, ctx := newCCGatewayBoundaryContext("/v1/messages")
-	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 
 	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
 
@@ -264,12 +297,13 @@ func TestCCGatewayControlPlane_FormalPoolUntrustedModelResponsesAndCountTokensDo
 			name: "count tokens",
 			path: "/v1/messages/count_tokens",
 			run: func(svc *GatewayService, ctx context.Context, c *gin.Context, account *Account) error {
-				body := []byte(`{"model":"claude-3-7-sonnet-20250219","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+				body := []byte(`{"model":"claude-3-7-sonnet-20250219","metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 				return svc.ForwardCountTokens(ctx, c, account, parseAnthropicRequestForTest(t, body))
 			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			useClaudeCodeSessionBoundaryLedgerFileForTest(t)
 			upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newCCGatewayControlPlaneResponse(http.StatusUnprocessableEntity, "persona_reject_untrusted_model")}
 			svc := newCCGatewayBoundaryService(upstream)
 			account := newCCGatewayBoundaryAccount()
@@ -289,10 +323,14 @@ func TestCCGatewayControlPlane_FormalPoolUntrustedModelResponsesAndCountTokensDo
 			require.True(t, repo.accountsByID[account.ID].Schedulable)
 			require.NotEqual(t, StatusError, repo.accountsByID[account.ID].Status)
 			require.Empty(t, repo.accountsByID[account.ID].Extra[FormalPoolExtraRiskEventRef])
-			require.NotEmpty(t, sink.risks)
-			require.Equal(t, RiskEventKindControlPlaneModelPolicy, sink.risks[len(sink.risks)-1].Kind)
-			require.Equal(t, RiskSeverityP2, sink.risks[len(sink.risks)-1].Severity)
-			require.Equal(t, BudgetActionObserve, sink.risks[len(sink.risks)-1].ActionRecommendation)
+			if tc.path == "/v1/messages/count_tokens" {
+				require.NotEmpty(t, sink.risks)
+				require.Equal(t, RiskEventKindControlPlaneModelPolicy, sink.risks[len(sink.risks)-1].Kind)
+				require.Equal(t, RiskSeverityP2, sink.risks[len(sink.risks)-1].Severity)
+				require.Equal(t, BudgetActionObserve, sink.risks[len(sink.risks)-1].ActionRecommendation)
+				return
+			}
+			require.Empty(t, sink.risks, "formal-pool non-native compat routes should fail closed before CC Gateway control-plane side effects")
 		})
 	}
 }
@@ -308,7 +346,7 @@ func TestCCGatewayControlPlane_APIKeyPassthroughUntrustedModelDoesNotQuarantine(
 			path: "/v1/messages",
 			run: func(svc *GatewayService, ctx context.Context, c *gin.Context, account *Account) error {
 				_, err := svc.forwardAnthropicAPIKeyPassthroughWithInput(ctx, c, account, anthropicPassthroughForwardInput{
-					Body:          []byte(`{"model":"claude-3-7-sonnet-20250219","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`),
+					Body:          []byte(`{"model":"claude-3-7-sonnet-20250219","metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`),
 					RequestModel:  "claude-3-7-sonnet-20250219",
 					OriginalModel: "claude-3-7-sonnet-20250219",
 					RequestStream: false,
@@ -320,7 +358,7 @@ func TestCCGatewayControlPlane_APIKeyPassthroughUntrustedModelDoesNotQuarantine(
 			name: "count tokens",
 			path: "/v1/messages/count_tokens",
 			run: func(svc *GatewayService, ctx context.Context, c *gin.Context, account *Account) error {
-				return svc.forwardCountTokensAnthropicAPIKeyPassthrough(ctx, c, account, []byte(`{"model":"claude-3-7-sonnet-20250219","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`))
+				return svc.forwardCountTokensAnthropicAPIKeyPassthrough(ctx, c, account, []byte(`{"model":"claude-3-7-sonnet-20250219","metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`))
 			},
 		},
 	} {
@@ -360,7 +398,7 @@ func TestCCGatewayControlPlane_NonFormalDoesNotQuarantine(t *testing.T) {
 	repo := &formalRateLimitRepo{accountsByID: map[int64]*Account{account.ID: account}}
 	svc.accountRepo = repo
 	c, ctx := newCCGatewayBoundaryContext("/v1/messages")
-	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 
 	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
 

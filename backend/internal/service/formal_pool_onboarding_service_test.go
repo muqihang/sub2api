@@ -713,10 +713,12 @@ func TestFormalPoolOnboardingRejectsDangerousRouteAndAccountRefInputs(t *testing
 func TestFormalPoolHTTPCCGatewayRuntimeRegistrarPostsSafeRuntimeMapping(t *testing.T) {
 	var gotPath string
 	var gotToken string
+	var gotAuth string
 	var got map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotToken = r.Header.Get("X-CC-Gateway-Token")
+		gotAuth = r.Header.Get("Authorization")
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
@@ -728,10 +730,11 @@ func TestFormalPoolHTTPCCGatewayRuntimeRegistrarPostsSafeRuntimeMapping(t *testi
 	registrar := NewFormalPoolHTTPCCGatewayRuntimeRegistrar(&config.Config{
 		Gateway: config.GatewayConfig{
 			CCGateway: config.GatewayCCGatewayConfig{
-				Enabled:        true,
-				BaseURL:        server.URL,
-				Token:          "gateway-token",
-				TimeoutSeconds: 1,
+				Enabled:              true,
+				BaseURL:              server.URL,
+				Token:                "gateway-token",
+				InternalControlToken: "internal-control-token",
+				TimeoutSeconds:       1,
 			},
 		},
 	})
@@ -740,13 +743,18 @@ func TestFormalPoolHTTPCCGatewayRuntimeRegistrarPostsSafeRuntimeMapping(t *testi
 	}
 
 	err := registrar.RegisterCCGatewayRuntime(context.Background(), FormalPoolCCGatewayRuntimeRegistration{
-		AccountRef:     "hmac-sha256:runtime-account-ref",
-		EgressBucket:   "claude-runtime-bucket",
-		ProxyURL:       "socks5h://user:pass@proxy.example:443",
-		ProxyRef:       "hmac-sha256:runtime-proxy-ref",
-		PolicyVersion:  ccGatewayAnthropicPolicyVersion,
-		PersonaVariant: "claude-code-2.1.175-macos-local",
-		SessionPolicy:  "preserve_downstream_session_id",
+		AccountRef:            "hmac-sha256:runtime-account-ref",
+		CredentialRef:         "opaque:credential-ref:v1:runtime",
+		CredentialBindingHMAC: "hmac-sha256:" + strings.Repeat("a", 64),
+		TokenType:             "oauth",
+		CredentialProof:       "Bearer fixture-credential-proof",
+		EgressBucket:          "claude-runtime-bucket",
+		ProxyURL:              "socks5h://user:pass@proxy.example:443",
+		ProxyRef:              "hmac-sha256:runtime-proxy-ref",
+		PolicyVersion:         ccGatewayAnthropicPolicyVersion,
+		PersonaVariant:        "claude-code-2.1.175-macos-local",
+		SessionPolicy:         "preserve_downstream_session_id",
+		DeviceID:              strings.Repeat("b", 64),
 	})
 	if err != nil {
 		t.Fatalf("RegisterCCGatewayRuntime() error = %v", err)
@@ -758,14 +766,28 @@ func TestFormalPoolHTTPCCGatewayRuntimeRegistrarPostsSafeRuntimeMapping(t *testi
 	if gotToken != "gateway-token" {
 		t.Fatalf("gateway token header missing")
 	}
+	if gotAuth != "Bearer fixture-credential-proof" {
+		t.Fatalf("credential proof header missing")
+	}
 	if got["account_id"] != "hmac-sha256:runtime-account-ref" ||
 		got["account_ref"] != "hmac-sha256:runtime-account-ref" ||
+		got["credential_ref"] != "opaque:credential-ref:v1:runtime" ||
+		got["credential_binding_hmac"] != "hmac-sha256:"+strings.Repeat("a", 64) ||
+		got["token_type"] != "oauth" ||
 		got["egress_bucket"] != "claude-runtime-bucket" ||
 		got["proxy_url"] != "socks5h://user:pass@proxy.example:443" ||
 		got["proxy_identity_ref"] != "hmac-sha256:runtime-proxy-ref" ||
 		got["policy_version"] != ccGatewayAnthropicPolicyVersion ||
-		got["session_policy"] != "preserve_downstream_session_id" {
+		got["session_policy"] != "preserve_downstream_session_id" ||
+		got["device_id"] != strings.Repeat("b", 64) {
 		t.Fatalf("unexpected registration payload: %#v", got)
+	}
+	rawPayload, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal captured payload: %v", err)
+	}
+	if strings.Contains(string(rawPayload), "fixture-credential-proof") {
+		t.Fatalf("registration payload must not contain credential proof")
 	}
 }
 
@@ -778,24 +800,58 @@ func TestFormalPoolHTTPCCGatewayRuntimeRegistrarFailsClosedOnGatewayError(t *tes
 	registrar := NewFormalPoolHTTPCCGatewayRuntimeRegistrar(&config.Config{
 		Gateway: config.GatewayConfig{
 			CCGateway: config.GatewayCCGatewayConfig{
-				Enabled:        true,
-				BaseURL:        server.URL,
-				Token:          "gateway-token",
-				TimeoutSeconds: 1,
+				Enabled:              true,
+				BaseURL:              server.URL,
+				Token:                "gateway-token",
+				InternalControlToken: "internal-control-token",
+				TimeoutSeconds:       1,
 			},
 		},
 	})
 	err := registrar.RegisterCCGatewayRuntime(context.Background(), FormalPoolCCGatewayRuntimeRegistration{
-		AccountRef:     "hmac-sha256:runtime-account-ref",
-		EgressBucket:   "claude-runtime-bucket",
-		ProxyURL:       "socks5h://proxy.example:443",
-		ProxyRef:       "hmac-sha256:runtime-proxy-ref",
-		PolicyVersion:  ccGatewayAnthropicPolicyVersion,
-		PersonaVariant: "claude-code-2.1.175-macos-local",
-		SessionPolicy:  "preserve_downstream_session_id",
+		AccountRef:            "hmac-sha256:runtime-account-ref",
+		CredentialRef:         "opaque:credential-ref:v1:runtime",
+		CredentialBindingHMAC: "hmac-sha256:" + strings.Repeat("a", 64),
+		TokenType:             "oauth",
+		CredentialProof:       "Bearer fixture-credential-proof",
+		EgressBucket:          "claude-runtime-bucket",
+		ProxyURL:              "socks5h://proxy.example:443",
+		ProxyRef:              "hmac-sha256:runtime-proxy-ref",
+		PolicyVersion:         ccGatewayAnthropicPolicyVersion,
+		PersonaVariant:        "claude-code-2.1.175-macos-local",
+		SessionPolicy:         "preserve_downstream_session_id",
+		DeviceID:              strings.Repeat("b", 64),
 	})
 	if err == nil || !strings.Contains(err.Error(), "status 403") {
 		t.Fatalf("expected fail-closed gateway status error, got %v", err)
+	}
+}
+
+func TestFormalPoolRuntimeIdentityExtraLeavesCredentialBindingEmptyWhenAccessTokenMissing(t *testing.T) {
+	extra := formalPoolRuntimeIdentityExtra(
+		"hmac-sha256:"+strings.Repeat("a", 64),
+		"hmac-sha256:"+strings.Repeat("b", 64),
+		map[string]any{"refresh_token": "refresh-only"},
+		"formal-pool-runtime-binding-local-test-secret",
+		"1",
+	)
+
+	if got := extra[ccGatewayExtraCredentialBindingHMAC]; got != "" {
+		t.Fatalf("credential binding HMAC must be empty without selected access token, got %q", got)
+	}
+}
+
+func TestFormalPoolRuntimeIdentityExtraDefaultsTo2179NativeDegradedPersona(t *testing.T) {
+	extra := formalPoolRuntimeIdentityExtra(
+		"hmac-sha256:"+strings.Repeat("a", 64),
+		"hmac-sha256:"+strings.Repeat("b", 64),
+		map[string]any{"access_token": "access-token"},
+		"formal-pool-runtime-binding-local-test-secret",
+		"1",
+	)
+
+	if got := extra[ccGatewayExtraPersonaProfile]; got != "claude_code_2_1_179_native_degraded" {
+		t.Fatalf("persona profile = %v, want 2.1.179 native degraded", got)
 	}
 }
 

@@ -30,12 +30,26 @@ from tools.cli_control_plane_guard import (
     RedactingForwarder,
     validate_loopback_url,
 )
+from tools.claude_code_route_trust import (
+    RouteCatalog,
+    RouteHintReplayCache,
+    build_signed_route_hint_headers,
+    cp4_fixture_route_catalog,
+)
 
 
 WORKTREE = Path(__file__).resolve().parents[1]
 CC_GATEWAY_ROOT = Path('/Users/muqihang/chelingxi_workspace/cc-gateway')
 DEFAULT_CC_HARNESS_SCRIPT = WORKTREE / 'tools/cc_gateway_localhost_harness.mjs'
 DEFAULT_SUB2API_HARNESS_DIR = WORKTREE / 'backend/.tmp-harness/cli-through-sub2api'
+LOCAL_ROUTE_HINT_SECRET = 'localhost-full-chain-route-hint-secret'
+LOCAL_ROUTE_HINT_SESSION_REF = '11111111-2222-4333-8444-555555555555'
+LOCAL_NATIVE_ATTESTATION_SECRET = 'localhost-full-chain-native-attestation-secret'
+LOCAL_NATIVE_MANAGED_ACCESS_TOKEN = 'localhost-full-chain-managed-access-token'
+LOCAL_NATIVE_RUNTIME_HASH = 'sha256:' + ('1' * 64)
+LOCAL_NATIVE_OVERLAY_HASH = 'sha256:' + ('2' * 64)
+LOCAL_NATIVE_CATALOG_HASH = 'sha256:' + ('3' * 64)
+LOCAL_NATIVE_CATALOG_VERSION = 'localhost-full-chain-cp4-v1'
 FORBIDDEN_HOST_SNIPPETS = ('anthropic.com', 'claude.ai', 'claude.com')
 REAL_UPSTREAM_ENV_VARS = (
     'ANTHROPIC_BASE_URL',
@@ -72,6 +86,22 @@ SAFE_SCENARIO_KEYS = {
     'sensitive_scan_failures',
     'scanned_paths',
     'readiness',
+    'billing_disposition',
+    'authority_boundary',
+    'upstream_safety',
+}
+CP4_SCENARIO_SAFE_KEYS = {
+    'scenario',
+    'status',
+    'real_anthropic_upstream',
+    'mock_request_count',
+    'client_status',
+    'sensitive_scan',
+    'sensitive_scan_failures',
+    'billing_disposition',
+    'authority_boundary',
+    'upstream_safety',
+    'observed',
 }
 
 
@@ -97,6 +127,26 @@ class ScenarioExpectation:
     expect_response_status: int
     expect_terminated_by_controller: bool
     linger_after_response: bool
+
+
+@dataclass(frozen=True)
+class CP4FormalPoolScenario:
+    name: str
+    expect_mock_request_count: int
+    expect_response_status: int
+    real_anthropic_upstream: bool = False
+
+
+CP4_FORMAL_POOL_SCENARIOS = (
+    CP4FormalPoolScenario('valid_trusted_context_strip_cch_present', 1, 200),
+    CP4FormalPoolScenario('forged_authority_headers_ignored', 1, 200),
+    CP4FormalPoolScenario('missing_trusted_context_fail_closed', 0, 403),
+    CP4FormalPoolScenario('default_strip_cch_present_inbound', 1, 200),
+    CP4FormalPoolScenario('default_strip_no_cch_inbound', 1, 200),
+    CP4FormalPoolScenario('optional_no_cch_profile_with_proof', 1, 200),
+    CP4FormalPoolScenario('optional_signed_cch_profile_requires_proof', 0, 403),
+    CP4FormalPoolScenario('cc_gateway_unavailable_no_direct_fallback', 0, 502),
+)
 
 
 def create_run_directory(base_tmp: Path | str = Path('/tmp'), *, now: datetime | None = None, pid: int | None = None) -> Path:
@@ -172,6 +222,106 @@ def build_unsafe_messages_fixture() -> dict[str, Any]:
     }
 
 
+def build_billing_messages_fixture(shape: str) -> dict[str, Any]:
+    fixture = build_safe_messages_fixture()
+    suffix = ''.join(['a', 'b', 'c'])
+    if shape == 'cch_present':
+        cch_value = ''.join(['a', 'b', 'c', 'd', 'e'])
+        billing = f'x-anthropic-billing-header: cc_version=2.1.179.{suffix}; cc_entrypoint=sdk-cli; cch={cch_value};'
+    elif shape == 'no_cch':
+        billing = f'x-anthropic-billing-header: cc_version=2.1.179.{suffix}; cc_entrypoint=sdk-cli;'
+    else:
+        return fixture
+    fixture['system'] = [{'type': 'text', 'text': billing}]
+    return fixture
+
+
+def default_route_hint_catalog() -> RouteCatalog:
+    return cp4_fixture_route_catalog(
+        runtime_hash=LOCAL_NATIVE_RUNTIME_HASH,
+        overlay_hash=LOCAL_NATIVE_OVERLAY_HASH,
+        catalog_hash=LOCAL_NATIVE_CATALOG_HASH,
+        catalog_version=LOCAL_NATIVE_CATALOG_VERSION,
+    )
+
+
+
+
+def cp4_profile_env_for_scenario(name: str) -> dict[str, str]:
+    env = {
+        'CC_HARNESS_POLICY_VERSION': '2.1.179',
+        'SUB2API_HARNESS_POLICY_VERSION': '2.1.179',
+        'CC_HARNESS_EGRESS_PROFILE_REF': 'strip_attribution',
+        'SUB2API_HARNESS_EGRESS_PROFILE_REF': 'strip_attribution',
+        'CC_HARNESS_BILLING_SHAPE_POLICY': 'strip',
+        'SUB2API_HARNESS_BILLING_SHAPE_POLICY': 'strip',
+    }
+    if name == 'optional_no_cch_profile_with_proof':
+        env.update({
+            'CC_HARNESS_EGRESS_PROFILE_REF': 'claude_code_2_1_179_custom_base_no_cch',
+            'SUB2API_HARNESS_EGRESS_PROFILE_REF': 'claude_code_2_1_179_custom_base_no_cch',
+            'CC_HARNESS_BILLING_SHAPE_POLICY': 'no_cch',
+            'SUB2API_HARNESS_BILLING_SHAPE_POLICY': 'no_cch',
+            'CC_HARNESS_ENABLE_NO_CCH_PROOF': '1',
+        })
+    elif name == 'optional_signed_cch_profile_requires_proof':
+        env.update({
+            'CC_HARNESS_EGRESS_PROFILE_REF': 'claude_code_2_1_179_first_party_signed_cch',
+            'SUB2API_HARNESS_EGRESS_PROFILE_REF': 'claude_code_2_1_179_first_party_signed_cch',
+            'CC_HARNESS_BILLING_SHAPE_POLICY': 'signed_cch',
+            'SUB2API_HARNESS_BILLING_SHAPE_POLICY': 'signed_cch',
+        })
+    return env
+
+def local_sub2api_native_attestation_env() -> dict[str, str]:
+    catalog = [{
+        'model_id': 'claude-sonnet-4-6',
+        'route': 'claude_code_native',
+        'provider_owner': 'zhumeng_managed',
+        'credential_scope': 'formal_pool',
+        'gateway_location': 'cloud',
+        'runtime_hash': LOCAL_NATIVE_RUNTIME_HASH,
+        'overlay_hash': LOCAL_NATIVE_OVERLAY_HASH,
+        'catalog_hash': LOCAL_NATIVE_CATALOG_HASH,
+        'catalog_version': LOCAL_NATIVE_CATALOG_VERSION,
+        'catalog_fresh': True,
+    }]
+    return {
+        'SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET': LOCAL_NATIVE_ATTESTATION_SECRET,
+        'SUB2API_CLAUDE_CODE_NATIVE_FORMAL_POOL_MODELS': 'claude-sonnet-4-6',
+        'SUB2API_CLAUDE_CODE_NATIVE_ROUTE_CATALOG_JSON': json.dumps(catalog, separators=(',', ':')),
+        'SUB2API_CLAUDE_CODE_NATIVE_RUNTIME_HASHES': LOCAL_NATIVE_RUNTIME_HASH,
+        'SUB2API_CLAUDE_CODE_NATIVE_OVERLAY_HASHES': LOCAL_NATIVE_OVERLAY_HASH,
+        'SUB2API_CLAUDE_CODE_NATIVE_CATALOG_HASHES': LOCAL_NATIVE_CATALOG_HASH,
+    }
+
+
+def build_synthetic_client_headers(
+    *,
+    body: bytes,
+    request_path: str,
+    now: int | None = None,
+    nonce: str | None = None,
+) -> dict[str, str]:
+    route_headers = build_signed_route_hint_headers(
+        body=body,
+        request_path=request_path,
+        catalog=default_route_hint_catalog(),
+        model_id=json.loads(body.decode('utf-8'))['model'],
+        session_ref=LOCAL_ROUTE_HINT_SESSION_REF,
+        secret=LOCAL_ROUTE_HINT_SECRET,
+        now=now,
+        nonce=nonce,
+    )
+    return {
+        'content-type': 'application/json',
+        'user-agent': 'claude-cli/2.1.179 (external, sdk-cli)',
+        'anthropic-beta': 'oauth-2025-04-20',
+        'x-claude-code-session-id': LOCAL_ROUTE_HINT_SESSION_REF,
+        **route_headers,
+    }
+
+
 def perform_sensitive_scan(paths: Sequence[Path | str]) -> SensitiveScanResult:
     failures: list[str] = []
     scanned_paths: list[str] = []
@@ -199,11 +349,14 @@ def build_full_chain_report_payload(
     scenario_a: Mapping[str, Any],
     scenario_b: Mapping[str, Any],
     scan_result: SensitiveScanResult,
+    cp4_scenarios: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     safe_a = _sanitize_scenario_payload(scenario_a)
     safe_b = _sanitize_scenario_payload(scenario_b)
-    status = 'PASS' if safe_a.get('status') == 'PASS' and safe_b.get('status') == 'PASS' and scan_result.status == 'PASS' else 'FAIL'
-    return {
+    safe_cp4 = _sanitize_cp4_scenarios(cp4_scenarios or [])
+    cp4_status = all(item.get('status') == 'PASS' for item in safe_cp4.values()) if safe_cp4 else True
+    status = 'PASS' if safe_a.get('status') == 'PASS' and safe_b.get('status') == 'PASS' and cp4_status and scan_result.status == 'PASS' else 'FAIL'
+    payload = {
         'run_id': run_id,
         'run_dir': str(run_dir),
         'safe_deliverable_dir': str(run_dir / 'safe-deliverable'),
@@ -215,6 +368,9 @@ def build_full_chain_report_payload(
         'sensitive_scan_failures': list(scan_result.failures),
         'scanned_paths': list(scan_result.scanned_paths),
     }
+    if safe_cp4:
+        payload['cp4_scenarios'] = safe_cp4
+    return payload
 
 
 def render_report_markdown(payload: Mapping[str, Any]) -> str:
@@ -275,7 +431,32 @@ def read_json_line(process: subprocess.Popen[bytes], timeout: float = 40.0) -> t
             return json.loads(text), lines
         except json.JSONDecodeError:
             continue
-    raise RuntimeError(f'expected JSON line from process, got {lines[-5:]}')
+    exit_code = process.poll()
+    stdout_tail = b''
+    stderr_tail = b''
+    if exit_code is not None:
+        try:
+            stdout_tail, stderr_tail = process.communicate(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            stdout_tail, stderr_tail = b'', b''
+    details = [
+        f'exit_code={exit_code if exit_code is not None else "still_running"}',
+        f'stdout_lines={_safe_diagnostic_tail("\\n".join(lines[-5:]).encode("utf-8"))!r}',
+    ]
+    if stdout_tail:
+        details.append(f'stdout_tail={_safe_diagnostic_tail(stdout_tail)!r}')
+    if stderr_tail:
+        details.append(f'stderr_tail={_safe_diagnostic_tail(stderr_tail)!r}')
+    raise RuntimeError(f'expected JSON line from process ({", ".join(details)})')
+
+
+def _safe_diagnostic_tail(data: bytes, *, max_chars: int = 4000) -> str:
+    text = data.decode('utf-8', 'replace')
+    if len(text) > max_chars:
+        text = '...<truncated>...\n' + text[-max_chars:]
+    for label, pattern in SENSITIVE_PATTERNS.items():
+        text = pattern.sub(f'<redacted:{label}>', text)
+    return text
 
 
 def scrub_real_upstream_env(extra: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -340,7 +521,13 @@ def run_synthetic_client_subprocess(
     fixture: Mapping[str, Any],
     *,
     linger_after_response: bool,
+    extra_headers: Mapping[str, str] | None = None,
 ) -> subprocess.Popen[bytes]:
+    body = json.dumps(dict(fixture), separators=(',', ':')).encode('utf-8')
+    request_path = '/v1/messages?beta=true'
+    headers = build_synthetic_client_headers(body=body, request_path=request_path)
+    if extra_headers:
+        headers.update({str(key): str(value) for key, value in extra_headers.items()})
     script = """
 import json
 import os
@@ -353,6 +540,7 @@ from pathlib import Path
 guard_url = os.environ['GUARD_URL']
 response_path = Path(os.environ['RESPONSE_PATH'])
 body = os.environ['FIXTURE_JSON'].encode('utf-8')
+headers = json.loads(os.environ['REQUEST_HEADERS_JSON'])
 linger = os.environ['LINGER_AFTER_RESPONSE'] == '1'
 received_sigterm = False
 def _handle_sigterm(signum, frame):
@@ -364,11 +552,7 @@ request = urllib.request.Request(
     guard_url.rstrip('/') + '/v1/messages?beta=true',
     data=body,
     method='POST',
-    headers={
-        'content-type': 'application/json',
-        'user-agent': 'synthetic-localhost-canary/1.0',
-        'anthropic-beta': 'oauth-2025-04-20',
-    },
+    headers=headers,
 )
 status = None
 try:
@@ -387,6 +571,7 @@ if linger:
         'GUARD_URL': guard_url,
         'RESPONSE_PATH': str(response_path),
         'FIXTURE_JSON': json.dumps(dict(fixture), separators=(',', ':')),
+        'REQUEST_HEADERS_JSON': json.dumps(headers, separators=(',', ':')),
         'LINGER_AFTER_RESPONSE': '1' if linger_after_response else '0',
     })
     return subprocess.Popen(
@@ -466,6 +651,9 @@ def run_scenario(
     expectation: ScenarioExpectation,
     cc_harness_script: Path,
     sub2api_harness_dir: Path,
+    extra_env: Mapping[str, str] | None = None,
+    extra_client_headers: Mapping[str, str] | None = None,
+    cc_gateway_unavailable: bool = False,
 ) -> dict[str, Any]:
     dirs = prepare_scenario_directories(run_dir, scenario_name)
     processes: list[tuple[str, ProcessHandle]] = []
@@ -473,24 +661,33 @@ def run_scenario(
     client_proc: subprocess.Popen[bytes] | None = None
 
     try:
-        cc_env = scrub_real_upstream_env({'CC_HARNESS_OUT': str(dirs['cc_dir'])})
-        cc_proc = subprocess.Popen(
-            [str(CC_GATEWAY_ROOT / 'node_modules/.bin/tsx'), str(cc_harness_script)],
-            cwd=str(CC_GATEWAY_ROOT),
-            env=cc_env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        cc_state, cc_lines = read_json_line(cc_proc)
-        processes.append((f'{scenario_name}_cc_harness', ProcessHandle(cc_proc, cc_lines)))
-        cc_gateway_url = assert_loopback_url(str(cc_state['cc_gateway_url']), f'{scenario_name}_cc_gateway_url')
-        _mock_url = assert_loopback_url(str(cc_state['mock_url']), f'{scenario_name}_mock_url')
+        merged_extra_env = dict(extra_env or {})
+        if cc_gateway_unavailable:
+            cc_gateway_url = assert_loopback_url(f'http://127.0.0.1:{free_port()}', f'{scenario_name}_cc_gateway_url')
+            cc_state = {'mock_url': 'http://127.0.0.1:1'}
+        else:
+            cc_env = scrub_real_upstream_env({'CC_HARNESS_OUT': str(dirs['cc_dir']), **merged_extra_env})
+            cc_proc = subprocess.Popen(
+                [str(CC_GATEWAY_ROOT / 'node_modules/.bin/tsx'), str(cc_harness_script)],
+                cwd=str(CC_GATEWAY_ROOT),
+                env=cc_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            cc_state, cc_lines = read_json_line(cc_proc)
+            processes.append((f'{scenario_name}_cc_harness', ProcessHandle(cc_proc, cc_lines)))
+            cc_gateway_url = assert_loopback_url(str(cc_state['cc_gateway_url']), f'{scenario_name}_cc_gateway_url')
+            _mock_url = assert_loopback_url(str(cc_state['mock_url']), f'{scenario_name}_mock_url')
 
         sub_summary_path = dirs['sub2api_dir'] / 'summary.jsonl'
         sub_summary_path.write_text('', encoding='utf-8')
+        sub_boundary_ledger_path = dirs['sub2api_dir'] / 'claude-code-session-boundary-ledger.json'
         sub_env = scrub_real_upstream_env({
             'CC_GATEWAY_URL': cc_gateway_url,
             'SUB2API_HARNESS_SUMMARY': str(sub_summary_path),
+            'SUB2API_CLAUDE_CODE_SESSION_BOUNDARY_LEDGER_FILE': str(sub_boundary_ledger_path),
+            **local_sub2api_native_attestation_env(),
+            **merged_extra_env,
         })
         sub_proc = subprocess.Popen(
             ['go', 'run', '.'],
@@ -515,6 +712,14 @@ def run_scenario(
                 summary_path=guard_summary_path,
                 connect_mode='stub',
                 max_messages=1,
+                route_hint_secret=LOCAL_ROUTE_HINT_SECRET,
+                route_hint_catalog=default_route_hint_catalog(),
+                route_hint_replay_cache=RouteHintReplayCache(ttl_seconds=60),
+                native_attestation_secret=LOCAL_NATIVE_ATTESTATION_SECRET,
+                native_managed_access_token=LOCAL_NATIVE_MANAGED_ACCESS_TOKEN,
+                managed_session_id=LOCAL_ROUTE_HINT_SESSION_REF,
+                device_id='localhost-full-chain-device',
+                agent_version='localhost-full-chain',
             ),
             execution_controller=controller,
         )
@@ -528,6 +733,7 @@ def run_scenario(
             client_response_path,
             fixture,
             linger_after_response=expectation.linger_after_response,
+            extra_headers=extra_client_headers,
         )
         controller.register_cli_process(client_proc)
 
@@ -550,13 +756,16 @@ def run_scenario(
             write_process_capture(dirs['scenario_dir'] / f'{name}.stderr.txt', [], stderr)
 
         cc_summary_path = dirs['cc_dir'] / 'cc_safe_summary.json'
-        if not cc_summary_path.exists():
+        if not cc_summary_path.exists() and not cc_gateway_unavailable:
             raise RuntimeError(f'{scenario_name}: cc harness did not emit cc_safe_summary.json')
 
         client_response = load_json_object_or_empty(client_response_path)
         guard_records = load_jsonl(guard_summary_path)
         sub2api_records = load_jsonl(sub_summary_path)
-        cc_safe_summary = json.loads(cc_summary_path.read_text(encoding='utf-8'))
+        if cc_summary_path.exists():
+            cc_safe_summary = json.loads(cc_summary_path.read_text(encoding='utf-8'))
+        else:
+            cc_safe_summary = {'mock_request_count': 0, 'mock_requests': [], 'proxy_connect_targets': [], 'profile': {'trusted_egress_profile_ref': 'unavailable'}}
         assert_loopback_connect_targets(cc_safe_summary.get('proxy_connect_targets', []))
         if client_response.get('response_status') is None:
             client_response['response_status_observed'] = False
@@ -587,14 +796,15 @@ def run_scenario(
             scenario_report_md,
             guard_summary_path,
             sub_summary_path,
-            cc_summary_path,
+            *( [cc_summary_path] if cc_summary_path.exists() else [] ),
             client_response_path,
             client_stdout_path,
             client_stderr_path,
-            dirs['scenario_dir'] / f'{scenario_name}_cc_harness.stdout.txt',
-            dirs['scenario_dir'] / f'{scenario_name}_cc_harness.stderr.txt',
-            dirs['scenario_dir'] / f'{scenario_name}_sub2api_harness.stdout.txt',
-            dirs['scenario_dir'] / f'{scenario_name}_sub2api_harness.stderr.txt',
+            *cp4_process_scan_targets(
+                dirs['scenario_dir'],
+                scenario_name,
+                cc_gateway_unavailable=cc_gateway_unavailable,
+            ),
         ])
         scenario_payload = build_scenario_report_payload(
             scenario_name=scenario_name,
@@ -668,8 +878,46 @@ def build_scenario_report_payload(
             'status': 'BLOCKED',
             'reason': 'localhost_only_dual_scenario_validation',
         },
+        'billing_disposition': _billing_disposition(cc_safe_summary),
+        'authority_boundary': _authority_boundary(cc_safe_summary, guard_counts),
+        'upstream_safety': _upstream_safety(cc_safe_summary),
     }
 
+
+
+def _billing_disposition(cc_safe_summary: Mapping[str, Any]) -> dict[str, Any]:
+    profile = cc_safe_summary.get('profile') if isinstance(cc_safe_summary.get('profile'), Mapping) else {}
+    requests = cc_safe_summary.get('mock_requests')
+    first = requests[0] if isinstance(requests, list) and requests and isinstance(requests[0], Mapping) else {}
+    return {
+        'profile_ref': profile.get('trusted_egress_profile_ref'),
+        'billing_shape_policy': profile.get('billing_shape_policy'),
+        'upstream_has_billing_marker': bool(first.get('has_billing_marker', False)),
+        'upstream_has_cch_shape': bool(first.get('has_cch_shape', False)),
+    }
+
+
+def _authority_boundary(cc_safe_summary: Mapping[str, Any], guard_counts: Mapping[str, int]) -> dict[str, Any]:
+    profile = cc_safe_summary.get('profile') if isinstance(cc_safe_summary.get('profile'), Mapping) else {}
+    return {
+        'formal_pool_attested': bool(cc_safe_summary.get('formal_pool_attested', False)),
+        'trusted_egress_profile_ref': profile.get('trusted_egress_profile_ref'),
+        'guard_forward_messages': int(guard_counts.get('forward_messages', 0) or 0),
+    }
+
+
+def missing_context_authority_boundary(cc_safe_summary: Mapping[str, Any]) -> dict[str, Any]:
+    boundary = _authority_boundary(cc_safe_summary, {})
+    boundary['formal_pool_attested'] = False
+    return boundary
+
+
+def _upstream_safety(cc_safe_summary: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        'real_anthropic_upstream': False,
+        'mock_request_count': int(cc_safe_summary.get('mock_request_count', 0) or 0),
+        'loopback_proxy_targets_only': True,
+    }
 
 def evaluate_scenario_status(payload: Mapping[str, Any], expectation: ScenarioExpectation) -> str:
     checks = [
@@ -707,6 +955,157 @@ def render_scenario_markdown(payload: Mapping[str, Any]) -> str:
     lines.extend(f'- {key}: {shape[key]}' for key in sorted(shape))
     return '\n'.join(lines).rstrip() + '\n'
 
+
+
+def cp4_fixture_for_scenario(name: str) -> dict[str, Any]:
+    if name in {'valid_trusted_context_strip_cch_present', 'default_strip_cch_present_inbound', 'optional_signed_cch_profile_requires_proof'}:
+        return build_billing_messages_fixture('cch_present')
+    if name in {'default_strip_no_cch_inbound', 'optional_no_cch_profile_with_proof'}:
+        return build_billing_messages_fixture('no_cch')
+    return build_safe_messages_fixture()
+
+
+def cp4_extra_headers_for_scenario(name: str) -> dict[str, str]:
+    if name != 'forged_authority_headers_ignored':
+        return {}
+    return {
+        'x-cc-account-id': 'forged-account-ref',
+        'x-cc-egress-bucket': 'forged-egress-bucket',
+        'x-sub2api-context-1m': 'true',
+        'x-anthropic-billing-header': 'forged-billing-marker',
+    }
+
+
+def cp4_expectation_for_scenario(scenario: CP4FormalPoolScenario) -> ScenarioExpectation:
+    expect_stop_events = 0 if scenario.name == 'missing_trusted_context_fail_closed' else 1
+    return ScenarioExpectation(
+        expect_mock_request_count=scenario.expect_mock_request_count,
+        expect_cost_envelope_block=False,
+        expect_stop_events=expect_stop_events,
+        expect_sub2api_selected_count=0 if scenario.name == 'missing_trusted_context_fail_closed' else 1,
+        expect_response_status=scenario.expect_response_status,
+        expect_terminated_by_controller=False,
+        linger_after_response=False,
+    )
+
+
+def cp4_process_scan_targets(scenario_dir: Path, scenario_name: str, *, cc_gateway_unavailable: bool) -> list[Path]:
+    targets = [
+        scenario_dir / f'{scenario_name}_sub2api_harness.stdout.txt',
+        scenario_dir / f'{scenario_name}_sub2api_harness.stderr.txt',
+    ]
+    if not cc_gateway_unavailable:
+        targets.extend([
+            scenario_dir / f'{scenario_name}_cc_harness.stdout.txt',
+            scenario_dir / f'{scenario_name}_cc_harness.stderr.txt',
+        ])
+    return targets
+
+
+def run_direct_cc_missing_context_scenario(*, run_dir: Path, scenario: CP4FormalPoolScenario, cc_harness_script: Path) -> dict[str, Any]:
+    dirs = prepare_scenario_directories(run_dir, scenario.name)
+    cc_env = scrub_real_upstream_env({'CC_HARNESS_OUT': str(dirs['cc_dir']), **cp4_profile_env_for_scenario(scenario.name)})
+    cc_proc = subprocess.Popen(
+        [str(CC_GATEWAY_ROOT / 'node_modules/.bin/tsx'), str(cc_harness_script)],
+        cwd=str(CC_GATEWAY_ROOT),
+        env=cc_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        cc_state, cc_lines = read_json_line(cc_proc)
+        cc_gateway_url = assert_loopback_url(str(cc_state['cc_gateway_url']), f'{scenario.name}_cc_gateway_url')
+        body = json.dumps(build_safe_messages_fixture(), separators=(',', ':')).encode('utf-8')
+        request = urllib.request.Request(
+            cc_gateway_url.rstrip('/') + '/v1/messages?beta=true',
+            data=body,
+            method='POST',
+            headers={
+                'content-type': 'application/json',
+                'x-cc-gateway-token': 'ccg-token',
+                'x-cc-provider': 'anthropic',
+                'x-cc-account-id': 'hmac-sha256:' + ('a' * 64),
+                'x-cc-egress-bucket': 'bucket-a',
+                'x-cc-token-type': 'oauth',
+                'x-cc-credential-ref': 'opaque:credential-ref:v1:local-harness-credential',
+                'x-cc-policy-version': '2.1.179',
+                'authorization': 'Bearer selected-oauth-credential-fixture',
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                status = response.status
+                response.read()
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+            exc.read()
+        stdout, stderr = stop_process(cc_proc)
+        write_process_capture(dirs['scenario_dir'] / f'{scenario.name}_cc_harness.stdout.txt', cc_lines, stdout)
+        write_process_capture(dirs['scenario_dir'] / f'{scenario.name}_cc_harness.stderr.txt', [], stderr)
+        cc_summary_path = dirs['cc_dir'] / 'cc_safe_summary.json'
+        cc_safe_summary = json.loads(cc_summary_path.read_text(encoding='utf-8')) if cc_summary_path.exists() else {'mock_request_count': 0, 'mock_requests': [], 'proxy_connect_targets': []}
+        assert_loopback_connect_targets(cc_safe_summary.get('proxy_connect_targets', []))
+        payload = {
+            'scenario': scenario.name,
+            'status': 'PASS' if status == scenario.expect_response_status and int(cc_safe_summary.get('mock_request_count', 0) or 0) == 0 else 'FAIL',
+            'real_anthropic_upstream': False,
+            'mock_request_count': int(cc_safe_summary.get('mock_request_count', 0) or 0),
+            'client_status': {'response_status': status, 'response_status_observed': True},
+            'sensitive_scan': 'PENDING',
+            'sensitive_scan_failures': [],
+            'billing_disposition': _billing_disposition(cc_safe_summary),
+            'authority_boundary': missing_context_authority_boundary(cc_safe_summary),
+            'upstream_safety': _upstream_safety(cc_safe_summary),
+        }
+        report_json = dirs['safe_dir'] / 'report.json'
+        report_md = dirs['safe_dir'] / 'report.md'
+        report_json.write_text(json.dumps(_sanitize_cp4_scenarios([payload])[scenario.name], indent=2, sort_keys=True), encoding='utf-8')
+        report_md.write_text(
+            f"# {scenario.name}\n\n"
+            f"- status: {payload['status']}\n"
+            f"- real_anthropic_upstream: false\n"
+            f"- mock_request_count: {payload['mock_request_count']}\n",
+            encoding='utf-8',
+        )
+        scan = perform_sensitive_scan([report_json, report_md, dirs['scenario_dir'] / f'{scenario.name}_cc_harness.stdout.txt', dirs['scenario_dir'] / f'{scenario.name}_cc_harness.stderr.txt'])
+        payload['sensitive_scan'] = scan.status
+        payload['sensitive_scan_failures'] = list(scan.failures)
+        payload['status'] = 'PASS' if payload['status'] == 'PASS' and scan.status == 'PASS' else 'FAIL'
+        report_json.write_text(json.dumps(_sanitize_cp4_scenarios([payload])[scenario.name], indent=2, sort_keys=True), encoding='utf-8')
+        return _sanitize_cp4_scenarios([payload])[scenario.name]
+    finally:
+        if cc_proc.poll() is None:
+            stop_process(cc_proc)
+
+
+def run_cp4_formal_pool_scenarios(*, run_dir: Path, cc_harness_script: Path, sub2api_harness_dir: Path) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for scenario in CP4_FORMAL_POOL_SCENARIOS:
+        if scenario.name == 'missing_trusted_context_fail_closed':
+            results.append(run_direct_cc_missing_context_scenario(run_dir=run_dir, scenario=scenario, cc_harness_script=cc_harness_script))
+            continue
+        payload = run_scenario(
+            run_dir=run_dir,
+            scenario_name=scenario.name,
+            fixture=cp4_fixture_for_scenario(scenario.name),
+            expectation=cp4_expectation_for_scenario(scenario),
+            cc_harness_script=cc_harness_script,
+            sub2api_harness_dir=sub2api_harness_dir,
+            extra_env=cp4_profile_env_for_scenario(scenario.name),
+            extra_client_headers=cp4_extra_headers_for_scenario(scenario.name),
+            cc_gateway_unavailable=scenario.name == 'cc_gateway_unavailable_no_direct_fallback',
+        )
+        cp4_payload = _sanitize_cp4_scenarios([{**payload, 'scenario': scenario.name}])[scenario.name]
+        if scenario.name in {'default_strip_cch_present_inbound', 'valid_trusted_context_strip_cch_present', 'default_strip_no_cch_inbound'}:
+            billing = cp4_payload.get('billing_disposition', {})
+            if billing.get('upstream_has_billing_marker') or billing.get('upstream_has_cch_shape'):
+                cp4_payload['status'] = 'FAIL'
+        if scenario.name == 'optional_no_cch_profile_with_proof':
+            billing = cp4_payload.get('billing_disposition', {})
+            if not billing.get('upstream_has_billing_marker') or billing.get('upstream_has_cch_shape'):
+                cp4_payload['status'] = 'FAIL'
+        results.append(cp4_payload)
+    return results
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description='Run localhost-only dual-scenario full-chain controller validation without real Claude/Anthropic traffic')
@@ -756,7 +1155,9 @@ def main(argv: list[str] | None = None) -> int:
         ),
         cc_harness_script=args.cc_harness_script,
         sub2api_harness_dir=args.sub2api_harness_dir,
+        extra_env=cp4_profile_env_for_scenario('valid_trusted_context_strip_cch_present'),
     )
+    cp4_scenarios = run_cp4_formal_pool_scenarios(run_dir=run_dir, cc_harness_script=args.cc_harness_script, sub2api_harness_dir=args.sub2api_harness_dir)
 
     report_json = safe_dir / 'report.json'
     report_md = safe_dir / 'report.md'
@@ -766,6 +1167,7 @@ def main(argv: list[str] | None = None) -> int:
         scenario_a=scenario_a,
         scenario_b=scenario_b,
         scan_result=SensitiveScanResult(status='PENDING', failures=[], scanned_paths=[]),
+        cp4_scenarios=cp4_scenarios,
     )
     report_json.write_text(json.dumps(pending_payload, indent=2, sort_keys=True), encoding='utf-8')
     report_md.write_text(render_report_markdown(pending_payload), encoding='utf-8')
@@ -777,6 +1179,8 @@ def main(argv: list[str] | None = None) -> int:
         Path(scenario_a['safe_deliverable_dir']) / 'report.md',
         Path(scenario_b['safe_deliverable_dir']) / 'report.json',
         Path(scenario_b['safe_deliverable_dir']) / 'report.md',
+        *[Path(item.get('safe_deliverable_dir', '')) / 'report.json' for item in cp4_scenarios if item.get('safe_deliverable_dir')],
+        *[Path(item.get('safe_deliverable_dir', '')) / 'report.md' for item in cp4_scenarios if item.get('safe_deliverable_dir')],
     ])
     final_payload = build_full_chain_report_payload(
         run_dir=run_dir,
@@ -784,6 +1188,7 @@ def main(argv: list[str] | None = None) -> int:
         scenario_a=scenario_a,
         scenario_b=scenario_b,
         scan_result=top_scan,
+        cp4_scenarios=cp4_scenarios,
     )
     report_json.write_text(json.dumps(final_payload, indent=2, sort_keys=True), encoding='utf-8')
     report_md.write_text(render_report_markdown(final_payload), encoding='utf-8')
@@ -797,6 +1202,7 @@ def main(argv: list[str] | None = None) -> int:
             'scenario_a_status': final_payload['scenario_a']['status'],
             'scenario_b_status': final_payload['scenario_b']['status'],
             'sensitive_scan': final_payload['sensitive_scan'],
+            'cp4_scenarios': {key: value.get('status') for key, value in final_payload.get('cp4_scenarios', {}).items()},
         }, sort_keys=True), flush=True)
         return 2
 
@@ -811,6 +1217,7 @@ def main(argv: list[str] | None = None) -> int:
         'scenario_b_mock_request_count': final_payload['scenario_b']['mock_request_count'],
         'scenario_b_controller_stop_requested_events': final_payload['scenario_b']['controller_stop_requested_events'],
         'sensitive_scan': final_payload['sensitive_scan'],
+        'cp4_scenarios': {key: value.get('status') for key, value in final_payload.get('cp4_scenarios', {}).items()},
     }, sort_keys=True), flush=True)
     return 0
 
@@ -875,6 +1282,16 @@ def _extract_message_shape(
     base['extra_message_count'] = max(int(cc_safe_summary.get('mock_request_count', 0) or 0) - 1, 0)
     return {key: base[key] for key in message_shape().keys()}
 
+
+def _sanitize_cp4_scenarios(scenarios: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    safe: dict[str, dict[str, Any]] = {}
+    for item in scenarios:
+        name = str(item.get('scenario') or '')
+        if not name:
+            continue
+        safe[name] = {key: item[key] for key in CP4_SCENARIO_SAFE_KEYS if key in item}
+        safe[name]['real_anthropic_upstream'] = bool(safe[name].get('real_anthropic_upstream', False))
+    return safe
 
 def _sanitize_scenario_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     return {key: payload[key] for key in SAFE_SCENARIO_KEYS if key in payload}

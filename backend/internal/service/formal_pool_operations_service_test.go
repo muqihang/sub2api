@@ -614,6 +614,8 @@ func TestFormalPoolOperationsRuntimeRegister_UsesAccountProxyAndBucket(t *testin
 	require.Equal(t, formalPoolSafeRef("proxy", "77"), runtime.input.ProxyRef)
 	require.Equal(t, ccGatewayAnthropicPolicyVersion, runtime.input.PolicyVersion)
 	require.Equal(t, "preserve_downstream_session_id", runtime.input.SessionPolicy)
+	require.Equal(t, "oauth", runtime.input.TokenType)
+	require.Equal(t, "Bearer access", runtime.input.CredentialProof)
 	require.NotEmpty(t, runtime.input.ProxyURL)
 	require.False(t, store.account.Schedulable)
 	require.Equal(t, StatusActive, store.account.Status)
@@ -1489,22 +1491,29 @@ func (f formalPoolOperationsAccountFake) UpdateFormalPoolAccountProxy(context.Co
 }
 
 func formalPoolDiagnosticsAccount(extra map[string]any) *Account {
+	proxyID := int64(7)
+	accountRef := "hmac-sha256:" + strings.Repeat("e", 64)
+	credentials := map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:inference"}
 	merged := map[string]any{
-		FormalPoolExtraOnboardingStage:     FormalPoolStageQuarantined,
-		FormalPoolExtraHealthcheckStatus:   FormalPoolOnboardingStatusQuarantined,
-		FormalPoolExtraQuarantineReason:    "reason_auth",
-		FormalPoolExtraRiskEventRef:        "hmac-sha256:" + strings.Repeat("d", 64),
-		"cc_gateway_account_ref":           "hmac-sha256:" + strings.Repeat("e", 64),
-		"cc_gateway_enabled":               "true",
-		"cc_gateway_routes":                string(ccGatewayRouteNativeMessages),
-		"cc_gateway_egress_bucket_enabled": "true",
-		"cc_gateway_egress_bucket":         "claude-1234567890abcdef",
-		FormalPoolExtraRuntimeRegistered:   true,
+		FormalPoolExtraOnboardingStage:      FormalPoolStageQuarantined,
+		FormalPoolExtraHealthcheckStatus:    FormalPoolOnboardingStatusQuarantined,
+		FormalPoolExtraQuarantineReason:     "reason_auth",
+		FormalPoolExtraRiskEventRef:         "hmac-sha256:" + strings.Repeat("d", 64),
+		"cc_gateway_account_ref":            accountRef,
+		"cc_gateway_enabled":                "true",
+		"cc_gateway_routes":                 string(ccGatewayRouteNativeMessages),
+		"cc_gateway_egress_bucket_enabled":  "true",
+		"cc_gateway_egress_bucket":          "claude-1234567890abcdef",
+		FormalPoolExtraRuntimeRegistered:    "true",
+		FormalPoolExtraRuntimeRegisteredAt:  "2026-05-29T00:00:00Z",
+		FormalPoolExtraCredentialGeneration: "1",
+	}
+	for k, v := range formalPoolRuntimeIdentityExtra(accountRef, formalPoolSafeRef("proxy", "7"), credentials, "formal-pool-runtime-binding-local-test-secret", "1") {
+		merged[k] = v
 	}
 	for k, v := range extra {
 		merged[k] = v
 	}
-	proxyID := int64(7)
 	return &Account{
 		ID:          42,
 		Name:        "formal",
@@ -1514,7 +1523,7 @@ func formalPoolDiagnosticsAccount(extra map[string]any) *Account {
 		Schedulable: false,
 		ProxyID:     &proxyID,
 		Extra:       merged,
-		Credentials: map[string]any{"scope": "user:inference"},
+		Credentials: credentials,
 	}
 }
 
@@ -1671,7 +1680,13 @@ func (f *formalPoolOperationsProxyFake) TestProxy(context.Context, int64) (Forma
 }
 
 func completeHealthcheckEvidenceExtra() map[string]any {
-	return map[string]any{
+	return completeHealthcheckEvidenceExtraForProxy(7)
+}
+
+func completeHealthcheckEvidenceExtraForProxy(proxyID int64) map[string]any {
+	accountRef := "hmac-sha256:" + strings.Repeat("3", 64)
+	credentials := map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:inference"}
+	extra := map[string]any{
 		FormalPoolExtraOnboardingStage:             FormalPoolStageHealthcheckPassed,
 		FormalPoolExtraHealthcheckStatus:           "passed",
 		FormalPoolExtraHealthcheckStatusCodeBucket: "status_2xx",
@@ -1682,10 +1697,15 @@ func completeHealthcheckEvidenceExtra() map[string]any {
 		FormalPoolExtraHealthcheckRiskTextDetected: false,
 		FormalPoolExtraRuntimeRegistered:           "true",
 		FormalPoolExtraRuntimeRegisteredAt:         "2026-05-29T00:00:00Z",
-		"cc_gateway_account_ref":                   "hmac-sha256:" + strings.Repeat("3", 64),
+		FormalPoolExtraCredentialGeneration:        "1",
+		"cc_gateway_account_ref":                   accountRef,
 		"cc_gateway_egress_bucket_enabled":         "true",
 		"cc_gateway_egress_bucket":                 "claude-complete-evidence",
 	}
+	for k, v := range formalPoolRuntimeIdentityExtra(accountRef, formalPoolSafeRef("proxy", fmt.Sprintf("%d", proxyID)), credentials, "formal-pool-runtime-binding-local-test-secret", "1") {
+		extra[k] = v
+	}
+	return extra
 }
 
 func TestFormalPoolRuntimeRegistrationReplayService_BackfillsMissingIdentityWithoutRegisteringDBID(t *testing.T) {
@@ -1769,6 +1789,8 @@ func TestFormalPoolRuntimeRegistrationReplayService_RebuildsRegistrationAndUpdat
 	require.Equal(t, "claude-replay-bucket", runtime.input.EgressBucket)
 	require.Equal(t, formalPoolSafeRef("proxy", "77"), runtime.input.ProxyRef)
 	require.Equal(t, "socks5h://proxy.local:1080", runtime.input.ProxyURL)
+	require.Equal(t, "oauth", runtime.input.TokenType)
+	require.Equal(t, "Bearer access", runtime.input.CredentialProof)
 	require.False(t, account.Schedulable)
 	require.Equal(t, "true", account.GetExtraString(FormalPoolExtraRuntimeRegistered))
 	require.Equal(t, "2026-05-30T01:02:03Z", account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt))
@@ -1777,13 +1799,13 @@ func TestFormalPoolRuntimeRegistrationReplayService_RebuildsRegistrationAndUpdat
 func TestFormalPoolRuntimeRegistrationReplayService_ReplaysCompleteWarmingEvidenceAfterGatewayRestart(t *testing.T) {
 	t.Parallel()
 
-	account := formalPoolDiagnosticsAccount(completeHealthcheckEvidenceExtra())
+	proxyID := int64(79)
+	account := formalPoolDiagnosticsAccount(completeHealthcheckEvidenceExtraForProxy(proxyID))
 	account.Status = StatusActive
 	account.Schedulable = true
 	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageWarming
 	account.Extra[FormalPoolExtraRuntimeRegistered] = "true"
 	account.Extra[FormalPoolExtraRuntimeRegisteredAt] = "2026-05-30T00:00:00Z"
-	proxyID := int64(79)
 	account.ProxyID = &proxyID
 	store := &formalPoolRuntimeReplayStore{accounts: []*Account{account}}
 	runtime := &formalPoolOperationsRuntimeFake{}
@@ -1805,6 +1827,20 @@ func TestFormalPoolRuntimeRegistrationReplayService_ReplaysCompleteWarmingEviden
 
 type formalPoolRuntimeReplayStore struct {
 	accounts []*Account
+}
+
+type formalPoolRuntimeReplayCorruptDeviceStore struct {
+	formalPoolRuntimeReplayStore
+	updates int
+}
+
+func (s *formalPoolRuntimeReplayCorruptDeviceStore) UpdateFormalPoolAccountState(ctx context.Context, id int64, schedulable bool, status string, extra map[string]any) (*Account, error) {
+	updated, err := s.formalPoolRuntimeReplayStore.UpdateFormalPoolAccountState(ctx, id, schedulable, status, extra)
+	if err == nil && updated != nil && s.updates == 0 {
+		updated.Extra["claude_code_device_id"] = "invalid-device acct-email-sentinel token=cp4-device-token raw_body proxy_credential=cp4-proxy-secret"
+	}
+	s.updates++
+	return updated, err
 }
 
 func (s *formalPoolRuntimeReplayStore) ListFormalPoolRuntimeReplayCandidates(context.Context) ([]*Account, error) {
@@ -1862,6 +1898,48 @@ func TestFormalPoolRuntimeRegistrationStartupReplay_ReplaysMissingEgressBucketEv
 	require.False(t, account.Schedulable, "replay repairs missing runtime mapping fail-closed until healthcheck/warming is rerun")
 }
 
+func TestFormalPoolRuntimeRegistrationReplayService_InvalidDeviceIDStoresOnlySafeFailureCode(t *testing.T) {
+	t.Parallel()
+
+	account := formalPoolDiagnosticsAccount(map[string]any{
+		FormalPoolExtraOnboardingStage:     FormalPoolStageHealthcheckPassed,
+		FormalPoolExtraRuntimeRegistered:   "false",
+		FormalPoolExtraRuntimeRegisteredAt: "",
+		"claude_code_device_id":            "invalid-device acct-email-sentinel token=cp4-device-token raw_body proxy_credential=cp4-proxy-secret",
+	})
+	account.Status = StatusActive
+	proxyID := int64(58)
+	account.ProxyID = &proxyID
+	store := &formalPoolRuntimeReplayCorruptDeviceStore{formalPoolRuntimeReplayStore: formalPoolRuntimeReplayStore{accounts: []*Account{account}}}
+	runtime := &formalPoolOperationsRuntimeFake{}
+	proxy := &formalPoolOperationsProxyFake{proxy: &Proxy{ID: 58, Protocol: "http", Host: "startup-proxy.local", Port: 8080, Status: StatusActive}}
+	replay := NewFormalPoolRuntimeRegistrationReplayService(FormalPoolRuntimeRegistrationReplayDeps{Accounts: store, Proxy: proxy, CCGatewayRuntime: runtime})
+
+	result, err := replay.Replay(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Scanned)
+	require.Equal(t, 0, result.Registered)
+	require.Equal(t, 1, result.Failed)
+	require.False(t, runtime.called)
+	require.False(t, account.Schedulable)
+	require.Equal(t, "false", account.GetExtraString(FormalPoolExtraRuntimeRegistered))
+	require.Empty(t, account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt))
+	require.Equal(t, "CC_GATEWAY_DEVICE_ID_REQUIRED", account.GetExtraString(FormalPoolExtraLastFailureCode))
+	require.Equal(t, "formal_pool_runtime_replay", account.GetExtraString(FormalPoolExtraLastFailureSource))
+	diagnostics := formalPoolDiagnosticsFromAccount(account)
+	payload := mustJSON(t, diagnostics)
+	for _, forbidden := range []string{
+		"invalid-device",
+		"acct-email-sentinel",
+		"cp4-device-token",
+		"raw_body",
+		"cp4-proxy-secret",
+	} {
+		require.NotContains(t, payload, forbidden)
+	}
+}
+
 func TestFormalPoolRuntimeRegistrationStartupReplay_RunsOnceAndRegistersCandidates(t *testing.T) {
 	t.Parallel()
 
@@ -1889,6 +1967,8 @@ func TestFormalPoolRuntimeRegistrationStartupReplay_RunsOnceAndRegistersCandidat
 	require.Equal(t, "hmac-sha256:"+strings.Repeat("7", 64), runtime.input.AccountRef)
 	require.Equal(t, "claude-startup-bucket", runtime.input.EgressBucket)
 	require.Equal(t, "socks5h://startup-proxy.local:1080", runtime.input.ProxyURL)
+	require.Equal(t, "oauth", runtime.input.TokenType)
+	require.Equal(t, "Bearer access", runtime.input.CredentialProof)
 	require.False(t, account.Schedulable)
 	require.Equal(t, "true", account.GetExtraString(FormalPoolExtraRuntimeRegistered))
 	require.Equal(t, "2026-05-30T02:03:04Z", account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt))

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +25,7 @@ type ccGatewayBoundaryUpstreamRecorder struct {
 	lastProfile  *tlsfingerprint.Profile
 	requests     int
 	resp         *http.Response
+	respFactory  func() *http.Response
 	err          error
 }
 
@@ -44,6 +46,9 @@ func (u *ccGatewayBoundaryUpstreamRecorder) DoWithTLS(req *http.Request, proxyUR
 	}
 	if u.err != nil {
 		return nil, u.err
+	}
+	if u.respFactory != nil {
+		return u.respFactory(), nil
 	}
 	return u.resp, nil
 }
@@ -299,6 +304,137 @@ func TestCCGatewayBoundary_ForwardAsResponsesSkipsMimicryAndProxy(t *testing.T) 
 	require.Nil(t, upstream.lastProfile, "CC Gateway responses path must not use account TLS fingerprint profile")
 }
 
+func TestCCGatewayBoundary_FormalPoolCompatMessagesFailClosedBeforeUpstream(t *testing.T) {
+	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newAnthropicSuccessResponse()}
+	svc := newCCGatewayBoundaryService(upstream)
+	account := newCCGatewayBoundaryAccount()
+	formalPoolApplyCompleteSchedulingEvidenceForTest(account)
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+	account.Extra[FormalPoolExtraPoolProfileEffective] = PoolProfileNormal
+	c, ctx := newCCGatewayBoundaryContext("/v1/messages")
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+
+	decision := AnthropicCompatIngressDecision{
+		InboundRoute:   AnthropicCompatInboundMessages,
+		CCGatewayRoute: AnthropicCompatCCGatewayMessages,
+		ClientType:     AnthropicCompatClientType,
+	}
+	ctx = WithAnthropicCompatAuditSummary(ctx, NewAnthropicCompatAuditSummary(decision))
+	c.Request = c.Request.WithContext(ctx)
+
+	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "formal pool")
+	require.Zero(t, upstream.requests, "formal-pool compat requests must fail closed before any CC Gateway or direct Anthropic attempt")
+}
+
+func TestCCGatewayBoundary_FormalPoolResponsesFailClosedBeforeUpstream(t *testing.T) {
+	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newAnthropicErrorResponse(http.StatusBadRequest)}
+	svc := newCCGatewayBoundaryService(upstream)
+	account := newCCGatewayBoundaryAccount()
+	formalPoolApplyCompleteSchedulingEvidenceForTest(account)
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+	account.Extra[FormalPoolExtraPoolProfileEffective] = PoolProfileNormal
+	c, ctx := newCCGatewayBoundaryContext("/v1/responses")
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","input":"hello","stream":false}`)
+
+	parsed := &ParsedRequest{Body: NewRequestBodyRef(body), Model: "claude-3-7-sonnet-20250219", Stream: false}
+	_, err := svc.ForwardAsResponses(ctx, c, account, body, parsed)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "formal pool")
+	require.Zero(t, upstream.requests, "formal-pool compat routes must fail closed before any CC Gateway or direct Anthropic attempt")
+}
+
+func TestCCGatewayBoundary_FormalPoolGatewayOnlyNativeCLIWithoutLocalGuardReachesCCGateway(t *testing.T) {
+	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
+	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newAnthropicSuccessResponse()}
+	svc := newCCGatewayBoundaryService(upstream)
+	account := newCCGatewayBoundaryAccount()
+	formalPoolApplyCompleteSchedulingEvidenceForTest(account)
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+	account.Extra[FormalPoolExtraPoolProfileEffective] = PoolProfileNormal
+	c, ctx := newCCGatewayBoundaryContext("/v1/messages")
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"system":[{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."}],"metadata":{"user_id":"{\"device_id\":\"abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd\",\"session_id\":\"123e4567-e89b-42d3-a456-426614174000\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"tools":[{"name":"Bash","input_schema":{"type":"object"}}]}`)
+
+	decision := AnthropicCompatIngressDecision{
+		InboundRoute:   AnthropicCompatInboundMessages,
+		CCGatewayRoute: AnthropicCompatCCGatewayMessages,
+		ClientType:     AnthropicCompatClientType,
+	}
+	ctx = WithAnthropicCompatAuditSummary(ctx, NewAnthropicCompatAuditSummaryWithShape(decision, AnthropicCompatShapeAudit{
+		ClientType:          AnthropicCompatClientType,
+		ServerFilledShape:   false,
+		PersonaSource:       "server_selected",
+		CompatFidelityLevel: AnthropicCompatFidelityL2,
+		ToolSearchMode:      "truthful_pass_through",
+		CapabilityBacked:    false,
+	}))
+	ctx = SetClaudeCodeClient(ctx, true)
+	c.Request = c.Request.WithContext(ctx)
+
+	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+
+	require.NoError(t, err)
+	require.Equal(t, 1, upstream.requests)
+	require.Equal(t, "http://cc-gateway:8443/v1/messages?beta=true", upstream.lastReq.URL.String())
+	require.Empty(t, upstream.lastProxyURL, "gateway-only native CLI formal-pool path must not use direct Anthropic proxy")
+	require.Nil(t, upstream.lastProfile, "gateway-only native CLI formal-pool path must not use direct Anthropic TLS profile")
+	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, ClaudeCodeNativeGuardAttestedHeader), "missing local guard evidence must not be forged into native attestation")
+}
+
+func TestCCGatewayBoundary_FormalPoolCCGatewayOrdinary502FailsClosedWithoutFailover(t *testing.T) {
+	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
+	upstream := &ccGatewayBoundaryUpstreamRecorder{respFactory: func() *http.Response {
+		return newAnthropicErrorResponse(http.StatusBadGateway)
+	}}
+	svc := newCCGatewayBoundaryService(upstream)
+	account := newCCGatewayBoundaryAccount()
+	formalPoolApplyCompleteSchedulingEvidenceForTest(account)
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+	account.Extra[FormalPoolExtraPoolProfileEffective] = PoolProfileNormal
+	c, ctx := newCCGatewayBoundaryContext("/v1/messages")
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"system":[{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."}],"metadata":{"user_id":"{\"device_id\":\"abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd\",\"session_id\":\"123e4567-e89b-42d3-a456-426614174000\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	ctx = SetClaudeCodeClient(ctx, true)
+	c.Request = c.Request.WithContext(ctx)
+
+	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+
+	require.Error(t, err)
+	var failoverErr *UpstreamFailoverError
+	require.False(t, errors.As(err, &failoverErr), "CC Gateway ordinary 502 for formal-pool native traffic must fail closed without account failover")
+	require.GreaterOrEqual(t, upstream.requests, 1)
+	require.Equal(t, "http://cc-gateway:8443/v1/messages?beta=true", upstream.lastReq.URL.String())
+	require.Empty(t, upstream.lastProxyURL)
+	require.Nil(t, upstream.lastProfile)
+}
+
+func TestCCGatewayBoundary_FormalPoolCCGatewayTransportUnavailableFailsClosedWithoutFailover(t *testing.T) {
+	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
+	upstream := &ccGatewayBoundaryUpstreamRecorder{err: errors.New("cc gateway transport unavailable: dial tcp 127.0.0.1:9: connect: connection refused")}
+	svc := newCCGatewayBoundaryService(upstream)
+	account := newCCGatewayBoundaryAccount()
+	formalPoolApplyCompleteSchedulingEvidenceForTest(account)
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+	account.Extra[FormalPoolExtraPoolProfileEffective] = PoolProfileNormal
+	c, ctx := newCCGatewayBoundaryContext("/v1/messages")
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"system":[{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."}],"metadata":{"user_id":"{\"device_id\":\"abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd\",\"session_id\":\"123e4567-e89b-42d3-a456-426614174000\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	ctx = SetClaudeCodeClient(ctx, true)
+	c.Request = c.Request.WithContext(ctx)
+
+	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+
+	require.Error(t, err)
+	var failoverErr *UpstreamFailoverError
+	require.False(t, errors.As(err, &failoverErr), "CC Gateway transport failure for formal-pool native traffic must fail closed without account failover")
+	require.Equal(t, 1, upstream.requests)
+	require.Equal(t, "http://cc-gateway:8443/v1/messages?beta=true", upstream.lastReq.URL.String())
+	require.Empty(t, upstream.lastProxyURL)
+	require.Nil(t, upstream.lastProfile)
+	require.NotContains(t, err.Error(), "123e4567-e89b-42d3-a456-426614174000")
+}
+
 func TestCCGatewayBoundary_ForwardNativeRichShapeWithoutDowngradingBodyFields(t *testing.T) {
 	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newAnthropicSuccessResponse()}
 	svc := newCCGatewayBoundaryService(upstream)
@@ -340,4 +476,79 @@ func TestCCGatewayBoundary_ForwardNativeRichShapeWithoutDowngradingBodyFields(t 
 	require.True(t, gjson.GetBytes(out, "eager_input_streaming").Bool())
 	require.Empty(t, upstream.lastProxyURL, "native CC Gateway path must not use account proxy")
 	require.Nil(t, upstream.lastProfile, "native CC Gateway path must not use account TLS fingerprint profile")
+}
+
+func TestCCGatewayBoundary_FormalPoolNativeAttestedPathBuildsCCGatewayAttestationAfterWireRestore(t *testing.T) {
+	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
+	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newAnthropicSuccessResponse()}
+	svc := newCCGatewayBoundaryService(upstream)
+	account := newCCGatewayBoundaryAccount()
+	formalPoolApplyCompleteSchedulingEvidenceForTest(account)
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+	account.Extra[FormalPoolExtraPoolProfileEffective] = PoolProfileNormal
+	c, ctx := newCCGatewayBoundaryContext("/v1/messages")
+	body := loadNativeFixture(t, "messages_rich_native_shape.json")
+
+	ctx = WithClaudeCodeNativeAuditSummary(ctx, buildClaudeCodeNativeAuditSummary(&ClaudeCodeNativeAttestationPayload{
+		RequestURI:                ClaudeCodeNativeInboundMessages,
+		GuardVersion:              "guard_v1",
+		ClaudeCodeVersion:         "2.1.175",
+		LocalSessionRef:           "hmac-sha256:" + strings.Repeat("f", 64),
+		ShapeHealthcheckProfile:   ClaudeCodeNativeTakeoverHealthProfile,
+		ReplaySafetyBoundary:      ClaudeCodeNativeReplaySafetyBoundary,
+		ReplaySafetyApplied:       true,
+		ReplaySafetyBodyShapeHash: claudeCodeNativeBodyShapeHash(body),
+	}, body))
+	c.Request = c.Request.WithContext(ctx)
+
+	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+
+	require.NoError(t, err)
+	require.Equal(t, 1, upstream.requests)
+	require.True(t, bytes.Equal(body, upstream.lastBody), "native attested body must remain wire-equivalent while server session authority is retained for attestation")
+	require.NotEmpty(t, getHeaderRaw(upstream.lastReq.Header, ccGatewayFormalPoolContextHeader))
+	require.NotEmpty(t, getHeaderRaw(upstream.lastReq.Header, ccGatewayFormalPoolSignatureHeader))
+	require.NotEmpty(t, getHeaderRaw(upstream.lastReq.Header, "X-Claude-Code-Session-Id"))
+}
+
+func TestCCGatewayBoundary_FormalPoolSessionBoundarySwapFailsBeforeUpstream(t *testing.T) {
+	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
+	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newAnthropicSuccessResponse()}
+	svc := newCCGatewayBoundaryService(upstream)
+	accountA := newCCGatewayBoundaryAccount()
+	formalPoolApplyCompleteSchedulingEvidenceForTest(accountA)
+	accountA.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+	accountA.Extra[FormalPoolExtraPoolProfileEffective] = PoolProfileNormal
+	accountA.Extra[ccGatewayExtraAccountRef] = "opaque:acct:boundary-a"
+	accountA.Extra[ccGatewayExtraEgressBucket] = "bucket-a"
+	accountA.Extra["claude_code_device_id"] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	accountB := newCCGatewayBoundaryAccount()
+	formalPoolApplyCompleteSchedulingEvidenceForTest(accountB)
+	accountB.ID = accountA.ID + 1
+	accountB.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+	accountB.Extra[FormalPoolExtraPoolProfileEffective] = PoolProfileNormal
+	accountB.Extra[ccGatewayExtraAccountRef] = "opaque:acct:boundary-b"
+	accountB.Extra[ccGatewayExtraEgressBucket] = "bucket-b"
+	accountB.Extra["claude_code_device_id"] = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":false,"system":[{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."}],"metadata":{"user_id":"{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"session_id\":\"123e4567-e89b-42d3-a456-426614174000\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+
+	c1, ctx1 := newCCGatewayBoundaryContext("/v1/messages")
+	ctx1 = SetClaudeCodeClient(WithClaudeCodeSessionUserScope(ctx1, "user:cp39-boundary"), true)
+	c1.Request = c1.Request.WithContext(ctx1)
+	_, err := svc.Forward(ctx1, c1, accountA, parseAnthropicRequestForTest(t, body))
+	require.NoError(t, err)
+	require.Equal(t, 1, upstream.requests)
+
+	c2, ctx2 := newCCGatewayBoundaryContext("/v1/messages")
+	ctx2 = SetClaudeCodeClient(WithClaudeCodeSessionUserScope(ctx2, "user:cp39-boundary"), true)
+	c2.Request = c2.Request.WithContext(ctx2)
+	_, err = svc.Forward(ctx2, c2, accountB, parseAnthropicRequestForTest(t, body))
+	require.Error(t, err)
+	var boundaryErr *ClaudeCodeSessionBoundaryError
+	require.ErrorAs(t, err, &boundaryErr)
+	require.Equal(t, "claude_native_session_boundary_failed", boundaryErr.Code)
+	require.Equal(t, 1, upstream.requests, "identity boundary failure must fail before CC Gateway/direct Anthropic upstream")
+	dumped, marshalErr := json.Marshal(boundaryErr)
+	require.NoError(t, marshalErr)
+	require.NotContains(t, string(dumped), "123e4567-e89b-42d3-a456-426614174000")
 }
