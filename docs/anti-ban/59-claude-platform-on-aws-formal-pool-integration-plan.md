@@ -4,7 +4,7 @@
 
 **Goal:** Add a new **Claude Platform on AWS** account/card that can import multiple `anthropic_workspace_id` workspaces, bind each workspace to its own egress proxy, and route native Claude formal-pool traffic safely through Sub2API -> CC Gateway -> Claude Platform on AWS.
 
-**Recommended baseline:** API-key authentication first, with a named `x_api_key` implementation profile as the Phase 1 target because the current Anthropic Claude Platform on AWS documentation says `apiKey` / `ANTHROPIC_AWS_API_KEY` resolves to `x-api-key`. This is still production-gated: Checkpoint 0 must prove the exact target credential/request path works with `x-api-key`, or the implementation must remain blocked or move to a separately named `bearer_api_key` profile with equivalent tests. SigV4 is a later gated phase because final SigV4 signing must happen after CC Gateway body/header rewrite and final verifier.
+**Recommended baseline:** API-key authentication first, with two mutually exclusive Phase 1 auth profiles: `x_api_key` and `bearer_api_key`. `x_api_key` is the target implementation profile because current Anthropic Claude Platform on AWS docs say `apiKey` / `ANTHROPIC_AWS_API_KEY` resolves to `x-api-key`, but this is not a proven production fact for our target account. Checkpoint 0 must prove which exact profile works for the target workspace/endpoint/credential; production enables only the proven profile. If neither profile is proven, production remains fail-closed. SigV4 is a later gated phase because final SigV4 signing must happen after CC Gateway body/header rewrite and final verifier.
 
 **Tech stack / working roots:**
 
@@ -15,28 +15,28 @@
 
 ## 0. 2026-06-26 alignment verdict
 
-Status after re-review against the completed doc-58 baseline: `PASS_WITH_REQUIRED_EDITS` before this revision, `READY_FOR_IMPLEMENTATION_PLANNING` after the edits in this document. The original design direction remains correct: Claude Platform on AWS is neither Bedrock nor Vertex, one workspace is one schedulable formal-pool account identity, Phase 1 uses API-key mode, and CC Gateway remains the final safety boundary.
+Status after re-review against the completed doc-58 baseline: `PASS_WITH_REQUIRED_EDITS` before this revision, `READY_FOR_IMPLEMENTATION_WITH_CP0_HARD_GATE` after the edits in this document. The original design direction remains correct: Claude Platform on AWS is neither Bedrock nor Vertex, one workspace is one schedulable formal-pool account identity, Phase 1 uses API-key mode, and CC Gateway remains the final safety boundary. Code implementation may start after document approval, but production enablement is blocked until CP0 proves the target workspace, endpoint, region, auth profile, and request shape.
 
 Required clarifications now incorporated:
 
 - Work roots now point to the new 59 worktree and the verified 58 snapshots instead of the older multiprovider worktree.
-- Checkpoint 0 is now a hard baseline/protocol verification gate, not a vague "rebase on 58 later" note.
+- Checkpoint 0 is now a hard baseline/protocol verification gate, not a vague "rebase on 58 later" note. It blocks production enablement until it proves the target endpoint `https://aws-external-anthropic.us-east-1.api.aws`, target workspace ID shape `wrkspc_...`, region/workspace consistency, auth scheme, and final `/v1/messages` host/path/query/header/body shape.
 - Multi-workspace import now requires idempotent per-row semantics, explicit proxy binding, and safe duplicate handling without raw workspace IDs in logs/evidence.
 - AWS Platform beta/header policy is provider-scoped: it may share the doc-58 request-shape/profile framework, but it must not reuse Vertex or Bedrock header policy blindly.
 - Final verifier scope is explicit for endpoint host, region, path/query, auth scheme, workspace header source, internal-header stripping, billing/CCH, cache/request-shape profile, and no direct fallback.
-- Production readiness remains blocked until implementation, targeted tests, local full-chain mock E2E, evidence updates, and deployed equivalence are green; this plan alone is not production evidence.
+- Production readiness remains blocked until CP0, implementation, targeted tests, local full-chain mock E2E, evidence updates, deployed equivalence, and tiny approved live smoke are green; this plan alone is not production evidence. Until then, AWS Platform formal-pool must stay feature-flagged, disabled, or fail-closed.
 
 ## 1. Confirmed external facts
 
 Official AWS Claude Platform documentation establishes these facts:
 
 - Claude Platform on AWS uses the Claude API surface and the Anthropic Messages API (`/v1/messages`) for inference. It differs from first-party Claude mainly by base URL, authentication method, AWS workspace scoping, and the required `anthropic-workspace-id` header. See [AWS Making requests](https://docs.aws.amazon.com/claude-platform/latest/userguide/making-requests.html). Phase 1 formal-pool routing is limited to `/v1/messages` unless a later request-shape profile explicitly allows additional endpoints such as count-tokens/files/batches/agents.
-- User-provided target endpoint for this rollout is `https://aws-external-anthropic.us-east-1.api.aws`; therefore the initial configured `aws_region` must be `us-east-1`, and the workspace must be a workspace bound to `us-east-1`. The raw workspace ID is not recorded in this plan; only the `wrkspc_...` format and a safe workspace ref may appear in evidence.
+- User-provided target endpoint for this rollout is `https://aws-external-anthropic.us-east-1.api.aws`; therefore the initial configured `aws_region` must be `us-east-1`, and the workspace must be a workspace bound to `us-east-1`. The raw workspace ID is not recorded in this plan; only the `wrkspc_...` format and a safe workspace ref may appear in evidence. CP0 must fail closed if the workspace region cannot be proven to match `us-east-1`.
 - The regional endpoint shape is `https://aws-external-anthropic.<region>.api.aws`. See [AWS Authentication](https://docs.aws.amazon.com/claude-platform/latest/userguide/authentication.html).
 - Each data-plane request must include `anthropic-workspace-id`; SDKs can read it from `ANTHROPIC_AWS_WORKSPACE_ID`, and base Anthropic clients must pass the header explicitly. See [AWS Workspaces](https://docs.aws.amazon.com/claude-platform/latest/userguide/workspaces.html).
 - Workspaces are region-scoped. The workspace ID belongs to the same ARN resource namespace used by IAM: `arn:aws:aws-external-anthropic:{region}:{account-id}:workspace/{workspace-id}`. See [AWS Workspaces](https://docs.aws.amazon.com/claude-platform/latest/userguide/workspaces.html).
 - Claude Platform on AWS supports IAM SigV4 and API-key authentication. For SigV4, the service name is `aws-external-anthropic`, and the SigV4 region must match the endpoint region. See [AWS Making requests](https://docs.aws.amazon.com/claude-platform/latest/userguide/making-requests.html) and [AWS Authentication](https://docs.aws.amazon.com/claude-platform/latest/userguide/authentication.html).
-- Current Anthropic Claude Platform on AWS documentation states the platform-specific SDK credential precedence as `apiKey` constructor argument -> `x-api-key` header and `ANTHROPIC_AWS_API_KEY` -> `x-api-key` header. The AWS User Guide also describes API-key authentication in terms of bearer-token authorization. To avoid an unsafe/wrong hard-code, Phase 1 treats `x-api-key` as a gated implementation profile rather than an already-proven production fact: Checkpoint 0 must record safe protocol evidence for the exact SDK/manual request path before production. If that evidence fails or is unavailable, production remains blocked or moves to a separately named `bearer_api_key` profile with equivalent tests. `Authorization: Bearer` stays disabled unless mock/oracle/live-approved evidence confirms it for the target account. See [Anthropic Claude Platform on AWS](https://platform.claude.com/docs/en/build-with-claude/claude-platform-on-aws).
+- Current Anthropic Claude Platform on AWS documentation states the platform-specific SDK credential precedence as `apiKey` constructor argument -> `x-api-key` header and `ANTHROPIC_AWS_API_KEY` -> `x-api-key` header. The AWS User Guide also describes API-key authentication in terms of bearer-token authorization. To avoid an unsafe/wrong hard-code, Phase 1 treats both `x_api_key` and `bearer_api_key` as mutually exclusive gated profiles rather than already-proven production facts: Checkpoint 0 must record safe protocol evidence for the exact SDK/manual request path before production. If evidence for both profiles fails or is unavailable, production remains blocked. Silent fallback between the profiles is forbidden. See [Anthropic Claude Platform on AWS](https://platform.claude.com/docs/en/build-with-claude/claude-platform-on-aws).
 - API keys for this service are not standard Claude Console keys and not Bedrock API keys. AWS docs state Claude Platform on AWS API keys are generated under AWS Console -> Claude Platform on AWS -> API keys, and Bedrock API keys do not work for this endpoint. See [AWS Authentication](https://docs.aws.amazon.com/claude-platform/latest/userguide/authentication.html). Short-term AWS-generated API keys/tokens are still treated as raw credentials: they may be stored only in sensitive credential storage, must receive their own `credential_ref`, must expire/refresh fail-closed, and must not appear in logs/evidence.
 
 ## 2. Current local code observations
@@ -71,7 +71,7 @@ Conclusion: the current Bedrock card/path is not the same service and must not b
    - `trusted_egress_profile_ref` and profile fields are authoritative.
    - Default shared formal-pool remains `strip_attribution`.
    - `signed_cch` / sign-primary remain fail-closed unless oracle/profile gates explicitly pass.
-7. Do not log or persist evidence containing API keys, tokens, cookies, Authorization, raw prompt/body/response/telemetry/CCH, raw account identity, proxy credentials, raw workspace IDs in evidence, or raw HMAC inputs.
+7. Do not log or persist evidence containing API keys, tokens, cookies, Authorization, `x-api-key`, raw prompt/body/response/telemetry/CCH, raw account identity, proxy credentials, raw workspace IDs, or raw HMAC input/output. Raw workspace IDs may exist only in sensitive credential/runtime storage.
 
 ## 4. Core design decision
 
@@ -98,14 +98,29 @@ This type is distinct from:
 - `service_account`: Vertex Anthropic.
 - `upstream`: generic base-url passthrough.
 
+Implementation isolation constraints:
+
+- Do not add `claude-platform-aws` to `IsAnthropicOAuthOrSetupToken()` or any helper whose contract means first-party Claude Code OAuth/setup-token identity. AWS Platform is not OAuth/setup-token even when the outer platform is `anthropic`.
+- Do not route `claude-platform-aws` through first-party `apikey`, Bedrock, Vertex `service_account`, or generic `upstream` builders. It must have provider-specific validation, scheduler eligibility, header policy, and direct-test builder.
+- Do not let adding this type widen existing OAuth/Setup Token/API-key/Bedrock/Vertex/generic-upstream schedulability or login behavior. Tests must prove those flows remain unchanged.
+- Formal-pool schedulability must use a dedicated eligibility predicate such as `IsFormalPoolEligibleAccount(account)` or a narrower `IsClaudePlatformAWSFormalPoolAccount(account)`. Eligibility requires account safe refs, credential binding, `workspace_ref`, `workspace_binding_hmac`, endpoint/region refs, proxy/egress binding, persona/profile refs, provider-scoped request-shape/cache/beta profile refs, and runtime registration readiness. Missing any required ref fails closed.
+
 ### 4.2 API-key MVP, SigV4 gated phase
 
-Phase 1 implements Claude Platform on AWS API-key mode only, but the concrete wire auth scheme is profile-gated:
+Phase 1 implements Claude Platform on AWS API-key mode only, but the concrete wire auth scheme is profile-gated and mutually exclusive:
 
-- Target profile: `upstream_auth_scheme = "x_api_key"`, because the current Anthropic SDK documented Claude Platform on AWS path resolves API-key auth to `x-api-key`.
-- Production gate: CP0/CP3 must prove the exact target account credential works with `x-api-key` using safe mock/manual protocol evidence before enabling this profile for production. If not proven, do not silently fall back; either block or implement a separately named `bearer_api_key` profile with the same binding, final-verifier, and no-leakage tests.
-- It avoids adding a final SigV4 signer to CC Gateway before the formal-pool rewrite/final-verifier path is fully covered.
-- It is enough to validate the new account model, workspace header injection, proxy assignment, and formal-pool safety boundary.
+| Profile | Final auth header | Forbidden in same final request | Enablement rule |
+|---|---|---|---|
+| `x_api_key` | `x-api-key: <selected credential>` | `Authorization` | Enabled only if CP0 proves the exact target credential works with `x-api-key` for `https://aws-external-anthropic.us-east-1.api.aws/v1/messages`. |
+| `bearer_api_key` | `Authorization: Bearer <selected credential>` | `x-api-key` | Enabled only if CP0 proves the exact target credential works with bearer-token auth for the same endpoint/workspace/request shape. |
+
+Rules:
+
+- `x_api_key` remains the Phase 1 target implementation profile because current Anthropic SDK documentation resolves API-key auth to `x-api-key`, but it is not a production fact until CP0 passes.
+- `bearer_api_key` is not a fallback. It is a separate profile with separate CP0 evidence, tests, profile refs, final-verifier checks, and evidence status.
+- Exactly one auth profile may be selected for a schedulable AWS Platform account/session. The selected `upstream_auth_scheme` is part of the sticky tuple and CC Gateway session ledger.
+- If neither profile is proven, production enablement for AWS Platform formal-pool remains `BLOCKED_AUTH_PROFILE` / fail-closed. Silent fallback between profiles is forbidden.
+- This API-key phase avoids adding a final SigV4 signer before the formal-pool rewrite/final-verifier path is fully covered.
 
 Phase 2 adds SigV4 only after targeted tests prove signing happens after CC Gateway final body/header rewrite and uses service `aws-external-anthropic` with endpoint-region equality.
 
@@ -135,15 +150,15 @@ func IsFormalPoolEligibleAccount(account *Account) bool
 
 ### 4.4 Provider-scoped beta/header/request-shape policy
 
-Claude Platform on AWS is an Anthropic-operated Claude API surface, but it is still a distinct provider path from first-party Anthropic, Vertex Anthropic, and Bedrock. Do not copy the Vertex beta-token denylist into this plan as a Vertex fix, and do not assume all native Claude Code beta tokens are safe for AWS Platform without a provider profile.
+Claude Platform on AWS is an Anthropic-operated Claude API surface, but it is still a distinct provider path from first-party Anthropic, Vertex Anthropic, and Bedrock. PR #3375 / #3150 and issue #3358 identify a Vertex Anthropic `anthropic-beta` filtering problem; that is not automatically the same problem as AWS Platform. Do not copy the Vertex beta-token denylist into this plan as a Vertex fix, and do not assume all native Claude Code beta tokens are safe for AWS Platform without a provider profile.
 
 Required policy shape:
 
 - Reuse the doc-58 `request_shape_profile_ref` / `cache_parity_profile_ref` mechanism, but add a provider-scoped profile such as `claude_platform_aws_native_cli_2_1_179_strip_v1`.
 - The profile owns the final `anthropic-beta` value, unknown beta-token disposition, tool-schema feature flags, `thinking`, `context_management`, `output_config`, diagnostics, cache-control placement, and any provider-specific fields such as future `inference_geo`.
 - The Vertex issue tokens (`advisor-tool-2026-03-01`, `prompt-caching-scope-2026-01-05`, `redact-thinking-2026-02-12`, `thinking-token-count-2026-05-13`) must appear in AWS Platform tests as fixtures proving AWS policy is independent: either allowed by an explicit AWS profile, stripped/downscoped by that profile, or rejected fail-closed. They must not be forwarded merely because a Vertex workaround exists elsewhere.
-- If current code shares a builder/header policy between Vertex, Bedrock, first-party Anthropic, and AWS Platform, Checkpoint 3/5 must split provider-specific policy before production enablement.
-- Client-supplied `anthropic-beta` is never authority. Sub2API records only safe observed names, and CC Gateway rewrites/verifies the final beta header from the trusted provider profile.
+- If current code shares a builder/header policy between Vertex, Bedrock, first-party Anthropic, and AWS Platform, Checkpoint 3/5 must split provider-specific policy before production enablement. AWS Platform implementation must not blindly forward Vertex/first-party/Bedrock beta tokens or header/body extensions.
+- Client-supplied `anthropic-beta` is never authority. Sub2API records only safe observed names, and CC Gateway rewrites/verifies the final beta header from the trusted provider profile. Any beta/header/body extension not explicitly allowed by `claude_platform_aws_native_cli_2_1_179_strip_v1` must be stripped/downscoped or fail-closed.
 - This section does not expand doc 59 into a Vertex fix; it prevents an AWS production risk if shared code would otherwise leak unsupported beta/header shape.
 
 ## 5. Data model
@@ -175,10 +190,10 @@ Validation rules:
 
 Redaction/storage rules:
 
-- Add `anthropic_workspace_id` to backend and DTO credential redaction helpers, or store the raw workspace ID only in the same sensitive credential map as `api_key` while exposing only `anthropic_aws_workspace_ref` in ordinary DTOs.
+- Add `anthropic_workspace_id` to backend and DTO credential redaction helpers, or store the raw workspace ID only in the same sensitive credential/runtime storage as `api_key` while exposing only `anthropic_aws_workspace_ref` in ordinary DTOs. Raw workspace ID must not appear in ordinary logs, evidence, scheduler artifacts, DTOs, or test artifacts.
 - Admin backup/export paths that intentionally export raw credentials must be documented as sensitive exports and must not be used as evidence artifacts.
 - Logs, ops errors, healthcheck results, and formal-pool evidence must show only `workspace_ref`, region, endpoint ref, booleans, and status codes.
-- Sub2API scheduler snapshots, scheduler cache metadata, admin account DTOs, healthcheck DTOs, formal-pool diagnostics, ops-log payloads, risk events, replay fixtures, and test evidence must use explicit allowlists. They may include `workspace_ref`, `endpoint_ref`, `aws_region`, `upstream_auth_scheme`, profile refs, and booleans; they must not include raw `anthropic_workspace_id`, raw API keys, raw credential digests/HMAC inputs, proxy credentials, raw prompts/bodies/responses, or Authorization/Cookie material.
+- Sub2API scheduler snapshots, scheduler cache metadata, admin account DTOs, healthcheck DTOs, formal-pool diagnostics, ops-log payloads, risk events, replay fixtures, and test evidence must use explicit allowlists. They may include `workspace_ref`, `endpoint_ref`, `aws_region`, `upstream_auth_scheme`, profile refs, booleans, and status-code buckets; they must not include raw `anthropic_workspace_id`, raw API keys, `Authorization`, `x-api-key`, raw credential digests, raw HMAC input/output, proxy credentials, raw prompts/bodies/responses, or cookies.
 - Any new field added to `Account.Extra`, scheduler metadata, or frontend types must be classified as safe-ref, sensitive, or internal-only before implementation. Unknown `claude-platform-aws` credential fields must default to redacted/omitted in ordinary API responses.
 
 ### 5.2 Safe refs stored in account extra
@@ -235,7 +250,7 @@ type AccountIdentityConfig = {
 }
 ```
 
-For Phase 1, `upstream_auth_scheme = "x_api_key"` is the target implementation profile for Claude Platform on AWS, not an unconditional production claim. CC Gateway receives the selected credential through the protected internal API-key path, verifies the credential binding, then emits `x-api-key: <selected credential>` to AWS only when CP0/CP3 evidence has enabled that profile. It must not forward client-supplied `Authorization` or `x-api-key`. A `bearer_api_key` mode may be added only as a separate compatibility profile after mock/oracle evidence proves it is accepted for the target account.
+For Phase 1, `upstream_auth_scheme` must be either `x_api_key` or `bearer_api_key`, never both. `x_api_key` is the target implementation profile for Claude Platform on AWS, not an unconditional production claim. CC Gateway receives the selected credential through the protected internal API-key path, verifies the credential binding, then emits exactly the header required by the proven profile. It must not forward client-supplied `Authorization` or `x-api-key`.
 
 ### 5.4 Workspace binding HMAC
 
@@ -255,7 +270,7 @@ workspace_binding_hmac = hmac-sha256(binding_secret,
 Rules:
 
 - `ref_secret` and `binding_secret` must be server/gateway formal-pool secrets unavailable to end users and distinct from ordinary client/API tokens. If Sub2API and CC Gateway both verify the binding, use a shared formal-pool binding secret or a key-derivation scheme explicitly configured on both sides.
-- Raw workspace ID may exist only in sensitive credential/runtime storage. Raw workspace ID, raw HMAC input, and raw HMAC output must not appear in logs, errors, evidence, or ordinary DTOs. Safe evidence may show only `workspace_ref`, `workspace_binding_hmac_present: true`, and boolean verification status.
+- Raw workspace ID may exist only in sensitive credential/runtime storage. Raw workspace ID, raw HMAC input, and raw HMAC output must not appear in logs, errors, evidence, ordinary DTOs, scheduler artifacts, or test artifacts. Safe evidence may show only `workspace_ref`, `workspace_binding_hmac_present: true`, and boolean verification status.
 - Runtime registration must verify `workspace_binding_hmac` against the selected account, credential, endpoint, region, auth scheme, egress bucket, and proxy identity before persisting the mapping.
 - Formal-pool attestation must carry `workspace_ref` and `workspace_binding_hmac`; CC Gateway must verify they match the runtime mapping and selected account identity before trusting any AWS workspace field.
 - The session ledger must bind `workspace_ref` and `workspace_binding_hmac`; the same formal-pool session cannot change either value.
@@ -292,6 +307,16 @@ Rules:
 - A later request for the same canonical formal-pool session that changes any tuple field fails closed before CC Gateway forwarding. It must not silently reschedule to another AWS workspace, credential, endpoint, proxy, profile, or beta policy.
 - Scheduler cache and replay metadata must include only safe refs for this tuple. Raw workspace IDs, raw credentials, raw HMAC inputs, and proxy credentials are forbidden in sticky/session artifacts.
 - If sticky storage is unavailable or cannot atomically compare-and-set the tuple, formal-pool production admission for `claude-platform-aws` fails closed. Personal standalone first-party behavior must not be affected.
+
+### 5.6 Non-downgrade security invariants from doc 58
+
+Doc 59 is additive. It must not weaken the completed doc-58 formal-pool boundary:
+
+- Sub2API can generate trusted AWS Platform formal-pool context only from server-side scheduler/account/runtime state. End-client input is observation only.
+- Client-supplied account, credential, egress, persona, profile, session, billing/CCH, control-plane, auth, workspace, beta, runtime, policy, and internal context headers must be stripped, ignored, or rejected before trusted context creation.
+- CC Gateway must independently verify account identity, credential binding, `workspace_ref` + `workspace_binding_hmac`, region/endpoint/path/query, egress bucket + proxy identity, persona/profile, session binding, `metadata.user_id`, billing/CCH strip/default policy, provider-scoped beta/request-shape/cache profile, and no-direct-fallback behavior before real AWS egress.
+- `strip_attribution` remains the shared formal-pool default. `no_cch`, `signed_cch`, sign-primary, Bearer auth, and SigV4 are profile-gated and disabled unless their named proof gates pass.
+- Provider final verifier must run after final URL/header/body construction. After it passes, no code may mutate auth, workspace, beta, body, path, query, billing/CCH, persona, profile, or other semantic authority fields. Only transport-only mechanics that cannot alter authority or request semantics are allowed.
 
 ## 6. Request flow
 
@@ -362,7 +387,7 @@ The direct path still needs a dedicated dispatcher/builder for `type = "claude-p
 
 ### 7.1 Inbound from end users
 
-Sub2API must strip or reject these end-user-supplied headers before any trusted context is built:
+Sub2API must strip, ignore, or reject these end-user-supplied headers before any trusted context is built; none of them may become authority for AWS Platform formal-pool routing:
 
 - `x-cc-*`
 - `x-sub2api-*`
@@ -371,7 +396,8 @@ Sub2API must strip or reject these end-user-supplied headers before any trusted 
 - `anthropic-workspace-id`
 - `x-amz-*`
 - persona/context/runtime/account/credential/egress/policy/session headers
-- any future header that can influence account, credential, workspace, proxy, persona, policy, billing/CCH, or session identity
+- billing/CCH/control-plane/cache/profile/request-shape authority headers
+- any future header that can influence account, credential, workspace, proxy, persona, policy, billing/CCH, auth scheme, route shape, or session identity
 
 For native Claude Code users, this does not break the client. The user client is not the authority for the AWS workspace. Sub2API/CC Gateway re-inject the correct workspace header after scheduler selection.
 
@@ -387,7 +413,7 @@ Sub2API may send internal selected credential material only after scheduler sele
 
 ### 7.3 CC Gateway -> AWS upstream headers
 
-For the Phase 1 `x_api_key` profile, after CP0/CP3 evidence enables that profile, final upstream headers must include:
+For the Phase 1 `x_api_key` profile, after CP0/CP3 evidence enables that profile, final upstream headers must include exactly one API-key auth header:
 
 ```text
 x-api-key: <selected AWS Claude Platform API key>
@@ -396,7 +422,16 @@ anthropic-version: 2023-06-01
 content-type: application/json
 ```
 
-`Authorization: Bearer <selected credential>` is not emitted by the `x_api_key` profile. It may be enabled only as a separately named compatibility profile after targeted evidence confirms it for Claude Platform on AWS in our request path. If neither `x_api_key` nor `bearer_api_key` is proven for the target credential, production remains fail-closed.
+For the Phase 1 `bearer_api_key` profile, after CP0/CP3 evidence enables that profile, final upstream headers must include exactly one bearer auth header:
+
+```text
+Authorization: Bearer <selected AWS Claude Platform API key or short-term token>
+anthropic-workspace-id: <server-owned workspace id>
+anthropic-version: 2023-06-01
+content-type: application/json
+```
+
+The two profiles are mutually exclusive. `x_api_key` must not emit `Authorization`, `bearer_api_key` must not emit `x-api-key`, and neither profile may forward a client-supplied auth header. If neither profile is proven for the target credential, production remains fail-closed.
 
 The final request must not include:
 
@@ -542,7 +577,9 @@ Therefore, extending the Bedrock card would be misleading and risky.
 
 ## 13. Checkpoint implementation plan
 
-### Checkpoint 0 - Baseline, protocol, and branch hygiene
+### Checkpoint 0 - Hard gate: baseline, protocol, target shape, and branch hygiene
+
+Implementation work may start after this document is approved, but production enablement is blocked until CP0 exits `PASS`. CP0 is the first hard gate for any real AWS Platform formal-pool traffic.
 
 - Confirm this plan with the user before code changes.
 - Verify work roots:
@@ -552,15 +589,25 @@ Therefore, extending the Bedrock card would be misleading and risky.
 - Verify the doc-58 baseline is present before coding:
   - Sub2API branch contains trusted server-side formal-pool context generation, forged authority-header stripping/rejection, sticky session tuple, `observed_client_profile` audit-only behavior, and signed-CCH fail-closed gates.
   - CC Gateway branch contains attestation verification, account/credential/egress/persona/session/profile final verifier, persistent/shared ledger or production fail-closed equivalent, control-plane isolation, `strip_attribution` default, and no direct fallback.
-- Record safe protocol evidence for AWS Platform API-key mode without live production traffic:
-  - official docs link set and retrieval date;
-  - endpoint pattern `aws-external-anthropic.<region>.api.aws`;
-  - target rollout region `us-east-1` when using the user-provided endpoint;
-  - `anthropic-workspace-id` required and redacted;
-  - Phase 1 target auth profile `x_api_key` plus explicit note that Bearer remains disabled until separately proven;
-  - a safe protocol check showing the exact target credential path accepts `x-api-key`, or a `BLOCKED_AUTH_PROFILE` status requiring a separately named `bearer_api_key` profile before production.
+- Prove the target AWS Platform protocol shape with safe evidence only:
+  - endpoint is exactly `https://aws-external-anthropic.us-east-1.api.aws`;
+  - target workspace ID has shape `wrkspc_...`, but raw value is stored only in sensitive credential/runtime storage;
+  - workspace region is proven to be `us-east-1`; mismatch or unknown region is `BLOCKED_REGION_WORKSPACE`;
+  - final upstream request host is `aws-external-anthropic.us-east-1.api.aws`;
+  - final path is `/v1/messages`;
+  - final query is empty unless a later named AWS request-shape profile explicitly allows otherwise;
+  - final headers include exactly one server-selected auth profile (`x_api_key` or `bearer_api_key`), exactly one server-owned `anthropic-workspace-id`, `anthropic-version`, and `content-type`;
+  - final headers contain no user-supplied auth/workspace/beta/internal context headers;
+  - final body shape is Anthropic Messages-compatible and recorded only as safe schema summary/top-level key summary, never raw prompt/body/response.
+- Auth profile proof matrix:
+  - test `x_api_key`: final request uses `x-api-key` and no `Authorization`;
+  - test `bearer_api_key`: final request uses `Authorization: Bearer` and no `x-api-key`;
+  - if one profile is proven, production may enable only that profile for the target account/session tuple;
+  - if both profiles appear to work, the operator must explicitly choose one profile for the account/session tuple; runtime silent fallback remains forbidden;
+  - if neither is proven, status is `BLOCKED_AUTH_PROFILE` and production remains fail-closed.
+- CP0 evidence may contain only: doc link set/retrieval date, endpoint ref, `workspace_ref`, `region=us-east-1`, auth profile ref, request-shape profile ref, booleans, status-code bucket, and pass/block reason. It must not contain raw workspace ID, API key, Authorization, `x-api-key`, raw HMAC input/output, raw prompt/body/response, cookies, proxy credentials, or raw telemetry.
 
-Exit gate: user approves scope, doc-58 substrate is present, API-key-first target profile is approved, `x_api_key` has safe protocol evidence or is marked `BLOCKED_AUTH_PROFILE`, and any missing 58 substrate is marked `BLOCKED_BASELINE` instead of being bypassed.
+Exit gate: user approves scope, doc-58 substrate is present, endpoint/workspace/region/request shape are proven, exactly one auth profile is selected or production is `BLOCKED_AUTH_PROFILE`, and any missing 58 substrate is marked `BLOCKED_BASELINE` instead of being bypassed.
 
 ### Checkpoint 1 - Sub2API account model and validation
 
@@ -589,6 +636,16 @@ Implementation:
 - Add a production admission flag so newly imported rows remain non-formal-pool-schedulable until CC Gateway registration and health gates pass.
 
 Exit gate: targeted Go tests pass and CodeGraph incrementally indexed if code changed.
+
+Minimum CP0/CP1 test matrix that must be represented before production work proceeds:
+
+- Auth profile tests prove `x_api_key` and `bearer_api_key` are mutually exclusive, no profile is enabled without CP0 evidence, and silent fallback is impossible.
+- Region/workspace tests prove `workspace_ref` is bound to `us-east-1` and `https://aws-external-anthropic.us-east-1.api.aws`; region mismatch or unknown workspace region fails closed.
+- Client spoofing tests prove forged `anthropic-workspace-id`, `x-api-key`, `Authorization`, `x-cc-*`, `x-sub2api-*`, account/credential/egress/persona/profile/session/billing/CCH/control-plane/internal context headers are ignored or rejected.
+- CC Gateway final verifier tests prove final upstream request has only server-selected auth/workspace, host/path/query/profile match, and all internal headers are stripped.
+- Session tuple tests prove the same formal-pool session cannot switch workspace, credential, egress, proxy, profile, beta policy, endpoint, auth scheme, or device.
+- Redaction tests prove artifacts/logs/DTOs/scheduler cache/evidence contain no raw workspace ID, API key, Authorization, `x-api-key`, raw body, raw response, raw HMAC input/output, cookies, proxy credentials, or raw telemetry.
+- No-bypass tests prove AWS Platform formal-pool production traffic cannot bypass CC Gateway and connect directly to the AWS upstream.
 
 ### Checkpoint 2 - UI card and multi-workspace import UX
 
@@ -670,7 +727,7 @@ TDD first:
   - Egress allowlist must include the account and proxy identity.
   - Auth scheme `x_api_key` emits the internal selected credential as `x-api-key` only after binding verification and only when the gated profile is enabled; otherwise it fails closed and strips any user-supplied auth headers.
   - Provider-aware upstream safety runs after attestation/account/workspace binding verification for real AWS egress.
-  - Provider final verifier runs after final URL resolution and final auth/workspace header injection, receives final URL/headers/body/identity/attestation/session/profile inputs, and rejects any post-verifier authority mutation.
+  - Provider final verifier runs after final URL resolution and final auth/workspace/header/body rewrite, receives final URL/headers/body/identity/attestation/session/profile inputs, and rejects any post-verifier authority mutation of auth/workspace/beta/body/path/query/billing/persona semantics.
   - Final upstream request has exactly one `anthropic-workspace-id`, exactly one verified API-key auth header for the enabled profile, no internal headers, no client-supplied beta/header authority, no forbidden billing/CCH markers, and safe evidence only.
   - Control-plane/admin/workspace/file/batch/agent routes cannot reach AWS upstream under the Phase 1 messages-only formal-pool profile.
   - Existing first-party Anthropic OAuth/API-key standalone and formal-pool tests still pass.
@@ -734,20 +791,24 @@ Exit gate: SigV4 mock/canonical tests pass; live canary still requires explicit 
 
 ## 14. Production gates
 
-Production enablement requires all of the following:
+Production enablement requires all of the following. The document phase is not production evidence, and any missing item means the feature remains feature-flagged, disabled, or fail-closed:
 
+- CP0 hard gate `PASS`: endpoint/workspace/region/request-shape proof is present, and exactly one auth profile (`x_api_key` or `bearer_api_key`) is proven and selected; otherwise production is `BLOCKED_AUTH_PROFILE`, `BLOCKED_REGION_WORKSPACE`, or `BLOCKED_SHAPE`.
 - Doc 58 safety substrate verified in the implementation branch, with targeted tests green for trusted profile fields, session ledger, final verifier, `strip_attribution`, and signed-CCH fail-closed behavior.
-- Sub2API targeted tests green for account validation, scheduler/cache/DTO redaction, dedicated batch import/idempotency/per-row semantics, direct AWS builder, trusted context, forged headers, complete sticky tuple persistence, provider-scoped beta policy, and no-bypass behavior.
-- CC Gateway targeted tests green for runtime schema/version gates, attestation, account/credential/workspace binding, workspace binding HMAC, egress allowlist, post-attestation upstream safety, provider-aware rewrite, route/control-plane isolation, beta/cache/request-shape profile enforcement, billing/CCH strip/sign gates, session ledger, and final verifier.
-- Local full-chain safe mock E2E green for at least two AWS workspace accounts with distinct proxy refs, proving scheduler can select multiple AWS upstreams without mixing workspace/account/credential/egress/session.
+- Targeted unit tests green for Sub2API account validation, scheduler/cache/DTO redaction, dedicated batch import/idempotency/per-row semantics, direct AWS builder, trusted context, forged headers, complete sticky tuple persistence, provider-scoped beta policy, and no-bypass behavior.
+- CC Gateway provider final verifier tests green for runtime schema/version gates, attestation, account/credential/workspace binding, workspace binding HMAC, region/endpoint/path/query, egress allowlist, post-attestation upstream safety, provider-aware rewrite, route/control-plane isolation, beta/cache/request-shape profile enforcement, billing/CCH strip/sign gates, session ledger, exactly-one-auth-header enforcement, and no post-verifier semantic mutation.
+- Sub2API full-chain local mock E2E green for at least two AWS workspace accounts with distinct proxy refs, proving scheduler can select multiple AWS upstreams without mixing workspace/account/credential/egress/session.
+- Safe artifact scan green across generated logs, DTO snapshots, scheduler cache evidence, test artifacts, local E2E reports, and documentation. Scan must reject raw workspace ID, API keys, Authorization, `x-api-key`, raw body, raw response, raw HMAC input/output, cookies, proxy credentials, and raw telemetry.
 - CodeGraph incrementally indexed after code changes in each repo when a `.codegraph/` directory exists; if absent, record that indexing was not available for that worktree.
 - 55 evidence report and final evidence map updated with safe evidence only.
-- No live formal-pool traffic until localhost E2E and deployed equivalence pass.
+- Deployed image/commit/config/profile equivalence proven with safe hashes and exact commit refs; no deployed/canary claim is valid without this.
+- Tiny approved live smoke passes only after targeted tests, local full-chain E2E, safe artifact scan, and deployed equivalence are green. The live smoke requires explicit user approval and a tiny cost envelope.
+- No live formal-pool traffic until localhost E2E, deployed equivalence, and approved live smoke pass.
 - No 3017 rebuild/smoke until targeted tests and local full-chain E2E are green and the user explicitly asks for deployment/validation.
 - No 3012 changes.
 - No standalone formal-pool production. Personal standalone remains allowed.
 - `signed_cch` / sign-primary remains fail-closed unless doc 58 oracle/profile gates pass.
-- The `x_api_key` profile requires safe protocol evidence for the exact target credential path; Bearer-token API-key compatibility and SigV4 remain disabled unless their named profiles have explicit proof.
+- Bearer-token API-key compatibility and SigV4 remain disabled unless their named profiles have explicit proof.
 
 ## 15. Evidence status for this plan
 
@@ -756,7 +817,7 @@ Production enablement requires all of the following:
 | Official endpoint/header semantics | PASS | AWS docs linked in section 1 |
 | Current screenshot equals Bedrock path | PASS | `CreateAccountModal.vue` Bedrock card and Bedrock backend signer/request code |
 | New card/type needed | PASS | Bedrock endpoint/auth/model/body semantics differ from Claude Platform on AWS |
-| API-key MVP feasibility | PASS | AWS supports API-key auth against same regional endpoint |
+| API-key MVP feasibility | PASS as design; BLOCKED_CP0 for production | AWS supports API-key auth against same regional endpoint, but `x_api_key` vs `bearer_api_key` must be proven by CP0 |
 | Multiple workspace support | PASS as design | One workspace per account row, optional batch import |
 | Per-workspace proxy | PASS as design | `proxy_id` required per created account row |
 | Formal-pool safety integration | PASS as design | Extends doc 56/58 context, verifier, and ledger fields without weakening `strip_attribution`/fail-closed defaults |
@@ -765,7 +826,8 @@ Production enablement requires all of the following:
 | Multiple AWS upstream production support | PASS as design | One workspace per account identity; local E2E must include at least two workspace/proxy refs before production |
 | SigV4 implementation | BLOCKED_EXTERNAL_EVIDENCE until tests | Official docs confirm service/region; local final-signer implementation and tests not yet done |
 | Current code feasibility review | PASS_WITH_REQUIRED_EDITS | Prior Raman review found required edits around account predicates, batch API, redaction, direct builder, canonical attestation parity, runtime schema, upstream safety, final verifier, and doc 58 sequencing; this revision incorporates those requirements |
-| Production readiness | BLOCKED_EXTERNAL_EVIDENCE | Requires code implementation, targeted tests, local E2E, deployed equivalence, and evidence updates |
+| CP0 hard gate | BLOCKED_PENDING_EXECUTION | Must prove endpoint/workspace/region/request-shape and exactly one auth profile before production |
+| Production readiness | BLOCKED_EXTERNAL_EVIDENCE | Requires CP0, code implementation, targeted unit tests, Sub2API full-chain local mock E2E, CC Gateway final verifier tests, safe artifact scan, deployed equivalence, tiny approved live smoke, and evidence updates |
 
 ## 16. Non-goals
 
@@ -776,5 +838,5 @@ Production enablement requires all of the following:
 - Do not enable `signed_cch` or sign-primary as part of this AWS upstream work.
 - Do not implement a Vertex beta-token patch in this plan; only add provider-scoped AWS safeguards if shared header code would otherwise create risk.
 - Do not enable Bearer API-key compatibility or SigV4 in Phase 1 without explicit profile proof.
-- Do not claim live production readiness from this document alone.
+- Do not claim live production readiness from this document alone; this document is not production evidence.
 - Do not implement production formal-pool routing unless Checkpoint 0 confirms the completed doc-58 safety substrate is present.
