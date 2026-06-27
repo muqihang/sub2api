@@ -954,4 +954,65 @@ All above targeted checks passed. Leak scans over the canonical fixture and curr
 
 This is not a broad-suite green claim. The broad-suite blockers recorded in the CP1 audit remain external/historical blockers for any production-readiness statement, and no deployed/live traffic claim is made.
 
-CP0 auth profile status remains `BLOCKED_AUTH_PROFILE` for production because no real target AWS workspace/API-key proof has been supplied. CP4 proves the Sub2API -> CC Gateway contract path and fail-closed behavior only; CP5 final CC Gateway verifier work has not started.
+CP0 auth profile status remains `BLOCKED_AUTH_PROFILE` for production because no real target AWS workspace/API-key proof has been supplied. CP4 proves the Sub2API -> CC Gateway contract path and fail-closed behavior only; CP5 final CC Gateway verifier work is recorded below.
+
+
+## CP5 implementation checkpoint record - 2026-06-27
+
+Status: `CP5_DONE_CCGATEWAY_VERIFIER_LEDGER_FINAL_INJECTION_TARGETED_AND_BROAD_GREEN`.
+
+CC Gateway worktree and commit:
+
+- Worktree: `/Users/muqihang/chelingxi_workspace/cc-gateway-claude-platform-aws-cp5`
+- Branch: `codex/claude-platform-aws-cp5`
+- Commit: `07eb7e3a4db111fdb1604a6bd003ba3fdbf09d0f` (`feat: enforce claude platform aws formal-pool verifier`)
+- Base reviewed for CP5: `443052a3e121b132dd6e36407f751de52d97a0b0`
+- CodeGraph: not available in the CC Gateway worktree (`.codegraph/` absent). This Sub2API worktree was incrementally indexed after this record update.
+
+Scope completed:
+
+- Extended CC Gateway account identity, runtime mapping, attestation, and formal-pool session authority ledger schemas with Claude Platform on AWS provider/workspace/workspace-binding/endpoint/region/auth/profile fields.
+- Added provider-scoped Claude Platform on AWS route admission for Phase 1 `/v1/messages` only. Internal compatibility query markers, including `?beta=true`, remain blocked and do not leak to AWS Platform.
+- Added AWS provider gates so `aws-external-anthropic.<region>.api.aws` is allowed only with `provider_kind = claude_platform_aws`; first-party/OAuth/API-key formal-pool traffic cannot use that host.
+- Bound final request verification to account identity, credential binding HMAC, workspace ref/binding HMAC, region, endpoint host, path, empty query, auth scheme, beta policy, request-shape/cache profile, egress/proxy, persona, and session authority.
+- Added provider-aware final header rewrite for Claude Platform on AWS: exactly one server-selected `anthropic-workspace-id`, exactly one selected auth header for the enabled `x_api_key` profile, no `authorization`, no client-supplied `anthropic-beta`, no internal `x-cc-*`/`x-sub2api-*`, and no billing/CCH authority headers.
+- Kept `bearer_api_key` fail-closed with `claude_platform_aws_auth_profile_unproven`; no silent fallback is implemented.
+- Added a production/real-canary endpoint verifier so Claude Platform on AWS traffic cannot be sent to a non-AWS configured upstream while merely overriding the `Host` header.
+- Extended runtime registration persistence/replay with AWS fields and conflict detection; old mappings without AWS capability fields remain blocked from AWS formal-pool production instead of defaulting open.
+- Extended final output verifier with provider-scoped AWS request-shape/cache policy, safe raw-capture summaries, and final upstream evidence that omits raw body, raw response, raw workspace ID, API key, Authorization value, raw HMAC input/output, and proxy credential material.
+
+New/updated CP5 files in the CC Gateway worktree:
+
+- `src/config.ts`
+- `src/policy.ts`
+- `src/proxy.ts`
+- `src/rewriter.ts`
+- `src/upstream-safety.ts`
+- `tests/claude-platform-aws-cp5.test.ts`
+
+Targeted and broad verification:
+
+```bash
+cd /Users/muqihang/chelingxi_workspace/cc-gateway-claude-platform-aws-cp5
+npx tsx tests/claude-platform-aws-cp5.test.ts
+npm run build
+npm test
+git diff --check
+rg -n "wrkspc_|Authorization: Bearer|x-api-key:|raw_body|raw_response|proxy_credential|HMAC input|HMAC output|sk-|AKIA|ASIA" . || true
+```
+
+Results:
+
+- `npx tsx tests/claude-platform-aws-cp5.test.ts`: `11 passed, 0 failed`.
+- `npm run build`: passed.
+- `npm test`: `215 passed, 0 failed`.
+- `git diff --check`: passed with no whitespace errors.
+- Leak scan hits were limited to existing redaction/tool/test forbidden-pattern code and safe omission-reason strings; no real raw workspace ID, API key, Authorization value, raw request/response body, raw HMAC input/output, or proxy credential was found.
+
+TDD evidence:
+
+- Initial CP5 tests were added before implementation and failed on unsupported AWS provider/runtime/final-verifier paths.
+- Additional regression test `claude platform aws rejects attested credential binding hmac mismatch` failed with an unexpected upstream pass before credential-binding HMAC verification was added.
+- Additional regression test `claude platform aws production rejects configured upstream endpoint mismatch before egress` failed by forwarding to the configured local upstream; the final verifier now blocks this with `claude_platform_aws_endpoint_mismatch` in production/real-canary modes.
+
+CP0 auth profile status remains `BLOCKED_AUTH_PROFILE` for production because no real target AWS workspace/API-key proof has been supplied. CP5 proves local/mock CC Gateway verifier, ledger, runtime replay, and final injection behavior only. No 3017 deployment/restart, live AWS request, canary, or production traffic claim is made.
