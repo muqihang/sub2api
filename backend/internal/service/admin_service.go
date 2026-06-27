@@ -2776,6 +2776,10 @@ func shouldUseFormalPoolSafeAdminMerge(account *Account) bool {
 	return account != nil && account.IsAnthropicOAuthOrSetupToken() && IsFormalPoolAccount(account)
 }
 
+func shouldUseAuthoritySafeAdminMerge(account *Account) bool {
+	return shouldUseFormalPoolSafeAdminMerge(account) || (account != nil && account.IsClaudePlatformAWS())
+}
+
 var formalPoolAdminProtectedCredentialKeys = map[string]struct{}{
 	"access_token":  {},
 	"refresh_token": {},
@@ -2788,13 +2792,21 @@ var formalPoolAdminProtectedCredentialKeys = map[string]struct{}{
 	"email_address": {},
 }
 
-func mergeFormalPoolAdminCredentials(existing, incoming map[string]any) map[string]any {
+var claudePlatformAWSAdminProtectedCredentialKeys = map[string]struct{}{
+	"api_key":                {},
+	"anthropic_workspace_id": {},
+	"auth_mode":              {},
+	"aws_region":             {},
+	"base_url":               {},
+}
+
+func mergeAuthoritySafeAdminCredentials(account *Account, existing, incoming map[string]any) map[string]any {
 	merged := cloneCredentials(existing)
 	if merged == nil {
 		merged = map[string]any{}
 	}
 	for key, value := range incoming {
-		if (isFormalPoolProtectedCredentialKey(key) || serviceSensitiveCredentialKeyForAdminMerge(key)) && isBlankAdminUpdateValue(value) {
+		if adminProtectedCredentialKeyForAccount(account, key) && isBlankAdminUpdateValue(value) {
 			continue
 		}
 		merged[key] = value
@@ -2802,60 +2814,98 @@ func mergeFormalPoolAdminCredentials(existing, incoming map[string]any) map[stri
 	return merged
 }
 
+func mergeFormalPoolAdminCredentials(existing, incoming map[string]any) map[string]any {
+	return mergeAuthoritySafeAdminCredentials(nil, existing, incoming)
+}
+
 var formalPoolAdminProtectedExtraKeys = map[string]struct{}{
-	"onboarding_state":                         {},
-	FormalPoolExtraOnboardingStage:             {},
-	FormalPoolExtraOnboardingStageUpdatedAt:    {},
-	FormalPoolExtraOnboardingLastCheck:         {},
-	FormalPoolExtraOnboardingLastCheckAt:       {},
-	FormalPoolExtraOnboardingLastErrorCode:     {},
-	FormalPoolExtraOnboardingLastErrorBucket:   {},
-	FormalPoolExtraHealthcheckStatus:           {},
-	FormalPoolExtraHealthcheckStatusCodeBucket: {},
-	FormalPoolExtraHealthcheckRawRef:           {},
-	FormalPoolExtraLastFailureOrigin:           {},
-	FormalPoolExtraLastFailureCode:             {},
-	FormalPoolExtraLastFailureSource:           {},
-	FormalPoolExtraLastCCGatewayErrorCode:      {},
-	FormalPoolExtraLastHealthcheckAt:           {},
-	FormalPoolExtraLastHealthcheckResult:       {},
-	FormalPoolExtraHealthcheckCCGatewaySeen:    {},
-	FormalPoolExtraHealthcheckFallbackDetected: {},
-	FormalPoolExtraHealthcheckProxyMismatch:    {},
-	FormalPoolExtraHealthcheckRiskTextDetected: {},
-	FormalPoolExtraHealthcheckSafeErrorCode:    {},
-	FormalPoolExtraHealthcheckSafeErrorBucket:  {},
-	FormalPoolExtraRateLimitErrorClass:         {},
-	FormalPoolExtraRateLimitWindow:             {},
-	FormalPoolExtraRateLimitAction:             {},
-	FormalPoolExtraRateLimitResetBucket:        {},
-	FormalPoolExtraRateLimitLastAt:             {},
-	FormalPoolExtraCredentialGeneration:        {},
-	FormalPoolExtraRepairedAt:                  {},
-	FormalPoolExtraRepairedBy:                  {},
-	FormalPoolExtraRuntimeRegistered:           {},
-	FormalPoolExtraRuntimeRegisteredAt:         {},
-	FormalPoolExtraWarmingStartedAt:            {},
-	FormalPoolExtraWarmingUntil:                {},
-	FormalPoolExtraPoolProfileRequested:        {},
-	FormalPoolExtraPoolProfileEffective:        {},
-	FormalPoolExtraPoolWeightMode:              {},
-	FormalPoolExtraRiskEventRef:                {},
-	FormalPoolExtraQuarantineReason:            {},
-	FormalPoolExtraQuarantineAt:                {},
-	"cc_gateway_enabled":                       {},
-	"cc_gateway_canary_only":                   {},
-	"cc_gateway_routes":                        {},
-	"cc_gateway_policy_version":                {},
-	"cc_gateway_account_ref":                   {},
-	"cc_gateway_egress_bucket_enabled":         {},
-	"cc_gateway_egress_bucket":                 {},
-	"oauth_refresh_fail_closed":                {},
+	"onboarding_state":                                     {},
+	FormalPoolExtraOnboardingStage:                         {},
+	FormalPoolExtraOnboardingStageUpdatedAt:                {},
+	FormalPoolExtraOnboardingLastCheck:                     {},
+	FormalPoolExtraOnboardingLastCheckAt:                   {},
+	FormalPoolExtraOnboardingLastErrorCode:                 {},
+	FormalPoolExtraOnboardingLastErrorBucket:               {},
+	FormalPoolExtraHealthcheckStatus:                       {},
+	FormalPoolExtraHealthcheckStatusCodeBucket:             {},
+	FormalPoolExtraHealthcheckRawRef:                       {},
+	FormalPoolExtraLastFailureOrigin:                       {},
+	FormalPoolExtraLastFailureCode:                         {},
+	FormalPoolExtraLastFailureSource:                       {},
+	FormalPoolExtraLastCCGatewayErrorCode:                  {},
+	FormalPoolExtraLastHealthcheckAt:                       {},
+	FormalPoolExtraLastHealthcheckResult:                   {},
+	FormalPoolExtraHealthcheckCCGatewaySeen:                {},
+	FormalPoolExtraHealthcheckFallbackDetected:             {},
+	FormalPoolExtraHealthcheckProxyMismatch:                {},
+	FormalPoolExtraHealthcheckRiskTextDetected:             {},
+	FormalPoolExtraHealthcheckSafeErrorCode:                {},
+	FormalPoolExtraHealthcheckSafeErrorBucket:              {},
+	FormalPoolExtraRateLimitErrorClass:                     {},
+	FormalPoolExtraRateLimitWindow:                         {},
+	FormalPoolExtraRateLimitAction:                         {},
+	FormalPoolExtraRateLimitResetBucket:                    {},
+	FormalPoolExtraRateLimitLastAt:                         {},
+	FormalPoolExtraCredentialGeneration:                    {},
+	FormalPoolExtraRepairedAt:                              {},
+	FormalPoolExtraRepairedBy:                              {},
+	FormalPoolExtraRuntimeRegistered:                       {},
+	FormalPoolExtraRuntimeRegisteredAt:                     {},
+	FormalPoolExtraWarmingStartedAt:                        {},
+	FormalPoolExtraWarmingUntil:                            {},
+	FormalPoolExtraPoolProfileRequested:                    {},
+	FormalPoolExtraPoolProfileEffective:                    {},
+	FormalPoolExtraPoolWeightMode:                          {},
+	FormalPoolExtraRiskEventRef:                            {},
+	FormalPoolExtraQuarantineReason:                        {},
+	FormalPoolExtraQuarantineAt:                            {},
+	"cc_gateway_enabled":                                   {},
+	"cc_gateway_canary_only":                               {},
+	"cc_gateway_routes":                                    {},
+	"cc_gateway_policy_version":                            {},
+	"cc_gateway_account_ref":                               {},
+	"cc_gateway_credential_ref":                            {},
+	"cc_gateway_credential_binding_hmac":                   {},
+	"cc_gateway_proxy_identity_ref":                        {},
+	"cc_gateway_persona_profile":                           {},
+	"cc_gateway_trusted_egress_profile_ref":                {},
+	"cc_gateway_profile_policy_version":                    {},
+	"cc_gateway_billing_shape_policy":                      {},
+	"cc_gateway_request_shape_profile_ref":                 {},
+	"cc_gateway_cache_parity_profile_ref":                  {},
+	"cc_gateway_egress_bucket_enabled":                     {},
+	"cc_gateway_egress_bucket":                             {},
+	"billing_cch_mode":                                     {},
+	"oauth_refresh_fail_closed":                            {},
+	ClaudePlatformAWSExtraWorkspaceRef:                     {},
+	ClaudePlatformAWSExtraWorkspaceBindingHMAC:             {},
+	ClaudePlatformAWSExtraEndpointRef:                      {},
+	ClaudePlatformAWSExtraRegion:                           {},
+	ClaudePlatformAWSExtraAuthScheme:                       {},
+	ClaudePlatformAWSExtraRequestShapeProfileRef:           {},
+	ClaudePlatformAWSExtraCacheParityProfileRef:            {},
+	ClaudePlatformAWSExtraBetaPolicyRef:                    {},
+	ClaudePlatformAWSExtraCP0AuthProfileEvidenceStatus:     {},
+	ClaudePlatformAWSExtraCP0RegionWorkspaceEvidenceStatus: {},
+	ClaudePlatformAWSExtraProductionAdmitted:               {},
 }
 
 func isFormalPoolProtectedCredentialKey(key string) bool {
 	_, protected := formalPoolAdminProtectedCredentialKeys[key]
 	return protected
+}
+
+func isClaudePlatformAWSAdminProtectedCredentialKey(key string) bool {
+	_, protected := claudePlatformAWSAdminProtectedCredentialKeys[key]
+	return protected
+}
+
+func adminProtectedCredentialKeyForAccount(account *Account, key string) bool {
+	key = strings.TrimSpace(key)
+	if isFormalPoolProtectedCredentialKey(key) || serviceSensitiveCredentialKeyForAdminMerge(key) {
+		return true
+	}
+	return account != nil && account.IsClaudePlatformAWS() && isClaudePlatformAWSAdminProtectedCredentialKey(key)
 }
 
 func serviceSensitiveCredentialKeyForAdminMerge(key string) bool {
@@ -2874,6 +2924,40 @@ func mergeFormalPoolAdminExtra(existing, incoming map[string]any) map[string]any
 		merged[key] = value
 	}
 	return merged
+}
+
+func filterAdminBulkUpdateAuthorityExtra(incoming map[string]any) map[string]any {
+	if incoming == nil {
+		return nil
+	}
+	filtered := make(map[string]any, len(incoming))
+	for key, value := range incoming {
+		if _, protected := formalPoolAdminProtectedExtraKeys[key]; protected {
+			continue
+		}
+		filtered[key] = value
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return filtered
+}
+
+func filterAdminBulkUpdateCredentials(incoming map[string]any) map[string]any {
+	if incoming == nil {
+		return nil
+	}
+	filtered := make(map[string]any, len(incoming))
+	for key, value := range incoming {
+		if (serviceSensitiveCredentialKeyForAdminMerge(key) || isClaudePlatformAWSAdminProtectedCredentialKey(key)) && isBlankAdminUpdateValue(value) {
+			continue
+		}
+		filtered[key] = value
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return filtered
 }
 
 func isBlankAdminUpdateValue(value any) bool {
@@ -2905,8 +2989,8 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if len(input.Credentials) > 0 {
 		// 敏感子键采用"incoming 没提供就保留"的合并语义：前端响应已脱敏，
 		// 全对象 PUT 编辑时不会再带回 token，避免覆盖时清空已有凭证。
-		if shouldUseFormalPoolSafeAdminMerge(account) {
-			account.Credentials = mergeFormalPoolAdminCredentials(account.Credentials, input.Credentials)
+		if shouldUseAuthoritySafeAdminMerge(account) {
+			account.Credentials = mergeAuthoritySafeAdminCredentials(account, account.Credentials, input.Credentials)
 		} else {
 			account.Credentials = MergePreservingSensitiveCreds(account.Credentials, input.Credentials)
 		}
@@ -2928,7 +3012,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		input.Extra[OpenAIGatewayTLSExtraKey] = input.OpenAIGatewayTLS.ExtraMap()
 	}
 	if input.Extra != nil {
-		if shouldUseFormalPoolSafeAdminMerge(account) && !input.FormalPoolStateUpdate {
+		if shouldUseAuthoritySafeAdminMerge(account) && !input.FormalPoolStateUpdate {
 			input.Extra = mergeFormalPoolAdminExtra(account.Extra, input.Extra)
 		}
 		// 保留配额用量字段，防止编辑账号时意外重置
@@ -3121,6 +3205,8 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 			return nil, errors.New("rate_multiplier must be >= 0")
 		}
 	}
+	bulkCredentials := filterAdminBulkUpdateCredentials(input.Credentials)
+	bulkExtra := filterAdminBulkUpdateAuthorityExtra(input.Extra)
 
 	if input.Schedulable != nil && *input.Schedulable {
 		accounts, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
@@ -3132,7 +3218,7 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 				continue
 			}
 			targetExtra := cloneCredentials(account.Extra)
-			for key, value := range input.Extra {
+			for key, value := range bulkExtra {
 				targetExtra[key] = value
 			}
 			target := *account
@@ -3145,8 +3231,8 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 
 	// Prepare bulk updates for columns and JSONB fields.
 	repoUpdates := AccountBulkUpdate{
-		Credentials: input.Credentials,
-		Extra:       input.Extra,
+		Credentials: bulkCredentials,
+		Extra:       bulkExtra,
 	}
 	if input.Name != "" {
 		repoUpdates.Name = &input.Name
