@@ -1733,6 +1733,43 @@ func TestFormalPoolOperationsRuntimeRegistrationInputCarriesClaudePlatformAWSAut
 	require.Equal(t, account.GetCredential("anthropic_workspace_id"), reg.AnthropicWorkspaceID)
 }
 
+func TestFormalPoolOperationsRuntimeRegisterPersistsExplicitClaudePlatformAWSAuthority(t *testing.T) {
+	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
+	markClaudePlatformAWSFormalPoolForRequestTest(t, account)
+	account.Extra[ccGatewayExtraPersonaProfile] = ccGatewayDefaultPersonaProfile
+	account.Extra["claude_code_device_id"] = strings.Repeat("c", 64)
+	account.Extra[FormalPoolExtraRuntimeRegistered] = "false"
+	account.Extra[FormalPoolExtraRuntimeRegisteredAt] = ""
+	store := newFormalPoolOperationsMutableStore(account)
+	runtime := &formalPoolOperationsRuntimeFake{}
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{
+		Accounts:                          store,
+		Proxy:                             &formalPoolOperationsProxyFake{proxy: &Proxy{ID: 5903, Protocol: "http", Host: "127.0.0.1", Port: 8080, Status: StatusActive}},
+		CCGatewayRuntime:                  runtime,
+		Now:                               func() time.Time { return time.Date(2026, 6, 27, 1, 2, 3, 0, time.UTC) },
+		CCGatewayContextAttestationSecret: jointGatewayContextAttestationSecret,
+		CCGatewayStickySessionHMACKey:     cp6AWSGatewayWorkspaceRefSecret,
+		CCGatewayClaudePlatformAWSWorkspaceBindingHMACKey: cp6AWSGatewayBindingSecret,
+	})
+	expected, err := ValidateClaudePlatformAWSAccountWithCCGatewayConfig(account, cp6AWSAuthorityConfig())
+	require.NoError(t, err)
+	require.NotEqual(t, account.GetExtraString(ClaudePlatformAWSExtraWorkspaceRef), expected.WorkspaceRef, "test must start with stale/default workspace authority")
+
+	_, err = svc.RuntimeRegister(context.Background(), account.ID)
+
+	require.NoError(t, err)
+	require.True(t, runtime.called)
+	require.Equal(t, expected.WorkspaceRef, account.GetExtraString(ClaudePlatformAWSExtraWorkspaceRef))
+	require.Equal(t, expected.WorkspaceBindingHMAC, account.GetExtraString(ClaudePlatformAWSExtraWorkspaceBindingHMAC))
+	require.Equal(t, expected.CredentialRef, account.GetExtraString(ccGatewayExtraCredentialRef))
+	require.Equal(t, expected.CredentialBindingHMAC, account.GetExtraString(ccGatewayExtraCredentialBindingHMAC))
+	require.Equal(t, expected.EndpointRef, account.GetExtraString(ClaudePlatformAWSExtraEndpointRef))
+	require.Equal(t, expected.WorkspaceRef, runtime.input.WorkspaceRef)
+	require.Equal(t, expected.WorkspaceBindingHMAC, runtime.input.WorkspaceBindingHMAC)
+	require.Equal(t, expected.CredentialRef, runtime.input.CredentialRef)
+	require.Equal(t, expected.CredentialBindingHMAC, runtime.input.CredentialBindingHMAC)
+}
+
 func TestFormalPoolOperationsRuntimeRegisterAcceptsClaudePlatformAWSRuntimeOnly(t *testing.T) {
 	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
 	markClaudePlatformAWSFormalPoolForRequestTest(t, account)
@@ -1866,6 +1903,49 @@ func TestFormalPoolRuntimeRegistrationReplayService_ReplaysClaudePlatformAWSRunt
 	require.NotEmpty(t, runtime.input.AnthropicWorkspaceID)
 	require.Equal(t, "2026-06-27T02:03:04Z", account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt))
 	require.False(t, account.Schedulable)
+}
+
+func TestFormalPoolRuntimeRegistrationReplayPersistsExplicitClaudePlatformAWSAuthority(t *testing.T) {
+	t.Parallel()
+
+	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
+	markClaudePlatformAWSFormalPoolForRequestTest(t, account)
+	account.Extra[ccGatewayExtraPersonaProfile] = ccGatewayDefaultPersonaProfile
+	account.Extra["claude_code_device_id"] = strings.Repeat("c", 64)
+	account.Extra[FormalPoolExtraRuntimeRegistered] = "true"
+	account.Extra[FormalPoolExtraRuntimeRegisteredAt] = "2026-06-27T00:00:00Z"
+	account.Status = StatusActive
+	account.Schedulable = false
+	store := &formalPoolRuntimeReplayStore{accounts: []*Account{account}}
+	runtime := &formalPoolOperationsRuntimeFake{}
+	proxy := &formalPoolOperationsProxyFake{proxy: &Proxy{ID: 5903, Protocol: "http", Host: "replay-proxy.local", Port: 8080, Status: StatusActive}}
+	svc := NewFormalPoolRuntimeRegistrationReplayService(FormalPoolRuntimeRegistrationReplayDeps{
+		Accounts:                          store,
+		Proxy:                             proxy,
+		CCGatewayRuntime:                  runtime,
+		Now:                               func() time.Time { return time.Date(2026, 6, 27, 2, 3, 4, 0, time.UTC) },
+		CCGatewayContextAttestationSecret: jointGatewayContextAttestationSecret,
+		CCGatewayStickySessionHMACKey:     cp6AWSGatewayWorkspaceRefSecret,
+		CCGatewayClaudePlatformAWSWorkspaceBindingHMACKey: cp6AWSGatewayBindingSecret,
+	})
+	expected, err := ValidateClaudePlatformAWSAccountWithCCGatewayConfig(account, cp6AWSAuthorityConfig())
+	require.NoError(t, err)
+	require.NotEqual(t, account.GetExtraString(ClaudePlatformAWSExtraWorkspaceRef), expected.WorkspaceRef, "test must start with stale/default workspace authority")
+
+	result, err := svc.Replay(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Registered)
+	require.True(t, runtime.called)
+	require.Equal(t, expected.WorkspaceRef, account.GetExtraString(ClaudePlatformAWSExtraWorkspaceRef))
+	require.Equal(t, expected.WorkspaceBindingHMAC, account.GetExtraString(ClaudePlatformAWSExtraWorkspaceBindingHMAC))
+	require.Equal(t, expected.CredentialRef, account.GetExtraString(ccGatewayExtraCredentialRef))
+	require.Equal(t, expected.CredentialBindingHMAC, account.GetExtraString(ccGatewayExtraCredentialBindingHMAC))
+	require.Equal(t, expected.EndpointRef, account.GetExtraString(ClaudePlatformAWSExtraEndpointRef))
+	require.Equal(t, expected.WorkspaceRef, runtime.input.WorkspaceRef)
+	require.Equal(t, expected.WorkspaceBindingHMAC, runtime.input.WorkspaceBindingHMAC)
+	require.Equal(t, expected.CredentialRef, runtime.input.CredentialRef)
+	require.Equal(t, expected.CredentialBindingHMAC, runtime.input.CredentialBindingHMAC)
 }
 
 func TestFormalPoolRuntimeRegistrationStartupReplay_RegistrarUnavailableFailClosesEligibleCandidates(t *testing.T) {

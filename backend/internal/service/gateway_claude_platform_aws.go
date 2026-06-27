@@ -21,7 +21,7 @@ func (s *GatewayService) buildUpstreamRequestClaudePlatformAWS(
 	if err := ValidateClaudePlatformAWSNoBypassForRoute(account, false, claudePlatformAWSDirectBuilderDiagnosticAllowed(c)); err != nil {
 		return nil, nil, err
 	}
-	validation, err := ValidateClaudePlatformAWSAccount(account)
+	validation, err := ValidateClaudePlatformAWSAccountWithCCGatewayConfig(account, s.cfg)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -149,14 +149,14 @@ func (s *GatewayService) buildUpstreamRequestClaudePlatformAWSCCGateway(
 	body []byte,
 	modelID string,
 ) (*http.Request, []byte, error) {
-	validation, err := ValidateClaudePlatformAWSAccount(account)
+	validation, err := ValidateClaudePlatformAWSAccountWithCCGatewayConfig(account, s.cfg)
 	if err != nil {
 		return nil, nil, err
 	}
 	if err := validateClaudePlatformAWSStoredCP0Bindings(account, validation); err != nil {
 		return nil, nil, err
 	}
-	if !IsClaudePlatformAWSFormalPoolAccount(account) {
+	if !isClaudePlatformAWSFormalPoolAccountWithValidation(account, validation) {
 		return nil, nil, fmt.Errorf("claude-platform-aws formal-pool account is not eligible for cc gateway")
 	}
 	authScheme := strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraAuthScheme))

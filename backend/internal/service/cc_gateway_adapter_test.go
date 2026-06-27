@@ -58,6 +58,8 @@ func ccGatewayTestConfig(provider string) *config.Config {
 	cfg.Gateway.CCGateway.Token = "ccg-token"
 	cfg.Gateway.CCGateway.InternalControlToken = "internal-control-material-test"
 	cfg.Gateway.CCGateway.ContextAttestationSecret = "formal-pool-attestation-secret-test"
+	cfg.Gateway.CCGateway.StickySessionHMACKey = "sub2api-gateway-sticky-session-dev-key"
+	cfg.Gateway.CCGateway.ClaudePlatformAWSWorkspaceBindingHMACKey = "sub2api-claude-platform-aws-binding-v1"
 	cfg.Gateway.CCGateway.DefaultEgressBucket = "default"
 	switch provider {
 	case PlatformAnthropic:
@@ -688,12 +690,17 @@ func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughCountTokensBuildsTran
 func TestGatewayService_CCGatewayClaudePlatformAWSBuildsAttestedContextFromServerState(t *testing.T) {
 	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
 	gin.SetMode(gin.TestMode)
+	cfg := ccGatewayTestConfig(PlatformAnthropic)
 	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
 	markClaudePlatformAWSFormalPoolForRequestTest(t, account)
 	account.Extra[ccGatewayExtraPersonaProfile] = ccGatewayDefaultPersonaProfile
 	account.Extra[ccGatewayExtraTrustedEgressProfile] = ccGatewayDefaultTrustedEgressProfileRef
 	account.Extra[ccGatewayExtraProfilePolicyVersion] = ccGatewayDefault2179ProfilePolicyVersion
 	account.Extra[ccGatewayExtraBillingShapePolicy] = ccGatewayDefaultBillingShapePolicy
+	validation, validationErr := ValidateClaudePlatformAWSAccountWithCCGatewayConfig(account, cfg)
+	require.NoError(t, validationErr)
+	account.Extra[ccGatewayExtraCredentialBindingHMAC] = validation.CredentialBindingHMAC
+	account.Extra[ClaudePlatformAWSExtraWorkspaceBindingHMAC] = validation.WorkspaceBindingHMAC
 
 	clientWorkspace := syntheticAWSWorkspaceID(9)
 	clientAPIKey := "synthetic-client-forged-api-key-cp4"
@@ -707,7 +714,7 @@ func TestGatewayService_CCGatewayClaudePlatformAWSBuildsAttestedContextFromServe
 	c.Request.Header.Set("X-Cc-Formal-Pool-Context", "client-forged-context-cp4")
 	c.Request.Header.Set("X-Sub2api-Profile", "client-forged-profile-cp4")
 
-	req, _, err := (&GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic), identityService: NewIdentityService(ccGatewayIdentityCache{})}).buildUpstreamRequest(
+	req, _, err := (&GatewayService{cfg: cfg, identityService: NewIdentityService(ccGatewayIdentityCache{})}).buildUpstreamRequest(
 		context.Background(), c, account, body,
 		account.GetCredential("api_key"), "claude_platform_aws", "claude-sonnet-4-6", false, false, false,
 	)
@@ -717,8 +724,6 @@ func TestGatewayService_CCGatewayClaudePlatformAWSBuildsAttestedContextFromServe
 	require.Equal(t, "", req.URL.RawQuery)
 
 	ctx := decodeCCGatewayFormalPoolContextForTest(t, req)
-	validation, validationErr := ValidateClaudePlatformAWSAccount(account)
-	require.NoError(t, validationErr)
 	require.Equal(t, claudePlatformAWSProviderKind, ctx["provider_kind"])
 	require.Equal(t, ClaudePlatformAWSAuthProfileXAPIKey, ctx["upstream_auth_scheme"])
 	require.Equal(t, "us-east-1", ctx["aws_region"])

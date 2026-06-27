@@ -1118,3 +1118,74 @@ CP5 second review verdict:
 - Minor: none.
 - The previous remaining Important about source-code default HMAC material is closed. The reviewer confirmed no new Critical/Important issue was introduced by the second review-fix.
 - CP5 is safe to proceed to CP6 from review perspective, still without any live/deploy/production traffic claim and with CP0 production auth profile remaining `BLOCKED_AUTH_PROFILE`.
+
+## CP6 implementation checkpoint record - 2026-06-27
+
+Status: `CP6_DONE_LOCAL_FULL_CHAIN_E2E_TARGETED_GREEN_PENDING_REVIEW`.
+
+Scope completed in this Sub2API worktree:
+
+- Added a local full-chain E2E for Claude Platform on AWS formal-pool traffic using the Sub2API service path, a local CC Gateway CP5 process, safe mock AWS upstream, and two independent AWS workspace account identities.
+- The E2E proves normal production-style Sub2API AWS formal-pool traffic routes through CC Gateway, not through a direct Sub2API account proxy bypass.
+- The E2E covers two AWS workspace accounts with distinct safe account/workspace/credential/egress/proxy refs and proves the selected account uses its selected proxy without mixing the other account's proxy.
+- Added explicit Sub2API config and wiring for CC Gateway sticky-session HMAC material and Claude Platform on AWS workspace-binding HMAC material, matching the CP5 CC Gateway requirement that AWS workspace authority material is explicit rather than a source-code fallback.
+- Updated Claude Platform on AWS validation/build/runtime paths so CC Gateway-enabled production paths fail closed when explicit AWS authority material is absent or incomplete.
+- Updated runtime registration and replay so the persisted scheduler/runtime safe refs, credential binding, workspace binding, and final CC Gateway registration input are generated from the same explicit CC Gateway authority material.
+- Updated the shared Sub2API <-> CC Gateway contract fixture canonical session output and AWS signature to match the current session mapper output.
+
+TDD evidence added during CP6:
+
+- New full-chain E2E initially failed with `BLOCKED_AUTH_PROFILE: CP0 evidence binding mismatch: workspace_binding_hmac`, proving the Sub2API and CC Gateway authority material were not yet aligned.
+- Added regression tests for explicit Claude Platform on AWS authority persistence in runtime register/replay; they initially failed because persisted scheduler state still carried stale/default authority refs while the CC Gateway registration input required explicit authority material.
+- Implementation then aligned validation, persisted refs, runtime registration, replay, and CC Gateway request construction; the new tests passed afterward.
+
+New/updated CP6 files in this worktree:
+
+- `backend/internal/config/config.go`
+- `backend/internal/config/config_test.go`
+- `backend/internal/service/cc_gateway_adapter_test.go`
+- `backend/internal/service/claude_platform_aws.go`
+- `backend/internal/service/claude_platform_aws_full_chain_e2e_test.go`
+- `backend/internal/service/formal_pool_operations_service.go`
+- `backend/internal/service/formal_pool_operations_service_test.go`
+- `backend/internal/service/formal_pool_runtime_replay_service.go`
+- `backend/internal/service/gateway_claude_platform_aws.go`
+- `backend/internal/service/gateway_claude_platform_aws_request_test.go`
+- `backend/internal/service/testdata/cc_gateway_formal_pool_contract/vectors.json`
+- `backend/internal/service/wire.go`
+
+Targeted verification:
+
+```bash
+cd /Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-platform-aws-formal-pool/backend
+go test ./internal/service -run 'TestFormalPoolOperationsRuntimeRegisterPersistsExplicitClaudePlatformAWSAuthority|TestFormalPoolRuntimeRegistrationReplayPersistsExplicitClaudePlatformAWSAuthority' -count=1 -v
+go test ./internal/service -run 'TestClaudePlatformAWS|TestGatewayService_(BuildClaudePlatformAWS|CCGatewayClaudePlatformAWS|GetAccessTokenClaudePlatformAWS|ClaudePlatformAWS)|TestFormalPoolOperationsRuntime.*ClaudePlatformAWS|TestFormalPoolRuntimeRegistrationReplayService_ReplaysClaudePlatformAWSRuntimeMapping|TestFormalPoolRuntimeRegistrationReplayPersistsExplicitClaudePlatformAWSAuthority|TestCCGatewayFormalPoolAttestationMatchesSharedContractFixture|TestCCGatewayFormalPoolAWSAttestationMatchesSharedCanonicalFixture' -count=1
+go test ./internal/config -run 'TestLoadDefaultCCGatewayConfig|TestLoadCCGatewayConfigFromEnv|TestLoadRejectsCCGatewayWithoutIndependent' -count=1
+go test ./internal/service -run '^TestClaudePlatformAWSLocalFullChainE2EUsesCCGatewayAndSafeMockUpstream$' -count=1 -v
+git diff --check
+```
+
+Results:
+
+- Runtime authority regression tests: passed after RED failure and fix.
+- Service targeted suite: passed.
+- Config targeted suite: passed.
+- Local full-chain E2E: passed.
+- `git diff --check`: passed.
+
+Safe artifact/leak scan:
+
+- Changed-file scan found only existing safe-pattern/test forbidden-token strings, code identifiers such as raw workspace parameter names, synthetic local fixtures, and existing redaction tests.
+- No real raw workspace ID, API key, Authorization value, `x-api-key` value, raw prompt/body/response, raw HMAC input/output, cookie, proxy credential, or raw telemetry was detected in changed files.
+- The CP6 E2E asserts gateway logs and mock evidence do not contain the synthetic raw workspace/API key values. Evidence remains limited to safe status/boolean/shape summaries.
+
+CodeGraph:
+
+- This Sub2API worktree must be incrementally indexed after this CP6 record update before commit.
+
+Non-claims / blockers:
+
+- CP0 auth profile status remains `BLOCKED_AUTH_PROFILE` for production because no real target AWS workspace/API-key proof has been supplied.
+- No 3017 deployment/restart, no 3012 change, no live AWS request, no canary, and no production traffic was performed.
+- This is not a broad-suite green claim. The broad-suite blockers recorded in the CP1 broad-suite audit remain external/historical blockers for any production-readiness statement.
+- CP6 requires code review before proceeding to any later checkpoint.

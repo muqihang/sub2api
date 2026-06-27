@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/tidwall/gjson"
 )
 
@@ -35,8 +37,9 @@ const (
 )
 
 const (
-	claudePlatformAWSProviderKind = "claude_platform_aws"
-	claudePlatformAWSAllowedPath  = "/v1/messages"
+	claudePlatformAWSProviderKind           = "claude_platform_aws"
+	claudePlatformAWSAllowedPath            = "/v1/messages"
+	claudePlatformAWSDefaultAuthoritySecret = "sub2api-claude-platform-aws-binding-v1"
 )
 
 const (
@@ -145,6 +148,60 @@ func (a *Account) IsClaudePlatformAWS() bool {
 }
 
 func ValidateClaudePlatformAWSAccount(account *Account) (ClaudePlatformAWSAccountValidation, error) {
+	return validateClaudePlatformAWSAccountWithAuthority(account, claudePlatformAWSDefaultAuthorityMaterial())
+}
+
+func ValidateClaudePlatformAWSAccountWithCCGatewayConfig(account *Account, cfg *config.Config) (ClaudePlatformAWSAccountValidation, error) {
+	material, err := claudePlatformAWSAuthorityMaterialFromCCGatewayConfig(cfg)
+	if err != nil {
+		return ClaudePlatformAWSAccountValidation{}, err
+	}
+	return validateClaudePlatformAWSAccountWithAuthority(account, material)
+}
+
+type claudePlatformAWSAuthorityMaterial struct {
+	SafeRefSecret           string
+	CredentialBindingSecret string
+	WorkspaceBindingSecret  string
+}
+
+func claudePlatformAWSDefaultAuthorityMaterial() claudePlatformAWSAuthorityMaterial {
+	return claudePlatformAWSAuthorityMaterial{
+		CredentialBindingSecret: claudePlatformAWSDefaultAuthoritySecret,
+		WorkspaceBindingSecret:  claudePlatformAWSDefaultAuthoritySecret,
+	}
+}
+
+func claudePlatformAWSAuthorityMaterialFromCCGatewayConfig(cfg *config.Config) (claudePlatformAWSAuthorityMaterial, error) {
+	material := claudePlatformAWSDefaultAuthorityMaterial()
+	if cfg == nil {
+		return material, nil
+	}
+	ccg := cfg.Gateway.CCGateway
+	safeRefSecret := firstNonEmptyString(
+		ccg.StickySessionHMACKey,
+		os.Getenv("SUB2API_GATEWAY_STICKY_SESSION_HMAC_KEY"),
+	)
+	workspaceBindingSecret := firstNonEmptyString(
+		ccg.ClaudePlatformAWSWorkspaceBindingHMACKey,
+		os.Getenv("SUB2API_CLAUDE_PLATFORM_AWS_BINDING_HMAC_KEY"),
+	)
+	if ccg.Enabled && (safeRefSecret == "" || workspaceBindingSecret == "") {
+		return material, fmt.Errorf("%s: explicit Claude Platform AWS authority material is required", ClaudePlatformAWSAuthProfileBlocked)
+	}
+	if safeRefSecret == "" && workspaceBindingSecret == "" {
+		return material, nil
+	}
+	if safeRefSecret == "" || workspaceBindingSecret == "" || strings.TrimSpace(ccg.ContextAttestationSecret) == "" {
+		return material, fmt.Errorf("%s: explicit Claude Platform AWS authority material is incomplete", ClaudePlatformAWSAuthProfileBlocked)
+	}
+	material.SafeRefSecret = strings.TrimSpace(safeRefSecret)
+	material.CredentialBindingSecret = strings.TrimSpace(ccg.ContextAttestationSecret)
+	material.WorkspaceBindingSecret = strings.TrimSpace(workspaceBindingSecret)
+	return material, nil
+}
+
+func validateClaudePlatformAWSAccountWithAuthority(account *Account, material claudePlatformAWSAuthorityMaterial) (ClaudePlatformAWSAccountValidation, error) {
 	var out ClaudePlatformAWSAccountValidation
 	if account == nil || !account.IsClaudePlatformAWS() {
 		return out, fmt.Errorf("claude-platform-aws account is required")
@@ -170,20 +227,23 @@ func ValidateClaudePlatformAWSAccount(account *Account) (ClaudePlatformAWSAccoun
 	if rawBase := strings.TrimSpace(account.GetCredential("base_url")); rawBase != "" && strings.TrimRight(rawBase, "/") != endpoint {
 		return out, fmt.Errorf("base_url region mismatch for claude-platform-aws")
 	}
-	credentialRef := formalPoolSafeRef("credential", "claude-platform-aws:"+region+":"+strings.TrimSpace(account.GetCredential("api_key")))
-	workspaceRef := ClaudePlatformAWSWorkspaceRef(region, workspaceID)
-	endpointRef := formalPoolSafeRef("endpoint", endpoint)
-	proxyRef := formalPoolSafeRef("proxy", fmt.Sprintf("%d", *account.ProxyID))
+	credentialRef := formalPoolSafeRefWithSecret(material.SafeRefSecret, "credential", "claude-platform-aws:"+region+":"+strings.TrimSpace(account.GetCredential("api_key")))
+	workspaceRef := claudePlatformAWSWorkspaceRefWithSecret(material.SafeRefSecret, region, workspaceID)
+	endpointRef := formalPoolSafeRefWithSecret(material.SafeRefSecret, "endpoint", endpoint)
+	proxyRef := strings.TrimSpace(account.GetExtraString(ccGatewayExtraProxyIdentityRef))
+	if proxyRef == "" {
+		proxyRef = formalPoolSafeRefWithSecret(material.SafeRefSecret, "proxy", fmt.Sprintf("%d", *account.ProxyID))
+	}
 	accountRef := strings.TrimSpace(account.GetExtraString(ccGatewayExtraAccountRef))
 	if accountRef == "" || accountRef == "0" {
-		accountRef = formalPoolSafeRef("account", workspaceRef+"|"+credentialRef+"|"+proxyRef)
+		accountRef = formalPoolSafeRefWithSecret(material.SafeRefSecret, "account", workspaceRef+"|"+credentialRef+"|"+proxyRef)
 	}
 	authScheme := strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraAuthScheme))
 	if authScheme == "" {
 		authScheme = ClaudePlatformAWSAuthProfileBlocked
 	}
-	credentialBinding := ccGatewayCredentialBindingHMACForMaterial("sub2api-claude-platform-aws-binding-v1", "apikey", strings.TrimSpace(account.GetCredential("api_key")))
-	binding := ClaudePlatformAWSWorkspaceBindingHMAC("sub2api-claude-platform-aws-binding-v1", ClaudePlatformAWSSessionTuple{
+	credentialBinding := ccGatewayCredentialBindingHMACForMaterial(material.CredentialBindingSecret, "apikey", strings.TrimSpace(account.GetCredential("api_key")))
+	binding := ClaudePlatformAWSWorkspaceBindingHMAC(material.WorkspaceBindingSecret, ClaudePlatformAWSSessionTuple{
 		ProviderKind:     claudePlatformAWSProviderKind,
 		AccountRef:       accountRef,
 		CredentialRef:    credentialRef,
@@ -207,13 +267,17 @@ func ClaudePlatformAWSEndpointForRegion(region string) string {
 }
 
 func ClaudePlatformAWSWorkspaceRef(region, rawWorkspaceID string) string {
-	return formalPoolSafeRef("workspace", "claude_platform_aws_workspace_ref_v1\x00"+strings.TrimSpace(region)+"\x00"+strings.TrimSpace(rawWorkspaceID))
+	return claudePlatformAWSWorkspaceRefWithSecret("", region, rawWorkspaceID)
+}
+
+func claudePlatformAWSWorkspaceRefWithSecret(secret, region, rawWorkspaceID string) string {
+	return formalPoolSafeRefWithSecret(secret, "workspace", "claude_platform_aws_workspace_ref_v1\x00"+strings.TrimSpace(region)+"\x00"+strings.TrimSpace(rawWorkspaceID))
 }
 
 func ClaudePlatformAWSWorkspaceBindingHMAC(secret string, tuple ClaudePlatformAWSSessionTuple) string {
 	secret = strings.TrimSpace(secret)
 	if secret == "" {
-		secret = "sub2api-claude-platform-aws-binding-v1"
+		secret = claudePlatformAWSDefaultAuthoritySecret
 	}
 	parts := []string{
 		"claude_platform_aws_workspace_binding_v1",
@@ -229,6 +293,24 @@ func ClaudePlatformAWSWorkspaceBindingHMAC(secret string, tuple ClaudePlatformAW
 	}
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(strings.Join(parts, "\x00")))
+	return "hmac-sha256:" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func formalPoolSafeRefWithSecret(secret, scope, raw string) string {
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		return formalPoolSafeRef(scope, raw)
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte("formal_pool_" + scope))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte("v1"))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte(raw))
 	return "hmac-sha256:" + hex.EncodeToString(mac.Sum(nil))
 }
 
@@ -327,6 +409,10 @@ func safeClaudePlatformAWSLabel(raw string) string {
 }
 
 func IsClaudePlatformAWSFormalPoolAccount(account *Account) bool {
+	return isClaudePlatformAWSFormalPoolAccountWithValidation(account, ClaudePlatformAWSAccountValidation{})
+}
+
+func isClaudePlatformAWSFormalPoolAccountWithValidation(account *Account, validation ClaudePlatformAWSAccountValidation) bool {
 	if account == nil || !account.IsClaudePlatformAWS() || account.ProxyID == nil {
 		return false
 	}
@@ -365,7 +451,16 @@ func IsClaudePlatformAWSFormalPoolAccount(account *Account) bool {
 	if !claudePlatformAWSRegionRe.MatchString(region) {
 		return false
 	}
-	if strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraEndpointRef)) != formalPoolSafeRef("endpoint", ClaudePlatformAWSEndpointForRegion(region)) {
+	expectedEndpointRef := strings.TrimSpace(validation.EndpointRef)
+	expectedRegion := strings.TrimSpace(validation.Region)
+	if expectedEndpointRef == "" {
+		expectedEndpointRef = formalPoolSafeRef("endpoint", ClaudePlatformAWSEndpointForRegion(region))
+	}
+	if expectedRegion == "" {
+		expectedRegion = region
+	}
+	if strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraEndpointRef)) != expectedEndpointRef ||
+		region != expectedRegion {
 		return false
 	}
 	for _, field := range []string{
@@ -468,6 +563,60 @@ func (t ClaudePlatformAWSSessionTuple) ValidateSame(attempt ClaudePlatformAWSSes
 		}
 	}
 	return nil
+}
+
+func claudePlatformAWSRuntimeAuthorityExtra(account *Account, cfg *config.Config, accountRef, egressBucket, proxyIdentityRef string) (map[string]any, error) {
+	if account == nil || !account.IsClaudePlatformAWS() {
+		return nil, nil
+	}
+	overlay := map[string]any{}
+	if accountRef = strings.TrimSpace(accountRef); accountRef != "" {
+		overlay[ccGatewayExtraAccountRef] = accountRef
+	}
+	if egressBucket = strings.TrimSpace(egressBucket); egressBucket != "" {
+		overlay[ccGatewayExtraEgressBucket] = egressBucket
+	}
+	if proxyIdentityRef = strings.TrimSpace(proxyIdentityRef); proxyIdentityRef != "" {
+		overlay[ccGatewayExtraProxyIdentityRef] = proxyIdentityRef
+	}
+	working := cloneClaudePlatformAWSAccountWithExtraOverlay(account, overlay)
+	expected, err := ValidateClaudePlatformAWSAccountWithCCGatewayConfig(working, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateClaudePlatformAWSStoredCP0Bindings(working, expected); err == nil {
+		return nil, nil
+	} else {
+		defaultExpected, defaultErr := ValidateClaudePlatformAWSAccount(working)
+		if defaultErr != nil || validateClaudePlatformAWSStoredCP0Bindings(working, defaultExpected) != nil {
+			return nil, err
+		}
+	}
+	return map[string]any{
+		ccGatewayExtraCredentialRef:                            expected.CredentialRef,
+		ccGatewayExtraCredentialBindingHMAC:                    expected.CredentialBindingHMAC,
+		ClaudePlatformAWSExtraWorkspaceRef:                     expected.WorkspaceRef,
+		ClaudePlatformAWSExtraWorkspaceBindingHMAC:             expected.WorkspaceBindingHMAC,
+		ClaudePlatformAWSExtraEndpointRef:                      expected.EndpointRef,
+		ClaudePlatformAWSExtraRegion:                           expected.Region,
+		ClaudePlatformAWSExtraCP0AuthProfileEvidenceStatus:     strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraCP0AuthProfileEvidenceStatus)),
+		ClaudePlatformAWSExtraCP0RegionWorkspaceEvidenceStatus: strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraCP0RegionWorkspaceEvidenceStatus)),
+	}, nil
+}
+
+func cloneClaudePlatformAWSAccountWithExtraOverlay(account *Account, extra map[string]any) *Account {
+	if account == nil {
+		return nil
+	}
+	clone := *account
+	clone.Extra = cloneCredentials(account.Extra)
+	if clone.Extra == nil {
+		clone.Extra = map[string]any{}
+	}
+	for key, value := range extra {
+		clone.Extra[key] = value
+	}
+	return &clone
 }
 
 func validateClaudePlatformAWSStoredCP0Bindings(account *Account, validation ClaudePlatformAWSAccountValidation) error {
@@ -629,10 +778,14 @@ func nonEmptyClaudePlatformAWSHeaderValues(headers http.Header, key string) []st
 }
 
 func applyClaudePlatformAWSRuntimeRegistrationFields(account *Account, reg *FormalPoolCCGatewayRuntimeRegistration) error {
+	return applyClaudePlatformAWSRuntimeRegistrationFieldsWithCCGatewayConfig(account, reg, nil)
+}
+
+func applyClaudePlatformAWSRuntimeRegistrationFieldsWithCCGatewayConfig(account *Account, reg *FormalPoolCCGatewayRuntimeRegistration, cfg *config.Config) error {
 	if account == nil || reg == nil || !account.IsClaudePlatformAWS() {
 		return nil
 	}
-	validation, err := ValidateClaudePlatformAWSAccount(account)
+	validation, err := ValidateClaudePlatformAWSAccountWithCCGatewayConfig(account, cfg)
 	if err != nil {
 		return err
 	}

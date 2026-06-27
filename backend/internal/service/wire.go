@@ -155,6 +155,8 @@ func ProvideFormalPoolOperationsService(adminService AdminService, oauthService 
 		SchedulerCache:                    schedulerCache,
 		Now:                               time.Now,
 		CCGatewayContextAttestationSecret: strings.TrimSpace(cfg.Gateway.CCGateway.ContextAttestationSecret),
+		CCGatewayStickySessionHMACKey:     strings.TrimSpace(cfg.Gateway.CCGateway.StickySessionHMACKey),
+		CCGatewayClaudePlatformAWSWorkspaceBindingHMACKey: strings.TrimSpace(cfg.Gateway.CCGateway.ClaudePlatformAWSWorkspaceBindingHMACKey),
 	})
 }
 
@@ -165,6 +167,8 @@ func ProvideFormalPoolRuntimeRegistrationStartupReplay(accountRepo AccountReposi
 		NewFormalPoolHTTPCCGatewayRuntimeRegistrar(cfg),
 		time.Now,
 		strings.TrimSpace(cfg.Gateway.CCGateway.ContextAttestationSecret),
+		strings.TrimSpace(cfg.Gateway.CCGateway.StickySessionHMACKey),
+		strings.TrimSpace(cfg.Gateway.CCGateway.ClaudePlatformAWSWorkspaceBindingHMACKey),
 	)
 }
 
@@ -176,10 +180,18 @@ func ProvideFormalPoolRuntimeRegistrationStartupReplayWithDeps(
 	contextAttestationSecret ...string,
 ) *FormalPoolRuntimeRegistrationStartupReplay {
 	secret := ""
+	stickySecret := ""
+	workspaceBindingSecret := ""
 	if len(contextAttestationSecret) > 0 {
 		secret = strings.TrimSpace(contextAttestationSecret[0])
 	}
-	replay := NewFormalPoolRuntimeRegistrationReplayService(FormalPoolRuntimeRegistrationReplayDeps{Accounts: accounts, Proxy: proxy, CCGatewayRuntime: registrar, Now: now, CCGatewayContextAttestationSecret: secret})
+	if len(contextAttestationSecret) > 1 {
+		stickySecret = strings.TrimSpace(contextAttestationSecret[1])
+	}
+	if len(contextAttestationSecret) > 2 {
+		workspaceBindingSecret = strings.TrimSpace(contextAttestationSecret[2])
+	}
+	replay := NewFormalPoolRuntimeRegistrationReplayService(FormalPoolRuntimeRegistrationReplayDeps{Accounts: accounts, Proxy: proxy, CCGatewayRuntime: registrar, Now: now, CCGatewayContextAttestationSecret: secret, CCGatewayStickySessionHMACKey: stickySecret, CCGatewayClaudePlatformAWSWorkspaceBindingHMACKey: workspaceBindingSecret})
 	runner := NewFormalPoolRuntimeRegistrationStartupReplay(replay)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

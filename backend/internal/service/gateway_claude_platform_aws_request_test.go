@@ -103,6 +103,24 @@ func TestGatewayService_BuildClaudePlatformAWSRequestFailsClosedWithoutCP0Eviden
 	require.Nil(t, req)
 }
 
+func TestGatewayService_CCGatewayClaudePlatformAWSFailsClosedWithoutAuthorityMaterial(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
+	markClaudePlatformAWSFormalPoolForRequestTest(t, account)
+	cfg := ccGatewayTestConfig(PlatformAnthropic)
+	cfg.Gateway.CCGateway.StickySessionHMACKey = ""
+	cfg.Gateway.CCGateway.ClaudePlatformAWSWorkspaceBindingHMACKey = ""
+
+	req, _, err := (&GatewayService{cfg: cfg}).buildUpstreamRequest(
+		context.Background(), claudePlatformAWSRequestTestContext(), account, []byte(`{"model":"claude-sonnet-4-6","messages":[]}`),
+		account.GetCredential("api_key"), "claude_platform_aws", "claude-sonnet-4-6", false, false, false,
+	)
+
+	require.ErrorContains(t, err, ClaudePlatformAWSAuthProfileBlocked)
+	require.ErrorContains(t, err, "authority material")
+	require.Nil(t, req)
+}
+
 func TestGatewayService_BuildClaudePlatformAWSFormalPoolNormalTrafficCannotBypassCCGatewayWhenProductionFlagFalse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)

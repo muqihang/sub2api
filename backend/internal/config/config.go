@@ -1132,14 +1132,16 @@ type OpenAIGatewayBucketTLSConfig struct {
 // GatewayCCGatewayConfig controls forwarding selected Anthropic/Antigravity
 // account credentials through cc-gateway for identity rewriting.
 type GatewayCCGatewayConfig struct {
-	Enabled                  bool                            `mapstructure:"enabled"`
-	BaseURL                  string                          `mapstructure:"base_url"`
-	Token                    string                          `mapstructure:"token"`
-	InternalControlToken     string                          `mapstructure:"internal_control_token"`
-	ContextAttestationSecret string                          `mapstructure:"context_attestation_secret"`
-	TimeoutSeconds           int                             `mapstructure:"timeout_seconds"`
-	DefaultEgressBucket      string                          `mapstructure:"default_egress_bucket"`
-	Providers                GatewayCCGatewayProvidersConfig `mapstructure:"providers"`
+	Enabled                                  bool                            `mapstructure:"enabled"`
+	BaseURL                                  string                          `mapstructure:"base_url"`
+	Token                                    string                          `mapstructure:"token"`
+	InternalControlToken                     string                          `mapstructure:"internal_control_token"`
+	ContextAttestationSecret                 string                          `mapstructure:"context_attestation_secret"`
+	StickySessionHMACKey                     string                          `mapstructure:"sticky_session_hmac_key"`
+	ClaudePlatformAWSWorkspaceBindingHMACKey string                          `mapstructure:"claude_platform_aws_workspace_binding_hmac_key"`
+	TimeoutSeconds                           int                             `mapstructure:"timeout_seconds"`
+	DefaultEgressBucket                      string                          `mapstructure:"default_egress_bucket"`
+	Providers                                GatewayCCGatewayProvidersConfig `mapstructure:"providers"`
 }
 
 type GatewayCCGatewayProvidersConfig struct {
@@ -2178,6 +2180,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.cc_gateway.token", "")
 	viper.SetDefault("gateway.cc_gateway.internal_control_token", "")
 	viper.SetDefault("gateway.cc_gateway.context_attestation_secret", "")
+	viper.SetDefault("gateway.cc_gateway.sticky_session_hmac_key", "")
+	viper.SetDefault("gateway.cc_gateway.claude_platform_aws_workspace_binding_hmac_key", "")
 	viper.SetDefault("gateway.cc_gateway.timeout_seconds", 600)
 	viper.SetDefault("gateway.cc_gateway.default_egress_bucket", "default")
 	viper.SetDefault("gateway.cc_gateway.providers.anthropic", false)

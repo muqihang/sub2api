@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
 )
@@ -189,31 +190,35 @@ type FormalPoolOperationsProxyStore interface {
 }
 
 type FormalPoolOperationsDeps struct {
-	Accounts                          FormalPoolOperationsAccountStore
-	OAuth                             FormalPoolOAuthFacade
-	Proxy                             FormalPoolOperationsProxyStore
-	CCGatewayRuntime                  FormalPoolCCGatewayRuntimeRegistrar
-	Healthcheck                       FormalPoolAccountHealthcheckRunner
-	Quarantine                        *AccountQuarantineService
-	Audit                             FormalPoolOperationAuditWriter
-	CacheInvalidator                  TokenCacheInvalidator
-	SchedulerCache                    SchedulerCache
-	Now                               func() time.Time
-	CCGatewayContextAttestationSecret string
+	Accounts                                          FormalPoolOperationsAccountStore
+	OAuth                                             FormalPoolOAuthFacade
+	Proxy                                             FormalPoolOperationsProxyStore
+	CCGatewayRuntime                                  FormalPoolCCGatewayRuntimeRegistrar
+	Healthcheck                                       FormalPoolAccountHealthcheckRunner
+	Quarantine                                        *AccountQuarantineService
+	Audit                                             FormalPoolOperationAuditWriter
+	CacheInvalidator                                  TokenCacheInvalidator
+	SchedulerCache                                    SchedulerCache
+	Now                                               func() time.Time
+	CCGatewayContextAttestationSecret                 string
+	CCGatewayStickySessionHMACKey                     string
+	CCGatewayClaudePlatformAWSWorkspaceBindingHMACKey string
 }
 
 type FormalPoolOperationsService struct {
-	accounts                          FormalPoolOperationsAccountStore
-	oauth                             FormalPoolOAuthFacade
-	proxy                             FormalPoolOperationsProxyStore
-	ccGatewayRuntime                  FormalPoolCCGatewayRuntimeRegistrar
-	healthcheck                       FormalPoolAccountHealthcheckRunner
-	quarantine                        *AccountQuarantineService
-	audit                             FormalPoolOperationAuditWriter
-	cacheInvalidator                  TokenCacheInvalidator
-	schedulerCache                    SchedulerCache
-	now                               func() time.Time
-	ccGatewayContextAttestationSecret string
+	accounts                                          FormalPoolOperationsAccountStore
+	oauth                                             FormalPoolOAuthFacade
+	proxy                                             FormalPoolOperationsProxyStore
+	ccGatewayRuntime                                  FormalPoolCCGatewayRuntimeRegistrar
+	healthcheck                                       FormalPoolAccountHealthcheckRunner
+	quarantine                                        *AccountQuarantineService
+	audit                                             FormalPoolOperationAuditWriter
+	cacheInvalidator                                  TokenCacheInvalidator
+	schedulerCache                                    SchedulerCache
+	now                                               func() time.Time
+	ccGatewayContextAttestationSecret                 string
+	ccGatewayStickySessionHMACKey                     string
+	ccGatewayClaudePlatformAWSWorkspaceBindingHMACKey string
 }
 
 func NewFormalPoolOperationsService(deps FormalPoolOperationsDeps) *FormalPoolOperationsService {
@@ -233,6 +238,8 @@ func NewFormalPoolOperationsService(deps FormalPoolOperationsDeps) *FormalPoolOp
 		schedulerCache:                    deps.SchedulerCache,
 		now:                               now,
 		ccGatewayContextAttestationSecret: strings.TrimSpace(deps.CCGatewayContextAttestationSecret),
+		ccGatewayStickySessionHMACKey:     strings.TrimSpace(deps.CCGatewayStickySessionHMACKey),
+		ccGatewayClaudePlatformAWSWorkspaceBindingHMACKey: strings.TrimSpace(deps.CCGatewayClaudePlatformAWSWorkspaceBindingHMACKey),
 	}
 }
 
@@ -1439,10 +1446,28 @@ func (s *FormalPoolOperationsService) runtimeRegistrationInput(ctx context.Conte
 		SessionPolicy:         "preserve_downstream_session_id",
 		DeviceID:              strings.ToLower(deviceID),
 	}
-	if err := applyClaudePlatformAWSRuntimeRegistrationFields(account, &reg); err != nil {
+	if err := applyClaudePlatformAWSRuntimeRegistrationFieldsWithCCGatewayConfig(account, &reg, s.claudePlatformAWSCCGatewayAuthorityConfig()); err != nil {
 		return FormalPoolCCGatewayRuntimeRegistration{}, err
 	}
 	return reg, nil
+}
+
+func (s *FormalPoolOperationsService) claudePlatformAWSCCGatewayAuthorityConfig() *config.Config {
+	if s == nil {
+		return nil
+	}
+	contextSecret := strings.TrimSpace(s.ccGatewayContextAttestationSecret)
+	stickySecret := strings.TrimSpace(s.ccGatewayStickySessionHMACKey)
+	workspaceBindingSecret := strings.TrimSpace(s.ccGatewayClaudePlatformAWSWorkspaceBindingHMACKey)
+	if contextSecret == "" && stickySecret == "" && workspaceBindingSecret == "" {
+		return nil
+	}
+	return &config.Config{Gateway: config.GatewayConfig{CCGateway: config.GatewayCCGatewayConfig{
+		Enabled:                                  true,
+		ContextAttestationSecret:                 contextSecret,
+		StickySessionHMACKey:                     stickySecret,
+		ClaudePlatformAWSWorkspaceBindingHMACKey: workspaceBindingSecret,
+	}}}
 }
 
 func (s *FormalPoolOperationsService) ensureRuntimeIdentityEvidence(ctx context.Context, account *Account) (*Account, error) {
@@ -1465,8 +1490,14 @@ func (s *FormalPoolOperationsService) ensureRuntimeIdentityEvidence(ctx context.
 	if generation == "" {
 		generation = "1"
 	}
-	identity := formalPoolRuntimeIdentityExtraForAccount(account, accountRef, proxyIdentityRef, s.ccGatewayRuntimeBindingSecret(), generation)
-	if account.GetExtraString(ccGatewayExtraAccountRef) == accountRef &&
+	authorityExtra, err := claudePlatformAWSRuntimeAuthorityExtra(account, s.claudePlatformAWSCCGatewayAuthorityConfig(), accountRef, egressBucket, proxyIdentityRef)
+	if err != nil {
+		return account, err
+	}
+	identityAccount := cloneClaudePlatformAWSAccountWithExtraOverlay(account, authorityExtra)
+	identity := formalPoolRuntimeIdentityExtraForAccount(identityAccount, accountRef, proxyIdentityRef, s.ccGatewayRuntimeBindingSecret(), generation)
+	if len(authorityExtra) == 0 &&
+		account.GetExtraString(ccGatewayExtraAccountRef) == accountRef &&
 		strings.TrimSpace(resolveCCGatewayEgressBucket(account)) == egressBucket &&
 		strings.TrimSpace(account.GetExtraString(ccGatewayExtraCredentialRef)) == stringFromMap(identity, ccGatewayExtraCredentialRef) &&
 		strings.TrimSpace(account.GetExtraString(ccGatewayExtraCredentialBindingHMAC)) == stringFromMap(identity, ccGatewayExtraCredentialBindingHMAC) &&
@@ -1478,6 +1509,9 @@ func (s *FormalPoolOperationsService) ensureRuntimeIdentityEvidence(ctx context.
 	extra := map[string]any{
 		ccGatewayExtraAccountRef:   accountRef,
 		ccGatewayExtraEgressBucket: egressBucket,
+	}
+	for k, v := range authorityExtra {
+		extra[k] = v
 	}
 	for k, v := range identity {
 		extra[k] = v
