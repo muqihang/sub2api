@@ -287,6 +287,40 @@ Remaining degraded/blocking scopes:
 - Strict native first-party parity/sign-primary and production `no_cch` for 2.1.179 remain optional/future and gated on explicit oracle/profile proof plus approved egress profile.
 - WebSearch/WebFetch bridge, multi-provider hot-switching, DeepSeek/GPT/AGNES/Kimi/GLM, and managed Zhumeng Claude Code runtime are outside plan 58.
 
+## 2026-06-27 Plan 59 Claude Platform on AWS evidence refresh
+
+Status for plan `docs/anti-ban/59-claude-platform-on-aws-formal-pool-integration-plan.md`: `PASS_LOCAL_TARGETED_WITH_PRODUCTION_BLOCKERS` after CP7 review. Local/mock Sub2API and CC Gateway checkpoint evidence is green through the optional SigV4 phase, but production remains blocked by CP0 real auth-profile proof, deployed equivalence, and explicit live-smoke approval.
+
+Tracked final evidence map for plan 59: `docs/anti-ban/59-claude-platform-on-aws-final-evidence-map.md`.
+
+Safe CP7-reviewed implementation refs before this evidence-only update:
+
+| Item | Value |
+|---|---|
+| Sub2API branch / CP7-reviewed implementation HEAD | `codex/claude-platform-aws-formal-pool` / `60416122c000` |
+| CC Gateway CP branch / HEAD | `codex/claude-platform-aws-cp5` / `e6889daac6babde65e52716ffc5acdc8b5ad2314` |
+| Endpoint ref / region | `endpoint_ref:aws-external-anthropic-us-east-1` / `us-east-1` |
+| CP0 production auth profile | `BLOCKED_AUTH_PROFILE` |
+
+Local safe evidence now recorded for plan 59:
+
+- `claude-platform-aws` is a distinct account type and remains isolated from OAuth, Setup Token, first-party Claude Console API-key, Bedrock, Vertex service-account, and generic upstream paths.
+- Sub2API local targeted tests cover safe workspace/credential/endpoint refs, per-workspace account identities, client-spoofing protection, redaction, no-bypass behavior, and the Sub2API -> CC Gateway formal-pool contract.
+- CC Gateway local targeted/full tests cover account/credential/workspace binding, workspace binding HMAC, endpoint/region/path/query, egress/proxy, session ledger, provider-scoped beta/request-shape/cache profiles, final verifier ordering, and no post-verifier semantic mutation for the AWS provider path.
+- CP6 local full-chain E2E proves local Sub2API -> local CC Gateway -> safe mock AWS upstream routing for two AWS workspace account identities with distinct proxy refs and no direct bypass.
+- CP7 optional SigV4 mock/canonical tests pass behind an explicit gate and do not reuse the Bedrock signer. This is not live SigV4 evidence.
+
+Remaining blockers stay explicit:
+
+| Gate | Status | Reason |
+|---|---|---|
+| Real CP0 auth profile proof | `BLOCKED_AUTH_PROFILE` | No real target workspace/API-key evidence has selected exactly one of `x_api_key` or `bearer_api_key`. |
+| Broad Sub2API Go suite | `BLOCKED_HISTORICAL_OR_EXTERNAL` | CP1 audit records historical/external failures unrelated to `fa50af8cfa26`/plan 59; broad green is not claimed. |
+| Deployed 3017/CC Gateway equivalence | `BLOCKED_EXTERNAL_EVIDENCE` | No rebuild/restart/deploy/equivalence proof was performed. |
+| Tiny live AWS smoke | `BLOCKED_USER_APPROVAL_AND_EXTERNAL_EVIDENCE` | Requires CP0 proof, deployed equivalence, explicit user approval, and tiny cost envelope. |
+
+Sensitive evidence policy for this plan 59 refresh: records contain only commit refs, safe endpoint/profile/workspace refs, statuses, counts, file paths, and omission reasons. No raw workspace ID, API key, Authorization value, `x-api-key` value, raw prompt/body/response, canonical request/string-to-sign output, raw HMAC input/output, cookie, proxy credential, or raw telemetry is recorded.
+
 ## Sub2API / CC Gateway responsibility boundary
 
 The intended and currently implemented boundary is:

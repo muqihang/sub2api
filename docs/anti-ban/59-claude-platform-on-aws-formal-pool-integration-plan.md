@@ -1320,3 +1320,42 @@ CP7 review verdict:
 - The reviewer confirmed SigV4 uses service `aws-external-anthropic`, region/host binding is enforced, server-owned workspace is signed, session token is handled/signed when present, and the profile gate fails closed by default.
 - Reviewer-ran checks passed: CP7 SigV4 test, CP5 AWS suite, preflight safety suite, build, and full `npm test`.
 - CP7 is safe to enter the next phase from review perspective, still subject to CP0/live/deploy/external gates and without any live/canary/deployment claim.
+
+## CP8 evidence/final-map refresh - 2026-06-27
+
+Status: `CP8_DONE_SAFE_EVIDENCE_MAP_UPDATED_REVIEW_PASS`.
+
+Scope completed in this Sub2API worktree:
+
+- Added tracked plan-59 final evidence map: `docs/anti-ban/59-claude-platform-on-aws-final-evidence-map.md`.
+- Updated the plan-55 final evidence report with a plan-59 safe evidence refresh and an explicit link to the tracked plan-59 final map.
+- Recorded CP0 production auth status as `BLOCKED_AUTH_PROFILE`; no real target AWS workspace/API-key proof exists yet, so neither `x_api_key` nor `bearer_api_key` is production-enabled by this evidence update.
+- Recorded CP7 optional SigV4 as mock/canonical reviewed evidence only. SigV4 remains behind its explicit gate and is not live/canary/deployment proof.
+- Kept broad Sub2API suite blockers explicit as historical/external from the CP1 audit; no broad Sub2API green claim is made.
+- Kept deployment/live gates explicit: no 3017 rebuild/restart/deploy, no 3012 change, no live AWS request, no canary, and no formal-pool production traffic.
+
+Safe evidence constraints:
+
+- The new evidence map and 55-report refresh contain only safe refs/statuses/counts/commit IDs/file paths/omission reasons.
+- They do not contain raw workspace IDs, API keys, Authorization values, `x-api-key` values, raw prompt/body/response, canonical request/string-to-sign output, raw HMAC input/output, cookies, proxy credentials, or raw telemetry.
+
+Required verification for this doc-only checkpoint:
+
+```bash
+git diff --check
+python3 - <<'PY'
+# safe-pattern scan over changed evidence docs; output reports only pattern labels/line numbers
+PY
+codegraph sync .
+```
+
+Next gate remains production/deployment evidence work only after review: prove deployed image/commit/config/profile equivalence with safe hashes, then request explicit approval before any tiny live AWS smoke. Do not deploy/restart 3017 or touch 3012 without explicit user approval.
+
+CP8 review verdict:
+
+- CP8 review agent: `019f0aac-72ac-77d1-8763-0979ab32f08f`.
+- Verdict: `PASS`.
+- Critical: none.
+- Important: new map file is ignored by the broad `docs/anti-ban/*` rule and must be force-added before commit; this CP8 record now calls that out explicitly.
+- Minor: keep the force-add/tracking note in the checkpoint handoff.
+- Reviewer confirmed no raw workspace ID, API key, Authorization/`x-api-key` value, raw prompt/body/response, raw HMAC/canonical output, cookie, proxy credential, or raw telemetry leak; blocker statuses and CP7/CP8 state are consistent.
