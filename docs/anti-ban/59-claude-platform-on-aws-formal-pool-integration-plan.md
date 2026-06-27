@@ -1059,3 +1059,52 @@ Results:
 - Leak scan hits remained limited to redaction/tool/test forbidden-pattern code and safe omission-reason strings. No real workspace ID, API key, Authorization value, raw body/response, raw HMAC input/output, or proxy credential was found.
 
 CP0 auth profile status remains `BLOCKED_AUTH_PROFILE` for production. This review-fix still does not claim live AWS, deployment, canary, or production traffic.
+
+
+## CP5 second review-fix record - 2026-06-27
+
+Status: `CP5_SECOND_REVIEW_FINDING_FIXED_PENDING_REVIEW_PASS`.
+
+CC Gateway follow-up commit:
+
+- Worktree: `/Users/muqihang/chelingxi_workspace/cc-gateway-claude-platform-aws-cp5`
+- Branch: `codex/claude-platform-aws-cp5`
+- Commit: `e794596aac46fe3ab2a1572758535486d1bc4802` (`fix: require aws workspace authority secrets`)
+- Review finding source: the same CP5 review agent reported no remaining Critical items, but one remaining Important item: source-code default HMAC material could still be used for Claude Platform on AWS workspace authority if explicit config/env secrets were absent.
+
+Fix scope:
+
+- Removed the Claude Platform on AWS workspace authority source-code default HMAC secrets from `src/proxy.ts`.
+- Changed the AWS workspace authority verifier to fail closed with `claude_platform_aws_workspace_authority_secret_missing` unless both server/gateway authority secrets are explicitly configured through config or environment.
+- Kept local/mock tests green by using local non-production fixture material through explicit test configuration instead of source defaults.
+- Added regression coverage proving production real AWS endpoint flow fails before egress when the explicit workspace authority secrets are missing.
+
+Verification after second review-fix:
+
+```bash
+cd /Users/muqihang/chelingxi_workspace/cc-gateway-claude-platform-aws-cp5
+npx tsx tests/claude-platform-aws-cp5.test.ts
+npx tsx tests/preflight-safety.test.ts
+npm run build
+npm test
+git diff --check
+python3 - <<'PY'
+# safe-pattern leak scan over workspace files; output redacts matched values
+PY
+```
+
+Results:
+
+- `npx tsx tests/claude-platform-aws-cp5.test.ts`: `17 passed, 0 failed`.
+- `npx tsx tests/preflight-safety.test.ts`: `8 passed, 0 failed`.
+- `npm run build`: passed.
+- `npm test`: `222 passed, 0 failed`.
+- `git diff --check`: passed.
+- Leak scan hits remained limited to existing redaction/tool/test forbidden-pattern code and safe omission-reason strings. No real workspace ID, API key, Authorization value, raw body/response, raw HMAC input/output, or proxy credential was found.
+
+CodeGraph:
+
+- CC Gateway worktree has no `.codegraph/`; indexing is unavailable there.
+- This Sub2API worktree was incrementally indexed after this record update.
+
+CP0 auth profile status remains `BLOCKED_AUTH_PROFILE` for production. This second review-fix still does not claim live AWS, deployment, canary, or production traffic.
