@@ -1308,3 +1308,15 @@ Non-claims / blockers:
 - SigV4 remains optional and gated; CP7 proves mock/canonical signing only. No live SigV4 canary was run.
 - No 3017 deployment/restart, no 3012 change, no live AWS request, no canary, and no production traffic was performed.
 - CP7 requires code review before entering any deployment/evidence/final production gate work.
+
+CP7 review verdict:
+
+- CP7 review agent: `019f0a8a-68fe-7c61-a937-cea3c83e9c0b`.
+- Verdict against `e794596bf5908b847c96158fb56e25ca347c4bec..e6889daac6babde65e52716ffc5acdc8b5ad2314`: `PASS`.
+- Critical: none.
+- Important: none.
+- Minor: reviewer noted that CP7 explicitly asserts service/region/workspace/session-token signed headers, while host, `x-amz-date`, and `x-amz-content-sha256` are covered mostly through the final verifier; a future tightening pass may add explicit payload-hash recomputation assertions.
+- The reviewer confirmed signing order is correct: body/header rewrite, final URL/headers, SigV4 signing, provider-aware final verifier, then no semantic mutation before upstream send.
+- The reviewer confirmed SigV4 uses service `aws-external-anthropic`, region/host binding is enforced, server-owned workspace is signed, session token is handled/signed when present, and the profile gate fails closed by default.
+- Reviewer-ran checks passed: CP7 SigV4 test, CP5 AWS suite, preflight safety suite, build, and full `npm test`.
+- CP7 is safe to enter the next phase from review perspective, still subject to CP0/live/deploy/external gates and without any live/canary/deployment claim.
