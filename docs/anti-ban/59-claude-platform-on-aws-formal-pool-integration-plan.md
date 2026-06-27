@@ -1242,3 +1242,69 @@ Non-claims:
 - CP0 production auth profile remains `BLOCKED_AUTH_PROFILE`.
 - No 3017 deployment/restart, no 3012 change, no live AWS request, no canary, and no production traffic was performed.
 - CP6 remains pending review pass by the same review agent before CP7.
+
+## CP7 implementation checkpoint record - 2026-06-27
+
+Status: `CP7_DONE_OPTIONAL_SIGV4_MOCK_TARGETED_AND_BROAD_GREEN_PENDING_REVIEW`.
+
+CC Gateway worktree and commit:
+
+- Worktree: `/Users/muqihang/chelingxi_workspace/cc-gateway-claude-platform-aws-cp5`
+- Branch: `codex/claude-platform-aws-cp5`
+- Commit: `e6889da` (`feat: add claude platform aws sigv4 signer`)
+- CodeGraph: not available in the CC Gateway worktree (`.codegraph/` absent). This Sub2API worktree was incrementally indexed after this record update.
+
+Scope completed:
+
+- Added optional Claude Platform on AWS SigV4 support in CC Gateway behind an explicit `shared_pool.claude_platform_aws_sigv4_enabled` CP7 gate. Without the gate, SigV4 traffic fails closed with `claude_platform_aws_sigv4_profile_unproven`.
+- Extended AWS account identity/runtime mapping/session authority schema to carry `upstream_auth_scheme = sigv4` and sensitive SigV4 credential fields (`aws_access_key_id`, `aws_secret_access_key`, optional `aws_session_token`) only in runtime/config storage.
+- Added final outbound SigV4 signing for Claude Platform on AWS after final URL resolution and final header/body rewrite, and before the provider-aware final verifier. The signer uses service `aws-external-anthropic`, endpoint region `us-east-1`, the final `/v1/messages` body hash, final server-owned `anthropic-workspace-id`, and optional session token.
+- Kept the Bedrock signer isolated; CP7 does not reuse Bedrock service `bedrock` signing.
+- Updated the AWS final verifier to accept SigV4 only when the final request has exactly one SigV4 `Authorization` header, no `x-api-key`, server-owned workspace header, required SigV4 headers, and credential scope containing `us-east-1/aws-external-anthropic/aws4_request`.
+- Preserved Phase 1 API-key behavior. `x_api_key` remains the only production-ready API-key profile from local/mock evidence; `bearer_api_key` remains fail-closed/unproven.
+- Added safe capture assertions proving raw workspace ID, access key id, secret access key, session token, raw body text, canonical request, and string-to-sign do not appear in capture artifacts.
+
+TDD evidence:
+
+- New CP7 SigV4 tests were written first and failed before implementation with `malformed_formal_pool_context_attestation` / missing SigV4 support.
+- After schema/profile/signing implementation, the same tests passed.
+
+New/updated CP7 files in the CC Gateway worktree:
+
+- `src/config.ts`
+- `src/policy.ts`
+- `src/proxy.ts`
+- `src/rewriter.ts`
+- `tests/claude-platform-aws-cp7-sigv4.test.ts`
+
+Verification:
+
+```bash
+cd /Users/muqihang/chelingxi_workspace/cc-gateway-claude-platform-aws-cp5
+npx tsx tests/claude-platform-aws-cp7-sigv4.test.ts
+npx tsx tests/claude-platform-aws-cp5.test.ts
+npx tsx tests/preflight-safety.test.ts
+npm run build
+npm test
+git diff --check
+python3 - <<'PY'
+# safe-pattern leak scan over CP7 changed files; output reports only pattern labels/line numbers
+PY
+```
+
+Results:
+
+- `npx tsx tests/claude-platform-aws-cp7-sigv4.test.ts`: `3 passed, 0 failed`.
+- `npx tsx tests/claude-platform-aws-cp5.test.ts`: `17 passed, 0 failed`.
+- `npx tsx tests/preflight-safety.test.ts`: `8 passed, 0 failed`.
+- `npm run build`: passed.
+- `npm test`: `225 passed, 0 failed`.
+- `git diff --check`: passed.
+- Leak scan hits were limited to existing detector regex/token-shape constants in source. No real raw workspace ID, API key, Authorization value, `x-api-key` value, raw prompt/body/response, canonical request, string-to-sign, raw HMAC input/output, cookie, proxy credential, or raw telemetry was detected.
+
+Non-claims / blockers:
+
+- CP0 production auth profile remains `BLOCKED_AUTH_PROFILE` because no real target AWS workspace/API-key proof has been supplied.
+- SigV4 remains optional and gated; CP7 proves mock/canonical signing only. No live SigV4 canary was run.
+- No 3017 deployment/restart, no 3012 change, no live AWS request, no canary, and no production traffic was performed.
+- CP7 requires code review before entering any deployment/evidence/final production gate work.
