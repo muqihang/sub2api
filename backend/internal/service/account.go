@@ -128,6 +128,9 @@ func (a *Account) IsSchedulable() bool {
 			return false
 		}
 	}
+	if a.IsClaudePlatformAWS() && !IsClaudePlatformAWSFormalPoolAccount(a) {
+		return false
+	}
 	now := time.Now()
 	if a.AutoPauseOnExpired && a.ExpiresAt != nil && !now.Before(*a.ExpiresAt) {
 		return false

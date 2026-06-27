@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1708,6 +1709,99 @@ func completeHealthcheckEvidenceExtraForProxy(proxyID int64) map[string]any {
 	return extra
 }
 
+func TestFormalPoolOperationsRuntimeRegistrationInputCarriesClaudePlatformAWSAuthority(t *testing.T) {
+	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
+	markClaudePlatformAWSFormalPoolForRequestTest(t, account)
+	account.Extra[ccGatewayExtraPersonaProfile] = ccGatewayDefaultPersonaProfile
+	account.Extra["claude_code_device_id"] = strings.Repeat("c", 64)
+	svc := &FormalPoolOperationsService{proxy: &formalPoolOperationsProxyFake{proxy: &Proxy{ID: 5903, Protocol: "http", Host: "127.0.0.1", Port: 8080, Status: StatusActive}}}
+
+	reg, err := svc.runtimeRegistrationInput(context.Background(), account)
+
+	require.NoError(t, err)
+	require.Equal(t, claudePlatformAWSProviderKind, reg.ProviderKind)
+	require.Equal(t, ClaudePlatformAWSAuthProfileXAPIKey, reg.UpstreamAuthScheme)
+	require.Equal(t, "us-east-1", reg.AWSRegion)
+	require.Equal(t, "https://aws-external-anthropic.us-east-1.api.aws", reg.UpstreamBaseURL)
+	require.Equal(t, account.GetExtraString(ClaudePlatformAWSExtraWorkspaceRef), reg.WorkspaceRef)
+	require.Equal(t, account.GetExtraString(ClaudePlatformAWSExtraWorkspaceBindingHMAC), reg.WorkspaceBindingHMAC)
+	require.Equal(t, account.GetExtraString(ClaudePlatformAWSExtraEndpointRef), reg.EndpointRef)
+	require.Equal(t, []string{"/v1/messages"}, reg.AllowedUpstreamPaths)
+	require.Equal(t, account.GetExtraString(ClaudePlatformAWSExtraBetaPolicyRef), reg.BetaPolicyRef)
+	require.Equal(t, account.GetExtraString(ClaudePlatformAWSExtraRequestShapeProfileRef), reg.RequestShapeProfileRef)
+	require.Equal(t, account.GetExtraString(ClaudePlatformAWSExtraCacheParityProfileRef), reg.CacheParityProfileRef)
+	require.Equal(t, account.GetCredential("anthropic_workspace_id"), reg.AnthropicWorkspaceID)
+}
+
+func TestFormalPoolOperationsRuntimeRegisterAcceptsClaudePlatformAWSRuntimeOnly(t *testing.T) {
+	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
+	markClaudePlatformAWSFormalPoolForRequestTest(t, account)
+	account.Extra[ccGatewayExtraPersonaProfile] = ccGatewayDefaultPersonaProfile
+	account.Extra["claude_code_device_id"] = strings.Repeat("c", 64)
+	account.Extra[FormalPoolExtraRuntimeRegistered] = "false"
+	account.Extra[FormalPoolExtraRuntimeRegisteredAt] = ""
+	store := newFormalPoolOperationsMutableStore(account)
+	runtime := &formalPoolOperationsRuntimeFake{}
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{
+		Accounts:         store,
+		Proxy:            &formalPoolOperationsProxyFake{proxy: &Proxy{ID: 5903, Protocol: "http", Host: "127.0.0.1", Port: 8080, Status: StatusActive}},
+		CCGatewayRuntime: runtime,
+		Now:              func() time.Time { return time.Date(2026, 6, 27, 1, 2, 3, 0, time.UTC) },
+	})
+
+	result, err := svc.RuntimeRegister(context.Background(), account.ID)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, runtime.called)
+	require.Equal(t, claudePlatformAWSProviderKind, runtime.input.ProviderKind)
+	require.Equal(t, account.GetExtraString(ClaudePlatformAWSExtraWorkspaceRef), runtime.input.WorkspaceRef)
+	require.Equal(t, account.GetExtraString(ClaudePlatformAWSExtraWorkspaceBindingHMAC), runtime.input.WorkspaceBindingHMAC)
+	require.Equal(t, "true", account.GetExtraString(FormalPoolExtraRuntimeRegistered))
+	require.Equal(t, "2026-06-27T01:02:03Z", account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt))
+	require.False(t, account.Schedulable, "runtime registration alone must not make AWS Platform schedulable")
+	require.NotContains(t, mustJSON(t, result), account.GetCredential("anthropic_workspace_id"))
+	require.NotContains(t, mustJSON(t, result), account.GetCredential("api_key"))
+}
+
+func TestFormalPoolOperationsClaudePlatformAWSRejectsUnsupportedLifecycleOps(t *testing.T) {
+	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
+	markClaudePlatformAWSFormalPoolForRequestTest(t, account)
+	account.Extra[ccGatewayExtraPersonaProfile] = ccGatewayDefaultPersonaProfile
+	account.Extra["claude_code_device_id"] = strings.Repeat("c", 64)
+	store := newFormalPoolOperationsMutableStore(account)
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{
+		Accounts:    store,
+		Proxy:       &formalPoolOperationsProxyFake{proxy: &Proxy{ID: 5903, Protocol: "http", Host: "127.0.0.1", Port: 8080, Status: StatusActive}},
+		Healthcheck: &formalPoolOperationsHealthcheckFake{result: &FormalPoolAcceptanceResult{}},
+	})
+
+	for name, run := range map[string]func() error{
+		"healthcheck": func() error {
+			_, err := svc.Healthcheck(context.Background(), account.ID)
+			return err
+		},
+		"start_warming": func() error {
+			_, err := svc.StartWarming(context.Background(), account.ID)
+			return err
+		},
+		"promote_production": func() error {
+			_, err := svc.PromoteProduction(context.Background(), account.ID)
+			return err
+		},
+		"swap_proxy": func() error {
+			_, err := svc.SwapProxy(context.Background(), account.ID, FormalPoolProxySwapRequest{ProxyID: 5904})
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := run()
+			require.Error(t, err)
+			require.Equal(t, "FORMAL_POOL_ACCOUNT_REQUIRED", infraerrors.Reason(err))
+		})
+	}
+}
+
 func TestFormalPoolRuntimeRegistrationReplayService_BackfillsMissingIdentityWithoutRegisteringDBID(t *testing.T) {
 	t.Parallel()
 
@@ -1736,6 +1830,42 @@ func TestFormalPoolRuntimeRegistrationReplayService_BackfillsMissingIdentityWith
 	require.Equal(t, runtime.input.AccountRef, account.GetExtraString("cc_gateway_account_ref"))
 	require.NotEmpty(t, runtime.input.EgressBucket)
 	require.Equal(t, runtime.input.EgressBucket, account.GetExtraString("cc_gateway_egress_bucket"))
+}
+
+func TestFormalPoolRuntimeRegistrationReplayService_ReplaysClaudePlatformAWSRuntimeMapping(t *testing.T) {
+	t.Parallel()
+
+	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
+	markClaudePlatformAWSFormalPoolForRequestTest(t, account)
+	account.Extra[ccGatewayExtraPersonaProfile] = ccGatewayDefaultPersonaProfile
+	account.Extra["claude_code_device_id"] = strings.Repeat("c", 64)
+	account.Extra[FormalPoolExtraRuntimeRegistered] = "true"
+	account.Extra[FormalPoolExtraRuntimeRegisteredAt] = "2026-06-27T00:00:00Z"
+	account.Status = StatusActive
+	account.Schedulable = false
+	store := &formalPoolRuntimeReplayStore{accounts: []*Account{account}}
+	runtime := &formalPoolOperationsRuntimeFake{}
+	proxy := &formalPoolOperationsProxyFake{proxy: &Proxy{ID: 5903, Protocol: "http", Host: "replay-proxy.local", Port: 8080, Status: StatusActive}}
+	svc := NewFormalPoolRuntimeRegistrationReplayService(FormalPoolRuntimeRegistrationReplayDeps{
+		Accounts:         store,
+		Proxy:            proxy,
+		CCGatewayRuntime: runtime,
+		Now:              func() time.Time { return time.Date(2026, 6, 27, 2, 3, 4, 0, time.UTC) },
+	})
+
+	result, err := svc.Replay(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Scanned)
+	require.Equal(t, 1, result.Registered)
+	require.True(t, runtime.called)
+	require.Equal(t, claudePlatformAWSProviderKind, runtime.input.ProviderKind)
+	require.Equal(t, account.GetExtraString(ClaudePlatformAWSExtraWorkspaceRef), runtime.input.WorkspaceRef)
+	require.Equal(t, "apikey", runtime.input.TokenType)
+	require.NotEmpty(t, runtime.input.CredentialProof)
+	require.NotEmpty(t, runtime.input.AnthropicWorkspaceID)
+	require.Equal(t, "2026-06-27T02:03:04Z", account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt))
+	require.False(t, account.Schedulable)
 }
 
 func TestFormalPoolRuntimeRegistrationStartupReplay_RegistrarUnavailableFailClosesEligibleCandidates(t *testing.T) {

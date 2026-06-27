@@ -455,26 +455,54 @@ func applyCCGatewayFormalPoolAttestationWithPersona(req *http.Request, cfg *conf
 		return nil
 	}
 	credentialRef := strings.TrimSpace(ccGatewayCredentialRef(account))
+	credentialBinding := strings.TrimSpace(ccGatewayCredentialBindingHMAC(account))
 	proxyIdentityRef := strings.TrimSpace(ccGatewayProxyIdentityRef(account))
 	personaProfile := strings.TrimSpace(personaOverride)
 	if personaProfile == "" {
 		personaProfile = strings.TrimSpace(ccGatewayPersonaProfile(account))
 	}
 	sessionID := strings.TrimSpace(getHeaderRaw(req.Header, "X-Claude-Code-Session-Id"))
-	if credentialRef == "" || proxyIdentityRef == "" || personaProfile == "" || sessionID == "" {
-		missing := make([]string, 0, 4)
-		if credentialRef == "" {
-			missing = append(missing, "credential_ref")
+	missing := make([]string, 0, 12)
+	if credentialRef == "" {
+		missing = append(missing, "credential_ref")
+	}
+	if proxyIdentityRef == "" {
+		missing = append(missing, "proxy_identity_ref")
+	}
+	if personaProfile == "" {
+		missing = append(missing, "persona_profile")
+	}
+	if sessionID == "" {
+		missing = append(missing, "session_id")
+	}
+	awsCtx, err := claudePlatformAWSFormalPoolAttestationContext(account)
+	if err != nil {
+		return err
+	}
+	if account.IsClaudePlatformAWS() {
+		for _, field := range []struct {
+			name  string
+			value string
+		}{
+			{"credential_binding_hmac", credentialBinding},
+			{"provider_kind", stringFromMap(awsCtx, "provider_kind")},
+			{"upstream_auth_scheme", stringFromMap(awsCtx, "upstream_auth_scheme")},
+			{"aws_region", stringFromMap(awsCtx, "aws_region")},
+			{"upstream_endpoint_ref", stringFromMap(awsCtx, "upstream_endpoint_ref")},
+			{"upstream_host", stringFromMap(awsCtx, "upstream_host")},
+			{"allowed_upstream_path", stringFromMap(awsCtx, "allowed_upstream_path")},
+			{"workspace_ref", stringFromMap(awsCtx, "workspace_ref")},
+			{"workspace_binding_hmac", stringFromMap(awsCtx, "workspace_binding_hmac")},
+			{"request_shape_profile_ref", stringFromMap(awsCtx, "request_shape_profile_ref")},
+			{"cache_parity_profile_ref", stringFromMap(awsCtx, "cache_parity_profile_ref")},
+			{"beta_policy_ref", stringFromMap(awsCtx, "beta_policy_ref")},
+		} {
+			if strings.TrimSpace(field.value) == "" {
+				missing = append(missing, field.name)
+			}
 		}
-		if proxyIdentityRef == "" {
-			missing = append(missing, "proxy_identity_ref")
-		}
-		if personaProfile == "" {
-			missing = append(missing, "persona_profile")
-		}
-		if sessionID == "" {
-			missing = append(missing, "session_id")
-		}
+	}
+	if len(missing) > 0 {
 		return fmt.Errorf("cc gateway formal-pool attestation context is incomplete: missing %s", strings.Join(missing, ","))
 	}
 	if !isSafeLedgerRef(credentialRef) || !isSafeLedgerRef(proxyIdentityRef) {
@@ -504,8 +532,14 @@ func applyCCGatewayFormalPoolAttestationWithPersona(req *http.Request, cfg *conf
 		"trusted_egress_profile_ref": ccGatewayTrustedEgressProfileRef(account),
 		"profile_policy_version":     ccGatewayProfilePolicyVersion(account),
 		"billing_shape_policy":       ccGatewayBillingShapePolicy(account),
-		"request_shape_profile_ref":  ccGatewayRequestShapeProfileRef(account),
-		"cache_parity_profile_ref":   ccGatewayCacheParityProfileRef(account),
+		"request_shape_profile_ref":  ccGatewayAttestationRequestShapeProfileRef(account),
+		"cache_parity_profile_ref":   ccGatewayAttestationCacheParityProfileRef(account),
+	}
+	if credentialBinding != "" {
+		ctx["credential_binding_hmac"] = credentialBinding
+	}
+	for k, v := range awsCtx {
+		ctx[k] = v
 	}
 	raw, err := json.Marshal(ctx)
 	if err != nil {
@@ -520,6 +554,9 @@ func applyCCGatewayFormalPoolAttestationWithPersona(req *http.Request, cfg *conf
 
 func requiresCCGatewayFormalPoolAttestation(account *Account) bool {
 	if IsFormalPoolAccount(account) {
+		return true
+	}
+	if account != nil && account.IsClaudePlatformAWS() {
 		return true
 	}
 	if account == nil || account.Platform != PlatformAnthropic || account.Type != AccountTypeAPIKey {
@@ -679,7 +716,7 @@ func ccGatewayCredentialBindingMaterialFromCredentials(accountType string, crede
 		if accessToken := ccGatewayCredentialString(credentials, "access_token"); accessToken != "" {
 			return "oauth", "Bearer " + accessToken
 		}
-	case AccountTypeAPIKey:
+	case AccountTypeAPIKey, AccountTypeClaudePlatformAWS:
 		if apiKey := ccGatewayCredentialString(credentials, "api_key"); apiKey != "" {
 			return "apikey", apiKey
 		}
@@ -1134,4 +1171,46 @@ func (s *AntigravityGatewayService) ccGatewayAntigravityParams(account *Account,
 		strings.TrimSpace(ccg.Token),
 		resolveCCGatewayEgressBucket(account),
 		ccGatewayAccountEmail(account)
+}
+
+func claudePlatformAWSFormalPoolAttestationContext(account *Account) (map[string]any, error) {
+	if account == nil || !account.IsClaudePlatformAWS() {
+		return nil, nil
+	}
+	region := strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraRegion))
+	if !claudePlatformAWSRegionRe.MatchString(region) {
+		return nil, nil
+	}
+	endpoint := ClaudePlatformAWSEndpointForRegion(region)
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" {
+		return nil, fmt.Errorf("cc gateway formal-pool attestation endpoint is invalid")
+	}
+	return map[string]any{
+		"provider_kind":             claudePlatformAWSProviderKind,
+		"upstream_auth_scheme":      strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraAuthScheme)),
+		"aws_region":                region,
+		"upstream_endpoint_ref":     strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraEndpointRef)),
+		"upstream_host":             u.Host,
+		"allowed_upstream_path":     claudePlatformAWSAllowedPath,
+		"workspace_ref":             strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraWorkspaceRef)),
+		"workspace_binding_hmac":    strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraWorkspaceBindingHMAC)),
+		"request_shape_profile_ref": ccGatewayAttestationRequestShapeProfileRef(account),
+		"cache_parity_profile_ref":  ccGatewayAttestationCacheParityProfileRef(account),
+		"beta_policy_ref":           strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraBetaPolicyRef)),
+	}, nil
+}
+
+func ccGatewayAttestationRequestShapeProfileRef(account *Account) string {
+	if account != nil && account.IsClaudePlatformAWS() {
+		return safeProfileRef(account.GetExtraString(ClaudePlatformAWSExtraRequestShapeProfileRef))
+	}
+	return ccGatewayRequestShapeProfileRef(account)
+}
+
+func ccGatewayAttestationCacheParityProfileRef(account *Account) string {
+	if account != nil && account.IsClaudePlatformAWS() {
+		return safeProfileRef(account.GetExtraString(ClaudePlatformAWSExtraCacheParityProfileRef))
+	}
+	return ccGatewayCacheParityProfileRef(account)
 }

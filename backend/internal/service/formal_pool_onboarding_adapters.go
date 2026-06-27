@@ -320,6 +320,9 @@ func (r *FormalPoolHTTPCCGatewayRuntimeRegistrar) RegisterCCGatewayRuntime(ctx c
 	if tokenType != "oauth" && tokenType != "apikey" {
 		return fmt.Errorf("cc gateway runtime registration credential proof token_type must be oauth or apikey")
 	}
+	if err := validateClaudePlatformAWSRuntimeRegistration(input); err != nil {
+		return err
+	}
 	endpoint, err := url.JoinPath(r.baseURL, "/_runtime/register-account")
 	if err != nil {
 		return err
@@ -338,6 +341,20 @@ func (r *FormalPoolHTTPCCGatewayRuntimeRegistrar) RegisterCCGatewayRuntime(ctx c
 		"persona_variant":         input.PersonaVariant,
 		"session_policy":          input.SessionPolicy,
 		"device_id":               input.DeviceID,
+	}
+	if strings.TrimSpace(input.ProviderKind) == claudePlatformAWSProviderKind {
+		payload["provider_kind"] = claudePlatformAWSProviderKind
+		payload["upstream_auth_scheme"] = strings.TrimSpace(input.UpstreamAuthScheme)
+		payload["aws_region"] = strings.TrimSpace(input.AWSRegion)
+		payload["upstream_base_url"] = strings.TrimRight(strings.TrimSpace(input.UpstreamBaseURL), "/")
+		payload["workspace_ref"] = strings.TrimSpace(input.WorkspaceRef)
+		payload["workspace_binding_hmac"] = strings.TrimSpace(input.WorkspaceBindingHMAC)
+		payload["endpoint_ref"] = strings.TrimSpace(input.EndpointRef)
+		payload["allowed_upstream_paths"] = append([]string(nil), input.AllowedUpstreamPaths...)
+		payload["beta_policy_ref"] = strings.TrimSpace(input.BetaPolicyRef)
+		payload["request_shape_profile_ref"] = strings.TrimSpace(input.RequestShapeProfileRef)
+		payload["cache_parity_profile_ref"] = strings.TrimSpace(input.CacheParityProfileRef)
+		payload["anthropic_workspace_id"] = strings.TrimSpace(input.AnthropicWorkspaceID)
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -387,4 +404,39 @@ func (v *FormalPoolStaticCCGatewayReadinessVerifier) VerifyCCGatewayReadiness(ct
 		checks[1].Message = "safe account ref missing"
 	}
 	return checks, nil
+}
+
+func validateClaudePlatformAWSRuntimeRegistration(input FormalPoolCCGatewayRuntimeRegistration) error {
+	if strings.TrimSpace(input.ProviderKind) == "" {
+		return nil
+	}
+	if strings.TrimSpace(input.ProviderKind) != claudePlatformAWSProviderKind {
+		return fmt.Errorf("unsupported runtime registration provider_kind")
+	}
+	if strings.TrimSpace(input.UpstreamAuthScheme) != ClaudePlatformAWSAuthProfileXAPIKey && strings.TrimSpace(input.UpstreamAuthScheme) != ClaudePlatformAWSAuthProfileBearerAPIKey {
+		return fmt.Errorf("claude-platform-aws runtime registration requires proven auth scheme")
+	}
+	region := strings.TrimSpace(input.AWSRegion)
+	if !claudePlatformAWSRegionRe.MatchString(region) {
+		return fmt.Errorf("claude-platform-aws runtime registration requires aws region")
+	}
+	endpoint := strings.TrimRight(strings.TrimSpace(input.UpstreamBaseURL), "/")
+	if endpoint != ClaudePlatformAWSEndpointForRegion(region) {
+		return fmt.Errorf("claude-platform-aws runtime registration endpoint mismatch")
+	}
+	for _, ref := range []string{input.WorkspaceRef, input.EndpointRef, input.BetaPolicyRef, input.RequestShapeProfileRef, input.CacheParityProfileRef} {
+		if !isClaudePlatformAWSSafeRef(ref) {
+			return fmt.Errorf("claude-platform-aws runtime registration requires safe refs")
+		}
+	}
+	if !ledgerGeneratedHMACRefRe.MatchString(strings.TrimSpace(input.WorkspaceBindingHMAC)) {
+		return fmt.Errorf("claude-platform-aws runtime registration requires workspace binding")
+	}
+	if len(input.AllowedUpstreamPaths) != 1 || strings.TrimSpace(input.AllowedUpstreamPaths[0]) != claudePlatformAWSAllowedPath {
+		return fmt.Errorf("claude-platform-aws runtime registration requires /v1/messages path")
+	}
+	if !claudePlatformAWSWorkspaceIDRe.MatchString(strings.TrimSpace(input.AnthropicWorkspaceID)) {
+		return fmt.Errorf("claude-platform-aws runtime registration requires workspace id")
+	}
+	return nil
 }

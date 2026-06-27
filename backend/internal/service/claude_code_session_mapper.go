@@ -38,25 +38,33 @@ type ClaudeCodeSessionMapper struct {
 }
 
 type ClaudeCodeSessionMapInput struct {
-	UserScope              string
-	BoundaryScope          string
-	EnforceBoundary        bool
-	FormalPoolProduction   bool
-	AccountRef             string
-	CredentialRef          string
-	DeviceID               string
-	AccountUUID            string
-	EgressBucket           string
-	ProxyIdentityRef       string
-	PolicyVersion          string
-	PersonaProfile         string
-	EgressProfileRef       string
-	ProfilePolicyVersion   string
-	BillingShapePolicy     string
-	RequestShapeProfileRef string
-	CacheParityProfileRef  string
-	ProviderFamily         string
-	RawSessionID           string
+	UserScope               string
+	BoundaryScope           string
+	EnforceBoundary         bool
+	FormalPoolProduction    bool
+	AccountRef              string
+	CredentialRef           string
+	DeviceID                string
+	AccountUUID             string
+	EgressBucket            string
+	ProxyIdentityRef        string
+	PolicyVersion           string
+	PersonaProfile          string
+	EgressProfileRef        string
+	ProfilePolicyVersion    string
+	BillingShapePolicy      string
+	RequestShapeProfileRef  string
+	CacheParityProfileRef   string
+	ProviderFamily          string
+	ProviderKind            string
+	WorkspaceRef            string
+	WorkspaceBindingHMAC    string
+	EndpointRef             string
+	Region                  string
+	AuthScheme              string
+	BetaPolicyRef           string
+	TrustedEgressProfileRef string
+	RawSessionID            string
 }
 
 type ClaudeCodeSessionMapping struct {
@@ -90,6 +98,20 @@ type ClaudeCodeSessionBoundaryError struct {
 	AttemptedCacheParityProfileRef  string `json:"attempted_cache_parity_profile_ref,omitempty"`
 	PreviousProviderFamily          string `json:"previous_provider_family,omitempty"`
 	AttemptedProviderFamily         string `json:"attempted_provider_family,omitempty"`
+	PreviousProviderKind            string `json:"previous_provider_kind,omitempty"`
+	AttemptedProviderKind           string `json:"attempted_provider_kind,omitempty"`
+	PreviousWorkspaceRef            string `json:"previous_workspace_ref,omitempty"`
+	AttemptedWorkspaceRef           string `json:"attempted_workspace_ref,omitempty"`
+	PreviousWorkspaceBindingHMAC    string `json:"previous_workspace_binding_hmac,omitempty"`
+	AttemptedWorkspaceBindingHMAC   string `json:"attempted_workspace_binding_hmac,omitempty"`
+	PreviousEndpointRef             string `json:"previous_endpoint_ref,omitempty"`
+	AttemptedEndpointRef            string `json:"attempted_endpoint_ref,omitempty"`
+	PreviousRegion                  string `json:"previous_region,omitempty"`
+	AttemptedRegion                 string `json:"attempted_region,omitempty"`
+	PreviousAuthScheme              string `json:"previous_auth_scheme,omitempty"`
+	AttemptedAuthScheme             string `json:"attempted_auth_scheme,omitempty"`
+	PreviousBetaPolicyRef           string `json:"previous_beta_policy_ref,omitempty"`
+	AttemptedBetaPolicyRef          string `json:"attempted_beta_policy_ref,omitempty"`
 	PreviousServerSessionRef        string `json:"previous_server_session_ref,omitempty"`
 	AttemptedServerSessionRef       string `json:"attempted_server_session_ref,omitempty"`
 }
@@ -102,20 +124,28 @@ func (e *ClaudeCodeSessionBoundaryError) Error() string {
 }
 
 type claudeCodeSessionBoundaryBinding struct {
-	AccountRef             string `json:"account_ref"`
-	CredentialRef          string `json:"credential_ref,omitempty"`
-	EgressBucket           string `json:"egress_bucket"`
-	ProxyIdentityRef       string `json:"proxy_identity_ref,omitempty"`
-	PolicyVersion          string `json:"policy_version,omitempty"`
-	PersonaProfile         string `json:"persona_profile,omitempty"`
-	EgressProfileRef       string `json:"egress_profile_ref,omitempty"`
-	ProfilePolicyVersion   string `json:"profile_policy_version,omitempty"`
-	BillingShapePolicy     string `json:"billing_shape_policy,omitempty"`
-	RequestShapeProfileRef string `json:"request_shape_profile_ref,omitempty"`
-	CacheParityProfileRef  string `json:"cache_parity_profile_ref,omitempty"`
-	ProviderFamily         string `json:"provider_family"`
-	DeviceRef              string `json:"device_ref,omitempty"`
-	ServerSessionRef       string `json:"server_session_ref"`
+	AccountRef              string `json:"account_ref"`
+	CredentialRef           string `json:"credential_ref,omitempty"`
+	EgressBucket            string `json:"egress_bucket"`
+	ProxyIdentityRef        string `json:"proxy_identity_ref,omitempty"`
+	PolicyVersion           string `json:"policy_version,omitempty"`
+	PersonaProfile          string `json:"persona_profile,omitempty"`
+	EgressProfileRef        string `json:"egress_profile_ref,omitempty"`
+	ProfilePolicyVersion    string `json:"profile_policy_version,omitempty"`
+	BillingShapePolicy      string `json:"billing_shape_policy,omitempty"`
+	RequestShapeProfileRef  string `json:"request_shape_profile_ref,omitempty"`
+	CacheParityProfileRef   string `json:"cache_parity_profile_ref,omitempty"`
+	ProviderFamily          string `json:"provider_family"`
+	ProviderKind            string `json:"provider_kind,omitempty"`
+	WorkspaceRef            string `json:"workspace_ref,omitempty"`
+	WorkspaceBindingHMAC    string `json:"workspace_binding_hmac,omitempty"`
+	EndpointRef             string `json:"endpoint_ref,omitempty"`
+	Region                  string `json:"region,omitempty"`
+	AuthScheme              string `json:"auth_scheme,omitempty"`
+	BetaPolicyRef           string `json:"beta_policy_ref,omitempty"`
+	TrustedEgressProfileRef string `json:"trusted_egress_profile_ref,omitempty"`
+	DeviceRef               string `json:"device_ref,omitempty"`
+	ServerSessionRef        string `json:"server_session_ref"`
 }
 
 var claudeCodeSessionBoundaryLedger sync.Map
@@ -199,39 +229,55 @@ func claudeCodeSessionMapMaterial(input ClaudeCodeSessionMapInput) ([]byte, erro
 		return nil, fmt.Errorf("claude code session mapper requires raw session id")
 	}
 	payload := struct {
-		UserScope              string `json:"user_scope"`
-		AccountRef             string `json:"account_ref,omitempty"`
-		CredentialRef          string `json:"credential_ref,omitempty"`
-		DeviceID               string `json:"device_id,omitempty"`
-		AccountUUID            string `json:"account_uuid,omitempty"`
-		EgressBucket           string `json:"egress_bucket,omitempty"`
-		ProxyIdentityRef       string `json:"proxy_identity_ref,omitempty"`
-		PolicyVersion          string `json:"policy_version,omitempty"`
-		PersonaProfile         string `json:"persona_profile,omitempty"`
-		EgressProfileRef       string `json:"egress_profile_ref,omitempty"`
-		ProfilePolicyVersion   string `json:"profile_policy_version,omitempty"`
-		BillingShapePolicy     string `json:"billing_shape_policy,omitempty"`
-		RequestShapeProfileRef string `json:"request_shape_profile_ref,omitempty"`
-		CacheParityProfileRef  string `json:"cache_parity_profile_ref,omitempty"`
-		ProviderFamily         string `json:"provider_family,omitempty"`
-		RawSessionID           string `json:"raw_session_id"`
+		UserScope               string `json:"user_scope"`
+		AccountRef              string `json:"account_ref,omitempty"`
+		CredentialRef           string `json:"credential_ref,omitempty"`
+		DeviceID                string `json:"device_id,omitempty"`
+		AccountUUID             string `json:"account_uuid,omitempty"`
+		EgressBucket            string `json:"egress_bucket,omitempty"`
+		ProxyIdentityRef        string `json:"proxy_identity_ref,omitempty"`
+		PolicyVersion           string `json:"policy_version,omitempty"`
+		PersonaProfile          string `json:"persona_profile,omitempty"`
+		EgressProfileRef        string `json:"egress_profile_ref,omitempty"`
+		ProfilePolicyVersion    string `json:"profile_policy_version,omitempty"`
+		BillingShapePolicy      string `json:"billing_shape_policy,omitempty"`
+		RequestShapeProfileRef  string `json:"request_shape_profile_ref,omitempty"`
+		CacheParityProfileRef   string `json:"cache_parity_profile_ref,omitempty"`
+		ProviderFamily          string `json:"provider_family,omitempty"`
+		ProviderKind            string `json:"provider_kind,omitempty"`
+		WorkspaceRef            string `json:"workspace_ref,omitempty"`
+		WorkspaceBindingHMAC    string `json:"workspace_binding_hmac,omitempty"`
+		EndpointRef             string `json:"endpoint_ref,omitempty"`
+		Region                  string `json:"region,omitempty"`
+		AuthScheme              string `json:"auth_scheme,omitempty"`
+		BetaPolicyRef           string `json:"beta_policy_ref,omitempty"`
+		TrustedEgressProfileRef string `json:"trusted_egress_profile_ref,omitempty"`
+		RawSessionID            string `json:"raw_session_id"`
 	}{
-		UserScope:              strings.TrimSpace(input.UserScope),
-		AccountRef:             strings.TrimSpace(input.AccountRef),
-		CredentialRef:          strings.TrimSpace(input.CredentialRef),
-		DeviceID:               strings.TrimSpace(input.DeviceID),
-		AccountUUID:            strings.TrimSpace(input.AccountUUID),
-		EgressBucket:           strings.TrimSpace(input.EgressBucket),
-		ProxyIdentityRef:       strings.TrimSpace(input.ProxyIdentityRef),
-		PolicyVersion:          strings.TrimSpace(input.PolicyVersion),
-		PersonaProfile:         strings.TrimSpace(input.PersonaProfile),
-		EgressProfileRef:       strings.TrimSpace(input.EgressProfileRef),
-		ProfilePolicyVersion:   strings.TrimSpace(input.ProfilePolicyVersion),
-		BillingShapePolicy:     strings.TrimSpace(input.BillingShapePolicy),
-		RequestShapeProfileRef: strings.TrimSpace(input.RequestShapeProfileRef),
-		CacheParityProfileRef:  strings.TrimSpace(input.CacheParityProfileRef),
-		ProviderFamily:         strings.TrimSpace(input.ProviderFamily),
-		RawSessionID:           rawSessionID,
+		UserScope:               strings.TrimSpace(input.UserScope),
+		AccountRef:              strings.TrimSpace(input.AccountRef),
+		CredentialRef:           strings.TrimSpace(input.CredentialRef),
+		DeviceID:                strings.TrimSpace(input.DeviceID),
+		AccountUUID:             strings.TrimSpace(input.AccountUUID),
+		EgressBucket:            strings.TrimSpace(input.EgressBucket),
+		ProxyIdentityRef:        strings.TrimSpace(input.ProxyIdentityRef),
+		PolicyVersion:           strings.TrimSpace(input.PolicyVersion),
+		PersonaProfile:          strings.TrimSpace(input.PersonaProfile),
+		EgressProfileRef:        strings.TrimSpace(input.EgressProfileRef),
+		ProfilePolicyVersion:    strings.TrimSpace(input.ProfilePolicyVersion),
+		BillingShapePolicy:      strings.TrimSpace(input.BillingShapePolicy),
+		RequestShapeProfileRef:  strings.TrimSpace(input.RequestShapeProfileRef),
+		CacheParityProfileRef:   strings.TrimSpace(input.CacheParityProfileRef),
+		ProviderFamily:          strings.TrimSpace(input.ProviderFamily),
+		ProviderKind:            strings.TrimSpace(input.ProviderKind),
+		WorkspaceRef:            strings.TrimSpace(input.WorkspaceRef),
+		WorkspaceBindingHMAC:    strings.TrimSpace(input.WorkspaceBindingHMAC),
+		EndpointRef:             strings.TrimSpace(input.EndpointRef),
+		Region:                  strings.TrimSpace(input.Region),
+		AuthScheme:              strings.TrimSpace(input.AuthScheme),
+		BetaPolicyRef:           strings.TrimSpace(input.BetaPolicyRef),
+		TrustedEgressProfileRef: strings.TrimSpace(input.TrustedEgressProfileRef),
+		RawSessionID:            rawSessionID,
 	}
 	if payload.UserScope == "" {
 		payload.UserScope = "claude_code_session_scope:anonymous"
@@ -246,7 +292,7 @@ func (m *ClaudeCodeSessionMapper) enforceBoundary(input ClaudeCodeSessionMapInpu
 	if accountRef == "" || egress == "" || provider == "" || mapping == nil || mapping.SessionRef == nil {
 		return nil
 	}
-	enforceFormalPool := provider == "anthropic_formal_pool"
+	enforceFormalPool := claudeCodeSessionBoundaryEnforcedProvider(provider)
 	keyPayload, err := json.Marshal(struct {
 		BoundaryScope string `json:"boundary_scope"`
 		RawSessionID  string `json:"raw_session_id"`
@@ -262,20 +308,28 @@ func (m *ClaudeCodeSessionMapper) enforceBoundary(input ClaudeCodeSessionMapInpu
 		return &ClaudeCodeSessionBoundaryError{Code: "claude_native_session_boundary_incomplete"}
 	}
 	attempted := claudeCodeSessionBoundaryBinding{
-		AccountRef:             safeBoundaryRef(accountRef),
-		CredentialRef:          safeBoundaryRef(input.CredentialRef),
-		EgressBucket:           sanitizeReasonCode(egress),
-		ProxyIdentityRef:       safeBoundaryRef(input.ProxyIdentityRef),
-		PolicyVersion:          sanitizeReasonCode(input.PolicyVersion),
-		PersonaProfile:         sanitizeReasonCode(input.PersonaProfile),
-		EgressProfileRef:       sanitizeReasonCode(input.EgressProfileRef),
-		ProfilePolicyVersion:   sanitizeReasonCode(input.ProfilePolicyVersion),
-		BillingShapePolicy:     sanitizeReasonCode(input.BillingShapePolicy),
-		RequestShapeProfileRef: sanitizeReasonCode(input.RequestShapeProfileRef),
-		CacheParityProfileRef:  sanitizeReasonCode(input.CacheParityProfileRef),
-		ProviderFamily:         sanitizeReasonCode(provider),
-		DeviceRef:              safeBoundaryRef(input.DeviceID),
-		ServerSessionRef:       safeBoundaryRef(mapping.SessionRef.Value),
+		AccountRef:              safeBoundaryRef(accountRef),
+		CredentialRef:           safeBoundaryRef(input.CredentialRef),
+		EgressBucket:            sanitizeReasonCode(egress),
+		ProxyIdentityRef:        safeBoundaryRef(input.ProxyIdentityRef),
+		PolicyVersion:           sanitizeReasonCode(input.PolicyVersion),
+		PersonaProfile:          sanitizeReasonCode(input.PersonaProfile),
+		EgressProfileRef:        sanitizeReasonCode(input.EgressProfileRef),
+		ProfilePolicyVersion:    sanitizeReasonCode(input.ProfilePolicyVersion),
+		BillingShapePolicy:      sanitizeReasonCode(input.BillingShapePolicy),
+		RequestShapeProfileRef:  sanitizeReasonCode(input.RequestShapeProfileRef),
+		CacheParityProfileRef:   sanitizeReasonCode(input.CacheParityProfileRef),
+		ProviderFamily:          sanitizeReasonCode(provider),
+		ProviderKind:            sanitizeReasonCode(input.ProviderKind),
+		WorkspaceRef:            safeBoundaryRef(input.WorkspaceRef),
+		WorkspaceBindingHMAC:    safeBoundaryRef(input.WorkspaceBindingHMAC),
+		EndpointRef:             safeBoundaryRef(input.EndpointRef),
+		Region:                  sanitizeReasonCode(input.Region),
+		AuthScheme:              sanitizeReasonCode(input.AuthScheme),
+		BetaPolicyRef:           sanitizeReasonCode(input.BetaPolicyRef),
+		TrustedEgressProfileRef: sanitizeReasonCode(input.TrustedEgressProfileRef),
+		DeviceRef:               safeBoundaryRef(input.DeviceID),
+		ServerSessionRef:        safeBoundaryRef(mapping.SessionRef.Value),
 	}
 	if input.FormalPoolProduction && enforceFormalPool && !claudeCodeSessionBoundaryLedgerPersistenceConfigured() {
 		return &ClaudeCodeSessionBoundaryError{Code: "claude_native_session_boundary_ledger_unavailable"}
@@ -309,26 +363,48 @@ func (m *ClaudeCodeSessionMapper) enforceBoundary(input ClaudeCodeSessionMapInpu
 			prev.RequestShapeProfileRef != attempted.RequestShapeProfileRef ||
 			prev.CacheParityProfileRef != attempted.CacheParityProfileRef ||
 			prev.ProviderFamily != attempted.ProviderFamily ||
+			prev.ProviderKind != attempted.ProviderKind ||
+			prev.WorkspaceRef != attempted.WorkspaceRef ||
+			prev.WorkspaceBindingHMAC != attempted.WorkspaceBindingHMAC ||
+			prev.EndpointRef != attempted.EndpointRef ||
+			prev.Region != attempted.Region ||
+			prev.AuthScheme != attempted.AuthScheme ||
+			prev.BetaPolicyRef != attempted.BetaPolicyRef ||
+			prev.TrustedEgressProfileRef != attempted.TrustedEgressProfileRef ||
 			prev.DeviceRef != attempted.DeviceRef ||
 			prev.ServerSessionRef != attempted.ServerSessionRef {
 			return &ClaudeCodeSessionBoundaryError{
-				Code:                      "claude_native_session_boundary_failed",
-				PreviousAccountRef:        prev.AccountRef,
-				AttemptedAccountRef:       attempted.AccountRef,
-				PreviousCredentialRef:     prev.CredentialRef,
-				AttemptedCredentialRef:    attempted.CredentialRef,
-				PreviousEgress:            prev.EgressBucket,
-				AttemptedEgress:           attempted.EgressBucket,
-				PreviousProxyIdentityRef:  prev.ProxyIdentityRef,
-				AttemptedProxyIdentityRef: attempted.ProxyIdentityRef,
-				PreviousPolicyVersion:     prev.PolicyVersion,
-				AttemptedPolicyVersion:    attempted.PolicyVersion,
-				PreviousPersonaProfile:    prev.PersonaProfile,
-				AttemptedPersonaProfile:   attempted.PersonaProfile,
-				PreviousProviderFamily:    prev.ProviderFamily,
-				AttemptedProviderFamily:   attempted.ProviderFamily,
-				PreviousServerSessionRef:  prev.ServerSessionRef,
-				AttemptedServerSessionRef: attempted.ServerSessionRef,
+				Code:                          "claude_native_session_boundary_failed",
+				PreviousAccountRef:            prev.AccountRef,
+				AttemptedAccountRef:           attempted.AccountRef,
+				PreviousCredentialRef:         prev.CredentialRef,
+				AttemptedCredentialRef:        attempted.CredentialRef,
+				PreviousEgress:                prev.EgressBucket,
+				AttemptedEgress:               attempted.EgressBucket,
+				PreviousProxyIdentityRef:      prev.ProxyIdentityRef,
+				AttemptedProxyIdentityRef:     attempted.ProxyIdentityRef,
+				PreviousPolicyVersion:         prev.PolicyVersion,
+				AttemptedPolicyVersion:        attempted.PolicyVersion,
+				PreviousPersonaProfile:        prev.PersonaProfile,
+				AttemptedPersonaProfile:       attempted.PersonaProfile,
+				PreviousProviderFamily:        prev.ProviderFamily,
+				AttemptedProviderFamily:       attempted.ProviderFamily,
+				PreviousProviderKind:          prev.ProviderKind,
+				AttemptedProviderKind:         attempted.ProviderKind,
+				PreviousWorkspaceRef:          prev.WorkspaceRef,
+				AttemptedWorkspaceRef:         attempted.WorkspaceRef,
+				PreviousWorkspaceBindingHMAC:  prev.WorkspaceBindingHMAC,
+				AttemptedWorkspaceBindingHMAC: attempted.WorkspaceBindingHMAC,
+				PreviousEndpointRef:           prev.EndpointRef,
+				AttemptedEndpointRef:          attempted.EndpointRef,
+				PreviousRegion:                prev.Region,
+				AttemptedRegion:               attempted.Region,
+				PreviousAuthScheme:            prev.AuthScheme,
+				AttemptedAuthScheme:           attempted.AuthScheme,
+				PreviousBetaPolicyRef:         prev.BetaPolicyRef,
+				AttemptedBetaPolicyRef:        attempted.BetaPolicyRef,
+				PreviousServerSessionRef:      prev.ServerSessionRef,
+				AttemptedServerSessionRef:     attempted.ServerSessionRef,
 			}
 		}
 	}
@@ -336,7 +412,7 @@ func (m *ClaudeCodeSessionMapper) enforceBoundary(input ClaudeCodeSessionMapInpu
 }
 
 func claudeCodeSessionFormalPoolBoundaryContextComplete(input ClaudeCodeSessionMapInput) bool {
-	for _, value := range []string{
+	values := []string{
 		input.AccountRef,
 		input.CredentialRef,
 		input.DeviceID,
@@ -350,12 +426,33 @@ func claudeCodeSessionFormalPoolBoundaryContextComplete(input ClaudeCodeSessionM
 		input.RequestShapeProfileRef,
 		input.CacheParityProfileRef,
 		input.ProviderFamily,
-	} {
+	}
+	if strings.TrimSpace(input.ProviderFamily) == claudePlatformAWSProviderKind || strings.TrimSpace(input.ProviderKind) == claudePlatformAWSProviderKind {
+		values = append(values,
+			input.ProviderKind,
+			input.WorkspaceRef,
+			input.WorkspaceBindingHMAC,
+			input.EndpointRef,
+			input.Region,
+			input.AuthScheme,
+			input.BetaPolicyRef,
+		)
+	}
+	for _, value := range values {
 		if strings.TrimSpace(value) == "" {
 			return false
 		}
 	}
 	return true
+}
+
+func claudeCodeSessionBoundaryEnforcedProvider(provider string) bool {
+	switch strings.TrimSpace(provider) {
+	case "anthropic_formal_pool", claudePlatformAWSProviderKind:
+		return true
+	default:
+		return false
+	}
 }
 
 func claudeCodeSessionBoundaryLedgerFilePath() string {
@@ -454,7 +551,23 @@ func claudeCodeSessionBoundaryBindingSafe(binding claudeCodeSessionBoundaryBindi
 			return false
 		}
 	}
+	for _, ref := range []string{binding.WorkspaceRef, binding.EndpointRef} {
+		if strings.TrimSpace(ref) != "" && !claudeCodeSessionSafeAWSBoundaryRef(ref) {
+			return false
+		}
+	}
+	if strings.TrimSpace(binding.WorkspaceBindingHMAC) != "" && !ledgerGeneratedHMACRefRe.MatchString(strings.TrimSpace(binding.WorkspaceBindingHMAC)) {
+		return false
+	}
 	return true
+}
+
+func claudeCodeSessionSafeAWSBoundaryRef(ref string) bool {
+	ref = strings.TrimSpace(ref)
+	if isSafeLedgerRef(ref) {
+		return true
+	}
+	return isClaudePlatformAWSSafeRef(ref)
 }
 
 func claudeCodeSessionBoundaryScope(input ClaudeCodeSessionMapInput) string {
@@ -515,25 +628,33 @@ func applyCCGatewayClaudeCodeSessionMapping(req *http.Request, account *Account)
 	boundaryScope := claudeCodeSessionBoundaryScopeForAccount(req.Context(), account)
 	mapper := NewClaudeCodeSessionMapperFromEnv()
 	mapping, err := mapper.Map(ClaudeCodeSessionMapInput{
-		UserScope:              claudeCodeSessionScopeFromContext(req.Context(), account, parsedUserID, accountUUID),
-		BoundaryScope:          boundaryScope,
-		EnforceBoundary:        boundaryScope != "",
-		FormalPoolProduction:   claudeCodeSessionFormalPoolProduction(account),
-		AccountRef:             accountRef,
-		CredentialRef:          ccGatewayCredentialRef(account),
-		DeviceID:               deviceID,
-		AccountUUID:            accountUUID,
-		EgressBucket:           resolveCCGatewayEgressBucket(account),
-		ProxyIdentityRef:       ccGatewayProxyIdentityRef(account),
-		PolicyVersion:          claudeCodeSessionPolicyVersion(req.Context(), account),
-		PersonaProfile:         claudeCodeSessionPersonaProfile(req, account),
-		EgressProfileRef:       ccGatewayTrustedEgressProfileRef(account),
-		ProfilePolicyVersion:   ccGatewayProfilePolicyVersion(account),
-		BillingShapePolicy:     ccGatewayBillingShapePolicy(account),
-		RequestShapeProfileRef: ccGatewayRequestShapeProfileRef(account),
-		CacheParityProfileRef:  ccGatewayCacheParityProfileRef(account),
-		ProviderFamily:         claudeCodeSessionProviderFamily(account),
-		RawSessionID:           rawSessionID,
+		UserScope:               claudeCodeSessionScopeFromContext(req.Context(), account, parsedUserID, accountUUID),
+		BoundaryScope:           boundaryScope,
+		EnforceBoundary:         boundaryScope != "",
+		FormalPoolProduction:    claudeCodeSessionFormalPoolProduction(account),
+		AccountRef:              accountRef,
+		CredentialRef:           ccGatewayCredentialRef(account),
+		DeviceID:                deviceID,
+		AccountUUID:             accountUUID,
+		EgressBucket:            resolveCCGatewayEgressBucket(account),
+		ProxyIdentityRef:        ccGatewayProxyIdentityRef(account),
+		PolicyVersion:           claudeCodeSessionPolicyVersion(req.Context(), account),
+		PersonaProfile:          claudeCodeSessionPersonaProfile(req, account),
+		EgressProfileRef:        ccGatewayTrustedEgressProfileRef(account),
+		ProfilePolicyVersion:    ccGatewayProfilePolicyVersion(account),
+		BillingShapePolicy:      ccGatewayBillingShapePolicy(account),
+		RequestShapeProfileRef:  ccGatewayAttestationRequestShapeProfileRef(account),
+		CacheParityProfileRef:   ccGatewayAttestationCacheParityProfileRef(account),
+		ProviderFamily:          claudeCodeSessionProviderFamily(account),
+		ProviderKind:            claudeCodeSessionProviderKind(account),
+		WorkspaceRef:            claudeCodeSessionWorkspaceRef(account),
+		WorkspaceBindingHMAC:    claudeCodeSessionWorkspaceBindingHMAC(account),
+		EndpointRef:             claudeCodeSessionEndpointRef(account),
+		Region:                  claudeCodeSessionRegion(account),
+		AuthScheme:              claudeCodeSessionAuthScheme(account),
+		BetaPolicyRef:           claudeCodeSessionBetaPolicyRef(account),
+		TrustedEgressProfileRef: ccGatewayTrustedEgressProfileRef(account),
+		RawSessionID:            rawSessionID,
 	})
 	if err != nil {
 		return err
@@ -685,7 +806,7 @@ func claudeCodeSessionBoundaryScopeForAccount(ctx context.Context, account *Acco
 	if scope := claudeCodeSessionBoundaryScopeFromContext(ctx); scope != "" {
 		return scope
 	}
-	if IsFormalPoolAccount(account) {
+	if IsFormalPoolEligibleAccount(account) {
 		return "formal_pool_session_scope:global"
 	}
 	return ""
@@ -694,7 +815,7 @@ func claudeCodeSessionBoundaryScopeForAccount(ctx context.Context, account *Acco
 var claudeCodeDeviceIDRe = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
 
 func claudeCodeSessionAccountDeviceID(account *Account, parsed *ParsedUserID) (string, error) {
-	if IsFormalPoolAccount(account) {
+	if IsFormalPoolEligibleAccount(account) {
 		for _, key := range []string{"claude_code_device_id", "device_id"} {
 			if deviceID := strings.TrimSpace(account.GetExtraString(key)); claudeCodeDeviceIDRe.MatchString(deviceID) {
 				return strings.ToLower(deviceID), nil
@@ -709,7 +830,7 @@ func claudeCodeSessionAccountDeviceID(account *Account, parsed *ParsedUserID) (s
 }
 
 func claudeCodeSessionAccountUUID(account *Account, parsed *ParsedUserID, accountRef string) string {
-	if IsFormalPoolAccount(account) {
+	if IsFormalPoolEligibleAccount(account) {
 		return safeBoundaryRef(accountRef)
 	}
 	if parsed != nil && strings.TrimSpace(parsed.AccountUUID) != "" {
@@ -722,11 +843,63 @@ func claudeCodeSessionAccountUUID(account *Account, parsed *ParsedUserID, accoun
 }
 
 func claudeCodeSessionProviderFamily(account *Account) string {
+	if account != nil && account.IsClaudePlatformAWS() {
+		return claudePlatformAWSProviderKind
+	}
 	if IsFormalPoolAccount(account) {
 		return "anthropic_formal_pool"
 	}
 	if account != nil {
 		return sanitizeReasonCode(account.Platform)
+	}
+	return ""
+}
+
+func claudeCodeSessionProviderKind(account *Account) string {
+	if account != nil && account.IsClaudePlatformAWS() {
+		return claudePlatformAWSProviderKind
+	}
+	return ""
+}
+
+func claudeCodeSessionWorkspaceRef(account *Account) string {
+	if account != nil && account.IsClaudePlatformAWS() {
+		return strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraWorkspaceRef))
+	}
+	return ""
+}
+
+func claudeCodeSessionWorkspaceBindingHMAC(account *Account) string {
+	if account != nil && account.IsClaudePlatformAWS() {
+		return strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraWorkspaceBindingHMAC))
+	}
+	return ""
+}
+
+func claudeCodeSessionEndpointRef(account *Account) string {
+	if account != nil && account.IsClaudePlatformAWS() {
+		return strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraEndpointRef))
+	}
+	return ""
+}
+
+func claudeCodeSessionRegion(account *Account) string {
+	if account != nil && account.IsClaudePlatformAWS() {
+		return strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraRegion))
+	}
+	return ""
+}
+
+func claudeCodeSessionAuthScheme(account *Account) string {
+	if account != nil && account.IsClaudePlatformAWS() {
+		return strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraAuthScheme))
+	}
+	return ""
+}
+
+func claudeCodeSessionBetaPolicyRef(account *Account) string {
+	if account != nil && account.IsClaudePlatformAWS() {
+		return strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraBetaPolicyRef))
 	}
 	return ""
 }
@@ -753,5 +926,11 @@ func claudeCodeSessionPersonaProfile(req *http.Request, account *Account) string
 }
 
 func claudeCodeSessionFormalPoolProduction(account *Account) bool {
-	return IsFormalPoolAccount(account) && FormalPoolAccountStage(account) == FormalPoolStageProduction
+	if IsFormalPoolAccount(account) && FormalPoolAccountStage(account) == FormalPoolStageProduction {
+		return true
+	}
+	if account != nil && account.IsClaudePlatformAWS() {
+		return formalPoolBool(account.Extra[ClaudePlatformAWSExtraProductionAdmitted])
+	}
+	return false
 }

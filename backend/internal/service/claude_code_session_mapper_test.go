@@ -213,6 +213,177 @@ func TestClaudeCodeSessionMapperRejectsFormalPoolAuthorityFieldSwitches(t *testi
 	}
 }
 
+func TestClaudeCodeSessionMapperRejectsClaudePlatformAWSAuthorityTupleSwitches(t *testing.T) {
+	t.Setenv("SUB2API_SESSION_BUDGET_HMAC_KEY", "sub2api-session-budget-test-key")
+	resetClaudeCodeSessionBoundaryLedgerForTest()
+
+	mapper := NewClaudeCodeSessionMapperFromEnv()
+	base := ClaudeCodeSessionMapInput{
+		UserScope:               "user:cp4-aws-authority",
+		BoundaryScope:           "user:cp4-aws-authority",
+		EnforceBoundary:         true,
+		AccountRef:              "opaque:acct:aws-a",
+		CredentialRef:           "opaque:credential-ref:v1:aws-cred-a",
+		DeviceID:                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		AccountUUID:             "opaque:acct:aws-a",
+		EgressBucket:            "egress:aws-a",
+		ProxyIdentityRef:        "opaque:proxy-ref:v1:aws-a",
+		PolicyVersion:           "2.1.179",
+		PersonaProfile:          "claude_code_2_1_179_native_degraded",
+		EgressProfileRef:        "strip_attribution",
+		ProfilePolicyVersion:    "claude_code_2_1_179_cp1_degraded_v1",
+		BillingShapePolicy:      "strip",
+		RequestShapeProfileRef:  "request-shape:claude-platform-aws-v1-strip",
+		CacheParityProfileRef:   "cache-profile:claude-platform-aws-v1-strip",
+		ProviderFamily:          claudePlatformAWSProviderKind,
+		ProviderKind:            claudePlatformAWSProviderKind,
+		WorkspaceRef:            "workspace:aws-a",
+		WorkspaceBindingHMAC:    "hmac-sha256:" + strings.Repeat("a", 64),
+		EndpointRef:             "endpoint:aws-use1",
+		Region:                  "us-east-1",
+		AuthScheme:              ClaudePlatformAWSAuthProfileXAPIKey,
+		BetaPolicyRef:           "beta-policy:claude-platform-aws-v1-strip",
+		TrustedEgressProfileRef: "strip_attribution",
+		RawSessionID:            "11111111-2222-4333-8444-555555555555",
+	}
+	_, err := mapper.Map(base)
+	require.NoError(t, err)
+
+	for name, mutate := range map[string]func(*ClaudeCodeSessionMapInput){
+		"workspace": func(in *ClaudeCodeSessionMapInput) { in.WorkspaceRef = "workspace:aws-b" },
+		"workspace_binding": func(in *ClaudeCodeSessionMapInput) {
+			in.WorkspaceBindingHMAC = "hmac-sha256:" + strings.Repeat("b", 64)
+		},
+		"endpoint":        func(in *ClaudeCodeSessionMapInput) { in.EndpointRef = "endpoint:aws-euw1" },
+		"region":          func(in *ClaudeCodeSessionMapInput) { in.Region = "eu-west-1" },
+		"auth_scheme":     func(in *ClaudeCodeSessionMapInput) { in.AuthScheme = ClaudePlatformAWSAuthProfileBearerAPIKey },
+		"beta_policy":     func(in *ClaudeCodeSessionMapInput) { in.BetaPolicyRef = "beta-policy:client-forged" },
+		"proxy":           func(in *ClaudeCodeSessionMapInput) { in.ProxyIdentityRef = "opaque:proxy-ref:v1:aws-b" },
+		"request_profile": func(in *ClaudeCodeSessionMapInput) { in.RequestShapeProfileRef = "request-shape:client-forged" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			attempt := base
+			mutate(&attempt)
+			_, err := mapper.Map(attempt)
+			require.Error(t, err)
+			var boundaryErr *ClaudeCodeSessionBoundaryError
+			require.ErrorAs(t, err, &boundaryErr)
+			require.Equal(t, "claude_native_session_boundary_failed", boundaryErr.Code)
+			dumped, marshalErr := json.Marshal(boundaryErr)
+			require.NoError(t, marshalErr)
+			require.NotContains(t, string(dumped), base.RawSessionID)
+			require.NotContains(t, string(dumped), "wrkspc_")
+		})
+	}
+}
+
+func TestCCGatewayClaudeCodeSessionMappingCarriesClaudePlatformAWSTuple(t *testing.T) {
+	t.Setenv("SUB2API_SESSION_BUDGET_HMAC_KEY", "sub2api-session-budget-test-key")
+	t.Setenv("SUB2API_CLAUDE_CODE_SESSION_BOUNDARY_LEDGER_FILE", filepath.Join(t.TempDir(), "formal-pool-session-ledger.json"))
+	resetClaudeCodeSessionBoundaryLedgerForTest()
+
+	proxyID := int64(701)
+	account := &Account{
+		ID:          701,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeClaudePlatformAWS,
+		Status:      StatusActive,
+		Schedulable: true,
+		ProxyID:     &proxyID,
+		Credentials: map[string]any{
+			"auth_mode":              "apikey",
+			"api_key":                testAWSAPIKey,
+			"aws_region":             "us-east-1",
+			"anthropic_workspace_id": testAWSWorkspaceID,
+			"base_url":               "https://aws-external-anthropic.us-east-1.api.aws",
+		},
+		Extra: map[string]any{
+			ccGatewayExtraEnabled:                                  "true",
+			ccGatewayExtraCanaryOnly:                               "false",
+			ccGatewayExtraPolicyVersion:                            ccGatewayAnthropicPolicyVersion,
+				ccGatewayExtraAccountRef:                               formalPoolSafeRef("account", "cpaws-a"),
+				ccGatewayExtraCredentialRef:                            formalPoolSafeRef("credential", "cpaws-a"),
+			ccGatewayExtraCredentialBindingHMAC:                    "hmac-sha256:" + strings.Repeat("a", 64),
+			ccGatewayExtraEgressBucket:                             "egress:cpaws-a",
+			ccGatewayExtraEgressBucketEnabled:                      "true",
+				ccGatewayExtraProxyIdentityRef:                         formalPoolSafeRef("proxy", "cpaws-a"),
+			ccGatewayExtraPersonaProfile:                           ccGatewayDefaultPersonaProfile,
+			ccGatewayExtraTrustedEgressProfile:                     "strip_attribution",
+			ccGatewayExtraProfilePolicyVersion:                     "claude_code_2_1_179_cp1_degraded_v1",
+			ccGatewayExtraBillingShapePolicy:                       "strip",
+			"claude_code_device_id":                                strings.Repeat("c", 64),
+			FormalPoolExtraRuntimeRegistered:                       "true",
+			FormalPoolExtraRuntimeRegisteredAt:                     "2026-06-27T00:00:00Z",
+			ClaudePlatformAWSExtraWorkspaceRef:                     "workspace:cpaws-a",
+			ClaudePlatformAWSExtraWorkspaceBindingHMAC:             "hmac-sha256:" + strings.Repeat("b", 64),
+			ClaudePlatformAWSExtraEndpointRef:                      formalPoolSafeRef("endpoint", ClaudePlatformAWSEndpointForRegion("us-east-1")),
+			ClaudePlatformAWSExtraRegion:                           "us-east-1",
+			ClaudePlatformAWSExtraAuthScheme:                       ClaudePlatformAWSAuthProfileXAPIKey,
+			ClaudePlatformAWSExtraRequestShapeProfileRef:           "request-shape:claude-platform-aws-v1-strip",
+			ClaudePlatformAWSExtraCacheParityProfileRef:            "cache-profile:claude-platform-aws-v1-strip",
+			ClaudePlatformAWSExtraBetaPolicyRef:                    "beta-policy:claude-platform-aws-v1-strip",
+			ClaudePlatformAWSExtraCP0AuthProfileEvidenceStatus:     "pass",
+			ClaudePlatformAWSExtraCP0RegionWorkspaceEvidenceStatus: "pass",
+		},
+	}
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"metadata":{"user_id":"{\"device_id\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"account_uuid\":\"client-account\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"messages":[{"role":"user","content":"hello"}]}`))
+
+	require.True(t, IsFormalPoolEligibleAccount(account))
+	require.NoError(t, applyCCGatewayClaudeCodeSessionMapping(req, account))
+
+	rawLedger, err := os.ReadFile(os.Getenv("SUB2API_CLAUDE_CODE_SESSION_BOUNDARY_LEDGER_FILE"))
+	require.NoError(t, err)
+	text := string(rawLedger)
+	require.Contains(t, text, `"provider_kind": "claude_platform_aws"`)
+	require.Contains(t, text, `"workspace_ref": "hmac-sha256:`)
+	require.Contains(t, text, `"endpoint_ref": "`)
+	require.Contains(t, text, `"auth_scheme": "x_api_key"`)
+	require.Contains(t, text, `"beta_policy_ref": "beta-policy:claude-platform-aws-v1-strip"`)
+	require.NotContains(t, text, "workspace:cpaws-a")
+	require.NotContains(t, text, testAWSWorkspaceID)
+	require.NotContains(t, text, testAWSAPIKey)
+	require.NotContains(t, text, "11111111-2222-4333-8444-555555555555")
+	require.NotContains(t, strings.ToLower(text), "authorization")
+	require.NotContains(t, strings.ToLower(text), "x-api-key")
+}
+
+func TestClaudeCodeSessionBoundaryBindingRejectsUnsafeClaudePlatformAWSRefs(t *testing.T) {
+	base := claudeCodeSessionBoundaryBinding{
+		AccountRef:              "hmac-sha256:" + strings.Repeat("d", 64),
+		CredentialRef:           "hmac-sha256:" + strings.Repeat("e", 64),
+		EgressBucket:            "egress:cpaws-a",
+		ProxyIdentityRef:        "hmac-sha256:" + strings.Repeat("f", 64),
+		ProviderFamily:          claudePlatformAWSProviderKind,
+		ProviderKind:            claudePlatformAWSProviderKind,
+		WorkspaceRef:            "workspace:cpaws-a",
+		WorkspaceBindingHMAC:    "hmac-sha256:" + strings.Repeat("a", 64),
+		EndpointRef:             "endpoint:cpaws-use1",
+		Region:                  "us-east-1",
+		AuthScheme:              ClaudePlatformAWSAuthProfileXAPIKey,
+		BetaPolicyRef:           "beta-policy:claude-platform-aws-v1-strip",
+		TrustedEgressProfileRef: "strip_attribution",
+		DeviceRef:               "hmac-sha256:" + strings.Repeat("c", 64),
+		ServerSessionRef:        "hmac-sha256:" + strings.Repeat("b", 64),
+	}
+	require.True(t, claudeCodeSessionBoundaryBindingSafe(base))
+
+	for name, mutate := range map[string]func(*claudeCodeSessionBoundaryBinding){
+		"workspace_ref": func(in *claudeCodeSessionBoundaryBinding) { in.WorkspaceRef = "wrkspc_SYNTHETICRAW" },
+		"workspace_binding": func(in *claudeCodeSessionBoundaryBinding) {
+			in.WorkspaceBindingHMAC = "raw-hmac-input"
+		},
+		"endpoint_ref": func(in *claudeCodeSessionBoundaryBinding) {
+			in.EndpointRef = "https://aws-external-anthropic.us-east-1.api.aws"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			attempt := base
+			mutate(&attempt)
+			require.False(t, claudeCodeSessionBoundaryBindingSafe(attempt))
+		})
+	}
+}
+
 func TestClaudeCodeSessionMapperFormalPoolProductionRequiresPersistentLedger(t *testing.T) {
 	t.Setenv("SUB2API_SESSION_BUDGET_HMAC_KEY", "sub2api-session-budget-test-key")
 	t.Setenv("SUB2API_CLAUDE_CODE_SESSION_BOUNDARY_LEDGER_FILE", "")

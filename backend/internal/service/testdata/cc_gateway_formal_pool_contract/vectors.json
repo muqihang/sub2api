@@ -81,5 +81,44 @@
     "session_id": "2775e5ba-bb74-457a-9c64-bef6b08f00f2",
     "token_type": "oauth",
     "trusted_egress_profile_ref": "strip_attribution"
-  }
+  },
+  "aws_valid_context": {
+    "account_id": "account:cpaws-fixture-a",
+    "allowed_upstream_path": "/v1/messages",
+    "aws_region": "us-east-1",
+    "beta_policy_ref": "beta-policy:claude-platform-aws-v1-strip",
+    "billing_shape_policy": "strip",
+    "cache_parity_profile_ref": "cache-profile:claude-platform-aws-v1-strip",
+    "credential_binding_hmac": "hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "credential_ref": "credential:cpaws-fixture-a",
+    "credential_source": "server_account_credentials",
+    "egress_bucket": "egress:cpaws-fixture-a",
+    "method": "POST",
+    "nonce": "cpaws-fixture-nonce",
+    "observed_client_profile": {
+      "cli_version_bucket": "2.1.179",
+      "route_class": "messages",
+      "safe_summary_only": true,
+      "schema_version": "observed_client_profile.v1"
+    },
+    "path": "/v1/messages",
+    "persona_profile": "claude_code_2_1_179_native_degraded",
+    "policy_version": "2.1.179",
+    "profile_policy_version": "claude_code_2_1_179_cp1_degraded_v1",
+    "provider_kind": "claude_platform_aws",
+    "proxy_identity_ref": "proxy:cpaws-fixture-a",
+    "request_shape_profile_ref": "request-shape:claude-platform-aws-v1-strip",
+    "route_class": "messages",
+    "session_id": "2775e5ba-bb74-457a-9c64-bef6b08f00f2",
+    "timestamp_ms": 1760000000000,
+    "token_type": "apikey",
+    "trusted_egress_profile_ref": "strip_attribution",
+    "upstream_auth_scheme": "x_api_key",
+    "upstream_endpoint_ref": "endpoint:cpaws-use1",
+    "upstream_host": "aws-external-anthropic.us-east-1.api.aws",
+    "workspace_binding_hmac": "hmac-sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "workspace_ref": "workspace:cpaws-fixture-a"
+  },
+  "aws_canonical_json": "{\"account_id\":\"account:cpaws-fixture-a\",\"allowed_upstream_path\":\"/v1/messages\",\"aws_region\":\"us-east-1\",\"beta_policy_ref\":\"beta-policy:claude-platform-aws-v1-strip\",\"billing_shape_policy\":\"strip\",\"cache_parity_profile_ref\":\"cache-profile:claude-platform-aws-v1-strip\",\"credential_binding_hmac\":\"hmac-sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"credential_ref\":\"credential:cpaws-fixture-a\",\"credential_source\":\"server_account_credentials\",\"egress_bucket\":\"egress:cpaws-fixture-a\",\"method\":\"POST\",\"nonce\":\"cpaws-fixture-nonce\",\"observed_client_profile\":{\"cli_version_bucket\":\"2.1.179\",\"route_class\":\"messages\",\"safe_summary_only\":true,\"schema_version\":\"observed_client_profile.v1\"},\"path\":\"/v1/messages\",\"persona_profile\":\"claude_code_2_1_179_native_degraded\",\"policy_version\":\"2.1.179\",\"profile_policy_version\":\"claude_code_2_1_179_cp1_degraded_v1\",\"provider_kind\":\"claude_platform_aws\",\"proxy_identity_ref\":\"proxy:cpaws-fixture-a\",\"request_shape_profile_ref\":\"request-shape:claude-platform-aws-v1-strip\",\"route_class\":\"messages\",\"session_id\":\"2775e5ba-bb74-457a-9c64-bef6b08f00f2\",\"timestamp_ms\":1760000000000,\"token_type\":\"apikey\",\"trusted_egress_profile_ref\":\"strip_attribution\",\"upstream_auth_scheme\":\"x_api_key\",\"upstream_endpoint_ref\":\"endpoint:cpaws-use1\",\"upstream_host\":\"aws-external-anthropic.us-east-1.api.aws\",\"workspace_binding_hmac\":\"hmac-sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"workspace_ref\":\"workspace:cpaws-fixture-a\"}",
+  "aws_context_signature": "hmac-sha256:d3566f5d373371e754a59ec60573da40cd40bd7d026309022b9c7dfeb8d6742b"
 }

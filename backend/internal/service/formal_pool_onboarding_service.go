@@ -224,18 +224,30 @@ type FormalPoolAcceptanceInput struct {
 }
 
 type FormalPoolCCGatewayRuntimeRegistration struct {
-	AccountRef            string
-	CredentialRef         string
-	CredentialBindingHMAC string
-	TokenType             string
-	CredentialProof       string
-	EgressBucket          string
-	ProxyURL              string
-	ProxyRef              string
-	PolicyVersion         string
-	PersonaVariant        string
-	SessionPolicy         string
-	DeviceID              string
+	AccountRef             string
+	CredentialRef          string
+	CredentialBindingHMAC  string
+	TokenType              string
+	CredentialProof        string
+	EgressBucket           string
+	ProxyURL               string
+	ProxyRef               string
+	PolicyVersion          string
+	PersonaVariant         string
+	SessionPolicy          string
+	DeviceID               string
+	ProviderKind           string
+	UpstreamAuthScheme     string
+	AWSRegion              string
+	UpstreamBaseURL        string
+	WorkspaceRef           string
+	WorkspaceBindingHMAC   string
+	EndpointRef            string
+	AllowedUpstreamPaths   []string
+	BetaPolicyRef          string
+	RequestShapeProfileRef string
+	CacheParityProfileRef  string
+	AnthropicWorkspaceID   string
 }
 
 type FormalPoolAcceptanceCheck struct {
@@ -1178,6 +1190,34 @@ func formalPoolRuntimeIdentityExtra(accountRef, proxyRef string, credentials map
 		"claude_code_device_id":             ccGatewayGeneratedDeviceID(accountRef),
 		FormalPoolExtraCredentialGeneration: generation,
 	}
+}
+
+func formalPoolRuntimeIdentityExtraForAccount(account *Account, accountRef, proxyRef, bindingSecret, generation string) map[string]any {
+	if account != nil && account.IsClaudePlatformAWS() {
+		extra := map[string]any{
+			ccGatewayExtraCredentialRef:         strings.TrimSpace(account.GetExtraString(ccGatewayExtraCredentialRef)),
+			ccGatewayExtraCredentialBindingHMAC: strings.TrimSpace(account.GetExtraString(ccGatewayExtraCredentialBindingHMAC)),
+			ccGatewayExtraProxyIdentityRef:      strings.TrimSpace(proxyRef),
+			ccGatewayExtraPersonaProfile:        ccGatewayDefaultPersonaProfile,
+			"claude_code_device_id":             ccGatewayGeneratedDeviceID(strings.TrimSpace(accountRef)),
+			FormalPoolExtraCredentialGeneration: strings.TrimSpace(generation),
+		}
+		if strings.TrimSpace(stringFromMap(extra, FormalPoolExtraCredentialGeneration)) == "" {
+			extra[FormalPoolExtraCredentialGeneration] = "1"
+		}
+		if persona := strings.TrimSpace(account.GetExtraString(ccGatewayExtraPersonaProfile)); persona != "" {
+			extra[ccGatewayExtraPersonaProfile] = persona
+		}
+		if deviceID := strings.TrimSpace(account.GetExtraString("claude_code_device_id")); claudeCodeDeviceIDRe.MatchString(deviceID) {
+			extra["claude_code_device_id"] = strings.ToLower(deviceID)
+		}
+		return extra
+	}
+	credentials := map[string]any(nil)
+	if account != nil {
+		credentials = account.Credentials
+	}
+	return formalPoolRuntimeIdentityExtra(accountRef, proxyRef, credentials, bindingSecret, generation)
 }
 
 func stringFromMap(values map[string]any, key string) string {

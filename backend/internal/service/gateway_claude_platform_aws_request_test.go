@@ -434,14 +434,25 @@ func claudePlatformAWSAccountTestContext() *gin.Context {
 
 func markClaudePlatformAWSFormalPoolForRequestTest(t *testing.T, account *Account) {
 	t.Helper()
-	validation, err := ValidateClaudePlatformAWSAccount(account)
-	require.NoError(t, err)
 	account.Status = StatusActive
 	account.Schedulable = true
+	account.Extra[ccGatewayExtraEgressBucket] = "egress:synthetic-cpaws"
+	account.Extra[ccGatewayExtraEgressBucketEnabled] = "true"
+	account.Extra[ccGatewayExtraPolicyVersion] = ccGatewayAnthropicPolicyVersion
+	validation, err := ValidateClaudePlatformAWSAccount(account)
+	require.NoError(t, err)
 	account.Extra[ccGatewayExtraAccountRef] = validation.AccountRef
 	account.Extra[ccGatewayExtraProxyIdentityRef] = validation.ProxyIdentityRef
-	account.Extra[ccGatewayExtraEgressBucket] = "egress:synthetic-cpaws"
+	account.Extra[ccGatewayExtraCredentialRef] = validation.CredentialRef
+	account.Extra[ccGatewayExtraCredentialBindingHMAC] = validation.CredentialBindingHMAC
+	account.Extra[ClaudePlatformAWSExtraWorkspaceRef] = validation.WorkspaceRef
+	account.Extra[ClaudePlatformAWSExtraWorkspaceBindingHMAC] = validation.WorkspaceBindingHMAC
+	account.Extra[ClaudePlatformAWSExtraEndpointRef] = validation.EndpointRef
+	account.Extra[ClaudePlatformAWSExtraRegion] = validation.Region
 	account.Extra[FormalPoolExtraRuntimeRegistered] = "true"
+	account.Extra[FormalPoolExtraRuntimeRegisteredAt] = "2026-06-27T00:00:00Z"
+	account.Extra[ccGatewayExtraPersonaProfile] = ccGatewayDefaultPersonaProfile
+	account.Extra["claude_code_device_id"] = strings.Repeat("c", 64)
 }
 
 func readClaudePlatformAWSRequestBodyForTest(t *testing.T, req *http.Request) []byte {

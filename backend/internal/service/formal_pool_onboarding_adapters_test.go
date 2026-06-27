@@ -274,6 +274,69 @@ func TestFormalPoolHTTPCCGatewayRuntimeRegistrarSendsCompleteAuthorityContract(t
 	require.Empty(t, gotHeader.Get("X-API-Key"))
 }
 
+func TestFormalPoolHTTPCCGatewayRuntimeRegistrarSendsClaudePlatformAWSRuntimeMapping(t *testing.T) {
+	t.Parallel()
+
+	var gotPayload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/_runtime/register-account", r.URL.Path)
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&gotPayload))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"registered"}`))
+	}))
+	defer server.Close()
+
+	registrar := NewFormalPoolHTTPCCGatewayRuntimeRegistrar(&config.Config{Gateway: config.GatewayConfig{CCGateway: config.GatewayCCGatewayConfig{
+		Enabled:              true,
+		BaseURL:              server.URL,
+		Token:                "gateway-control-material-v1-local-test",
+		InternalControlToken: "internal-control-material-v1-local-test",
+		TimeoutSeconds:       1,
+	}}})
+	workspaceID := syntheticAWSWorkspaceID(11)
+	err := registrar.RegisterCCGatewayRuntime(context.Background(), FormalPoolCCGatewayRuntimeRegistration{
+		AccountRef:             "hmac-sha256:" + strings.Repeat("a", 64),
+		CredentialRef:          "opaque:credential-ref:v1:cpaws-cred-a",
+		CredentialBindingHMAC:  "hmac-sha256:" + strings.Repeat("b", 64),
+		TokenType:              "apikey",
+		CredentialProof:        syntheticAWSAPIKey(),
+		EgressBucket:           "egress:cpaws-a",
+		ProxyURL:               "http://127.0.0.1:8080",
+		ProxyRef:               "opaque:proxy-ref:v1:cpaws-a",
+		PolicyVersion:          ccGatewayAnthropicPolicyVersion,
+		PersonaVariant:         "claude-code-" + ccGatewayAnthropicPolicyVersion + "-macos-local",
+		SessionPolicy:          "preserve_downstream_session_id",
+		DeviceID:               strings.Repeat("c", 64),
+		ProviderKind:           claudePlatformAWSProviderKind,
+		UpstreamAuthScheme:     ClaudePlatformAWSAuthProfileXAPIKey,
+		AWSRegion:              "us-east-1",
+		UpstreamBaseURL:        "https://aws-external-anthropic.us-east-1.api.aws",
+		WorkspaceRef:           "workspace:cpaws-a",
+		WorkspaceBindingHMAC:   "hmac-sha256:" + strings.Repeat("d", 64),
+		EndpointRef:            "endpoint:cpaws-use1",
+		AllowedUpstreamPaths:   []string{"/v1/messages"},
+		BetaPolicyRef:          "beta-policy:claude-platform-aws-v1-strip",
+		RequestShapeProfileRef: "request-shape:claude-platform-aws-v1-strip",
+		CacheParityProfileRef:  "cache-profile:claude-platform-aws-v1-strip",
+		AnthropicWorkspaceID:   workspaceID,
+	})
+	require.NoError(t, err)
+	require.Equal(t, claudePlatformAWSProviderKind, gotPayload["provider_kind"])
+	require.Equal(t, ClaudePlatformAWSAuthProfileXAPIKey, gotPayload["upstream_auth_scheme"])
+	require.Equal(t, "us-east-1", gotPayload["aws_region"])
+	require.Equal(t, "https://aws-external-anthropic.us-east-1.api.aws", gotPayload["upstream_base_url"])
+	require.Equal(t, "workspace:cpaws-a", gotPayload["workspace_ref"])
+	require.Equal(t, "hmac-sha256:"+strings.Repeat("d", 64), gotPayload["workspace_binding_hmac"])
+	require.Equal(t, "endpoint:cpaws-use1", gotPayload["endpoint_ref"])
+	require.Equal(t, workspaceID, gotPayload["anthropic_workspace_id"])
+	require.Equal(t, "beta-policy:claude-platform-aws-v1-strip", gotPayload["beta_policy_ref"])
+	require.Equal(t, "request-shape:claude-platform-aws-v1-strip", gotPayload["request_shape_profile_ref"])
+	require.Equal(t, "cache-profile:claude-platform-aws-v1-strip", gotPayload["cache_parity_profile_ref"])
+	paths, ok := gotPayload["allowed_upstream_paths"].([]any)
+	require.True(t, ok)
+	require.Equal(t, "/v1/messages", paths[0])
+}
+
 func TestFormalPoolHTTPCCGatewayRuntimeRegistrarFailureRedactsControlPlaneBody(t *testing.T) {
 	t.Parallel()
 

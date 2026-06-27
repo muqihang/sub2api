@@ -854,7 +854,10 @@ func formalPoolRiskEventRefFromLedgerEntry(entry RiskEventLedgerEntry) string {
 }
 
 func serviceFormalPoolAccount(account *Account) bool {
-	return account != nil && account.IsAnthropicOAuthOrSetupToken() && IsFormalPoolAccount(account)
+	if account == nil {
+		return false
+	}
+	return (account.IsAnthropicOAuthOrSetupToken() && IsFormalPoolAccount(account)) || account.IsClaudePlatformAWS()
 }
 
 func formalPoolStageGateCheck(account *Account) FormalPoolAcceptanceCheck {
@@ -891,7 +894,7 @@ func runtimeEvidenceComplete(account *Account) bool {
 	if account == nil || account.Extra == nil {
 		return false
 	}
-	return formalPoolOpsBool(account.Extra[FormalPoolExtraRuntimeRegistered]) &&
+	baseComplete := formalPoolOpsBool(account.Extra[FormalPoolExtraRuntimeRegistered]) &&
 		strings.TrimSpace(account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt)) != "" &&
 		isSafeLedgerRef(strings.TrimSpace(account.GetExtraString(ccGatewayExtraAccountRef))) &&
 		isSafeLedgerRef(strings.TrimSpace(account.GetExtraString(ccGatewayExtraCredentialRef))) &&
@@ -900,6 +903,34 @@ func runtimeEvidenceComplete(account *Account) bool {
 		strings.TrimSpace(account.GetExtraString(ccGatewayExtraPersonaProfile)) != "" &&
 		claudeCodeDeviceIDRe.MatchString(strings.TrimSpace(account.GetExtraString("claude_code_device_id"))) &&
 		formalPoolEgressBucketEvidenceComplete(account)
+	if !baseComplete {
+		return false
+	}
+	if account.IsClaudePlatformAWS() {
+		for _, ref := range []string{
+			account.GetExtraString(ClaudePlatformAWSExtraWorkspaceRef),
+			account.GetExtraString(ClaudePlatformAWSExtraEndpointRef),
+			account.GetExtraString(ClaudePlatformAWSExtraRequestShapeProfileRef),
+			account.GetExtraString(ClaudePlatformAWSExtraCacheParityProfileRef),
+			account.GetExtraString(ClaudePlatformAWSExtraBetaPolicyRef),
+		} {
+			if !isClaudePlatformAWSSafeRef(ref) {
+				return false
+			}
+		}
+		if !ledgerGeneratedHMACRefRe.MatchString(strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraWorkspaceBindingHMAC))) {
+			return false
+		}
+		switch strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraAuthScheme)) {
+		case ClaudePlatformAWSAuthProfileXAPIKey, ClaudePlatformAWSAuthProfileBearerAPIKey:
+		default:
+			return false
+		}
+		if !claudePlatformAWSRegionRe.MatchString(strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraRegion))) {
+			return false
+		}
+	}
+	return true
 }
 
 func formalPoolEgressBucketEvidenceComplete(account *Account) bool {
@@ -1202,6 +1233,19 @@ func formalPoolRequireOperationsAccount(account *Account) error {
 	return nil
 }
 
+func formalPoolRequireRuntimeRegistrationAccount(account *Account) error {
+	if account == nil {
+		return infraerrors.NotFound("ACCOUNT_NOT_FOUND", "account not found")
+	}
+	if account.Platform != PlatformAnthropic || !serviceFormalPoolAccount(account) {
+		return infraerrors.BadRequest("FORMAL_POOL_ACCOUNT_REQUIRED", "operation requires an Anthropic formal pool account")
+	}
+	if account.ProxyID == nil || *account.ProxyID <= 0 {
+		return infraerrors.BadRequest("FORMAL_POOL_PROXY_REQUIRED", "formal pool account requires a proxy")
+	}
+	return nil
+}
+
 func formalPoolRequireSetupTokenAccount(account *Account) error {
 	if err := formalPoolRequireOperationsAccount(account); err != nil {
 		return err
@@ -1273,7 +1317,7 @@ func (s *FormalPoolOperationsService) runtimeRegisterUnlogged(ctx context.Contex
 	if err != nil {
 		return nil, err
 	}
-	if err := formalPoolRequireOperationsAccount(account); err != nil {
+	if err := formalPoolRequireRuntimeRegistrationAccount(account); err != nil {
 		return nil, err
 	}
 	if s.ccGatewayRuntime == nil {
@@ -1381,7 +1425,7 @@ func (s *FormalPoolOperationsService) runtimeRegistrationInput(ctx context.Conte
 	if !claudeCodeDeviceIDRe.MatchString(deviceID) {
 		return FormalPoolCCGatewayRuntimeRegistration{}, infraerrors.BadRequest("CC_GATEWAY_DEVICE_ID_REQUIRED", "cc gateway account-owned device id is required")
 	}
-	return FormalPoolCCGatewayRuntimeRegistration{
+	reg := FormalPoolCCGatewayRuntimeRegistration{
 		AccountRef:            accountRef,
 		CredentialRef:         credentialRef,
 		CredentialBindingHMAC: credentialBinding,
@@ -1394,7 +1438,11 @@ func (s *FormalPoolOperationsService) runtimeRegistrationInput(ctx context.Conte
 		PersonaVariant:        fmt.Sprintf("claude-code-%s-macos-local", ccGatewayAnthropicPolicyVersion),
 		SessionPolicy:         "preserve_downstream_session_id",
 		DeviceID:              strings.ToLower(deviceID),
-	}, nil
+	}
+	if err := applyClaudePlatformAWSRuntimeRegistrationFields(account, &reg); err != nil {
+		return FormalPoolCCGatewayRuntimeRegistration{}, err
+	}
+	return reg, nil
 }
 
 func (s *FormalPoolOperationsService) ensureRuntimeIdentityEvidence(ctx context.Context, account *Account) (*Account, error) {
@@ -1417,7 +1465,7 @@ func (s *FormalPoolOperationsService) ensureRuntimeIdentityEvidence(ctx context.
 	if generation == "" {
 		generation = "1"
 	}
-	identity := formalPoolRuntimeIdentityExtra(accountRef, proxyIdentityRef, account.Credentials, s.ccGatewayRuntimeBindingSecret(), generation)
+	identity := formalPoolRuntimeIdentityExtraForAccount(account, accountRef, proxyIdentityRef, s.ccGatewayRuntimeBindingSecret(), generation)
 	if account.GetExtraString(ccGatewayExtraAccountRef) == accountRef &&
 		strings.TrimSpace(resolveCCGatewayEgressBucket(account)) == egressBucket &&
 		strings.TrimSpace(account.GetExtraString(ccGatewayExtraCredentialRef)) == stringFromMap(identity, ccGatewayExtraCredentialRef) &&

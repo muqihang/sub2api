@@ -330,7 +330,7 @@ func IsClaudePlatformAWSFormalPoolAccount(account *Account) bool {
 	if account == nil || !account.IsClaudePlatformAWS() || account.ProxyID == nil {
 		return false
 	}
-	if !formalPoolBool(account.Extra[FormalPoolExtraRuntimeRegistered]) {
+	if !runtimeEvidenceComplete(account) {
 		return false
 	}
 	if strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraCP0AuthProfileEvidenceStatus)) != "pass" || strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraCP0RegionWorkspaceEvidenceStatus)) != "pass" {
@@ -626,4 +626,30 @@ func nonEmptyClaudePlatformAWSHeaderValues(headers http.Header, key string) []st
 		}
 	}
 	return values
+}
+
+func applyClaudePlatformAWSRuntimeRegistrationFields(account *Account, reg *FormalPoolCCGatewayRuntimeRegistration) error {
+	if account == nil || reg == nil || !account.IsClaudePlatformAWS() {
+		return nil
+	}
+	validation, err := ValidateClaudePlatformAWSAccount(account)
+	if err != nil {
+		return err
+	}
+	if err := validateClaudePlatformAWSStoredCP0Bindings(account, validation); err != nil {
+		return err
+	}
+	reg.ProviderKind = claudePlatformAWSProviderKind
+	reg.UpstreamAuthScheme = strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraAuthScheme))
+	reg.AWSRegion = validation.Region
+	reg.UpstreamBaseURL = validation.Endpoint
+	reg.WorkspaceRef = strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraWorkspaceRef))
+	reg.WorkspaceBindingHMAC = strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraWorkspaceBindingHMAC))
+	reg.EndpointRef = strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraEndpointRef))
+	reg.AllowedUpstreamPaths = []string{claudePlatformAWSAllowedPath}
+	reg.BetaPolicyRef = strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraBetaPolicyRef))
+	reg.RequestShapeProfileRef = strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraRequestShapeProfileRef))
+	reg.CacheParityProfileRef = strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraCacheParityProfileRef))
+	reg.AnthropicWorkspaceID = strings.TrimSpace(account.GetCredential("anthropic_workspace_id"))
+	return nil
 }

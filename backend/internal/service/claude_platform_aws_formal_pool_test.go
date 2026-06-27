@@ -173,11 +173,13 @@ func TestClaudePlatformAWSFormalPoolEligibilityRequiresAllSafeBindingsAndCP0Evid
 	require.False(t, IsFormalPoolEligibleAccount(account))
 
 	account.Extra = map[string]any{
-		"cc_gateway_account_ref":                               "account:abc",
-		"cc_gateway_credential_ref":                            "credential:def",
+		"cc_gateway_account_ref":                               "hmac-sha256:" + strings.Repeat("c", 64),
+		"cc_gateway_credential_ref":                            "hmac-sha256:" + strings.Repeat("d", 64),
 		"cc_gateway_credential_binding_hmac":                   "hmac-sha256:" + strings.Repeat("a", 64),
 		"cc_gateway_egress_bucket":                             "egress:bucket-a",
-		"cc_gateway_proxy_identity_ref":                        "proxy:proxy-a",
+		"cc_gateway_proxy_identity_ref":                        "hmac-sha256:" + strings.Repeat("e", 64),
+		"cc_gateway_persona_profile":                           ccGatewayDefaultPersonaProfile,
+		"claude_code_device_id":                                strings.Repeat("f", 64),
 		ClaudePlatformAWSExtraWorkspaceRef:                     "workspace:ws-a",
 		ClaudePlatformAWSExtraWorkspaceBindingHMAC:             "hmac-sha256:" + strings.Repeat("b", 64),
 		ClaudePlatformAWSExtraEndpointRef:                      formalPoolSafeRef("endpoint", ClaudePlatformAWSEndpointForRegion("us-east-1")),
@@ -190,11 +192,16 @@ func TestClaudePlatformAWSFormalPoolEligibilityRequiresAllSafeBindingsAndCP0Evid
 		ClaudePlatformAWSExtraCP0RegionWorkspaceEvidenceStatus: "pass",
 		FormalPoolExtraRuntimeRegistered:                       "true",
 	}
+	require.False(t, IsClaudePlatformAWSFormalPoolAccount(account), "runtime registration flag without timestamp and enabled egress bucket must fail closed")
+	account.Extra[FormalPoolExtraRuntimeRegisteredAt] = "2026-06-27T00:00:00Z"
+	account.Extra[ccGatewayExtraEgressBucketEnabled] = "true"
 	require.True(t, IsClaudePlatformAWSFormalPoolAccount(account))
 	require.True(t, IsFormalPoolEligibleAccount(account))
+	require.True(t, account.IsSchedulable())
 
 	account.Extra[ClaudePlatformAWSExtraCP0AuthProfileEvidenceStatus] = "blocked"
 	require.False(t, IsClaudePlatformAWSFormalPoolAccount(account))
+	require.False(t, account.IsSchedulable())
 }
 
 func TestClaudePlatformAWSSanitizesClientSpoofedAuthorityHeaders(t *testing.T) {
@@ -324,11 +331,13 @@ func TestClaudePlatformAWSBatchImportJSONUsesBooleanHMACPresenceOnly(t *testing.
 func TestClaudePlatformAWSFormalPoolEligibilityRejectsNonHMACBindingsAndUnknownAuthScheme(t *testing.T) {
 	proxyID := int64(7)
 	account := &Account{Platform: PlatformAnthropic, Type: AccountTypeClaudePlatformAWS, Status: StatusActive, Schedulable: true, ProxyID: &proxyID, Extra: map[string]any{
-		"cc_gateway_account_ref":                               "account:abc",
-		"cc_gateway_credential_ref":                            "credential:def",
+		"cc_gateway_account_ref":                               "hmac-sha256:" + strings.Repeat("c", 64),
+		"cc_gateway_credential_ref":                            "hmac-sha256:" + strings.Repeat("d", 64),
 		"cc_gateway_credential_binding_hmac":                   "hmac-sha256:" + strings.Repeat("a", 64),
 		"cc_gateway_egress_bucket":                             "egress:bucket-a",
-		"cc_gateway_proxy_identity_ref":                        "proxy:proxy-a",
+		"cc_gateway_proxy_identity_ref":                        "hmac-sha256:" + strings.Repeat("e", 64),
+		"cc_gateway_persona_profile":                           ccGatewayDefaultPersonaProfile,
+		"claude_code_device_id":                                strings.Repeat("f", 64),
 		ClaudePlatformAWSExtraWorkspaceRef:                     "workspace:ws-a",
 		ClaudePlatformAWSExtraWorkspaceBindingHMAC:             "hmac-sha256:" + strings.Repeat("b", 64),
 		ClaudePlatformAWSExtraEndpointRef:                      formalPoolSafeRef("endpoint", ClaudePlatformAWSEndpointForRegion("us-east-1")),
@@ -340,6 +349,8 @@ func TestClaudePlatformAWSFormalPoolEligibilityRejectsNonHMACBindingsAndUnknownA
 		ClaudePlatformAWSExtraCP0AuthProfileEvidenceStatus:     "pass",
 		ClaudePlatformAWSExtraCP0RegionWorkspaceEvidenceStatus: "pass",
 		FormalPoolExtraRuntimeRegistered:                       "true",
+		FormalPoolExtraRuntimeRegisteredAt:                     "2026-06-27T00:00:00Z",
+		ccGatewayExtraEgressBucketEnabled:                      "true",
 	}}
 	require.True(t, IsClaudePlatformAWSFormalPoolAccount(account))
 
@@ -409,11 +420,14 @@ func TestClaudePlatformAWSIdempotencyKeyUsesHeaderBeforeBody(t *testing.T) {
 func TestClaudePlatformAWSFormalPoolEligibilityBindsRegionToEndpointRef(t *testing.T) {
 	proxyID := int64(7)
 	account := &Account{Platform: PlatformAnthropic, Type: AccountTypeClaudePlatformAWS, Status: StatusActive, Schedulable: true, ProxyID: &proxyID, Extra: map[string]any{
-		"cc_gateway_account_ref":                               "account:abc",
-		"cc_gateway_credential_ref":                            "credential:def",
+		"cc_gateway_account_ref":                               "hmac-sha256:" + strings.Repeat("c", 64),
+		"cc_gateway_credential_ref":                            "hmac-sha256:" + strings.Repeat("d", 64),
 		"cc_gateway_credential_binding_hmac":                   "hmac-sha256:" + strings.Repeat("a", 64),
 		"cc_gateway_egress_bucket":                             "egress:bucket-a",
-		"cc_gateway_proxy_identity_ref":                        "proxy:proxy-a",
+		"cc_gateway_egress_bucket_enabled":                     "true",
+		"cc_gateway_proxy_identity_ref":                        "hmac-sha256:" + strings.Repeat("e", 64),
+		"cc_gateway_persona_profile":                           ccGatewayDefaultPersonaProfile,
+		"claude_code_device_id":                                strings.Repeat("f", 64),
 		ClaudePlatformAWSExtraWorkspaceRef:                     "workspace:ws-a",
 		ClaudePlatformAWSExtraWorkspaceBindingHMAC:             "hmac-sha256:" + strings.Repeat("b", 64),
 		ClaudePlatformAWSExtraEndpointRef:                      formalPoolSafeRef("endpoint", ClaudePlatformAWSEndpointForRegion("us-east-1")),
@@ -425,6 +439,7 @@ func TestClaudePlatformAWSFormalPoolEligibilityBindsRegionToEndpointRef(t *testi
 		ClaudePlatformAWSExtraCP0AuthProfileEvidenceStatus:     "pass",
 		ClaudePlatformAWSExtraCP0RegionWorkspaceEvidenceStatus: "pass",
 		FormalPoolExtraRuntimeRegistered:                       "true",
+		FormalPoolExtraRuntimeRegisteredAt:                     "2026-06-27T00:00:00Z",
 	}}
 	require.True(t, IsClaudePlatformAWSFormalPoolAccount(account))
 

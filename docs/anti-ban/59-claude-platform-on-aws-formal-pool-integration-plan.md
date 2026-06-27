@@ -924,3 +924,34 @@ git diff --check
 All above targeted checks passed. This is not a broad-suite green claim; the broad-suite blockers recorded in the CP1 audit remain external/historical blockers for any production-readiness statement.
 
 CP0 auth profile status remains `BLOCKED_AUTH_PROFILE` for production because no real target AWS workspace/API-key proof has been supplied. CP3 proves the local/mock request shape and fail-closed behavior only.
+
+## CP4 implementation checkpoint record - 2026-06-27
+
+Status: `CP4_DONE_SUB2API_CCGATEWAY_CONTRACT_TARGETED_GREEN`.
+
+Scope completed:
+
+- Extended Sub2API formal-pool CC Gateway attestation with Claude Platform on AWS provider tuple fields from server scheduler/account state only: provider kind, credential ref/binding HMAC, workspace ref/binding HMAC, endpoint ref, region, auth scheme, request-shape/cache/beta profile refs, egress/proxy/persona/profile fields, and session id.
+- Added a CC Gateway production-path builder for `claude-platform-aws` that routes through CC Gateway when enabled, validates CP0 bindings, requires formal-pool runtime evidence, applies AWS request-shape/beta stripping, strips/ignores inbound auth/workspace/internal headers, and fails closed instead of using the direct builder for normal production traffic.
+- Extended Claude Code session mapping and boundary ledger with AWS sticky tuple fields. Same formal-pool session cannot silently switch workspace, workspace binding HMAC, credential, egress/proxy, persona/profile, beta policy, endpoint, region, auth scheme, device, or provider kind.
+- Extended runtime registration/replay support for Claude Platform on AWS with safe refs and preserved CP0 credential/workspace bindings. Runtime registration is allowed only for formal-pool eligible accounts; healthcheck, warming, promote, and proxy-swap lifecycle operations remain fail-closed for this account type until explicitly implemented.
+- Tightened Claude Platform on AWS formal-pool eligibility: `runtime_registered=true` alone is insufficient; runtime timestamp, egress bucket enablement, safe refs, HMAC bindings, CP0 evidence status, endpoint/region binding, auth profile, request/cache/beta profile refs, persona, proxy, and device evidence are required.
+- Added boundary ledger safety checks so AWS workspace/endpoint refs are stored only as safe refs/HMAC-derived refs in evidence, not raw workspace IDs or endpoint URLs.
+- Updated the shared canonical fixture to include AWS formal-pool attestation fields and verify Sub2API canonical bytes stay in parity with the verifier fixture.
+
+Targeted verification:
+
+```bash
+cd backend && go test ./internal/service -run 'TestGatewayService_CCGatewayClaudePlatformAWSBuildsAttestedContextFromServerState|TestClaudePlatformAWSFormalPoolEligibilityBindsRegionToEndpointRef' -count=1
+cd backend && go test ./internal/service -run 'TestCCGatewayClaudeCodeSessionMappingCarriesClaudePlatformAWSTuple|TestClaudeCodeSessionBoundaryBindingRejectsUnsafeClaudePlatformAWSRefs|TestClaudeCodeSessionMapperRejectsClaudePlatformAWSAuthorityTupleSwitches|TestFormalPoolOperationsRuntimeRegisterAcceptsClaudePlatformAWSRuntimeOnly|TestFormalPoolRuntimeRegistrationReplayService_ReplaysClaudePlatformAWSRuntimeMapping|TestFormalPoolOperationsClaudePlatformAWSRejectsUnsupportedLifecycleOps|TestClaudePlatformAWSFormalPoolEligibilityRequiresAllSafeBindingsAndCP0Evidence|TestClaudePlatformAWSFormalPoolEligibilityRejectsNonHMACBindingsAndUnknownAuthScheme' -count=1
+cd backend && go test ./internal/service -run 'TestClaudePlatformAWS|TestGatewayService_(BuildClaudePlatformAWS|GetAccessTokenClaudePlatformAWS|ClaudePlatformAWSModelPreflight|CCGatewayClaudePlatformAWS|CCGatewayAnthropicAPIKeyPassthrough|CCGatewayFormalPool|CCGatewayAnthropicOAuth)|TestAccountTestService_ClaudePlatformAWS|TestClaudeCodeSessionMapper|TestFormalPoolHTTPCCGatewayRuntimeRegistrar|TestFormalPoolOperationsRuntime(Register|RegistrationInput|ClaudePlatformAWSRejects)|TestFormalPoolRuntimeRegistrationReplayService|TestFormalPoolRuntimeRegistrationStartupReplay|TestCCGatewayFormalPoolAWSAttestationMatchesSharedCanonicalFixture' -count=1
+cd backend && go test ./internal/service -run 'TestGatewayService_BuildAnthropicVertexServiceAccount|TestBuildUpstreamRequestAnthropicAPIKeyPassthrough|TestGatewayService_Forward' -count=1
+git diff --check
+codegraph sync .
+```
+
+All above targeted checks passed. Leak scans over the canonical fixture and current diff found only safe profile strings and test forbidden-string assertions; no raw workspace ID, API key, Authorization value, raw body/response, raw HMAC input/output, or proxy credential was found.
+
+This is not a broad-suite green claim. The broad-suite blockers recorded in the CP1 audit remain external/historical blockers for any production-readiness statement, and no deployed/live traffic claim is made.
+
+CP0 auth profile status remains `BLOCKED_AUTH_PROFILE` for production because no real target AWS workspace/API-key proof has been supplied. CP4 proves the Sub2API -> CC Gateway contract path and fail-closed behavior only; CP5 final CC Gateway verifier work has not started.

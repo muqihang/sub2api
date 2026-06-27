@@ -685,6 +685,106 @@ func TestGatewayService_CCGatewayAnthropicAPIKeyPassthroughCountTokensBuildsTran
 	require.NotEmpty(t, getHeaderRaw(req.Header, ccGatewayFormalPoolSignatureHeader))
 }
 
+func TestGatewayService_CCGatewayClaudePlatformAWSBuildsAttestedContextFromServerState(t *testing.T) {
+	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
+	gin.SetMode(gin.TestMode)
+	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
+	markClaudePlatformAWSFormalPoolForRequestTest(t, account)
+	account.Extra[ccGatewayExtraPersonaProfile] = ccGatewayDefaultPersonaProfile
+	account.Extra[ccGatewayExtraTrustedEgressProfile] = ccGatewayDefaultTrustedEgressProfileRef
+	account.Extra[ccGatewayExtraProfilePolicyVersion] = ccGatewayDefault2179ProfilePolicyVersion
+	account.Extra[ccGatewayExtraBillingShapePolicy] = ccGatewayDefaultBillingShapePolicy
+
+	clientWorkspace := syntheticAWSWorkspaceID(9)
+	clientAPIKey := "synthetic-client-forged-api-key-cp4"
+	body := []byte(`{"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}]}`)
+	c := claudePlatformAWSRequestTestContext()
+	c.Request.Header.Set("Anthropic-Workspace-Id", clientWorkspace)
+	c.Request.Header.Set("X-Api-Key", clientAPIKey)
+	c.Request.Header.Set("Authorization", "Bearer synthetic-client-forged-bearer-cp4")
+	c.Request.Header.Set("X-Amz-Security-Token", "synthetic-client-forged-amz-cp4")
+	c.Request.Header.Set("Anthropic-Beta", "client-forged-beta-cp4")
+	c.Request.Header.Set("X-Cc-Formal-Pool-Context", "client-forged-context-cp4")
+	c.Request.Header.Set("X-Sub2api-Profile", "client-forged-profile-cp4")
+
+	req, _, err := (&GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic), identityService: NewIdentityService(ccGatewayIdentityCache{})}).buildUpstreamRequest(
+		context.Background(), c, account, body,
+		account.GetCredential("api_key"), "claude_platform_aws", "claude-sonnet-4-6", false, false, false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, req)
+	require.Equal(t, "http://cc-gateway:8443/v1/messages", req.URL.String())
+	require.Equal(t, "", req.URL.RawQuery)
+
+	ctx := decodeCCGatewayFormalPoolContextForTest(t, req)
+	validation, validationErr := ValidateClaudePlatformAWSAccount(account)
+	require.NoError(t, validationErr)
+	require.Equal(t, claudePlatformAWSProviderKind, ctx["provider_kind"])
+	require.Equal(t, ClaudePlatformAWSAuthProfileXAPIKey, ctx["upstream_auth_scheme"])
+	require.Equal(t, "us-east-1", ctx["aws_region"])
+	require.Equal(t, "aws-external-anthropic.us-east-1.api.aws", ctx["upstream_host"])
+	require.Equal(t, "/v1/messages", ctx["allowed_upstream_path"])
+	require.Equal(t, validation.EndpointRef, ctx["upstream_endpoint_ref"])
+	require.Equal(t, validation.WorkspaceRef, ctx["workspace_ref"])
+	require.Equal(t, validation.WorkspaceBindingHMAC, ctx["workspace_binding_hmac"])
+	require.Equal(t, validation.CredentialRef, ctx["credential_ref"])
+	require.Equal(t, validation.CredentialBindingHMAC, ctx["credential_binding_hmac"])
+	require.Equal(t, "egress:synthetic-cpaws", ctx["egress_bucket"])
+	require.Equal(t, validation.ProxyIdentityRef, ctx["proxy_identity_ref"])
+	require.Equal(t, "request-shape:claude-platform-aws-v1-strip", ctx["request_shape_profile_ref"])
+	require.Equal(t, "cache-profile:claude-platform-aws-v1-strip", ctx["cache_parity_profile_ref"])
+	require.Equal(t, "beta-policy:claude-platform-aws-v1-strip", ctx["beta_policy_ref"])
+
+	encodedContext, marshalErr := json.Marshal(ctx)
+	require.NoError(t, marshalErr)
+	for _, forbidden := range []string{clientWorkspace, clientAPIKey, account.GetCredential("api_key"), account.GetCredential("anthropic_workspace_id"), "synthetic-client-forged-amz-cp4", "client-forged-beta-cp4", "client-forged-context-cp4", "client-forged-profile-cp4"} {
+		require.NotContains(t, string(encodedContext), forbidden)
+	}
+	headerDump, dumpErr := json.Marshal(req.Header)
+	require.NoError(t, dumpErr)
+	for _, forbidden := range []string{clientWorkspace, clientAPIKey, account.GetCredential("anthropic_workspace_id"), "synthetic-client-forged-amz-cp4", "client-forged-beta-cp4", "client-forged-context-cp4", "client-forged-profile-cp4"} {
+		require.NotContains(t, string(headerDump), forbidden)
+	}
+	require.Empty(t, getHeaderRaw(req.Header, "anthropic-workspace-id"))
+	require.Empty(t, getHeaderRaw(req.Header, "anthropic-beta"))
+	require.Empty(t, getHeaderRaw(req.Header, "x-amz-security-token"))
+	require.Empty(t, getHeaderRaw(req.Header, "x-sub2api-profile"))
+	require.NotEqual(t, "client-forged-context-cp4", getHeaderRaw(req.Header, ccGatewayFormalPoolContextHeader))
+	requireValidCCGatewayFormalPoolSignatureForTest(t, req, "formal-pool-attestation-secret-test")
+}
+
+func TestCCGatewayClaudePlatformAWSAttestationFailsClosedWhenAuthorityFieldsMissing(t *testing.T) {
+	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
+	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
+	markClaudePlatformAWSFormalPoolForRequestTest(t, account)
+	account.Extra[ccGatewayExtraPersonaProfile] = ccGatewayDefaultPersonaProfile
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Set("X-Claude-Code-Session-Id", "11111111-2222-4333-8444-555555555555")
+	require.NoError(t, applyCCGatewayAnthropicHeaders(req, ccGatewayTestConfig(PlatformAnthropic), account, "apikey"))
+
+	for name, key := range map[string]string{
+		"workspace_ref":         ClaudePlatformAWSExtraWorkspaceRef,
+		"workspace_binding":     ClaudePlatformAWSExtraWorkspaceBindingHMAC,
+		"endpoint_ref":          ClaudePlatformAWSExtraEndpointRef,
+		"region":                ClaudePlatformAWSExtraRegion,
+		"auth_scheme":           ClaudePlatformAWSExtraAuthScheme,
+		"request_shape_profile": ClaudePlatformAWSExtraRequestShapeProfileRef,
+		"cache_parity_profile":  ClaudePlatformAWSExtraCacheParityProfileRef,
+		"beta_policy":           ClaudePlatformAWSExtraBetaPolicyRef,
+	} {
+		t.Run(name, func(t *testing.T) {
+			attempt := *account
+			attempt.Extra = cloneCredentials(account.Extra)
+			delete(attempt.Extra, key)
+			err := applyCCGatewayFormalPoolAttestation(req.Clone(context.Background()), ccGatewayTestConfig(PlatformAnthropic), &attempt)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), name)
+			require.NotContains(t, err.Error(), attempt.GetCredential("api_key"))
+			require.NotContains(t, err.Error(), attempt.GetCredential("anthropic_workspace_id"))
+		})
+	}
+}
+
 func decodeCCGatewayFormalPoolContextForTest(t *testing.T, req *http.Request) map[string]any {
 	t.Helper()
 	encoded := getHeaderRaw(req.Header, ccGatewayFormalPoolContextHeader)
@@ -1154,6 +1254,27 @@ func TestCCGatewayFormalPoolAttestationMatchesSharedContractFixture(t *testing.T
 	require.NotEqual(t, fixture.ClientInput["raw_client_session_id"], ctx["session_id"])
 	requireValidCCGatewayFormalPoolSignatureForTest(t, req, fixture.Materials["context_attestation_material"])
 	require.Equal(t, fixture.Materials["internal_control_material"], getHeaderRaw(req.Header, ccGatewayInternalControlHeader))
+}
+
+func TestCCGatewayFormalPoolAWSAttestationMatchesSharedCanonicalFixture(t *testing.T) {
+	raw, err := os.ReadFile("testdata/cc_gateway_formal_pool_contract/vectors.json")
+	require.NoError(t, err)
+	var fixture struct {
+		Materials           map[string]string `json:"materials"`
+		AWSValidContext     map[string]any    `json:"aws_valid_context"`
+		AWSCanonicalJSON    string            `json:"aws_canonical_json"`
+		AWSContextSignature string            `json:"aws_context_signature"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &fixture))
+	canonical, err := json.Marshal(fixture.AWSValidContext)
+	require.NoError(t, err)
+	require.Equal(t, fixture.AWSCanonicalJSON, string(canonical))
+	mac := hmac.New(sha256.New, []byte(fixture.Materials["context_attestation_material"]))
+	_, _ = mac.Write(canonical)
+	require.Equal(t, fixture.AWSContextSignature, "hmac-sha256:"+hex.EncodeToString(mac.Sum(nil)))
+	for _, forbidden := range []string{"wrkspc_", "synthetic-cpaws", "Authorization", "x-api-key", "raw_prompt", "raw_body", "proxy_credential"} {
+		require.NotContains(t, string(canonical), forbidden)
+	}
 }
 
 func TestGatewayService_CCGatewayAnthropicOAuthFailsClosedWithoutAttestationSecret(t *testing.T) {

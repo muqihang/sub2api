@@ -102,6 +102,15 @@ func IsFormalPoolAccount(account *Account) bool {
 }
 
 func FormalPoolAccountStage(account *Account) string {
+	if account != nil && account.IsClaudePlatformAWS() {
+		if stage := strings.TrimSpace(account.GetExtraString(FormalPoolExtraOnboardingStage)); stage != "" {
+			return stage
+		}
+		if formalPoolBool(account.Extra[FormalPoolExtraRuntimeRegistered]) {
+			return FormalPoolStageRuntimeRegistered
+		}
+		return FormalPoolStageImported
+	}
 	if account == nil || !account.IsAnthropicOAuthOrSetupToken() {
 		return ""
 	}

@@ -231,7 +231,7 @@ func (s *FormalPoolRuntimeRegistrationReplayService) ensureRuntimeIdentityEviden
 	if generation == "" {
 		generation = "1"
 	}
-	identity := formalPoolRuntimeIdentityExtra(accountRef, proxyIdentityRef, account.Credentials, s.ccGatewayRuntimeBindingSecret(), generation)
+	identity := formalPoolRuntimeIdentityExtraForAccount(account, accountRef, proxyIdentityRef, s.ccGatewayRuntimeBindingSecret(), generation)
 	if account.GetExtraString(ccGatewayExtraAccountRef) == accountRef &&
 		strings.TrimSpace(resolveCCGatewayEgressBucket(account)) == egressBucket &&
 		strings.TrimSpace(account.GetExtraString(ccGatewayExtraCredentialRef)) == stringFromMap(identity, ccGatewayExtraCredentialRef) &&
@@ -308,7 +308,7 @@ func (s *FormalPoolRuntimeRegistrationReplayService) runtimeReplayRegistrationIn
 	if !claudeCodeDeviceIDRe.MatchString(deviceID) {
 		return FormalPoolCCGatewayRuntimeRegistration{}, infraerrors.BadRequest("CC_GATEWAY_DEVICE_ID_REQUIRED", "cc gateway account-owned device id is required")
 	}
-	return FormalPoolCCGatewayRuntimeRegistration{
+	reg := FormalPoolCCGatewayRuntimeRegistration{
 		AccountRef:            accountRef,
 		CredentialRef:         credentialRef,
 		CredentialBindingHMAC: credentialBinding,
@@ -321,7 +321,11 @@ func (s *FormalPoolRuntimeRegistrationReplayService) runtimeReplayRegistrationIn
 		PersonaVariant:        fmt.Sprintf("claude-code-%s-macos-local", ccGatewayAnthropicPolicyVersion),
 		SessionPolicy:         "preserve_downstream_session_id",
 		DeviceID:              strings.ToLower(deviceID),
-	}, nil
+	}
+	if err := applyClaudePlatformAWSRuntimeRegistrationFields(account, &reg); err != nil {
+		return FormalPoolCCGatewayRuntimeRegistration{}, err
+	}
+	return reg, nil
 }
 
 func (s *FormalPoolRuntimeRegistrationReplayService) ccGatewayRuntimeBindingSecret() string {

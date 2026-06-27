@@ -6891,8 +6891,15 @@ func (s *GatewayService) handleBedrockNonStreamingResponse(
 
 func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token, tokenType, modelID string, reqStream bool, mimicClaudeCode bool, strictPassthrough bool) (*http.Request, []byte, error) {
 	if account != nil && account.IsClaudePlatformAWS() {
-		req, wireBody, err := s.buildUpstreamRequestClaudePlatformAWS(ctx, c, account, body, token, modelID)
-		return req, wireBody, err
+		if claudePlatformAWSDirectBuilderDiagnosticAllowed(c) {
+			req, wireBody, err := s.buildUpstreamRequestClaudePlatformAWS(ctx, c, account, body, token, modelID)
+			return req, wireBody, err
+		}
+		if s.shouldUseCCGatewayClaudePlatformAWS(account) {
+			req, wireBody, err := s.buildUpstreamRequestClaudePlatformAWSCCGateway(ctx, c, account, body, modelID)
+			return req, wireBody, err
+		}
+		return nil, nil, ValidateClaudePlatformAWSNoBypass(account, false)
 	}
 	if account.Platform == PlatformAnthropic && account.Type == AccountTypeServiceAccount {
 		req, err := s.buildUpstreamRequestAnthropicVertex(ctx, c, account, body, token, modelID, reqStream)
