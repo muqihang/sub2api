@@ -3720,6 +3720,16 @@ export default {
         desc: 'Workspace formal pool',
         safetyHint:
           'Creates one formal-pool account per workspace. Workspace IDs and API keys are submitted only to sensitive credential storage; safe evidence uses refs only.',
+        authProfileGate: {
+          cardBadge: 'CP0 gated',
+          title: 'Auth profile gate (read-only)',
+          mutualExclusion:
+            'x_api_key and bearer_api_key are mutually exclusive auth profiles. The gateway must use only the explicitly proven profile.',
+          cp0Blocked:
+            'keeps production blocked until CP0 auth-profile and region/workspace evidence both pass.',
+          noSilentFallback:
+            'Silent fallback is forbidden: if the selected profile is not proven, traffic fails closed instead of trying another auth header.'
+        },
         apiKeyLabel: 'AWS Claude Platform API Key *',
         apiKeyPlaceholder: 'Enter AWS Claude Platform API key',
         apiKeyHint: 'Generated in AWS Console -> Claude Platform on AWS -> API keys.',

@@ -55,6 +55,8 @@ vi.mock('vue-i18n', async () => {
 })
 
 import CreateAccountModal from '../CreateAccountModal.vue'
+import en from '@/i18n/locales/en'
+import zh from '@/i18n/locales/zh'
 
 const BaseDialogStub = defineComponent({
   name: 'BaseDialog',
@@ -174,10 +176,54 @@ describe('CreateAccountModal Claude Platform on AWS', () => {
     expect(wrapper.get('[data-testid="account-type-bedrock"]').text()).toContain('admin.accounts.bedrockDesc')
     expect(wrapper.get('[data-testid="account-type-claude-platform-aws"]').text()).toContain('admin.accounts.claudePlatformAWS.label')
     expect(wrapper.get('[data-testid="account-type-claude-platform-aws"]').text()).toContain('admin.accounts.claudePlatformAWS.desc')
+    expect(wrapper.get('[data-testid="claude-platform-aws-card-gate-badge"]').text()).toContain(
+      'admin.accounts.claudePlatformAWS.authProfileGate.cardBadge'
+    )
 
     await selectClaudePlatformAWS(wrapper)
     expect(wrapper.find('[data-testid="claude-platform-aws-fields"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="bedrock-fields"]').exists()).toBe(false)
+  })
+
+  it('shows a read-only auth-profile gate warning with mutually exclusive profiles and fail-closed CP0 state', async () => {
+    const wrapper = mountModal()
+    await flushPromises()
+    await selectClaudePlatformAWS(wrapper)
+
+    const gate = wrapper.get('[data-testid="claude-platform-aws-auth-profile-gate"]')
+    expect(gate.text()).toContain('admin.accounts.claudePlatformAWS.authProfileGate.title')
+    expect(gate.text()).toContain('x_api_key')
+    expect(gate.text()).toContain('bearer_api_key')
+    expect(gate.text()).toContain('BLOCKED_AUTH_PROFILE')
+    expect(gate.text()).toContain('anthropic_aws_production_admitted=false')
+    expect(gate.text()).toContain('admin.accounts.claudePlatformAWS.authProfileGate.mutualExclusion')
+    expect(gate.text()).toContain('admin.accounts.claudePlatformAWS.authProfileGate.cp0Blocked')
+    expect(gate.text()).toContain('admin.accounts.claudePlatformAWS.authProfileGate.noSilentFallback')
+  })
+
+  it('hides shared account fields that the Claude Platform on AWS batch payload does not submit', async () => {
+    const wrapper = mountModal()
+    await flushPromises()
+    await selectClaudePlatformAWS(wrapper)
+
+    expect(wrapper.text()).toContain('admin.accounts.concurrency')
+    expect(wrapper.text()).toContain('admin.accounts.priority')
+    expect(wrapper.text()).not.toContain('admin.accounts.loadFactor')
+    expect(wrapper.text()).not.toContain('admin.accounts.billingRateMultiplier')
+    expect(wrapper.text()).not.toContain('admin.accounts.expiresAt')
+  })
+
+  it('provides localized auth-profile gate copy for CP0 evidence and silent fallback', () => {
+    expect(en.admin.accounts.claudePlatformAWS.authProfileGate.mutualExclusion).toContain('x_api_key')
+    expect(en.admin.accounts.claudePlatformAWS.authProfileGate.mutualExclusion).toContain('bearer_api_key')
+    expect(en.admin.accounts.claudePlatformAWS.authProfileGate.cp0Blocked).toContain('CP0')
+    expect(en.admin.accounts.claudePlatformAWS.authProfileGate.noSilentFallback.toLowerCase()).toContain(
+      'silent fallback'
+    )
+    expect(zh.admin.accounts.claudePlatformAWS.authProfileGate.mutualExclusion).toContain('x_api_key')
+    expect(zh.admin.accounts.claudePlatformAWS.authProfileGate.mutualExclusion).toContain('bearer_api_key')
+    expect(zh.admin.accounts.claudePlatformAWS.authProfileGate.cp0Blocked).toContain('CP0')
+    expect(zh.admin.accounts.claudePlatformAWS.authProfileGate.noSilentFallback).toContain('silent fallback')
   })
 
   it('requires every workspace row to have its own proxy before batch import', async () => {

@@ -276,6 +276,12 @@
               <span class="text-xs text-gray-500 dark:text-gray-400">{{
                 t('admin.accounts.claudePlatformAWS.desc')
               }}</span>
+              <span
+                data-testid="claude-platform-aws-card-gate-badge"
+                class="mt-1 inline-flex rounded bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+              >
+                {{ t('admin.accounts.claudePlatformAWS.authProfileGate.cardBadge') }}
+              </span>
             </div>
           </button>
 
@@ -1442,12 +1448,35 @@
 
       <!-- Claude Platform on AWS batch workspace import -->
       <div
-        v-if="form.platform === 'anthropic' && accountCategory === 'claude-platform-aws'"
+        v-if="isClaudePlatformAWSMode"
         class="space-y-4"
         data-testid="claude-platform-aws-fields"
       >
         <div class="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-800 dark:border-indigo-800/40 dark:bg-indigo-900/20 dark:text-indigo-200">
           <p>{{ t('admin.accounts.claudePlatformAWS.safetyHint') }}</p>
+        </div>
+
+        <div
+          data-testid="claude-platform-aws-auth-profile-gate"
+          class="rounded-lg border border-amber-300 bg-amber-50 px-3 py-3 text-xs text-amber-900 dark:border-amber-800/50 dark:bg-amber-900/20 dark:text-amber-100"
+        >
+          <p class="font-semibold">{{ t('admin.accounts.claudePlatformAWS.authProfileGate.title') }}</p>
+          <ul class="mt-2 list-disc space-y-1 pl-4">
+            <li>
+              <code class="rounded bg-white/70 px-1 dark:bg-dark-800">x_api_key</code>
+              /
+              <code class="rounded bg-white/70 px-1 dark:bg-dark-800">bearer_api_key</code>
+              {{ t('admin.accounts.claudePlatformAWS.authProfileGate.mutualExclusion') }}
+            </li>
+            <li>
+              <code class="rounded bg-white/70 px-1 dark:bg-dark-800">BLOCKED_AUTH_PROFILE</code>
+              {{ t('admin.accounts.claudePlatformAWS.authProfileGate.cp0Blocked') }}
+              <code class="rounded bg-white/70 px-1 dark:bg-dark-800">anthropic_aws_production_admitted=false</code>
+            </li>
+            <li>
+              {{ t('admin.accounts.claudePlatformAWS.authProfileGate.noSilentFallback') }}
+            </li>
+          </ul>
         </div>
 
         <div>
@@ -2040,7 +2069,10 @@
       </div>
 
       <!-- Temp Unschedulable Rules -->
-      <div class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4">
+      <div
+        v-if="!isClaudePlatformAWSMode"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4"
+      >
         <div class="mb-3 flex items-center justify-between">
           <div>
             <label class="input-label mb-0">{{ t('admin.accounts.tempUnschedulable.title') }}</label>
@@ -2189,7 +2221,7 @@
 
       <!-- Intercept Warmup Requests (Anthropic/Antigravity) -->
       <div
-        v-if="form.platform === 'anthropic' || form.platform === 'antigravity'"
+        v-if="(form.platform === 'anthropic' || form.platform === 'antigravity') && !isClaudePlatformAWSMode"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -2599,7 +2631,7 @@
         </div>
       </div>
 
-      <div v-if="!(form.platform === 'anthropic' && accountCategory === 'claude-platform-aws')">
+      <div v-if="!isClaudePlatformAWSMode">
         <div class="mb-1 flex items-center gap-2">
           <label class="input-label mb-0">{{ t('admin.accounts.proxy') }}</label>
           <ProxyAdBanner />
@@ -2607,13 +2639,18 @@
         <ProxySelector v-model="form.proxy_id" :proxies="proxies" />
       </div>
 
-      <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div
+        :class="[
+          'grid gap-4',
+          isClaudePlatformAWSMode ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-2 lg:grid-cols-4'
+        ]"
+      >
         <div>
           <label class="input-label">{{ t('admin.accounts.concurrency') }}</label>
           <input v-model.number="form.concurrency" type="number" min="1" class="input"
             @input="form.concurrency = Math.max(1, form.concurrency || 1)" />
         </div>
-        <div>
+        <div v-if="!isClaudePlatformAWSMode">
           <label class="input-label">{{ t('admin.accounts.loadFactor') }}</label>
           <input v-model.number="form.load_factor" type="number" min="1"
             class="input" :placeholder="String(form.concurrency || 1)"
@@ -2631,13 +2668,13 @@
           />
           <p class="input-hint">{{ t('admin.accounts.priorityHint') }}</p>
         </div>
-        <div>
+        <div v-if="!isClaudePlatformAWSMode">
           <label class="input-label">{{ t('admin.accounts.billingRateMultiplier') }}</label>
           <input v-model.number="form.rate_multiplier" type="number" min="0" step="0.001" class="input" />
           <p class="input-hint">{{ t('admin.accounts.billingRateMultiplierHint') }}</p>
         </div>
       </div>
-      <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
+      <div v-if="!isClaudePlatformAWSMode" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <label class="input-label">{{ t('admin.accounts.expiresAt') }}</label>
         <input v-model="expiresAtInput" type="datetime-local" class="input" />
         <p class="input-hint">{{ t('admin.accounts.expiresAtHint') }}</p>
@@ -2889,7 +2926,7 @@
         </div>
       </div>
 
-      <div>
+      <div v-if="!isClaudePlatformAWSMode">
         <div class="flex items-center justify-between">
           <div>
             <label class="input-label mb-0">{{
@@ -3844,6 +3881,10 @@ const form = reactive({
   expires_at: null as number | null
 })
 
+const isClaudePlatformAWSMode = computed(
+  () => form.platform === 'anthropic' && accountCategory.value === 'claude-platform-aws'
+)
+
 // Helper to check if current type needs OAuth flow
 const isOAuthFlow = computed(() => {
   // Antigravity upstream 类型不需要 OAuth 流程
@@ -3855,7 +3896,7 @@ const isOAuthFlow = computed(() => {
     return false
   }
   // Claude Platform on AWS uses a dedicated batch import flow.
-  if (form.platform === 'anthropic' && accountCategory.value === 'claude-platform-aws') {
+  if (isClaudePlatformAWSMode.value) {
     return false
   }
   return accountCategory.value === 'oauth-based'

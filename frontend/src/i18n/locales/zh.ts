@@ -3868,6 +3868,16 @@ export default {
         desc: 'Workspace formal pool',
         safetyHint:
           '每个 workspace 创建一个 formal-pool 账号。Workspace ID 和 API Key 只提交到敏感凭据存储；安全证据仅使用 ref。',
+        authProfileGate: {
+          cardBadge: 'CP0 gate',
+          title: '认证档案 gate（只读）',
+          mutualExclusion:
+            'x_api_key 与 bearer_api_key 是互斥认证档案。网关只能使用已显式证明并选择的档案。',
+          cp0Blocked:
+            '会在 CP0 认证档案证据与 region/workspace 证据均通过前阻止生产启用。',
+          noSilentFallback:
+            '禁止 silent fallback：所选档案未证明时必须 fail closed，不能自动尝试其他认证头。'
+        },
         apiKeyLabel: 'AWS Claude Platform API Key *',
         apiKeyPlaceholder: '输入 AWS Claude Platform API Key',
         apiKeyHint: '在 AWS Console -> Claude Platform on AWS -> API keys 生成。',
