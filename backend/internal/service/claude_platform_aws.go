@@ -489,10 +489,10 @@ func VerifyClaudePlatformAWSFinalRequest(input ClaudePlatformAWSFinalVerifierInp
 	if !input.AuthFromServer {
 		return fmt.Errorf("server auth header is required")
 	}
-	if strings.TrimSpace(input.Headers.Get("anthropic-version")) != "2023-06-01" {
+	if strings.TrimSpace(getHeaderRaw(input.Headers, "anthropic-version")) != "2023-06-01" {
 		return fmt.Errorf("anthropic-version header is required")
 	}
-	if !strings.Contains(strings.ToLower(strings.TrimSpace(input.Headers.Get("content-type"))), "application/json") {
+	if !strings.Contains(strings.ToLower(strings.TrimSpace(getHeaderRaw(input.Headers, "content-type"))), "application/json") {
 		return fmt.Errorf("content-type application/json is required")
 	}
 	xKeyCount := countNonEmptyClaudePlatformAWSHeaderValues(input.Headers, "x-api-key")
@@ -533,10 +533,15 @@ func countNonEmptyClaudePlatformAWSHeaderValues(headers http.Header, key string)
 }
 
 func nonEmptyClaudePlatformAWSHeaderValues(headers http.Header, key string) []string {
-	values := make([]string, 0, len(headers.Values(key)))
-	for _, value := range headers.Values(key) {
-		if strings.TrimSpace(value) != "" {
-			values = append(values, strings.TrimSpace(value))
+	values := []string{}
+	for actualKey, actualValues := range headers {
+		if !strings.EqualFold(strings.TrimSpace(actualKey), strings.TrimSpace(key)) {
+			continue
+		}
+		for _, value := range actualValues {
+			if strings.TrimSpace(value) != "" {
+				values = append(values, strings.TrimSpace(value))
+			}
 		}
 	}
 	return values

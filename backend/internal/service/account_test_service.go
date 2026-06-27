@@ -235,6 +235,9 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 	if account.IsBedrock() {
 		return s.testBedrockAccountConnection(c, ctx, account, testModelID)
 	}
+	if account.IsClaudePlatformAWS() {
+		return s.testClaudePlatformAWSAccountConnection(c, ctx, account, testModelID)
+	}
 	if account.Type == AccountTypeServiceAccount {
 		return s.testClaudeVertexServiceAccountConnection(c, ctx, account, testModelID)
 	}
@@ -339,6 +342,53 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 
 	// Process SSE stream
 	return s.processClaudeStream(c, resp.Body)
+}
+
+func (s *AccountTestService) testClaudePlatformAWSAccountConnection(c *gin.Context, ctx context.Context, account *Account, testModelID string) error {
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	payload, err := createTestPayload(testModelID)
+	if err != nil {
+		return s.sendErrorAndEnd(c, "Failed to create test payload")
+	}
+	payloadBytes, _ := json.Marshal(payload)
+
+	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
+
+	gateway := &GatewayService{cfg: s.cfg}
+	req, _, err := gateway.buildUpstreamRequestClaudePlatformAWS(ctx, c, account, payloadBytes, account.GetCredential("api_key"), testModelID)
+	if err != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to build Claude Platform on AWS request: %s", err.Error()))
+	}
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+
+	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	if err != nil {
+		return s.sendErrorAndEnd(c, "Claude Platform on AWS request failed: transport_error raw_error_omitted")
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, gatewayUpstreamErrorBodyReadLimit))
+		errMsg := fmt.Sprintf("Claude Platform on AWS API returned status_bucket=%s body_length_bucket=%s raw_body_omitted_reason=raw_body_forbidden", statusBucketFromHTTP(resp.StatusCode), safeLengthBucket(len(body)))
+		if resp.StatusCode == http.StatusForbidden {
+			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
+		}
+		return s.sendErrorAndEnd(c, errMsg)
+	}
+
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, gatewayUpstreamErrorBodyReadLimit))
+	s.sendEvent(c, TestEvent{Type: "content", Text: "Claude Platform on AWS safe probe succeeded"})
+	s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+	return nil
 }
 
 func (s *AccountTestService) testClaudeVertexServiceAccountConnection(c *gin.Context, ctx context.Context, account *Account, testModelID string) error {

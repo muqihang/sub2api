@@ -1,0 +1,115 @@
+package service
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"net/http"
+	"strings"
+
+	"github.com/gin-gonic/gin"
+)
+
+func (s *GatewayService) buildUpstreamRequestClaudePlatformAWS(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+	_ string,
+	_ string,
+) (*http.Request, []byte, error) {
+	if err := ValidateClaudePlatformAWSNoBypass(account, false); err != nil {
+		return nil, nil, err
+	}
+	validation, err := ValidateClaudePlatformAWSAccount(account)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	authScheme, err := resolveClaudePlatformAWSBuilderAuthScheme(account, validation)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	apiKey := strings.TrimSpace(account.GetCredential("api_key"))
+	if apiKey == "" {
+		return nil, nil, fmt.Errorf("api_key not found in claude-platform-aws credentials")
+	}
+	workspaceID := strings.TrimSpace(account.GetCredential("anthropic_workspace_id"))
+	if workspaceID == "" {
+		return nil, nil, fmt.Errorf("workspace id is invalid")
+	}
+
+	clientHeaders := http.Header{}
+	if c != nil && c.Request != nil {
+		clientHeaders = SanitizeClaudePlatformAWSInboundHeaders(c.Request.Header)
+	}
+
+	finalBeta, setBeta := claudePlatformAWSFinalBetaHeader(account, clientHeaders)
+	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(body, finalBeta); changed {
+		body = sanitized
+	}
+
+	targetURL := strings.TrimRight(validation.Endpoint, "/") + claudePlatformAWSAllowedPath
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if accept := strings.TrimSpace(getHeaderRaw(clientHeaders, "accept")); accept != "" {
+		setHeaderRaw(req.Header, "accept", accept)
+	}
+	setHeaderRaw(req.Header, "content-type", "application/json")
+	setHeaderRaw(req.Header, "anthropic-version", "2023-06-01")
+	setHeaderRaw(req.Header, "anthropic-workspace-id", workspaceID)
+	switch authScheme {
+	case ClaudePlatformAWSAuthProfileXAPIKey:
+		setHeaderRaw(req.Header, "x-api-key", apiKey)
+	case ClaudePlatformAWSAuthProfileBearerAPIKey:
+		setHeaderRaw(req.Header, "authorization", "Bearer "+apiKey)
+	default:
+		return nil, nil, fmt.Errorf("%s: unsupported auth scheme", ClaudePlatformAWSAuthProfileBlocked)
+	}
+	if setBeta {
+		setHeaderRaw(req.Header, "anthropic-beta", finalBeta)
+	}
+
+	if err := VerifyClaudePlatformAWSFinalRequest(ClaudePlatformAWSFinalVerifierInput{
+		FinalURL:            req.URL.String(),
+		Headers:             req.Header,
+		Region:              validation.Region,
+		AuthScheme:          authScheme,
+		WorkspaceFromServer: true,
+		AuthFromServer:      true,
+		AllowedPath:         claudePlatformAWSAllowedPath,
+	}); err != nil {
+		return nil, nil, err
+	}
+	return req, body, nil
+}
+
+func resolveClaudePlatformAWSBuilderAuthScheme(account *Account, validation ClaudePlatformAWSAccountValidation) (string, error) {
+	if account == nil {
+		return "", fmt.Errorf("claude-platform-aws account is required")
+	}
+	if strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraCP0AuthProfileEvidenceStatus)) != "pass" ||
+		strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraCP0RegionWorkspaceEvidenceStatus)) != "pass" {
+		return "", fmt.Errorf("%s: CP0 evidence is incomplete", ClaudePlatformAWSAuthProfileBlocked)
+	}
+	selected := strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraAuthScheme))
+	evidence := ClaudePlatformAWSAuthEvidence{
+		XAPIKeyProven:    selected == ClaudePlatformAWSAuthProfileXAPIKey,
+		BearerAPIProven:  selected == ClaudePlatformAWSAuthProfileBearerAPIKey,
+		SelectedProfile:  selected,
+		Endpoint:         validation.Endpoint,
+		Region:           validation.Region,
+		WorkspaceRef:     validation.WorkspaceRef,
+		RequestShapePath: claudePlatformAWSAllowedPath,
+	}
+	return ResolveClaudePlatformAWSAuthProfile(evidence)
+}
+
+func claudePlatformAWSFinalBetaHeader(_ *Account, _ http.Header) (string, bool) {
+	// Phase 1 uses a provider-owned strip profile: client beta tokens are observations only.
+	return "", false
+}

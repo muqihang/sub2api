@@ -891,3 +891,36 @@ pnpm --dir frontend typecheck
 ```
 
 All above targeted frontend checks passed. Broad backend suite blockers remain the externally/historically classified blockers recorded in the CP1 broad-suite audit; they are not claimed green here.
+
+## CP3 implementation checkpoint record - 2026-06-27
+
+Status: `CP3_DONE_SUB2API_DIRECT_BUILDER_TARGETED_GREEN`.
+
+Scope completed:
+
+- Added a dedicated Sub2API Claude Platform on AWS upstream request builder for `type = "claude-platform-aws"`.
+- Direct builder derives `https://aws-external-anthropic.us-east-1.api.aws/v1/messages` from the server-side account region/endpoint and never emits the legacy internal `?beta=true` marker to AWS Platform.
+- Server-owned `anthropic-workspace-id` and exactly one CP0-gated auth profile are injected by the builder:
+  - `x_api_key` emits only the API-key header when account evidence status is `pass`.
+  - `bearer_api_key` emits only bearer authorization when explicitly selected and evidence status is `pass`.
+  - missing/blocked evidence remains fail-closed with `BLOCKED_AUTH_PROFILE`; no silent fallback is implemented.
+- Added GatewayService dispatch and token selection for `claude-platform-aws` without routing through OAuth/setup-token, first-party API-key passthrough, Bedrock, Vertex service-account, or generic upstream paths.
+- Phase 1 count-tokens/direct non-messages path now fails closed for this type; messages-only remains the allowed request shape.
+- Added provider-scoped AWS beta behavior for the direct builder: client-supplied beta tokens are observation-only and not forwarded; unsupported beta-shaped body fields are stripped symmetrically.
+- Added direct account-test path using the same AWS builder, selected proxy, and safe admin SSE summaries. It does not echo raw upstream response text, raw transport errors, raw proxy credentials, raw workspace IDs, or API keys.
+- Added a no-bypass guard to the direct builder: accounts marked production-admitted for AWS Platform fail closed unless the CC Gateway production path is implemented/enabled in later checkpoints.
+- Fixed the AWS final verifier to count raw/wire/canonical header casing consistently, so duplicate/missing auth/workspace/version/content-type checks work with `setHeaderRaw` output.
+- Refactored Anthropic preflight model mapping behind a helper and explicitly kept Claude Platform on AWS model names Anthropic-native, avoiding OAuth prefix normalization, Bedrock model mapping, and Vertex normalization.
+
+Targeted verification:
+
+```bash
+cd backend && go test ./internal/service -run 'TestClaudePlatformAWS|TestGatewayService_(BuildClaudePlatformAWS|GetAccessTokenClaudePlatformAWS|ClaudePlatformAWSModelPreflight)|TestAccountTestService_ClaudePlatformAWS' -count=1
+cd backend && go test ./internal/service -run 'TestGatewayService_BuildAnthropicVertexServiceAccount|TestBuildUpstreamRequestAnthropicAPIKeyPassthrough' -count=1
+cd backend && go test ./internal/handler/dto -run 'TestAccountFromService_ClaudePlatformAWS|TestAccountFromService_FormalPool' -count=1
+git diff --check
+```
+
+All above targeted checks passed. This is not a broad-suite green claim; the broad-suite blockers recorded in the CP1 audit remain external/historical blockers for any production-readiness statement.
+
+CP0 auth profile status remains `BLOCKED_AUTH_PROFILE` for production because no real target AWS workspace/API-key proof has been supplied. CP3 proves the local/mock request shape and fail-closed behavior only.

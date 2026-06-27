@@ -1137,6 +1137,47 @@ func (s *GatewayService) replaceModelInBody(body []byte, newModel string) []byte
 	return ReplaceModelInBody(body, newModel)
 }
 
+func (s *GatewayService) resolveAnthropicPreflightModelMapping(account *Account, reqModel string) (string, string) {
+	if account == nil || reqModel == "" {
+		return reqModel, ""
+	}
+	if account.IsClaudePlatformAWS() {
+		return reqModel, ""
+	}
+	if account.Type == AccountTypeAPIKey {
+		mappedModel := account.GetMappedModel(reqModel)
+		if mappedModel != reqModel {
+			return mappedModel, "account"
+		}
+		return reqModel, ""
+	}
+	if account.Platform == PlatformAnthropic && account.Type == AccountTypeServiceAccount {
+		if candidate, matched := account.ResolveMappedModel(reqModel); matched {
+			return candidate, "account"
+		}
+		normalized := normalizeVertexAnthropicModelID(claude.NormalizeModelID(reqModel))
+		if normalized != reqModel {
+			return normalized, "vertex"
+		}
+		return reqModel, ""
+	}
+	if account.Platform == PlatformAnthropic {
+		normalized := claude.NormalizeModelID(reqModel)
+		if normalized != reqModel {
+			return normalized, "prefix"
+		}
+	}
+	return reqModel, ""
+}
+
+func (s *GatewayService) applyAnthropicPreflightModelMapping(body []byte, account *Account, reqModel string) ([]byte, string) {
+	mappedModel, _ := s.resolveAnthropicPreflightModelMapping(account, reqModel)
+	if mappedModel != reqModel {
+		return s.replaceModelInBody(body, mappedModel), mappedModel
+	}
+	return body, reqModel
+}
+
 type claudeOAuthNormalizeOptions struct {
 	injectMetadata          bool
 	metadataUserID          string
@@ -4050,6 +4091,15 @@ func (s *GatewayService) GetAccessToken(ctx context.Context, account *Account) (
 			return "", "", errors.New("api_key not found in credentials")
 		}
 		return apiKey, "apikey", nil
+	case AccountTypeClaudePlatformAWS:
+		if account.Platform != PlatformAnthropic {
+			return "", "", fmt.Errorf("unsupported claude-platform-aws platform: %s", account.Platform)
+		}
+		apiKey := strings.TrimSpace(account.GetCredential("api_key"))
+		if apiKey == "" {
+			return "", "", errors.New("api_key not found in claude-platform-aws credentials")
+		}
+		return apiKey, "claude_platform_aws", nil
 	case AccountTypeBedrock:
 		return "", "bedrock", nil // Bedrock 使用 SigV4 签名或 API Key，由 forwardBedrock 处理
 	case AccountTypeServiceAccount:
@@ -4822,36 +4872,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			return nil, err
 		}
 
-		// 应用模型映射：
-		// - APIKey 账号：使用账号级别的显式映射（如果配置），否则透传原始模型名
-		// - OAuth/SetupToken 账号：使用 Anthropic 标准映射（短ID → 长ID）
-		mappedModel := reqModel
-		mappingSource := ""
-		if account.Type == AccountTypeAPIKey {
-			mappedModel = account.GetMappedModel(reqModel)
-			if mappedModel != reqModel {
-				mappingSource = "account"
-			}
-		}
-		if mappingSource == "" && account.Platform == PlatformAnthropic && account.Type == AccountTypeServiceAccount {
-			if candidate, matched := account.ResolveMappedModel(reqModel); matched {
-				mappedModel = candidate
-				mappingSource = "account"
-			} else {
-				normalized := normalizeVertexAnthropicModelID(claude.NormalizeModelID(reqModel))
-				if normalized != reqModel {
-					mappedModel = normalized
-					mappingSource = "vertex"
-				}
-			}
-		}
-		if mappingSource == "" && account.Platform == PlatformAnthropic && account.Type != AccountTypeAPIKey {
-			normalized := claude.NormalizeModelID(reqModel)
-			if normalized != reqModel {
-				mappedModel = normalized
-				mappingSource = "prefix"
-			}
-		}
+		// 应用模型映射。Claude Platform on AWS 在 helper 内显式保持原生 Anthropic 模型名。
+		mappedModel, mappingSource := s.resolveAnthropicPreflightModelMapping(account, reqModel)
 		if mappedModel != reqModel {
 			body = s.replaceModelInBody(body, mappedModel)
 			reqModel = mappedModel
@@ -6868,6 +6890,10 @@ func (s *GatewayService) handleBedrockNonStreamingResponse(
 }
 
 func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token, tokenType, modelID string, reqStream bool, mimicClaudeCode bool, strictPassthrough bool) (*http.Request, []byte, error) {
+	if account != nil && account.IsClaudePlatformAWS() {
+		req, wireBody, err := s.buildUpstreamRequestClaudePlatformAWS(ctx, c, account, body, token, modelID)
+		return req, wireBody, err
+	}
 	if account.Platform == PlatformAnthropic && account.Type == AccountTypeServiceAccount {
 		req, err := s.buildUpstreamRequestAnthropicVertex(ctx, c, account, body, token, modelID, reqStream)
 		return req, body, err
@@ -10511,13 +10537,14 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	if !isStrictClaudeCode && reqModel != "" {
 		mappedModel := reqModel
 		mappingSource := ""
-		if account.Type == AccountTypeAPIKey {
+		if account.IsClaudePlatformAWS() {
+			// Phase 1 AWS Platform keeps native Anthropic model names unchanged.
+		} else if account.Type == AccountTypeAPIKey {
 			mappedModel = account.GetMappedModel(reqModel)
 			if mappedModel != reqModel {
 				mappingSource = "account"
 			}
-		}
-		if mappingSource == "" && account.Platform == PlatformAnthropic && account.Type != AccountTypeAPIKey {
+		} else if account.Platform == PlatformAnthropic {
 			normalized := claude.NormalizeModelID(reqModel)
 			if normalized != reqModel {
 				mappedModel = normalized
@@ -10940,6 +10967,9 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 
 // buildCountTokensRequest 构建 count_tokens 上游请求
 func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token, tokenType, modelID string, mimicClaudeCode bool, strictPassthrough bool) (*http.Request, []byte, error) {
+	if account != nil && account.IsClaudePlatformAWS() {
+		return nil, nil, fmt.Errorf("claude-platform-aws phase 1 allows %s only", claudePlatformAWSAllowedPath)
+	}
 	useCCGateway, routeErr := s.selectCCGatewayAnthropicRoute(account, ccGatewayRouteNativeCountTokens)
 	if routeErr != nil {
 		return nil, nil, routeErr
