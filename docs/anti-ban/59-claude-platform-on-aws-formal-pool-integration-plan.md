@@ -829,7 +829,36 @@ Production enablement requires all of the following. The document phase is not p
 | CP0 hard gate | BLOCKED_PENDING_EXECUTION | Must prove endpoint/workspace/region/request-shape and exactly one auth profile before production |
 | Production readiness | BLOCKED_EXTERNAL_EVIDENCE | Requires CP0, code implementation, targeted unit tests, Sub2API full-chain local mock E2E, CC Gateway final verifier tests, safe artifact scan, deployed equivalence, tiny approved live smoke, and evidence updates |
 
-## 16. Non-goals
+## 16. CP1 broad-suite failure audit before CP2
+
+Status as of 2026-06-27: CP0/CP1 targeted tests are green, but `cd backend && go test ./...` is not green. The failures below were investigated before CP2 and must not be reported as a green broad suite.
+
+Audit method:
+
+- Reproduced failing packages with targeted commands.
+- Initialized CodeGraph in this worktree and confirmed it is locally ignored by `.git/info/exclude`.
+- Compared suspect source/test blobs at `80fc0963f`, `fa50af8cfa26`, and current `HEAD` without switching worktrees.
+- Checked `git diff --name-only 80fc0963f..fa50af8cfa26` and `fa50af8cfa26..HEAD` for each suspect package/file.
+- Used `git log -S` to identify older candidate commits for historical failures.
+
+Findings:
+
+| Package / command | Failure | Relation to `fa50af8cfa26` | Status |
+|---|---|---|---|
+| `go test ./ent/schema -count=1` | Setup fails while downloading `golang.org/x/tools@v0.44.0` from `proxy.golang.org` with `i/o timeout`. | No code-path relation found; this is an external network/module-cache failure. | `BLOCKED_EXTERNAL_NETWORK` |
+| `go test ./internal/handler/admin -count=1` | Build failures: `accountRefreshProxyRepoStub` lacks `CountExpired`; several `NewSettingHandler` calls pass 6 args instead of the current 7 including `*service.UserAttributeService`. | Suspect files are byte-identical at `80fc0963f`, `fa50af8cfa26`, and current `HEAD`. `CountExpired` traces to older proxy expiry work; `UserAttributeService` traces to older auth-identity/settings work. | `BLOCKED_HISTORICAL_TEST_DRIFT` |
+| `go test ./internal/repository -run 'Test(SchedulerCacheMetadataSerializationPreservesFormalPoolSchedulableEvidence\|BuildSchedulerMetadataAccount_PreservesFormalPoolSchedulableEvidence)' -count=1` | Scheduler metadata tests fail because the slim cache allowlist/test fixture does not preserve all current formal-pool runtime evidence now required by `runtimeEvidenceComplete` / `healthcheckEvidenceComplete`. | Suspect files are byte-identical at `80fc0963f`, `fa50af8cfa26`, and current `HEAD`; stricter formal-pool evidence traces to older trusted gateway profile work, not AWS Platform 59. | `BLOCKED_HISTORICAL_FORMAL_POOL_TEST_DRIFT` |
+| `go test ./internal/server/routes -run '^TestFormalPoolOperationsRoutes_PromoteProductionSuccessReturnsSafeAccount$' -count=1` | Route fixture expects promote-production success, but fixture lacks complete current runtime evidence and returns `PRODUCTION_EVIDENCE_INCOMPLETE`. | Suspect files are byte-identical at `80fc0963f`, `fa50af8cfa26`, and current `HEAD`; same historical formal-pool evidence-gate drift as above. | `BLOCKED_HISTORICAL_FORMAL_POOL_TEST_DRIFT` |
+| `go test ./internal/handler -run '^TestGatewayHandlerBridgeLiveStoresSafeAuditSummaryOnContext$' -count=1 -v` | Expected `CacheMissTokens=13`, actual `0`. | Suspect handler/bridge files are byte-identical at `80fc0963f`, `fa50af8cfa26`, and current `HEAD`; failure traces to older Claude Code bridge/cache-audit work, not AWS Platform 59. | `BLOCKED_HISTORICAL_BRIDGE_TEST_DRIFT` |
+
+CP2 entry decision:
+
+- These broad-suite failures are not caused by `fa50af8cfa26` or later 59 commits.
+- They remain recorded blockers for any future "broad suite green" or production-readiness claim.
+- They do not change CP0 auth profile status: production remains `BLOCKED_AUTH_PROFILE` because no real target AWS Platform auth evidence has been supplied.
+- CP2 may proceed only as frontend/import UX work on top of the already committed CP0/CP1 targeted green state; do not claim the broad Go suite is green until the historical/external failures above are fixed or the environment issue clears.
+
+## 17. Non-goals
 
 - Do not merge Claude Platform on AWS into the Bedrock card.
 - Do not permit arbitrary custom base URLs for formal-pool production.
