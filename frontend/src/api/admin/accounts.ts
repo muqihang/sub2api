@@ -145,6 +145,51 @@ export async function create(accountData: CreateAccountRequest): Promise<Account
   return data
 }
 
+export interface ClaudePlatformAWSBatchCreateRow {
+  name: string
+  workspace_id: string
+  aws_region: string
+  api_key: string
+  proxy_id: number
+  concurrency?: number
+  priority?: number
+}
+
+export interface ClaudePlatformAWSBatchCreateRequest {
+  idempotency_key?: string
+  group_ids?: number[]
+  rows: ClaudePlatformAWSBatchCreateRow[]
+}
+
+export interface ClaudePlatformAWSBatchCreateResultRow {
+  index: number
+  status: string
+  region: string
+  workspace_ref?: string
+  workspace_binding_hmac_present?: boolean
+  endpoint_ref?: string
+  credential_ref?: string
+  proxy_identity_ref?: string
+  account_ref?: string
+  created_account_id?: number
+  cc_gateway_runtime_registered?: boolean
+  formal_pool_schedulable?: boolean
+}
+
+export interface ClaudePlatformAWSBatchCreateResult {
+  rows: ClaudePlatformAWSBatchCreateResultRow[]
+}
+
+export async function createClaudePlatformAWSBatch(
+  request: ClaudePlatformAWSBatchCreateRequest
+): Promise<ClaudePlatformAWSBatchCreateResult> {
+  const { data } = await apiClient.post<ClaudePlatformAWSBatchCreateResult>(
+    '/admin/accounts/claude-platform-aws/batch',
+    request
+  )
+  return data
+}
+
 /**
  * Update account
  * @param id - Account ID
@@ -747,6 +792,7 @@ export const accountsAPI = {
   getFormalPoolStatusDashboard,
   getById,
   create,
+  createClaudePlatformAWSBatch,
   update,
   checkMixedChannelRisk,
   delete: deleteAccount,

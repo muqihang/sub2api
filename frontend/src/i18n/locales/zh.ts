@@ -3863,6 +3863,32 @@ export default {
       claudeConsole: 'Claude Console',
       bedrockLabel: 'AWS Bedrock',
       bedrockDesc: 'SigV4 / API Key',
+      claudePlatformAWS: {
+        label: 'Claude Platform on AWS',
+        desc: 'Workspace formal pool',
+        safetyHint:
+          '每个 workspace 创建一个 formal-pool 账号。Workspace ID 和 API Key 只提交到敏感凭据存储；安全证据仅使用 ref。',
+        apiKeyLabel: 'AWS Claude Platform API Key *',
+        apiKeyPlaceholder: '输入 AWS Claude Platform API Key',
+        apiKeyHint: '在 AWS Console -> Claude Platform on AWS -> API keys 生成。',
+        regionLabel: 'AWS Region',
+        endpointHint: 'Phase 1 endpoint: {endpoint}/v1/messages',
+        workspacesLabel: 'Workspaces',
+        addWorkspace: '添加 workspace',
+        rowTitle: 'Workspace #{index}',
+        workspaceLabel: 'Anthropic Workspace ID *',
+        workspacePlaceholder: 'wrkspc_...',
+        workspaceHint: '该原始值不会写入 safe extra 或证据字段。',
+        proxyLabel: '出口代理 *',
+        proxyHint: '每个 workspace 必须绑定自己的出口代理。',
+        workspaceRequired: '请为每一行填写 workspace ID',
+        proxyRequired: '请为每个 workspace 行选择代理',
+        status: {
+          needsWorkspace: '需要 workspace ID',
+          needsProxy: '需要代理',
+          ready: '就绪'
+        }
+      },
       vertexLabel: 'Vertex',
       vertexDesc: 'Service Account',
       vertexAnthropicHint: '使用 Google Cloud Service Account JSON 通过 Vertex AI 调用 Anthropic Claude。建议配置模型映射，将客户端 Claude 模型名映射到 Vertex 模型 ID。',

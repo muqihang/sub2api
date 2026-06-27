@@ -54,6 +54,7 @@
           class="input"
           :placeholder="t('admin.accounts.enterAccountName')"
           data-tour="account-form-name"
+          data-testid="account-name-input"
         />
       </div>
       <div>
@@ -153,10 +154,11 @@
       <!-- Account Type Selection (Anthropic) -->
       <div v-if="form.platform === 'anthropic'">
         <label class="input-label">{{ t('admin.accounts.accountType') }}</label>
-        <div class="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-4" data-tour="account-form-type">
+        <div class="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-5" data-tour="account-form-type">
           <button
             type="button"
             @click="accountCategory = 'oauth-based'"
+            data-testid="account-type-oauth-based"
             :class="[
               'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
               accountCategory === 'oauth-based'
@@ -187,6 +189,7 @@
           <button
             type="button"
             @click="accountCategory = 'apikey'"
+            data-testid="account-type-apikey"
             :class="[
               'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
               accountCategory === 'apikey'
@@ -217,6 +220,7 @@
           <button
             type="button"
             @click="accountCategory = 'bedrock'"
+            data-testid="account-type-bedrock"
             :class="[
               'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
               accountCategory === 'bedrock'
@@ -246,7 +250,39 @@
 
           <button
             type="button"
+            @click="accountCategory = 'claude-platform-aws'"
+            data-testid="account-type-claude-platform-aws"
+            :class="[
+              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
+              accountCategory === 'claude-platform-aws'
+                ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/20'
+                : 'border-gray-200 hover:border-indigo-300 dark:border-dark-600 dark:hover:border-indigo-700'
+            ]"
+          >
+            <div
+              :class="[
+                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                accountCategory === 'claude-platform-aws'
+                  ? 'bg-indigo-500 text-white'
+                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
+              ]"
+            >
+              <Icon name="cloud" size="sm" />
+            </div>
+            <div>
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{
+                t('admin.accounts.claudePlatformAWS.label')
+              }}</span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">{{
+                t('admin.accounts.claudePlatformAWS.desc')
+              }}</span>
+            </div>
+          </button>
+
+          <button
+            type="button"
             @click="accountCategory = 'service_account'"
+            data-testid="account-type-service-account"
             :class="[
               'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
               accountCategory === 'service_account'
@@ -1404,8 +1440,109 @@
 
       </div>
 
+      <!-- Claude Platform on AWS batch workspace import -->
+      <div
+        v-if="form.platform === 'anthropic' && accountCategory === 'claude-platform-aws'"
+        class="space-y-4"
+        data-testid="claude-platform-aws-fields"
+      >
+        <div class="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-800 dark:border-indigo-800/40 dark:bg-indigo-900/20 dark:text-indigo-200">
+          <p>{{ t('admin.accounts.claudePlatformAWS.safetyHint') }}</p>
+        </div>
+
+        <div>
+          <label class="input-label">{{ t('admin.accounts.claudePlatformAWS.apiKeyLabel') }}</label>
+          <input
+            v-model="claudePlatformAWSAPIKey"
+            type="password"
+            required
+            class="input font-mono"
+            :placeholder="t('admin.accounts.claudePlatformAWS.apiKeyPlaceholder')"
+            data-testid="claude-platform-aws-api-key"
+          />
+          <p class="input-hint">{{ t('admin.accounts.claudePlatformAWS.apiKeyHint') }}</p>
+        </div>
+
+        <div>
+          <label class="input-label">{{ t('admin.accounts.claudePlatformAWS.regionLabel') }}</label>
+          <select v-model="claudePlatformAWSRegion" class="input" data-testid="claude-platform-aws-region">
+            <option value="us-east-1">us-east-1</option>
+          </select>
+          <p class="input-hint">
+            {{ t('admin.accounts.claudePlatformAWS.endpointHint', { endpoint: claudePlatformAWSEndpoint }) }}
+          </p>
+        </div>
+
+        <div class="space-y-3">
+          <div class="flex items-center justify-between">
+            <label class="input-label mb-0">{{ t('admin.accounts.claudePlatformAWS.workspacesLabel') }}</label>
+            <button
+              type="button"
+              class="rounded-lg border border-indigo-200 px-3 py-1.5 text-xs font-medium text-indigo-700 transition-colors hover:bg-indigo-50 dark:border-indigo-800/60 dark:text-indigo-300 dark:hover:bg-indigo-900/20"
+              data-testid="claude-platform-aws-add-row"
+              @click="addClaudePlatformAWSRow"
+            >
+              + {{ t('admin.accounts.claudePlatformAWS.addWorkspace') }}
+            </button>
+          </div>
+
+          <div
+            v-for="(row, index) in claudePlatformAWSRows"
+            :key="index"
+            class="rounded-lg border border-gray-200 p-3 dark:border-dark-600"
+            :data-testid="`claude-platform-aws-row-${index}`"
+          >
+            <div class="mb-2 flex items-center justify-between">
+              <span class="text-xs font-medium text-gray-500 dark:text-gray-400">
+                {{ t('admin.accounts.claudePlatformAWS.rowTitle', { index: index + 1 }) }}
+              </span>
+              <button
+                v-if="claudePlatformAWSRows.length > 1"
+                type="button"
+                class="rounded p-1 text-red-500 transition-colors hover:text-red-600"
+                @click="removeClaudePlatformAWSRow(index)"
+              >
+                <Icon name="x" size="sm" :stroke-width="2" />
+              </button>
+            </div>
+
+            <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
+              <div>
+                <label class="input-label">{{ t('admin.accounts.claudePlatformAWS.workspaceLabel') }}</label>
+                <input
+                  v-model="row.workspaceId"
+                  type="password"
+                  required
+                  class="input font-mono"
+                  :placeholder="t('admin.accounts.claudePlatformAWS.workspacePlaceholder')"
+                  :data-testid="`claude-platform-aws-workspace-${index}`"
+                />
+                <p class="input-hint">{{ t('admin.accounts.claudePlatformAWS.workspaceHint') }}</p>
+              </div>
+              <div>
+                <label class="input-label">{{ t('admin.accounts.claudePlatformAWS.proxyLabel') }}</label>
+                <ProxySelector v-model="row.proxyId" :proxies="proxies" />
+                <p class="input-hint">{{ t('admin.accounts.claudePlatformAWS.proxyHint') }}</p>
+              </div>
+            </div>
+
+            <p
+              class="mt-2 text-xs"
+              :class="claudePlatformAWSRowReady(row) ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'"
+              :data-testid="`claude-platform-aws-row-status-${index}`"
+            >
+              {{ t(claudePlatformAWSRowStatusKey(row)) }}
+            </p>
+          </div>
+        </div>
+      </div>
+
       <!-- Bedrock credentials (only for Anthropic Bedrock type) -->
-      <div v-if="form.platform === 'anthropic' && accountCategory === 'bedrock'" class="space-y-4">
+      <div
+        v-if="form.platform === 'anthropic' && accountCategory === 'bedrock'"
+        class="space-y-4"
+        data-testid="bedrock-fields"
+      >
         <!-- Auth Mode Radio -->
         <div>
           <label class="input-label">{{ t('admin.accounts.bedrockAuthMode') }}</label>
@@ -2462,7 +2599,7 @@
         </div>
       </div>
 
-      <div>
+      <div v-if="!(form.platform === 'anthropic' && accountCategory === 'claude-platform-aws')">
         <div class="mb-1 flex items-center gap-2">
           <label class="input-label mb-0">{{ t('admin.accounts.proxy') }}</label>
           <ProxyAdBanner />
@@ -3354,10 +3491,15 @@ interface TempUnschedRuleForm {
   description: string
 }
 
+interface ClaudePlatformAWSWorkspaceRow {
+  workspaceId: string
+  proxyId: number | null
+}
+
 // State
 const step = ref(1)
 const submitting = ref(false)
-const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_account'>('oauth-based') // UI selection for account category
+const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_account' | 'claude-platform-aws'>('oauth-based') // UI selection for account category
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
@@ -3456,6 +3598,12 @@ const bedrockSessionToken = ref('')
 const bedrockRegion = ref('us-east-1')
 const bedrockForceGlobal = ref(false)
 const bedrockApiKeyValue = ref('')
+const claudePlatformAWSAPIKey = ref('')
+const claudePlatformAWSRegion = ref('us-east-1')
+const claudePlatformAWSRows = ref<ClaudePlatformAWSWorkspaceRow[]>([{ workspaceId: '', proxyId: null }])
+const claudePlatformAWSEndpoint = computed(
+  () => `https://aws-external-anthropic.${claudePlatformAWSRegion.value}.api.aws`
+)
 const vertexServiceAccountFileInput = ref<HTMLInputElement | null>(null)
 const vertexServiceAccountJson = ref('')
 const vertexProjectId = ref('')
@@ -3706,6 +3854,10 @@ const isOAuthFlow = computed(() => {
   if (form.platform === 'anthropic' && accountCategory.value === 'bedrock') {
     return false
   }
+  // Claude Platform on AWS uses a dedicated batch import flow.
+  if (form.platform === 'anthropic' && accountCategory.value === 'claude-platform-aws') {
+    return false
+  }
   return accountCategory.value === 'oauth-based'
 })
 
@@ -3777,6 +3929,10 @@ watch(
       form.type = 'bedrock' as AccountType
       return
     }
+    if (form.platform === 'anthropic' && category === 'claude-platform-aws') {
+      form.type = 'claude-platform-aws' as AccountType
+      return
+    }
     if ((form.platform === 'gemini' || form.platform === 'anthropic') && category === 'service_account') {
       form.type = 'service_account' as AccountType
     } else if (category === 'oauth-based') {
@@ -3823,6 +3979,9 @@ watch(
     if (newPlatform !== 'anthropic' && accountCategory.value === 'bedrock') {
       accountCategory.value = 'oauth-based'
     }
+    if (newPlatform !== 'anthropic' && accountCategory.value === 'claude-platform-aws') {
+      accountCategory.value = 'oauth-based'
+    }
     // Reset Bedrock fields when switching platforms
     bedrockAccessKeyId.value = ''
     bedrockSecretAccessKey.value = ''
@@ -3831,6 +3990,9 @@ watch(
     bedrockForceGlobal.value = false
     bedrockAuthMode.value = 'sigv4'
     bedrockApiKeyValue.value = ''
+    claudePlatformAWSAPIKey.value = ''
+    claudePlatformAWSRegion.value = 'us-east-1'
+    claudePlatformAWSRows.value = [{ workspaceId: '', proxyId: null }]
     vertexServiceAccountJson.value = ''
     vertexProjectId.value = ''
     vertexClientEmail.value = ''
@@ -4023,6 +4185,28 @@ const addTempUnschedRule = (preset?: TempUnschedRuleForm) => {
     duration_minutes: 30,
     description: ''
   })
+}
+
+const addClaudePlatformAWSRow = () => {
+  claudePlatformAWSRows.value.push({ workspaceId: '', proxyId: null })
+}
+
+const removeClaudePlatformAWSRow = (index: number) => {
+  if (claudePlatformAWSRows.value.length <= 1) return
+  claudePlatformAWSRows.value.splice(index, 1)
+}
+
+const claudePlatformAWSRowReady = (row: ClaudePlatformAWSWorkspaceRow) =>
+  row.workspaceId.trim().length > 0 && row.proxyId !== null && row.proxyId > 0
+
+const claudePlatformAWSRowStatusKey = (row: ClaudePlatformAWSWorkspaceRow) => {
+  if (!row.workspaceId.trim()) {
+    return 'admin.accounts.claudePlatformAWS.status.needsWorkspace'
+  }
+  if (row.proxyId === null || row.proxyId <= 0) {
+    return 'admin.accounts.claudePlatformAWS.status.needsProxy'
+  }
+  return 'admin.accounts.claudePlatformAWS.status.ready'
 }
 
 const removeTempUnschedRule = (index: number) => {
@@ -4273,6 +4457,9 @@ const resetForm = () => {
   antigravityAccountType.value = 'oauth'
   upstreamBaseUrl.value = ''
   upstreamApiKey.value = ''
+  claudePlatformAWSAPIKey.value = ''
+  claudePlatformAWSRegion.value = 'us-east-1'
+  claudePlatformAWSRows.value = [{ workspaceId: '', proxyId: null }]
   vertexServiceAccountJson.value = ''
   vertexProjectId.value = ''
   vertexClientEmail.value = ''
@@ -4479,6 +4666,55 @@ const handleSubmit = async () => {
       return
     }
     step.value = 2
+    return
+  }
+
+  // For Claude Platform on AWS, create one formal-pool account per workspace row.
+  if (form.platform === 'anthropic' && accountCategory.value === 'claude-platform-aws') {
+    if (!form.name.trim()) {
+      appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
+      return
+    }
+    if (!claudePlatformAWSAPIKey.value.trim()) {
+      appStore.showError(t('admin.accounts.pleaseEnterApiKey'))
+      return
+    }
+    for (const row of claudePlatformAWSRows.value) {
+      if (!row.workspaceId.trim()) {
+        appStore.showError(t('admin.accounts.claudePlatformAWS.workspaceRequired'))
+        return
+      }
+      if (row.proxyId === null || row.proxyId <= 0) {
+        appStore.showError(t('admin.accounts.claudePlatformAWS.proxyRequired'))
+        return
+      }
+    }
+
+    const baseName = form.name.trim()
+    const rows = claudePlatformAWSRows.value.map((row, index) => ({
+      name: claudePlatformAWSRows.value.length > 1 ? `${baseName} #${index + 1}` : baseName,
+      aws_region: claudePlatformAWSRegion.value,
+      workspace_id: row.workspaceId.trim(),
+      api_key: claudePlatformAWSAPIKey.value.trim(),
+      proxy_id: row.proxyId as number,
+      concurrency: form.concurrency,
+      priority: form.priority
+    }))
+
+    submitting.value = true
+    try {
+      await adminAPI.accounts.createClaudePlatformAWSBatch({
+        group_ids: form.group_ids,
+        rows
+      })
+      appStore.showSuccess(t('admin.accounts.accountCreated'))
+      emit('created')
+      handleClose()
+    } catch (error: any) {
+      appStore.showError(error.response?.data?.message || error.response?.data?.detail || t('admin.accounts.failedToCreate'))
+    } finally {
+      submitting.value = false
+    }
     return
   }
 

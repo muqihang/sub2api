@@ -869,3 +869,25 @@ CP2 entry decision:
 - Do not enable Bearer API-key compatibility or SigV4 in Phase 1 without explicit profile proof.
 - Do not claim live production readiness from this document alone; this document is not production evidence.
 - Do not implement production formal-pool routing unless Checkpoint 0 confirms the completed doc-58 safety substrate is present.
+
+## CP2 implementation checkpoint record - 2026-06-27
+
+Status: `CP2_DONE_FRONTEND_TARGETED_GREEN`.
+
+Scope completed:
+
+- Added a distinct frontend **Claude Platform on AWS** Anthropic account card; existing Claude Code OAuth/Setup Token, Claude Console API key, AWS Bedrock, and Vertex cards remain separate.
+- Added multi-workspace import UX using the dedicated admin batch endpoint `/admin/accounts/claude-platform-aws/batch`.
+- Each workspace row carries its own required proxy binding and per-row validation/status copy.
+- The UI submits raw workspace IDs and API key only in the sensitive batch-create request rows required for account creation. It does not place raw workspace IDs/API keys into frontend `extra`, evidence, status, or safe-ref fields.
+- Phase 1 region selector is constrained to `us-east-1`, matching the current CP0 target endpoint.
+
+Targeted verification:
+
+```bash
+pnpm --dir frontend test:run src/components/account/__tests__/CreateAccountModal.claudePlatformAWS.spec.ts --reporter=dot
+pnpm --dir frontend test:run src/components/account/__tests__/CreateAccountModal.claudePlatformAWS.spec.ts src/components/account/__tests__/EditAccountModal.spec.ts src/views/admin/__tests__/AccountsView.bulkEdit.spec.ts --reporter=dot
+pnpm --dir frontend typecheck
+```
+
+All above targeted frontend checks passed. Broad backend suite blockers remain the externally/historically classified blockers recorded in the CP1 broad-suite audit; they are not claimed green here.

@@ -3715,6 +3715,32 @@ export default {
       claudeConsole: 'Claude Console',
       bedrockLabel: 'AWS Bedrock',
       bedrockDesc: 'SigV4 / API Key',
+      claudePlatformAWS: {
+        label: 'Claude Platform on AWS',
+        desc: 'Workspace formal pool',
+        safetyHint:
+          'Creates one formal-pool account per workspace. Workspace IDs and API keys are submitted only to sensitive credential storage; safe evidence uses refs only.',
+        apiKeyLabel: 'AWS Claude Platform API Key *',
+        apiKeyPlaceholder: 'Enter AWS Claude Platform API key',
+        apiKeyHint: 'Generated in AWS Console -> Claude Platform on AWS -> API keys.',
+        regionLabel: 'AWS Region',
+        endpointHint: 'Phase 1 endpoint: {endpoint}/v1/messages',
+        workspacesLabel: 'Workspaces',
+        addWorkspace: 'Add workspace',
+        rowTitle: 'Workspace #{index}',
+        workspaceLabel: 'Anthropic Workspace ID *',
+        workspacePlaceholder: 'wrkspc_...',
+        workspaceHint: 'This raw value is never placed in safe extra or evidence fields.',
+        proxyLabel: 'Egress Proxy *',
+        proxyHint: 'Every workspace requires its own proxy binding.',
+        workspaceRequired: 'Please enter workspace ID for every row',
+        proxyRequired: 'Please select a proxy for every workspace row',
+        status: {
+          needsWorkspace: 'Workspace ID required',
+          needsProxy: 'Proxy required',
+          ready: 'Ready'
+        }
+      },
       vertexLabel: 'Vertex',
       vertexDesc: 'Service Account',
       vertexAnthropicHint: 'Use a Google Cloud Service Account JSON to call Anthropic Claude via Vertex AI. It is recommended to configure model mapping to map client Claude model names to Vertex model IDs.',
