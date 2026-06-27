@@ -30,11 +30,11 @@ func TestClaudePlatformAWSLocalFullChainE2EUsesCCGatewayAndSafeMockUpstream(t *t
 	require.DirExists(t, os.Getenv("CC_GATEWAY_REPO_ROOT"))
 	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
 
-	mockAWS := startCP6AWSMockUpstream(t)
 	proxyA := startConnectProxyServer(t)
 	proxyB := startConnectProxyServer(t)
 	accountA := newCP6ClaudePlatformAWSAccount(t, 0, proxyA.URL())
 	accountB := newCP6ClaudePlatformAWSAccount(t, 1, proxyB.URL())
+	mockAWS := startCP6AWSMockUpstream(t, accountA, accountB)
 	require.NotEqual(t, accountA.GetExtraString(ccGatewayExtraAccountRef), accountB.GetExtraString(ccGatewayExtraAccountRef))
 	require.NotEqual(t, accountA.GetExtraString(ClaudePlatformAWSExtraWorkspaceRef), accountB.GetExtraString(ClaudePlatformAWSExtraWorkspaceRef))
 	require.NotEqual(t, accountA.GetExtraString(ccGatewayExtraCredentialRef), accountB.GetExtraString(ccGatewayExtraCredentialRef))
@@ -145,10 +145,17 @@ func cp6AWSEgressBucket(index int) string {
 func requireCP6AWSMockEvidenceSafe(t *testing.T, evidence cp6AWSMockEvidence, account *Account) {
 	t.Helper()
 	require.Equal(t, "/v1/messages", evidence.Path)
-	require.Equal(t, "aws-external-anthropic.us-east-1.api.aws", evidence.Host)
+	require.Empty(t, evidence.RawQuery)
+	require.NotEmpty(t, evidence.Host)
+	require.Equal(t, "aws-external-anthropic.us-east-1.api.aws", evidence.HostHeader)
 	require.Equal(t, "us-east-1", evidence.Region)
 	require.True(t, evidence.WorkspaceHeaderPresent)
+	require.True(t, evidence.WorkspaceMatchesServerAccount)
+	require.Equal(t, account.GetExtraString(ClaudePlatformAWSExtraWorkspaceRef), evidence.WorkspaceRef)
+	require.False(t, evidence.ClientForgedWorkspaceSeen)
 	require.True(t, evidence.XAPIKeyPresent)
+	require.True(t, evidence.AuthMatchesServerCredential)
+	require.False(t, evidence.ClientForgedAPIKeySeen)
 	require.False(t, evidence.AuthorizationPresent)
 	require.False(t, evidence.InternalHeaderPresent)
 	require.False(t, evidence.ClientSpoofHeaderPresent)
@@ -323,22 +330,38 @@ type cp6AWSMockUpstream struct {
 }
 
 type cp6AWSMockEvidence struct {
-	Path                     string `json:"path"`
-	Host                     string `json:"host"`
-	Region                   string `json:"region"`
-	WorkspaceHeaderPresent   bool   `json:"workspace_header_present"`
-	XAPIKeyPresent           bool   `json:"x_api_key_present"`
-	AuthorizationPresent     bool   `json:"authorization_present"`
-	InternalHeaderPresent    bool   `json:"internal_header_present"`
-	ClientSpoofHeaderPresent bool   `json:"client_spoof_header_present"`
-	AnthropicBetaPresent     bool   `json:"anthropic_beta_present"`
-	BillingCCHPresent        bool   `json:"billing_cch_present"`
-	SafeEvidenceOnly         bool   `json:"safe_evidence_only"`
-	BodyShapeSummary         string `json:"body_shape_summary"`
+	Path                          string `json:"path"`
+	RawQuery                      string `json:"raw_query"`
+	Host                          string `json:"host"`
+	HostHeader                    string `json:"host_header"`
+	Region                        string `json:"region"`
+	WorkspaceHeaderPresent        bool   `json:"workspace_header_present"`
+	WorkspaceMatchesServerAccount bool   `json:"workspace_matches_server_account"`
+	WorkspaceRef                  string `json:"workspace_ref"`
+	ClientForgedWorkspaceSeen     bool   `json:"client_forged_workspace_seen"`
+	XAPIKeyPresent                bool   `json:"x_api_key_present"`
+	AuthMatchesServerCredential   bool   `json:"auth_matches_server_credential"`
+	ClientForgedAPIKeySeen        bool   `json:"client_forged_api_key_seen"`
+	AuthorizationPresent          bool   `json:"authorization_present"`
+	InternalHeaderPresent         bool   `json:"internal_header_present"`
+	ClientSpoofHeaderPresent      bool   `json:"client_spoof_header_present"`
+	AnthropicBetaPresent          bool   `json:"anthropic_beta_present"`
+	BillingCCHPresent             bool   `json:"billing_cch_present"`
+	SafeEvidenceOnly              bool   `json:"safe_evidence_only"`
+	BodyShapeSummary              string `json:"body_shape_summary"`
 }
 
-func startCP6AWSMockUpstream(t *testing.T) *cp6AWSMockUpstream {
+func startCP6AWSMockUpstream(t *testing.T, accounts ...*Account) *cp6AWSMockUpstream {
 	t.Helper()
+	workspaceToAccount := map[string]*Account{}
+	apiKeyToAccount := map[string]*Account{}
+	for _, account := range accounts {
+		if account == nil {
+			continue
+		}
+		workspaceToAccount[strings.TrimSpace(account.GetCredential("anthropic_workspace_id"))] = account
+		apiKeyToAccount[strings.TrimSpace(account.GetCredential("api_key"))] = account
+	}
 	mock := &cp6AWSMockUpstream{seen: make(chan cp6AWSMockEvidence, 1)}
 	mock.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body := make([]byte, 0)
@@ -347,23 +370,37 @@ func startCP6AWSMockUpstream(t *testing.T) *cp6AWSMockUpstream {
 			limited := http.MaxBytesReader(w, r.Body, 1<<20)
 			body, _ = io.ReadAll(limited)
 		}
+		hostHeader := strings.TrimSpace(r.Host)
+		workspaceHeader := strings.TrimSpace(r.Header.Get("anthropic-workspace-id"))
+		apiKeyHeader := strings.TrimSpace(r.Header.Get("x-api-key"))
+		workspaceAccount := workspaceToAccount[workspaceHeader]
+		apiKeyAccount := apiKeyToAccount[apiKeyHeader]
+		workspaceRef := ""
+		if workspaceAccount != nil {
+			workspaceRef = workspaceAccount.GetExtraString(ClaudePlatformAWSExtraWorkspaceRef)
+		}
 		evidence := cp6AWSMockEvidence{
-			Path:                   r.URL.EscapedPath(),
-			Host:                   "aws-external-anthropic.us-east-1.api.aws",
-			Region:                 "us-east-1",
-			WorkspaceHeaderPresent: strings.TrimSpace(r.Header.Get("anthropic-workspace-id")) != "",
-			XAPIKeyPresent:         strings.TrimSpace(r.Header.Get("x-api-key")) != "",
-			AuthorizationPresent:   strings.TrimSpace(r.Header.Get("authorization")) != "",
-			AnthropicBetaPresent:   strings.TrimSpace(r.Header.Get("anthropic-beta")) != "",
-			BillingCCHPresent:      strings.Contains(strings.ToLower(string(body)), "cch=") || strings.TrimSpace(r.Header.Get("x-anthropic-billing-header")) != "",
-			BodyShapeSummary:       cp6AWSBodyShapeSummary(body),
+			Path:                          r.URL.EscapedPath(),
+			RawQuery:                      r.URL.RawQuery,
+			Host:                          r.Host,
+			HostHeader:                    hostHeader,
+			Region:                        cp6AWSRegionFromHostHeader(hostHeader),
+			WorkspaceHeaderPresent:        workspaceHeader != "",
+			WorkspaceMatchesServerAccount: workspaceAccount != nil && workspaceAccount == apiKeyAccount,
+			WorkspaceRef:                  workspaceRef,
+			ClientForgedWorkspaceSeen:     workspaceHeader == syntheticAWSWorkspaceID(12),
+			XAPIKeyPresent:                apiKeyHeader != "",
+			AuthMatchesServerCredential:   apiKeyAccount != nil && workspaceAccount == apiKeyAccount,
+			ClientForgedAPIKeySeen:        apiKeyHeader == "synthetic-client-forged-api-key",
+			AuthorizationPresent:          strings.TrimSpace(r.Header.Get("authorization")) != "",
+			AnthropicBetaPresent:          strings.TrimSpace(r.Header.Get("anthropic-beta")) != "",
+			BillingCCHPresent:             strings.Contains(strings.ToLower(string(body)), "cch=") || strings.TrimSpace(r.Header.Get("x-anthropic-billing-header")) != "",
+			BodyShapeSummary:              cp6AWSBodyShapeSummary(body),
 		}
 		for key := range r.Header {
 			lower := strings.ToLower(key)
 			if strings.HasPrefix(lower, "x-sub2api-") || strings.HasPrefix(lower, "x-cc-") {
-				if lower != "x-cc-cp6-workspace-ref" && lower != "x-cc-cp6-proxy-identity-ref" {
-					evidence.InternalHeaderPresent = true
-				}
+				evidence.InternalHeaderPresent = true
 			}
 			if strings.Contains(lower, "client-forged") || lower == "x-profile" || lower == "x-session" {
 				evidence.ClientSpoofHeaderPresent = true
@@ -412,6 +449,16 @@ func cp6ProxySawMockUpstream(proxy *connectProxyServer) bool {
 	return false
 }
 
+func cp6AWSRegionFromHostHeader(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	const prefix = "aws-external-anthropic."
+	const suffix = ".api.aws"
+	if !strings.HasPrefix(host, prefix) || !strings.HasSuffix(host, suffix) {
+		return ""
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(host, prefix), suffix)
+}
+
 func cp6AWSBodyShapeSummary(body []byte) string {
 	return fmt.Sprintf("model=%s;messages=%d;context_management=%t;anthropic_beta=%t;len=%s",
 		gjson.GetBytes(body, "model").String(),
@@ -420,4 +467,19 @@ func cp6AWSBodyShapeSummary(body []byte) string {
 		gjson.GetBytes(body, "anthropic_beta").Exists(),
 		strconv.Itoa(len(body)),
 	)
+}
+
+func TestCP6AWSMockEvidenceFlagsAllInternalHeaders(t *testing.T) {
+	mock := startCP6AWSMockUpstream(t)
+	client := &http.Client{Timeout: 2 * time.Second}
+	req, err := http.NewRequest(http.MethodPost, mock.URL()+"/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-6","messages":[]}`))
+	require.NoError(t, err)
+	req.Host = "aws-external-anthropic.us-east-1.api.aws"
+	req.Header.Set("x-cc-cp6-workspace-ref", "workspace:safe-only")
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+
+	evidence := mock.popSingle(t)
+	require.True(t, evidence.InternalHeaderPresent)
 }

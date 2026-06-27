@@ -197,6 +197,47 @@ func TestLoadRejectsCCGatewayWithoutIndependentContextAttestationSecret(t *testi
 	require.Contains(t, err.Error(), "context_attestation_secret must be independent")
 }
 
+func TestLoadRejectsCCGatewayWithoutIndependentClaudePlatformAWSAuthorityKeys(t *testing.T) {
+	base := func() {
+		resetViperWithJWTSecret(t)
+		t.Setenv("GATEWAY_CC_GATEWAY_ENABLED", "true")
+		t.Setenv("GATEWAY_CC_GATEWAY_BASE_URL", "http://cc-gateway:8443")
+		t.Setenv("GATEWAY_CC_GATEWAY_TOKEN", "ccg-token")
+		t.Setenv("GATEWAY_CC_GATEWAY_INTERNAL_CONTROL_TOKEN", "internal-control-material-test")
+		t.Setenv("GATEWAY_CC_GATEWAY_CONTEXT_ATTESTATION_SECRET", "formal-pool-attestation-secret-test")
+		t.Setenv("GATEWAY_CC_GATEWAY_STICKY_SESSION_HMAC_KEY", "")
+		t.Setenv("GATEWAY_CC_GATEWAY_CLAUDE_PLATFORM_AWS_WORKSPACE_BINDING_HMAC_KEY", "")
+		t.Setenv("GATEWAY_CC_GATEWAY_TIMEOUT_SECONDS", "30")
+		t.Setenv("GATEWAY_CC_GATEWAY_DEFAULT_EGRESS_BUCKET", "bucket-a")
+		t.Setenv("GATEWAY_CC_GATEWAY_PROVIDERS_ANTHROPIC", "true")
+	}
+
+	base()
+	_, err := Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "sticky_session_hmac_key")
+
+	base()
+	t.Setenv("GATEWAY_CC_GATEWAY_STICKY_SESSION_HMAC_KEY", "formal-pool-attestation-secret-test")
+	t.Setenv("GATEWAY_CC_GATEWAY_CLAUDE_PLATFORM_AWS_WORKSPACE_BINDING_HMAC_KEY", "workspace-binding-material-test")
+	_, err = Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "sticky_session_hmac_key must be independent")
+
+	base()
+	t.Setenv("GATEWAY_CC_GATEWAY_STICKY_SESSION_HMAC_KEY", "workspace-ref-material-test")
+	_, err = Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "claude_platform_aws_workspace_binding_hmac_key")
+
+	base()
+	t.Setenv("GATEWAY_CC_GATEWAY_STICKY_SESSION_HMAC_KEY", "workspace-ref-material-test")
+	t.Setenv("GATEWAY_CC_GATEWAY_CLAUDE_PLATFORM_AWS_WORKSPACE_BINDING_HMAC_KEY", "workspace-ref-material-test")
+	_, err = Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "claude_platform_aws_workspace_binding_hmac_key must be independent")
+}
+
 func TestLoadRejectsCCGatewayNonHTTPBaseURL(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("GATEWAY_CC_GATEWAY_ENABLED", "true")

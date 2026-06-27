@@ -1714,7 +1714,20 @@ func TestFormalPoolOperationsRuntimeRegistrationInputCarriesClaudePlatformAWSAut
 	markClaudePlatformAWSFormalPoolForRequestTest(t, account)
 	account.Extra[ccGatewayExtraPersonaProfile] = ccGatewayDefaultPersonaProfile
 	account.Extra["claude_code_device_id"] = strings.Repeat("c", 64)
-	svc := &FormalPoolOperationsService{proxy: &formalPoolOperationsProxyFake{proxy: &Proxy{ID: 5903, Protocol: "http", Host: "127.0.0.1", Port: 8080, Status: StatusActive}}}
+	expected, err := ValidateClaudePlatformAWSAccountWithCCGatewayConfig(account, cp6AWSAuthorityConfig())
+	require.NoError(t, err)
+	account.Extra[ccGatewayExtraCredentialRef] = expected.CredentialRef
+	account.Extra[ccGatewayExtraCredentialBindingHMAC] = expected.CredentialBindingHMAC
+	account.Extra[ClaudePlatformAWSExtraWorkspaceRef] = expected.WorkspaceRef
+	account.Extra[ClaudePlatformAWSExtraWorkspaceBindingHMAC] = expected.WorkspaceBindingHMAC
+	account.Extra[ClaudePlatformAWSExtraEndpointRef] = expected.EndpointRef
+	account.Extra[ClaudePlatformAWSExtraRegion] = expected.Region
+	svc := &FormalPoolOperationsService{
+		proxy:                             &formalPoolOperationsProxyFake{proxy: &Proxy{ID: 5903, Protocol: "http", Host: "127.0.0.1", Port: 8080, Status: StatusActive}},
+		ccGatewayContextAttestationSecret: jointGatewayContextAttestationSecret,
+		ccGatewayStickySessionHMACKey:     cp6AWSGatewayWorkspaceRefSecret,
+		ccGatewayClaudePlatformAWSWorkspaceBindingHMACKey: cp6AWSGatewayBindingSecret,
+	}
 
 	reg, err := svc.runtimeRegistrationInput(context.Background(), account)
 
@@ -1770,7 +1783,7 @@ func TestFormalPoolOperationsRuntimeRegisterPersistsExplicitClaudePlatformAWSAut
 	require.Equal(t, expected.CredentialBindingHMAC, runtime.input.CredentialBindingHMAC)
 }
 
-func TestFormalPoolOperationsRuntimeRegisterAcceptsClaudePlatformAWSRuntimeOnly(t *testing.T) {
+func TestFormalPoolOperationsRuntimeRegisterFailsClosedWithoutClaudePlatformAWSAuthority(t *testing.T) {
 	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
 	markClaudePlatformAWSFormalPoolForRequestTest(t, account)
 	account.Extra[ccGatewayExtraPersonaProfile] = ccGatewayDefaultPersonaProfile
@@ -1784,6 +1797,36 @@ func TestFormalPoolOperationsRuntimeRegisterAcceptsClaudePlatformAWSRuntimeOnly(
 		Proxy:            &formalPoolOperationsProxyFake{proxy: &Proxy{ID: 5903, Protocol: "http", Host: "127.0.0.1", Port: 8080, Status: StatusActive}},
 		CCGatewayRuntime: runtime,
 		Now:              func() time.Time { return time.Date(2026, 6, 27, 1, 2, 3, 0, time.UTC) },
+	})
+
+	result, err := svc.RuntimeRegister(context.Background(), account.ID)
+
+	require.Error(t, err)
+	require.NotNil(t, result)
+	require.False(t, runtime.called)
+	require.Equal(t, "false", account.GetExtraString(FormalPoolExtraRuntimeRegistered))
+	require.Empty(t, account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt))
+	require.NotContains(t, mustJSON(t, result), account.GetCredential("anthropic_workspace_id"))
+	require.NotContains(t, mustJSON(t, result), account.GetCredential("api_key"))
+}
+
+func TestFormalPoolOperationsRuntimeRegisterAcceptsClaudePlatformAWSWithExplicitAuthority(t *testing.T) {
+	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
+	markClaudePlatformAWSFormalPoolForRequestTest(t, account)
+	account.Extra[ccGatewayExtraPersonaProfile] = ccGatewayDefaultPersonaProfile
+	account.Extra["claude_code_device_id"] = strings.Repeat("c", 64)
+	account.Extra[FormalPoolExtraRuntimeRegistered] = "false"
+	account.Extra[FormalPoolExtraRuntimeRegisteredAt] = ""
+	store := newFormalPoolOperationsMutableStore(account)
+	runtime := &formalPoolOperationsRuntimeFake{}
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{
+		Accounts:                          store,
+		Proxy:                             &formalPoolOperationsProxyFake{proxy: &Proxy{ID: 5903, Protocol: "http", Host: "127.0.0.1", Port: 8080, Status: StatusActive}},
+		CCGatewayRuntime:                  runtime,
+		Now:                               func() time.Time { return time.Date(2026, 6, 27, 1, 2, 3, 0, time.UTC) },
+		CCGatewayContextAttestationSecret: jointGatewayContextAttestationSecret,
+		CCGatewayStickySessionHMACKey:     cp6AWSGatewayWorkspaceRefSecret,
+		CCGatewayClaudePlatformAWSWorkspaceBindingHMACKey: cp6AWSGatewayBindingSecret,
 	})
 
 	result, err := svc.RuntimeRegister(context.Background(), account.ID)
@@ -1869,7 +1912,7 @@ func TestFormalPoolRuntimeRegistrationReplayService_BackfillsMissingIdentityWith
 	require.Equal(t, runtime.input.EgressBucket, account.GetExtraString("cc_gateway_egress_bucket"))
 }
 
-func TestFormalPoolRuntimeRegistrationReplayService_ReplaysClaudePlatformAWSRuntimeMapping(t *testing.T) {
+func TestFormalPoolRuntimeRegistrationReplayFailsClosedWithoutClaudePlatformAWSAuthority(t *testing.T) {
 	t.Parallel()
 
 	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
@@ -1888,6 +1931,41 @@ func TestFormalPoolRuntimeRegistrationReplayService_ReplaysClaudePlatformAWSRunt
 		Proxy:            proxy,
 		CCGatewayRuntime: runtime,
 		Now:              func() time.Time { return time.Date(2026, 6, 27, 2, 3, 4, 0, time.UTC) },
+	})
+
+	result, err := svc.Replay(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Scanned)
+	require.Equal(t, 0, result.Registered)
+	require.Equal(t, 1, result.Failed)
+	require.False(t, runtime.called)
+	require.Equal(t, "false", account.GetExtraString(FormalPoolExtraRuntimeRegistered))
+	require.Empty(t, account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt))
+}
+
+func TestFormalPoolRuntimeRegistrationReplayService_ReplaysClaudePlatformAWSRuntimeMapping(t *testing.T) {
+	t.Parallel()
+
+	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
+	markClaudePlatformAWSFormalPoolForRequestTest(t, account)
+	account.Extra[ccGatewayExtraPersonaProfile] = ccGatewayDefaultPersonaProfile
+	account.Extra["claude_code_device_id"] = strings.Repeat("c", 64)
+	account.Extra[FormalPoolExtraRuntimeRegistered] = "true"
+	account.Extra[FormalPoolExtraRuntimeRegisteredAt] = "2026-06-27T00:00:00Z"
+	account.Status = StatusActive
+	account.Schedulable = false
+	store := &formalPoolRuntimeReplayStore{accounts: []*Account{account}}
+	runtime := &formalPoolOperationsRuntimeFake{}
+	proxy := &formalPoolOperationsProxyFake{proxy: &Proxy{ID: 5903, Protocol: "http", Host: "replay-proxy.local", Port: 8080, Status: StatusActive}}
+	svc := NewFormalPoolRuntimeRegistrationReplayService(FormalPoolRuntimeRegistrationReplayDeps{
+		Accounts:                          store,
+		Proxy:                             proxy,
+		CCGatewayRuntime:                  runtime,
+		Now:                               func() time.Time { return time.Date(2026, 6, 27, 2, 3, 4, 0, time.UTC) },
+		CCGatewayContextAttestationSecret: jointGatewayContextAttestationSecret,
+		CCGatewayStickySessionHMACKey:     cp6AWSGatewayWorkspaceRefSecret,
+		CCGatewayClaudePlatformAWSWorkspaceBindingHMACKey: cp6AWSGatewayBindingSecret,
 	})
 
 	result, err := svc.Replay(context.Background())

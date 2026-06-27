@@ -778,6 +778,9 @@ func nonEmptyClaudePlatformAWSHeaderValues(headers http.Header, key string) []st
 }
 
 func applyClaudePlatformAWSRuntimeRegistrationFields(account *Account, reg *FormalPoolCCGatewayRuntimeRegistration) error {
+	if account != nil && account.IsClaudePlatformAWS() {
+		return fmt.Errorf("%s: explicit Claude Platform AWS authority material is required", ClaudePlatformAWSAuthProfileBlocked)
+	}
 	return applyClaudePlatformAWSRuntimeRegistrationFieldsWithCCGatewayConfig(account, reg, nil)
 }
 

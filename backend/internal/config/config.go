@@ -3055,6 +3055,28 @@ func (c *Config) Validate() error {
 		if contextAttestationSecret == internalControlToken {
 			return fmt.Errorf("gateway.cc_gateway.context_attestation_secret must be independent from gateway.cc_gateway.internal_control_token")
 		}
+		stickySessionHMACKey := strings.TrimSpace(c.Gateway.CCGateway.StickySessionHMACKey)
+		if stickySessionHMACKey == "" {
+			return fmt.Errorf("gateway.cc_gateway.sticky_session_hmac_key is required when gateway.cc_gateway.enabled=true")
+		}
+		claudePlatformAWSWorkspaceBindingHMACKey := strings.TrimSpace(c.Gateway.CCGateway.ClaudePlatformAWSWorkspaceBindingHMACKey)
+		if claudePlatformAWSWorkspaceBindingHMACKey == "" {
+			return fmt.Errorf("gateway.cc_gateway.claude_platform_aws_workspace_binding_hmac_key is required when gateway.cc_gateway.enabled=true")
+		}
+		for name, value := range map[string]string{
+			"sticky_session_hmac_key":                        stickySessionHMACKey,
+			"claude_platform_aws_workspace_binding_hmac_key": claudePlatformAWSWorkspaceBindingHMACKey,
+		} {
+			if value == strings.TrimSpace(c.Gateway.CCGateway.Token) || value == internalControlToken || value == contextAttestationSecret {
+				return fmt.Errorf("gateway.cc_gateway.%s must be independent from other cc gateway secrets", name)
+			}
+			if value == "sub2api-claude-platform-aws-binding-v1" || value == "sub2api-gateway-sticky-session-dev-key" {
+				return fmt.Errorf("gateway.cc_gateway.%s must not use known development authority material", name)
+			}
+		}
+		if claudePlatformAWSWorkspaceBindingHMACKey == stickySessionHMACKey {
+			return fmt.Errorf("gateway.cc_gateway.claude_platform_aws_workspace_binding_hmac_key must be independent from gateway.cc_gateway.sticky_session_hmac_key")
+		}
 		if c.Gateway.CCGateway.TimeoutSeconds <= 0 {
 			return fmt.Errorf("gateway.cc_gateway.timeout_seconds must be positive")
 		}

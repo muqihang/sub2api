@@ -1189,3 +1189,56 @@ Non-claims / blockers:
 - No 3017 deployment/restart, no 3012 change, no live AWS request, no canary, and no production traffic was performed.
 - This is not a broad-suite green claim. The broad-suite blockers recorded in the CP1 broad-suite audit remain external/historical blockers for any production-readiness statement.
 - CP6 requires code review before proceeding to any later checkpoint.
+
+## CP6 review-fix record - 2026-06-27
+
+Status: `CP6_REVIEW_FINDINGS_FIXED_PENDING_REVIEW_PASS`.
+
+Review source:
+
+- CP6 review agent: `019f0a03-dbe4-7c11-9421-dd3b12d13223`.
+- Verdict against `c405bf83536887b49a6935d3e677bd05b8dccaa6..1339111a5a869fef005bd5dac46f8c720b6b0642`: `FAIL`.
+- Findings: E2E did not prove actual final host/query, did not prove workspace/auth came from server-owned account state, allowed internal `x-cc-*` test headers, runtime register/replay still had nil-config default authority fallback, and config did not validate the new authority keys.
+
+Fix scope:
+
+- Strengthened the CP6 local full-chain mock upstream evidence to record actual final path, empty query, Host header-derived AWS region, server-owned workspace/auth match booleans, safe `workspace_ref`, and client-forged workspace/API-key absence.
+- Removed the E2E allowance for internal `x-cc-*` headers; any `x-cc-*` or `x-sub2api-*` header at the mock AWS upstream is now treated as an internal-header leak.
+- Added a regression test proving the CP6 mock evidence flags every internal `x-cc-*` header.
+- Changed Claude Platform on AWS runtime register/replay authority config construction to always require explicit CC Gateway authority material for AWS accounts; missing material now fail-closes instead of falling back to source-code default material.
+- Added runtime register/replay tests proving no explicit AWS authority material fails closed and explicit material succeeds/persists the same refs/HMAC used in registration input.
+- Added config validation for `gateway.cc_gateway.sticky_session_hmac_key` and `gateway.cc_gateway.claude_platform_aws_workspace_binding_hmac_key`: both are required when CC Gateway is enabled, must be independent from other CC Gateway secrets and each other, and must not use known local development/default literals.
+
+Verification after review-fix:
+
+```bash
+cd /Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-platform-aws-formal-pool/backend
+go test ./internal/service -run 'TestCP6AWSMockEvidenceFlagsAllInternalHeaders|TestFormalPoolOperationsRuntimeRegisterFailsClosedWithoutClaudePlatformAWSAuthority|TestFormalPoolRuntimeRegistrationReplayFailsClosedWithoutClaudePlatformAWSAuthority|TestClaudePlatformAWSLocalFullChainE2EUsesCCGatewayAndSafeMockUpstream' -count=1 -v
+go test ./internal/service -run 'TestClaudePlatformAWS|TestGatewayService_(BuildClaudePlatformAWS|CCGatewayClaudePlatformAWS|GetAccessTokenClaudePlatformAWS|ClaudePlatformAWS)|TestFormalPoolOperationsRuntime.*ClaudePlatformAWS|TestFormalPoolRuntimeRegistrationReplay.*ClaudePlatformAWS|TestCCGatewayFormalPoolAttestationMatchesSharedContractFixture|TestCCGatewayFormalPoolAWSAttestationMatchesSharedCanonicalFixture|TestCP6AWSMockEvidenceFlagsAllInternalHeaders' -count=1
+go test ./internal/config -run 'TestLoadDefaultCCGatewayConfig|TestLoadCCGatewayConfigFromEnv|TestLoadRejectsCCGatewayWithoutIndependent|TestLoadRejectsCCGatewayNonHTTPBaseURL' -count=1
+go test ./internal/service -run '^TestClaudePlatformAWSLocalFullChainE2EUsesCCGatewayAndSafeMockUpstream$' -count=1 -v
+go test ./internal/config -count=1
+go test ./internal/service -run 'TestGatewayService_CCGatewayAnthropic|TestGatewayService_SelectCCGatewayAnthropic|TestGatewayService_CCGatewayAnthropicOAuthFailsClosedWithoutAttestationSecret|TestCCGatewayFormalPool|TestFormalPoolOperationsRuntime' -count=1
+git diff --check
+```
+
+Results:
+
+- Review-fix focused tests: passed.
+- CP6 targeted service suite: passed.
+- CP6 targeted config suite: passed.
+- Local full-chain E2E: passed.
+- Config package: passed.
+- 58/CC Gateway Anthropic/formal-pool targeted regression slice: passed.
+- `git diff --check`: passed.
+
+Safe artifact/leak scan:
+
+- Review-fix changed-file scan found only existing redaction tests, synthetic forbidden strings, and code identifiers.
+- No real raw workspace ID, API key, Authorization value, `x-api-key` value, raw prompt/body/response, raw HMAC input/output, cookie, proxy credential, or raw telemetry was detected in the review-fix diff.
+
+Non-claims:
+
+- CP0 production auth profile remains `BLOCKED_AUTH_PROFILE`.
+- No 3017 deployment/restart, no 3012 change, no live AWS request, no canary, and no production traffic was performed.
+- CP6 remains pending review pass by the same review agent before CP7.

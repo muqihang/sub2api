@@ -1459,9 +1459,6 @@ func (s *FormalPoolOperationsService) claudePlatformAWSCCGatewayAuthorityConfig(
 	contextSecret := strings.TrimSpace(s.ccGatewayContextAttestationSecret)
 	stickySecret := strings.TrimSpace(s.ccGatewayStickySessionHMACKey)
 	workspaceBindingSecret := strings.TrimSpace(s.ccGatewayClaudePlatformAWSWorkspaceBindingHMACKey)
-	if contextSecret == "" && stickySecret == "" && workspaceBindingSecret == "" {
-		return nil
-	}
 	return &config.Config{Gateway: config.GatewayConfig{CCGateway: config.GatewayCCGatewayConfig{
 		Enabled:                                  true,
 		ContextAttestationSecret:                 contextSecret,
