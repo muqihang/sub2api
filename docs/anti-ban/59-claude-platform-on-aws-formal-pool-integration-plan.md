@@ -1016,3 +1016,46 @@ TDD evidence:
 - Additional regression test `claude platform aws production rejects configured upstream endpoint mismatch before egress` failed by forwarding to the configured local upstream; the final verifier now blocks this with `claude_platform_aws_endpoint_mismatch` in production/real-canary modes.
 
 CP0 auth profile status remains `BLOCKED_AUTH_PROFILE` for production because no real target AWS workspace/API-key proof has been supplied. CP5 proves local/mock CC Gateway verifier, ledger, runtime replay, and final injection behavior only. No 3017 deployment/restart, live AWS request, canary, or production traffic claim is made.
+
+
+## CP5 review-fix record - 2026-06-27
+
+Status: `CP5_REVIEW_FINDINGS_FIXED_PENDING_REVIEW_PASS`.
+
+CC Gateway follow-up commit:
+
+- Worktree: `/Users/muqihang/chelingxi_workspace/cc-gateway-claude-platform-aws-cp5`
+- Branch: `codex/claude-platform-aws-cp5`
+- Commit: `c418e7e09718ab74fe2b85d5c64eba6004c7bead` (`fix: bind claude platform aws final verifier`)
+- Review finding source: CP5 review agent reported one Critical workspace-binding issue and three Important final-gate/upstream-safety/test-coverage issues against `07eb7e3a4db111fdb1604a6bd003ba3fdbf09d0f`.
+
+Fix scope:
+
+- Added Sub2API-compatible workspace authority recomputation in CC Gateway: safe `workspace_ref` from region plus sensitive raw workspace ID, and workspace binding HMAC from provider/account/credential/workspace/endpoint/region/auth/egress/proxy tuple.
+- Enforced workspace authority checks during runtime registration/replay and again in the provider-aware final AWS verifier before egress.
+- Moved final output verification to after final URL/header/body construction and wrapped shared-pool plus AWS provider checks in a single provider-aware final verifier call before proxy agent creation and socket write.
+- Changed real AWS Claude Platform upstream preflight safety to return `real_aws_claude_platform_requires_post_attestation`; proxy handling now only proceeds to the post-attestation/final gate for that code, keeping route and non-AWS safety blocks intact.
+- Added negative tests for raw workspace mismatch, workspace ref recomputation mismatch, workspace binding tuple mismatch, missing/wrong AWS provider attestation before real AWS egress, and final body/profile mismatch before egress.
+
+Verification after review-fix:
+
+```bash
+cd /Users/muqihang/chelingxi_workspace/cc-gateway-claude-platform-aws-cp5
+npx tsx tests/claude-platform-aws-cp5.test.ts
+npx tsx tests/preflight-safety.test.ts
+npm run build
+npm test
+git diff --check
+rg -n "wrkspc_|Authorization: Bearer|x-api-key:|raw_body|raw_response|proxy_credential|HMAC input|HMAC output|sk-|AKIA|ASIA" . || true
+```
+
+Results:
+
+- `npx tsx tests/claude-platform-aws-cp5.test.ts`: `16 passed, 0 failed`.
+- `npx tsx tests/preflight-safety.test.ts`: `8 passed, 0 failed`.
+- `npm run build`: passed.
+- `npm test`: `221 passed, 0 failed`.
+- `git diff --check`: passed.
+- Leak scan hits remained limited to redaction/tool/test forbidden-pattern code and safe omission-reason strings. No real workspace ID, API key, Authorization value, raw body/response, raw HMAC input/output, or proxy credential was found.
+
+CP0 auth profile status remains `BLOCKED_AUTH_PROFILE` for production. This review-fix still does not claim live AWS, deployment, canary, or production traffic.
