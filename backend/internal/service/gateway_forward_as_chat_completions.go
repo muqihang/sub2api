@@ -44,6 +44,10 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	originalModel := ccReq.Model
 	clientStream := ccReq.Stream
 	includeUsage := ccReq.StreamOptions != nil && ccReq.StreamOptions.IncludeUsage
+	if account != nil && account.IsClaudePlatformAWS() {
+		writeGatewayCCError(c, http.StatusBadGateway, "cc_gateway_control_plane", "claude-platform-aws compat route is disabled")
+		return nil, fmt.Errorf("claude-platform-aws compat route is disabled")
+	}
 	useCCGateway, ccGatewayErr := s.selectCCGatewayAnthropicRoute(account, ccGatewayRouteChatCompletions)
 	if ccGatewayErr != nil {
 		writeGatewayCCError(c, http.StatusBadGateway, "cc_gateway_control_plane", "CC Gateway route policy rejected request")

@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -37,10 +39,24 @@ const (
 	claudePlatformAWSAllowedPath  = "/v1/messages"
 )
 
+const (
+	claudePlatformAWSRequestShapeProfileMessages = "request-shape:claude-platform-aws-v1-messages"
+	claudePlatformAWSRequestShapeProfileStrip    = "request-shape:claude-platform-aws-v1-strip"
+)
+
 var (
 	claudePlatformAWSWorkspaceIDRe = regexp.MustCompile(`^wrkspc_[A-Za-z0-9]+$`)
 	claudePlatformAWSRegionRe      = regexp.MustCompile(`^[a-z]{2}-[a-z]+-[0-9]+$`)
 )
+
+var claudePlatformAWSUnsupportedBodyExtensionPaths = []string{
+	"anthropic_beta",
+	"context_management",
+	"output_config",
+	"thinking",
+	"diagnostic",
+	"diagnostics",
+}
 
 type ClaudePlatformAWSAccountValidation struct {
 	Region                string
@@ -116,6 +132,7 @@ type ClaudePlatformAWSSessionTuple struct {
 type ClaudePlatformAWSFinalVerifierInput struct {
 	FinalURL            string
 	Headers             http.Header
+	Body                []byte
 	Region              string
 	AuthScheme          string
 	WorkspaceFromServer bool
@@ -453,11 +470,68 @@ func (t ClaudePlatformAWSSessionTuple) ValidateSame(attempt ClaudePlatformAWSSes
 	return nil
 }
 
+func validateClaudePlatformAWSStoredCP0Bindings(account *Account, validation ClaudePlatformAWSAccountValidation) error {
+	if account == nil {
+		return fmt.Errorf("%s: claude-platform-aws account is required", ClaudePlatformAWSAuthProfileBlocked)
+	}
+	if strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraCP0AuthProfileEvidenceStatus)) != "pass" ||
+		strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraCP0RegionWorkspaceEvidenceStatus)) != "pass" {
+		return fmt.Errorf("%s: CP0 evidence is incomplete", ClaudePlatformAWSAuthProfileBlocked)
+	}
+	checks := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"workspace_ref", account.GetExtraString(ClaudePlatformAWSExtraWorkspaceRef), validation.WorkspaceRef},
+		{"endpoint_ref", account.GetExtraString(ClaudePlatformAWSExtraEndpointRef), validation.EndpointRef},
+		{"region", account.GetExtraString(ClaudePlatformAWSExtraRegion), validation.Region},
+		{"credential_ref", account.GetExtraString(ccGatewayExtraCredentialRef), validation.CredentialRef},
+		{"credential_binding_hmac", account.GetExtraString(ccGatewayExtraCredentialBindingHMAC), validation.CredentialBindingHMAC},
+		{"workspace_binding_hmac", account.GetExtraString(ClaudePlatformAWSExtraWorkspaceBindingHMAC), validation.WorkspaceBindingHMAC},
+	}
+	for _, check := range checks {
+		if strings.TrimSpace(check.got) != strings.TrimSpace(check.want) {
+			return fmt.Errorf("%s: CP0 evidence binding mismatch: %s", ClaudePlatformAWSAuthProfileBlocked, check.name)
+		}
+	}
+	return nil
+}
+
+func claudePlatformAWSRequestShapeProfileAllowed(profile string) bool {
+	switch strings.TrimSpace(profile) {
+	case claudePlatformAWSRequestShapeProfileMessages, claudePlatformAWSRequestShapeProfileStrip:
+		return true
+	default:
+		return false
+	}
+}
+
+func applyClaudePlatformAWSRequestShapeProfile(body []byte, profile string) ([]byte, error) {
+	if !claudePlatformAWSRequestShapeProfileAllowed(profile) {
+		return nil, fmt.Errorf("%s: unsupported claude-platform-aws request-shape profile", ClaudePlatformAWSAuthProfileBlocked)
+	}
+	out := body
+	for _, path := range claudePlatformAWSUnsupportedBodyExtensionPaths {
+		if next, ok := deleteJSONPathBytes(out, path); ok {
+			out = next
+		}
+	}
+	return out, nil
+}
+
 func ValidateClaudePlatformAWSNoBypass(account *Account, ccGatewayEnabled bool) error {
+	return ValidateClaudePlatformAWSNoBypassForRoute(account, ccGatewayEnabled, false)
+}
+
+func ValidateClaudePlatformAWSNoBypassForRoute(account *Account, ccGatewayEnabled bool, diagnosticAllowed bool) error {
 	if account == nil || !account.IsClaudePlatformAWS() {
 		return nil
 	}
-	if formalPoolBool(account.Extra[ClaudePlatformAWSExtraProductionAdmitted]) && !ccGatewayEnabled {
+	if diagnosticAllowed {
+		return nil
+	}
+	if !ccGatewayEnabled {
 		return fmt.Errorf("CC Gateway is required for claude-platform-aws formal-pool production traffic")
 	}
 	return nil
@@ -516,6 +590,13 @@ func VerifyClaudePlatformAWSFinalRequest(input ClaudePlatformAWSFinalVerifierInp
 		lower := strings.ToLower(strings.TrimSpace(key))
 		if shouldStripClaudePlatformAWSFinalHeader(lower) {
 			return fmt.Errorf("internal header must be stripped")
+		}
+	}
+	if len(input.Body) > 0 {
+		for _, path := range claudePlatformAWSUnsupportedBodyExtensionPaths {
+			if gjson.GetBytes(input.Body, path).Exists() {
+				return fmt.Errorf("unsupported claude-platform-aws body extension must be stripped")
+			}
 		}
 	}
 	return nil

@@ -18,7 +18,7 @@ func (s *GatewayService) buildUpstreamRequestClaudePlatformAWS(
 	_ string,
 	_ string,
 ) (*http.Request, []byte, error) {
-	if err := ValidateClaudePlatformAWSNoBypass(account, false); err != nil {
+	if err := ValidateClaudePlatformAWSNoBypassForRoute(account, false, claudePlatformAWSDirectBuilderDiagnosticAllowed(c)); err != nil {
 		return nil, nil, err
 	}
 	validation, err := ValidateClaudePlatformAWSAccount(account)
@@ -45,6 +45,10 @@ func (s *GatewayService) buildUpstreamRequestClaudePlatformAWS(
 		clientHeaders = SanitizeClaudePlatformAWSInboundHeaders(c.Request.Header)
 	}
 
+	body, err = applyClaudePlatformAWSRequestShapeProfile(body, account.GetExtraString(ClaudePlatformAWSExtraRequestShapeProfileRef))
+	if err != nil {
+		return nil, nil, err
+	}
 	finalBeta, setBeta := claudePlatformAWSFinalBetaHeader(account, clientHeaders)
 	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(body, finalBeta); changed {
 		body = sanitized
@@ -77,6 +81,7 @@ func (s *GatewayService) buildUpstreamRequestClaudePlatformAWS(
 	if err := VerifyClaudePlatformAWSFinalRequest(ClaudePlatformAWSFinalVerifierInput{
 		FinalURL:            req.URL.String(),
 		Headers:             req.Header,
+		Body:                body,
 		Region:              validation.Region,
 		AuthScheme:          authScheme,
 		WorkspaceFromServer: true,
@@ -92,9 +97,8 @@ func resolveClaudePlatformAWSBuilderAuthScheme(account *Account, validation Clau
 	if account == nil {
 		return "", fmt.Errorf("claude-platform-aws account is required")
 	}
-	if strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraCP0AuthProfileEvidenceStatus)) != "pass" ||
-		strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraCP0RegionWorkspaceEvidenceStatus)) != "pass" {
-		return "", fmt.Errorf("%s: CP0 evidence is incomplete", ClaudePlatformAWSAuthProfileBlocked)
+	if err := validateClaudePlatformAWSStoredCP0Bindings(account, validation); err != nil {
+		return "", err
 	}
 	selected := strings.TrimSpace(account.GetExtraString(ClaudePlatformAWSExtraAuthScheme))
 	evidence := ClaudePlatformAWSAuthEvidence{
@@ -112,4 +116,24 @@ func resolveClaudePlatformAWSBuilderAuthScheme(account *Account, validation Clau
 func claudePlatformAWSFinalBetaHeader(_ *Account, _ http.Header) (string, bool) {
 	// Phase 1 uses a provider-owned strip profile: client beta tokens are observations only.
 	return "", false
+}
+
+const claudePlatformAWSDirectBuilderDiagnosticAllowedKey = "claude_platform_aws_direct_builder_diagnostic_allowed"
+
+func markClaudePlatformAWSDirectBuilderDiagnosticAllowed(c *gin.Context) {
+	if c != nil {
+		c.Set(claudePlatformAWSDirectBuilderDiagnosticAllowedKey, true)
+	}
+}
+
+func claudePlatformAWSDirectBuilderDiagnosticAllowed(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	allowed, ok := c.Get(claudePlatformAWSDirectBuilderDiagnosticAllowedKey)
+	if !ok {
+		return false
+	}
+	allowedBool, ok := allowed.(bool)
+	return ok && allowedBool
 }

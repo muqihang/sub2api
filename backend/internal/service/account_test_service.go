@@ -360,6 +360,7 @@ func (s *AccountTestService) testClaudePlatformAWSAccountConnection(c *gin.Conte
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
 
 	gateway := &GatewayService{cfg: s.cfg}
+	markClaudePlatformAWSDirectBuilderDiagnosticAllowed(c)
 	req, _, err := gateway.buildUpstreamRequestClaudePlatformAWS(ctx, c, account, payloadBytes, account.GetCredential("api_key"), testModelID)
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Failed to build Claude Platform on AWS request: %s", err.Error()))

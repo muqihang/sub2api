@@ -20,7 +20,7 @@ func TestGatewayService_BuildClaudePlatformAWSRequestUsesDerivedEndpointServerWo
 	gin.SetMode(gin.TestMode)
 	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
 	body := []byte(`{"model":"claude-sonnet-4-6","stream":false,"max_tokens":32,"context_management":{"edits":[{"type":"clear_thinking_20251015"}]},"messages":[{"role":"user","content":"fixture"}]}`)
-	c := claudePlatformAWSRequestTestContext()
+	c := claudePlatformAWSAccountTestContext()
 
 	req, wireBody, err := (&GatewayService{}).buildUpstreamRequest(
 		context.Background(), c, account, body,
@@ -59,16 +59,77 @@ func TestGatewayService_BuildClaudePlatformAWSRequestUsesDerivedEndpointServerWo
 	}))
 }
 
+func TestGatewayService_BuildClaudePlatformAWSRequestFailsClosedOnCP0BindingMismatch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for name, mutate := range map[string]func(*Account){
+		"api_key_rotated_after_cp0": func(account *Account) {
+			account.Credentials["api_key"] = "synthetic-cpaws-rotated-" + strings.Repeat("r", 16)
+		},
+		"workspace_rotated_after_cp0": func(account *Account) {
+			account.Credentials["anthropic_workspace_id"] = syntheticAWSWorkspaceID(10)
+		},
+		"stored_endpoint_ref_mismatch": func(account *Account) {
+			account.Extra[ClaudePlatformAWSExtraEndpointRef] = formalPoolSafeRef("endpoint", ClaudePlatformAWSEndpointForRegion("eu-west-1"))
+		},
+		"stored_workspace_hmac_mismatch": func(account *Account) {
+			account.Extra[ClaudePlatformAWSExtraWorkspaceBindingHMAC] = "hmac-sha256:" + strings.Repeat("0", 64)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
+			mutate(account)
+
+			req, _, err := (&GatewayService{}).buildUpstreamRequest(
+				context.Background(), claudePlatformAWSAccountTestContext(), account, []byte(`{"model":"claude-sonnet-4-6","messages":[]}`),
+				account.GetCredential("api_key"), "claude_platform_aws", "claude-sonnet-4-6", false, false, false,
+			)
+
+			require.ErrorContains(t, err, ClaudePlatformAWSAuthProfileBlocked)
+			require.Nil(t, req)
+		})
+	}
+}
+
 func TestGatewayService_BuildClaudePlatformAWSRequestFailsClosedWithoutCP0Evidence(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, false)
+
+	req, _, err := (&GatewayService{}).buildUpstreamRequest(
+		context.Background(), claudePlatformAWSAccountTestContext(), account, []byte(`{"model":"claude-sonnet-4-6","messages":[]}`),
+		account.GetCredential("api_key"), "claude_platform_aws", "claude-sonnet-4-6", false, false, false,
+	)
+
+	require.ErrorContains(t, err, ClaudePlatformAWSAuthProfileBlocked)
+	require.Nil(t, req)
+}
+
+func TestGatewayService_BuildClaudePlatformAWSFormalPoolNormalTrafficCannotBypassCCGatewayWhenProductionFlagFalse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
+	markClaudePlatformAWSFormalPoolForRequestTest(t, account)
+	account.Extra[ClaudePlatformAWSExtraProductionAdmitted] = false
 
 	req, _, err := (&GatewayService{}).buildUpstreamRequest(
 		context.Background(), claudePlatformAWSRequestTestContext(), account, []byte(`{"model":"claude-sonnet-4-6","messages":[]}`),
 		account.GetCredential("api_key"), "claude_platform_aws", "claude-sonnet-4-6", false, false, false,
 	)
 
-	require.ErrorContains(t, err, ClaudePlatformAWSAuthProfileBlocked)
+	require.ErrorContains(t, err, "CC Gateway")
+	require.Nil(t, req)
+}
+
+func TestGatewayService_BuildClaudePlatformAWSSpoofedAccountTestPathCannotBypassWithoutServerMarker(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
+	c := claudePlatformAWSRequestTestContext()
+	c.Request.URL.Path = "/api/v1/admin/accounts/5903/test"
+
+	req, _, err := (&GatewayService{}).buildUpstreamRequest(
+		context.Background(), c, account, []byte(`{"model":"claude-sonnet-4-6","messages":[]}`),
+		account.GetCredential("api_key"), "claude_platform_aws", "claude-sonnet-4-6", false, false, false,
+	)
+
+	require.ErrorContains(t, err, "CC Gateway")
 	require.Nil(t, req)
 }
 
@@ -91,7 +152,7 @@ func TestGatewayService_BuildClaudePlatformAWSRequestUsesBearerOnlyWhenExplicitE
 	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileBearerAPIKey, true)
 
 	req, _, err := (&GatewayService{}).buildUpstreamRequest(
-		context.Background(), claudePlatformAWSRequestTestContext(), account, []byte(`{"model":"claude-sonnet-4-6","messages":[]}`),
+		context.Background(), claudePlatformAWSAccountTestContext(), account, []byte(`{"model":"claude-sonnet-4-6","messages":[]}`),
 		account.GetCredential("api_key"), "claude_platform_aws", "claude-sonnet-4-6", false, false, false,
 	)
 
@@ -107,6 +168,56 @@ func TestGatewayService_BuildClaudePlatformAWSRequestUsesBearerOnlyWhenExplicitE
 		AuthFromServer:      true,
 		AllowedPath:         "/v1/messages",
 	}))
+}
+
+func TestGatewayService_BuildClaudePlatformAWSRequestStripsBetaAndUnsupportedBodyExtensions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
+	body := []byte(`{
+		"model":"claude-sonnet-4-6",
+		"anthropic_beta":["context-management-2025-06-27","interleaved-thinking-2025-05-14"],
+		"context_management":{"edits":[{"type":"clear_thinking_20251015"}]},
+		"output_config":{"effort":"max"},
+		"thinking":{"type":"enabled","budget_tokens":1024},
+		"diagnostics":{"trace":true},
+		"messages":[{"role":"user","content":"fixture"}]
+	}`)
+
+	req, wireBody, err := (&GatewayService{}).buildUpstreamRequest(
+		context.Background(), claudePlatformAWSAccountTestContext(), account, body,
+		account.GetCredential("api_key"), "claude_platform_aws", "claude-sonnet-4-6", false, false, false,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, req)
+	require.Empty(t, getHeaderRaw(req.Header, "anthropic-beta"))
+	for _, path := range []string{"anthropic_beta", "context_management", "output_config", "thinking", "diagnostics"} {
+		require.False(t, gjson.GetBytes(wireBody, path).Exists(), path)
+	}
+	require.NoError(t, VerifyClaudePlatformAWSFinalRequest(ClaudePlatformAWSFinalVerifierInput{
+		FinalURL:            req.URL.String(),
+		Headers:             req.Header,
+		Body:                wireBody,
+		Region:              "us-east-1",
+		AuthScheme:          ClaudePlatformAWSAuthProfileXAPIKey,
+		WorkspaceFromServer: true,
+		AuthFromServer:      true,
+		AllowedPath:         "/v1/messages",
+	}))
+}
+
+func TestGatewayService_BuildClaudePlatformAWSRequestFailsClosedOnUnknownAWSRequestShapeProfile(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
+	account.Extra[ClaudePlatformAWSExtraRequestShapeProfileRef] = "request-shape:vertex-profile-is-not-aws"
+
+	req, _, err := (&GatewayService{}).buildUpstreamRequest(
+		context.Background(), claudePlatformAWSAccountTestContext(), account, []byte(`{"model":"claude-sonnet-4-6","messages":[]}`),
+		account.GetCredential("api_key"), "claude_platform_aws", "claude-sonnet-4-6", false, false, false,
+	)
+
+	require.ErrorContains(t, err, ClaudePlatformAWSAuthProfileBlocked)
+	require.Nil(t, req)
 }
 
 func TestGatewayService_GetAccessTokenClaudePlatformAWSIsNotOAuthBedrockVertexOrGenericUpstream(t *testing.T) {
@@ -146,6 +257,42 @@ func TestGatewayService_BuildClaudePlatformAWSCountTokensPathFailsClosed(t *test
 
 	require.ErrorContains(t, err, "/v1/messages")
 	require.Nil(t, req)
+}
+
+func TestGatewayService_ClaudePlatformAWSCompatRoutesFailClosedBeforeModelMappingOrUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for name, run := range map[string]func(*GatewayService, *gin.Context, *Account) (*ForwardResult, error){
+		"chat_completions": func(svc *GatewayService, c *gin.Context, account *Account) (*ForwardResult, error) {
+			body := []byte(`{"model":"claude-haiku-4-5","messages":[{"role":"user","content":"hi"}],"stream":false}`)
+			return svc.ForwardAsChatCompletions(context.Background(), c, account, body, nil)
+		},
+		"responses": func(svc *GatewayService, c *gin.Context, account *Account) (*ForwardResult, error) {
+			body := []byte(`{"model":"claude-haiku-4-5","input":"hi","stream":false}`)
+			return svc.ForwardAsResponses(context.Background(), c, account, body, nil)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
+			recorder := &claudePlatformAWSAccountTestUpstream{resp: &http.Response{
+				StatusCode: http.StatusTeapot,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"synthetic upstream should not be called"}}`)),
+			}}
+			responseRecorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(responseRecorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/"+strings.ReplaceAll(name, "_", "/"), nil)
+			svc := &GatewayService{
+				httpUpstream:        recorder,
+				tlsFPProfileService: &TLSFingerprintProfileService{},
+			}
+
+			result, err := run(svc, c, account)
+
+			require.Nil(t, result)
+			require.ErrorContains(t, err, "claude-platform-aws compat route")
+			require.Nil(t, recorder.lastReq)
+		})
+	}
 }
 
 func TestAccountTestService_ClaudePlatformAWSUsesDedicatedSafeRequestPath(t *testing.T) {
@@ -276,6 +423,25 @@ func claudePlatformAWSRequestTestContext() *gin.Context {
 	c.Request.Header.Set("Anthropic-Version", "2023-06-01")
 	c.Request.Header.Set("Accept", "application/json")
 	return c
+}
+
+func claudePlatformAWSAccountTestContext() *gin.Context {
+	c := claudePlatformAWSRequestTestContext()
+	c.Request.URL.Path = "/api/v1/admin/accounts/5903/test"
+	markClaudePlatformAWSDirectBuilderDiagnosticAllowed(c)
+	return c
+}
+
+func markClaudePlatformAWSFormalPoolForRequestTest(t *testing.T, account *Account) {
+	t.Helper()
+	validation, err := ValidateClaudePlatformAWSAccount(account)
+	require.NoError(t, err)
+	account.Status = StatusActive
+	account.Schedulable = true
+	account.Extra[ccGatewayExtraAccountRef] = validation.AccountRef
+	account.Extra[ccGatewayExtraProxyIdentityRef] = validation.ProxyIdentityRef
+	account.Extra[ccGatewayExtraEgressBucket] = "egress:synthetic-cpaws"
+	account.Extra[FormalPoolExtraRuntimeRegistered] = "true"
 }
 
 func readClaudePlatformAWSRequestBodyForTest(t *testing.T, req *http.Request) []byte {
