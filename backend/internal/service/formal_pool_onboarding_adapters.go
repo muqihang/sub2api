@@ -343,14 +343,20 @@ func (r *FormalPoolHTTPCCGatewayRuntimeRegistrar) RegisterCCGatewayRuntime(ctx c
 		"device_id":               input.DeviceID,
 	}
 	if strings.TrimSpace(input.ProviderKind) == claudePlatformAWSProviderKind {
+		upstreamBaseURL := strings.TrimRight(strings.TrimSpace(input.UpstreamBaseURL), "/")
+		upstreamHost := ""
+		if parsed, err := url.Parse(upstreamBaseURL); err == nil {
+			upstreamHost = parsed.Host
+		}
 		payload["provider_kind"] = claudePlatformAWSProviderKind
 		payload["upstream_auth_scheme"] = strings.TrimSpace(input.UpstreamAuthScheme)
 		payload["aws_region"] = strings.TrimSpace(input.AWSRegion)
-		payload["upstream_base_url"] = strings.TrimRight(strings.TrimSpace(input.UpstreamBaseURL), "/")
+		payload["upstream_base_url"] = upstreamBaseURL
+		payload["upstream_host"] = upstreamHost
 		payload["workspace_ref"] = strings.TrimSpace(input.WorkspaceRef)
 		payload["workspace_binding_hmac"] = strings.TrimSpace(input.WorkspaceBindingHMAC)
-		payload["endpoint_ref"] = strings.TrimSpace(input.EndpointRef)
-		payload["allowed_upstream_paths"] = append([]string(nil), input.AllowedUpstreamPaths...)
+		payload["upstream_endpoint_ref"] = strings.TrimSpace(input.EndpointRef)
+		payload["allowed_upstream_path"] = strings.TrimSpace(input.AllowedUpstreamPaths[0])
 		payload["beta_policy_ref"] = strings.TrimSpace(input.BetaPolicyRef)
 		payload["request_shape_profile_ref"] = strings.TrimSpace(input.RequestShapeProfileRef)
 		payload["cache_parity_profile_ref"] = strings.TrimSpace(input.CacheParityProfileRef)

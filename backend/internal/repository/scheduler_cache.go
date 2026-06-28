@@ -427,6 +427,11 @@ func (c *schedulerCache) mgetChunked(ctx context.Context, keys []string) ([]any,
 }
 
 func buildSchedulerMetadataAccount(account service.Account) service.Account {
+	credentials := filterSchedulerCredentials(account.Credentials)
+	if account.IsClaudePlatformAWS() {
+		credentials = nil
+	}
+
 	return service.Account{
 		ID:                      account.ID,
 		Name:                    account.Name,
@@ -451,7 +456,8 @@ func buildSchedulerMetadataAccount(account service.Account) service.Account {
 		SessionWindowStatus:     account.SessionWindowStatus,
 		AccountGroups:           filterSchedulerAccountGroups(account.AccountGroups),
 		GroupIDs:                filterSchedulerGroupIDs(account.GroupIDs, account.AccountGroups),
-		Credentials:             filterSchedulerCredentials(account.Credentials),
+		Credentials:             credentials,
+		ProxyID:                 account.ProxyID,
 		Extra:                   filterSchedulerExtra(account.Extra),
 	}
 }
@@ -574,6 +580,25 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		"cc_gateway_egress_bucket_enabled",
 		"cc_gateway_egress_bucket",
 		"cc_gateway_account_ref",
+		"cc_gateway_credential_ref",
+		"cc_gateway_credential_binding_hmac",
+		"cc_gateway_proxy_identity_ref",
+		"cc_gateway_persona_profile",
+		"cc_gateway_trusted_egress_profile_ref",
+		"cc_gateway_profile_policy_version",
+		"cc_gateway_billing_shape_policy",
+		"claude_code_device_id",
+		service.ClaudePlatformAWSExtraWorkspaceRef,
+		service.ClaudePlatformAWSExtraWorkspaceBindingHMAC,
+		service.ClaudePlatformAWSExtraEndpointRef,
+		service.ClaudePlatformAWSExtraRegion,
+		service.ClaudePlatformAWSExtraAuthScheme,
+		service.ClaudePlatformAWSExtraRequestShapeProfileRef,
+		service.ClaudePlatformAWSExtraCacheParityProfileRef,
+		service.ClaudePlatformAWSExtraBetaPolicyRef,
+		service.ClaudePlatformAWSExtraCP0AuthProfileEvidenceStatus,
+		service.ClaudePlatformAWSExtraCP0RegionWorkspaceEvidenceStatus,
+		service.ClaudePlatformAWSExtraProductionAdmitted,
 		"openai_responses_mode",
 		"openai_responses_supported",
 		"codex_5h_used_percent",

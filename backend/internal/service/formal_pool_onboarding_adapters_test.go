@@ -327,14 +327,15 @@ func TestFormalPoolHTTPCCGatewayRuntimeRegistrarSendsClaudePlatformAWSRuntimeMap
 	require.Equal(t, "https://aws-external-anthropic.us-east-1.api.aws", gotPayload["upstream_base_url"])
 	require.Equal(t, "workspace:cpaws-a", gotPayload["workspace_ref"])
 	require.Equal(t, "hmac-sha256:"+strings.Repeat("d", 64), gotPayload["workspace_binding_hmac"])
-	require.Equal(t, "endpoint:cpaws-use1", gotPayload["endpoint_ref"])
+	require.Equal(t, "endpoint:cpaws-use1", gotPayload["upstream_endpoint_ref"])
+	require.Equal(t, "aws-external-anthropic.us-east-1.api.aws", gotPayload["upstream_host"])
+	require.Equal(t, "/v1/messages", gotPayload["allowed_upstream_path"])
+	require.NotContains(t, gotPayload, "endpoint_ref")
+	require.NotContains(t, gotPayload, "allowed_upstream_paths")
 	require.Equal(t, workspaceID, gotPayload["anthropic_workspace_id"])
 	require.Equal(t, "beta-policy:claude-platform-aws-v1-strip", gotPayload["beta_policy_ref"])
 	require.Equal(t, "request-shape:claude-platform-aws-v1-strip", gotPayload["request_shape_profile_ref"])
 	require.Equal(t, "cache-profile:claude-platform-aws-v1-strip", gotPayload["cache_parity_profile_ref"])
-	paths, ok := gotPayload["allowed_upstream_paths"].([]any)
-	require.True(t, ok)
-	require.Equal(t, "/v1/messages", paths[0])
 }
 
 func TestFormalPoolHTTPCCGatewayRuntimeRegistrarFailureRedactsControlPlaneBody(t *testing.T) {
