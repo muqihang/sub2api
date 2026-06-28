@@ -3,8 +3,11 @@ import { createConnection } from 'net'
 import { createHmac } from 'crypto'
 import { writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
-import { startProxy } from '/Users/muqihang/chelingxi_workspace/cc-gateway/src/proxy.ts'
-import { baseConfig } from '/Users/muqihang/chelingxi_workspace/cc-gateway/tests/helpers.ts'
+import { pathToFileURL } from 'url'
+
+const ccGatewayRoot = process.env.CC_GATEWAY_ROOT || '/Users/muqihang/chelingxi_workspace/cc-gateway-claude-platform-aws-cp5'
+const { startProxy } = await import(pathToFileURL(join(ccGatewayRoot, 'src/proxy.ts')).href)
+const { baseConfig } = await import(pathToFileURL(join(ccGatewayRoot, 'tests/helpers.ts')).href)
 
 function listen(server) { return new Promise(resolve => server.listen(0, '127.0.0.1', resolve)) }
 function addr(server) { return server.address().port }
@@ -19,6 +22,7 @@ const proxyIdentityRef = 'opaque:proxy-ref:v1:harness'
 const personaProfile = 'claude_code_2_1_179_native_degraded'
 
 const policyVersion = process.env.CC_HARNESS_POLICY_VERSION || '2.1.179'
+const observedCliVersion = process.env.CC_HARNESS_OBSERVED_CLI_VERSION || policyVersion
 const trustedEgressProfileRef = process.env.CC_HARNESS_EGRESS_PROFILE_REF || 'strip_attribution'
 const billingShapePolicy = process.env.CC_HARNESS_BILLING_SHAPE_POLICY || 'strip'
 const enableNoCchProof = process.env.CC_HARNESS_ENABLE_NO_CCH_PROOF === '1'
@@ -147,7 +151,7 @@ const ccGatewayUrl = serverUrl(gateway)
 const mockUrl = `http://127.0.0.1:${addr(mock)}`
 function serverUrl(server) { return `http://127.0.0.1:${server.address().port}` }
 function writeSummary() {
-  const safe = { cc_gateway_url: ccGatewayUrl, mock_url: mockUrl, formal_pool_attested: true, persistent_ledger_configured: true, profile: { policy_version: policyVersion, trusted_egress_profile_ref: trustedEgressProfileRef, billing_shape_policy: billingShapePolicy, profile_policy_version: profilePolicyVersion, request_shape_profile_ref: requestShapeProfileRef, cache_parity_profile_ref: cacheParityProfileRef, no_cch_oracle_proof_enabled: enableNoCchProof, signed_cch_oracle_proof_enabled: enableSignedCchProof }, proxy_connect_targets: proxyTargets, mock_request_count: summaries.length, mock_requests: summaries }
+  const safe = { cc_gateway_url: ccGatewayUrl, mock_url: mockUrl, formal_pool_attested: true, persistent_ledger_configured: true, cc_gateway_root: ccGatewayRoot, profile: { policy_version: policyVersion, observed_cli_version: observedCliVersion, trusted_egress_profile_ref: trustedEgressProfileRef, billing_shape_policy: billingShapePolicy, profile_policy_version: profilePolicyVersion, request_shape_profile_ref: requestShapeProfileRef, cache_parity_profile_ref: cacheParityProfileRef, no_cch_oracle_proof_enabled: enableNoCchProof, signed_cch_oracle_proof_enabled: enableSignedCchProof }, proxy_connect_targets: proxyTargets, mock_request_count: summaries.length, mock_requests: summaries }
   writeFileSync(`${outDir}/cc_safe_summary.json`, JSON.stringify(safe, null, 2), { mode: 0o600 })
 }
 setInterval(writeSummary, 500).unref()

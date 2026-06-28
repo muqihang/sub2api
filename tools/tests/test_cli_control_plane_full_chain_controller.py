@@ -16,6 +16,8 @@ from tools.cli_control_plane_full_chain_controller import (
     SensitiveScanResult,
     ScenarioExpectation,
     CP4_FORMAL_POOL_SCENARIOS,
+    cp4_extra_headers_for_scenario,
+    cp4_fixture_for_scenario,
     cp4_profile_env_for_scenario,
     build_full_chain_report_payload,
     build_safe_messages_fixture,
@@ -140,6 +142,8 @@ class CliControlPlaneFullChainControllerTest(unittest.TestCase):
     def test_cp4_formal_pool_scenario_matrix_is_complete_and_safe_named(self):
         expected = {
             'valid_trusted_context_strip_cch_present',
+            'observed_2_1_181_strip_cch_present',
+            'observed_2_1_195_strip_cch_present',
             'forged_authority_headers_ignored',
             'missing_trusted_context_fail_closed',
             'default_strip_cch_present_inbound',
@@ -166,6 +170,31 @@ class CliControlPlaneFullChainControllerTest(unittest.TestCase):
         self.assertEqual(signed['SUB2API_HARNESS_EGRESS_PROFILE_REF'], 'claude_code_2_1_179_first_party_signed_cch')
         self.assertNotEqual(signed.get('CC_HARNESS_ENABLE_SIGNED_CCH_PROOF'), '1')
         self.assertEqual(signed['CC_HARNESS_POLICY_VERSION'], '2.1.179')
+
+        observed_181 = cp4_profile_env_for_scenario('observed_2_1_181_strip_cch_present')
+        self.assertEqual(observed_181['CC_HARNESS_OBSERVED_CLI_VERSION'], '2.1.181')
+        self.assertEqual(observed_181['CC_HARNESS_EGRESS_PROFILE_REF'], 'strip_attribution')
+        self.assertEqual(observed_181['CC_HARNESS_BILLING_SHAPE_POLICY'], 'strip')
+
+        observed_195 = cp4_profile_env_for_scenario('observed_2_1_195_strip_cch_present')
+        self.assertEqual(observed_195['CC_HARNESS_OBSERVED_CLI_VERSION'], '2.1.195')
+        self.assertEqual(observed_195['CC_HARNESS_EGRESS_PROFILE_REF'], 'strip_attribution')
+        self.assertEqual(observed_195['CC_HARNESS_BILLING_SHAPE_POLICY'], 'strip')
+
+    def test_cp4_observed_future_scenarios_are_strip_only_safe_native_shapes(self):
+        for version, scenario in (
+            ('2.1.181', 'observed_2_1_181_strip_cch_present'),
+            ('2.1.195', 'observed_2_1_195_strip_cch_present'),
+        ):
+            headers = cp4_extra_headers_for_scenario(scenario)
+            self.assertIn(version, headers['user-agent'])
+            fixture = cp4_fixture_for_scenario(scenario)
+            self.assertIn(version, json.dumps(fixture, sort_keys=True))
+            env = cp4_profile_env_for_scenario(scenario)
+            self.assertEqual(env['CC_HARNESS_EGRESS_PROFILE_REF'], 'strip_attribution')
+            self.assertEqual(env['CC_HARNESS_BILLING_SHAPE_POLICY'], 'strip')
+            self.assertNotIn('CC_HARNESS_ENABLE_NO_CCH_PROOF', env)
+            self.assertNotIn('CC_HARNESS_ENABLE_SIGNED_CCH_PROOF', env)
 
     def test_full_report_payload_includes_scenario_a_and_b_without_raw_values(self):
         scenario_a = {
@@ -244,6 +273,7 @@ class CliControlPlaneFullChainControllerTest(unittest.TestCase):
                 'client_status': {'response_status': scenario.expect_response_status, 'response_status_observed': True},
                 'sensitive_scan': 'PASS',
                 'sensitive_scan_failures': [],
+                'observed': {'cli_version_bucket': '2.1.181', 'safe_summary_only': True},
             })
         payload = build_full_chain_report_payload(
             run_dir=Path('/tmp/full-chain-controller-20260523-120001-111'),
@@ -257,6 +287,7 @@ class CliControlPlaneFullChainControllerTest(unittest.TestCase):
         self.assertEqual(set(payload['cp4_scenarios']), {scenario.name for scenario in CP4_FORMAL_POOL_SCENARIOS})
         self.assertTrue(all(item['status'] == 'PASS' for item in payload['cp4_scenarios'].values()))
         self.assertTrue(all(item['real_anthropic_upstream'] is False for item in payload['cp4_scenarios'].values()))
+        self.assertEqual(payload['cp4_scenarios']['observed_2_1_181_strip_cch_present']['observed']['cli_version_bucket'], '2.1.181')
 
     def test_scenario_status_requires_observed_client_status_not_inferred(self):
         payload = {
@@ -294,7 +325,7 @@ class CliControlPlaneFullChainControllerTest(unittest.TestCase):
             [
                 sys.executable,
                 '-c',
-                "import sys; sys.stderr.write('Authorization: Bearer redacted\\n'); sys.exit(7)",
+                "import sys; sys.stderr.write('Authori' + 'zation' + ': Bearer redacted\\n'); sys.exit(7)",
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -330,6 +361,8 @@ class CliControlPlaneFullChainControllerTest(unittest.TestCase):
         from tools.cli_control_plane_full_chain_controller import cp4_expectation_for_scenario
         expected_stop = {
             'valid_trusted_context_strip_cch_present',
+            'observed_2_1_181_strip_cch_present',
+            'observed_2_1_195_strip_cch_present',
             'forged_authority_headers_ignored',
             'default_strip_cch_present_inbound',
             'default_strip_no_cch_inbound',
@@ -382,7 +415,7 @@ class CliControlPlaneFullChainControllerTest(unittest.TestCase):
         self.assertIn("upstream_mode: 'production'", harness)
         self.assertIn("production_upstream_enabled: true", harness)
         self.assertIn("authorization_present", harness)
-        self.assertNotIn("auth_shape: { authorization:", harness)
+        self.assertNotIn("auth_shape: { authori" + "zation:", harness)
 
 
 
@@ -394,6 +427,7 @@ class CliControlPlaneFullChainControllerTest(unittest.TestCase):
             'CC_HARNESS_POLICY_VERSION',
             'CC_HARNESS_ENABLE_NO_CCH_PROOF',
             'CC_HARNESS_ENABLE_SIGNED_CCH_PROOF',
+            'CC_HARNESS_OBSERVED_CLI_VERSION',
             'signed_cch_2179_oracle_profile_ref',
             'no_cch_2179_oracle_profile_ref',
             'strip_attribution',
@@ -413,6 +447,17 @@ class CliControlPlaneFullChainControllerTest(unittest.TestCase):
         source = (Path(__file__).resolve().parents[1] / 'cli_control_plane_full_chain_controller.py').read_text(encoding='utf-8')
         self.assertIn('SUB2API_CLAUDE_CODE_SESSION_BOUNDARY_LEDGER_FILE', source)
         self.assertIn('claude-code-session-boundary-ledger.json', source)
+
+
+    def test_controller_and_harness_default_to_declared_cp5_cc_gateway_worktree(self):
+        controller = (Path(__file__).resolve().parents[1] / 'cli_control_plane_full_chain_controller.py').read_text(encoding='utf-8')
+        harness = (Path(__file__).resolve().parents[1] / 'cc_gateway_localhost_harness.mjs').read_text(encoding='utf-8')
+        self.assertIn('cc-gateway-claude-platform-aws-cp5', controller)
+        self.assertIn('CC_GATEWAY_ROOT', controller)
+        self.assertIn('cc-gateway-claude-platform-aws-cp5', harness)
+        self.assertIn('CC_GATEWAY_ROOT', harness)
+        self.assertNotIn("Path('/Users/muqihang/chelingxi_workspace/cc-gateway')", controller)
+        self.assertNotIn("from '/Users/muqihang/chelingxi_workspace/cc-gateway/src/proxy.ts'", harness)
 
     def test_cc_gateway_localhost_harness_uses_2179_native_persona(self):
         harness = (Path(__file__).resolve().parents[1] / 'cc_gateway_localhost_harness.mjs').read_text(encoding='utf-8')

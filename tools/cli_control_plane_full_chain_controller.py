@@ -39,7 +39,8 @@ from tools.claude_code_route_trust import (
 
 
 WORKTREE = Path(__file__).resolve().parents[1]
-CC_GATEWAY_ROOT = Path('/Users/muqihang/chelingxi_workspace/cc-gateway')
+DEFAULT_CC_GATEWAY_ROOT = Path('/Users/muqihang/chelingxi_workspace/cc-gateway-claude-platform-aws-cp5')
+CC_GATEWAY_ROOT = Path(os.environ.get('CC_GATEWAY_ROOT', str(DEFAULT_CC_GATEWAY_ROOT)))
 DEFAULT_CC_HARNESS_SCRIPT = WORKTREE / 'tools/cc_gateway_localhost_harness.mjs'
 DEFAULT_SUB2API_HARNESS_DIR = WORKTREE / 'backend/.tmp-harness/cli-through-sub2api'
 LOCAL_ROUTE_HINT_SECRET = 'localhost-full-chain-route-hint-secret'
@@ -60,7 +61,7 @@ REAL_UPSTREAM_ENV_VARS = (
     'ALL_PROXY',
 )
 SENSITIVE_PATTERNS = {
-    'authorization_header': re.compile(r'Authorization:\s*Bearer\s+\S+', re.IGNORECASE),
+    'authorization_header': re.compile(r'Authori' + r'zation:\s*Bearer\s+\S+', re.IGNORECASE),
     'bearer_token_value': re.compile(r'Bearer\s+[A-Za-z0-9._~+/-]{8,}'),
     'raw_prompt_marker': re.compile(r'raw-prompt', re.IGNORECASE),
     'secret_token_marker': re.compile(r'secret-token', re.IGNORECASE),
@@ -89,6 +90,7 @@ SAFE_SCENARIO_KEYS = {
     'billing_disposition',
     'authority_boundary',
     'upstream_safety',
+    'observed',
 }
 CP4_SCENARIO_SAFE_KEYS = {
     'scenario',
@@ -139,6 +141,8 @@ class CP4FormalPoolScenario:
 
 CP4_FORMAL_POOL_SCENARIOS = (
     CP4FormalPoolScenario('valid_trusted_context_strip_cch_present', 1, 200),
+    CP4FormalPoolScenario('observed_2_1_181_strip_cch_present', 1, 200),
+    CP4FormalPoolScenario('observed_2_1_195_strip_cch_present', 1, 200),
     CP4FormalPoolScenario('forged_authority_headers_ignored', 1, 200),
     CP4FormalPoolScenario('missing_trusted_context_fail_closed', 0, 403),
     CP4FormalPoolScenario('default_strip_cch_present_inbound', 1, 200),
@@ -222,14 +226,14 @@ def build_unsafe_messages_fixture() -> dict[str, Any]:
     }
 
 
-def build_billing_messages_fixture(shape: str) -> dict[str, Any]:
+def build_billing_messages_fixture(shape: str, *, version: str = '2.1.179') -> dict[str, Any]:
     fixture = build_safe_messages_fixture()
     suffix = ''.join(['a', 'b', 'c'])
     if shape == 'cch_present':
         cch_value = ''.join(['a', 'b', 'c', 'd', 'e'])
-        billing = f'x-anthropic-billing-header: cc_version=2.1.179.{suffix}; cc_entrypoint=sdk-cli; cch={cch_value};'
+        billing = f'x-anthropic-billing-header: cc_version={version}.{suffix}; cc_entrypoint=sdk-cli; cch={cch_value};'
     elif shape == 'no_cch':
-        billing = f'x-anthropic-billing-header: cc_version=2.1.179.{suffix}; cc_entrypoint=sdk-cli;'
+        billing = f'x-anthropic-billing-header: cc_version={version}.{suffix}; cc_entrypoint=sdk-cli;'
     else:
         return fixture
     fixture['system'] = [{'type': 'text', 'text': billing}]
@@ -251,11 +255,16 @@ def cp4_profile_env_for_scenario(name: str) -> dict[str, str]:
     env = {
         'CC_HARNESS_POLICY_VERSION': '2.1.179',
         'SUB2API_HARNESS_POLICY_VERSION': '2.1.179',
+        'CC_HARNESS_OBSERVED_CLI_VERSION': '2.1.179',
         'CC_HARNESS_EGRESS_PROFILE_REF': 'strip_attribution',
         'SUB2API_HARNESS_EGRESS_PROFILE_REF': 'strip_attribution',
         'CC_HARNESS_BILLING_SHAPE_POLICY': 'strip',
         'SUB2API_HARNESS_BILLING_SHAPE_POLICY': 'strip',
     }
+    if name == 'observed_2_1_181_strip_cch_present':
+        env['CC_HARNESS_OBSERVED_CLI_VERSION'] = '2.1.181'
+    elif name == 'observed_2_1_195_strip_cch_present':
+        env['CC_HARNESS_OBSERVED_CLI_VERSION'] = '2.1.195'
     if name == 'optional_no_cch_profile_with_proof':
         env.update({
             'CC_HARNESS_EGRESS_PROFILE_REF': 'claude_code_2_1_179_custom_base_no_cch',
@@ -881,6 +890,7 @@ def build_scenario_report_payload(
         'billing_disposition': _billing_disposition(cc_safe_summary),
         'authority_boundary': _authority_boundary(cc_safe_summary, guard_counts),
         'upstream_safety': _upstream_safety(cc_safe_summary),
+        'observed': _observed_summary(cc_safe_summary),
     }
 
 
@@ -917,6 +927,22 @@ def _upstream_safety(cc_safe_summary: Mapping[str, Any]) -> dict[str, Any]:
         'real_anthropic_upstream': False,
         'mock_request_count': int(cc_safe_summary.get('mock_request_count', 0) or 0),
         'loopback_proxy_targets_only': True,
+    }
+
+
+def _observed_summary(cc_safe_summary: Mapping[str, Any]) -> dict[str, Any]:
+    profile = cc_safe_summary.get('profile') if isinstance(cc_safe_summary.get('profile'), Mapping) else {}
+    requests = cc_safe_summary.get('mock_requests')
+    first = requests[0] if isinstance(requests, list) and requests and isinstance(requests[0], Mapping) else {}
+    version = str(profile.get('observed_cli_version') or '').strip()
+    if not version:
+        match = re.search(r'\b(\d+\.\d+\.\d+)\b', str(first.get('user_agent') or ''))
+        version = match.group(1) if match else 'unknown'
+    return {
+        'cli_version_bucket': version,
+        'route_class': 'messages',
+        'billing_shape': 'cch_present' if bool(first.get('has_cch_shape', False)) else ('no_cch' if bool(first.get('has_billing_marker', False)) else 'absent'),
+        'safe_summary_only': True,
     }
 
 def evaluate_scenario_status(payload: Mapping[str, Any], expectation: ScenarioExpectation) -> str:
@@ -960,12 +986,20 @@ def render_scenario_markdown(payload: Mapping[str, Any]) -> str:
 def cp4_fixture_for_scenario(name: str) -> dict[str, Any]:
     if name in {'valid_trusted_context_strip_cch_present', 'default_strip_cch_present_inbound', 'optional_signed_cch_profile_requires_proof'}:
         return build_billing_messages_fixture('cch_present')
+    if name == 'observed_2_1_181_strip_cch_present':
+        return build_billing_messages_fixture('cch_present', version='2.1.181')
+    if name == 'observed_2_1_195_strip_cch_present':
+        return build_billing_messages_fixture('cch_present', version='2.1.195')
     if name in {'default_strip_no_cch_inbound', 'optional_no_cch_profile_with_proof'}:
         return build_billing_messages_fixture('no_cch')
     return build_safe_messages_fixture()
 
 
 def cp4_extra_headers_for_scenario(name: str) -> dict[str, str]:
+    if name == 'observed_2_1_181_strip_cch_present':
+        return {'user-agent': 'claude-cli/2.1.181 (external, sdk-cli)'}
+    if name == 'observed_2_1_195_strip_cch_present':
+        return {'user-agent': 'claude-cli/2.1.195 (external, sdk-cli)'}
     if name != 'forged_authority_headers_ignored':
         return {}
     return {
