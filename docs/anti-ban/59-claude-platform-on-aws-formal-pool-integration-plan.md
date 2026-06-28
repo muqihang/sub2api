@@ -1261,7 +1261,7 @@ Scope completed:
 - Added final outbound SigV4 signing for Claude Platform on AWS after final URL resolution and final header/body rewrite, and before the provider-aware final verifier. The signer uses service `aws-external-anthropic`, endpoint region `us-east-1`, the final `/v1/messages` body hash, final server-owned `anthropic-workspace-id`, and optional session token.
 - Kept the Bedrock signer isolated; CP7 does not reuse Bedrock service `bedrock` signing.
 - Updated the AWS final verifier to accept SigV4 only when the final request has exactly one SigV4 `Authorization` header, no `x-api-key`, server-owned workspace header, required SigV4 headers, and credential scope containing `us-east-1/aws-external-anthropic/aws4_request`.
-- Preserved Phase 1 API-key behavior. `x_api_key` remains the only production-ready API-key profile from local/mock evidence; `bearer_api_key` remains fail-closed/unproven.
+- Preserved Phase 1 API-key behavior. Local/mock evidence covers the `x_api_key` request shape only as a candidate profile; it does not production-enable `x_api_key`, while `bearer_api_key` remains fail-closed/unproven until CP0 proves exactly one production profile.
 - Added safe capture assertions proving raw workspace ID, access key id, secret access key, session token, raw body text, canonical request, and string-to-sign do not appear in capture artifacts.
 
 TDD evidence:
@@ -1359,3 +1359,82 @@ CP8 review verdict:
 - Important: new map file is ignored by the broad `docs/anti-ban/*` rule and must be force-added before commit; this CP8 record now calls that out explicitly.
 - Minor: keep the force-add/tracking note in the checkpoint handoff.
 - Reviewer confirmed no raw workspace ID, API key, Authorization/`x-api-key` value, raw prompt/body/response, raw HMAC/canonical output, cookie, proxy credential, or raw telemetry leak; blocker statuses and CP7/CP8 state are consistent.
+
+## CP9 server-side simulated full-chain smoke - 2026-06-28
+
+Status: `CP9_DONE_SERVER_MOCK_FULL_CHAIN_PASS_PRODUCTION_STILL_BLOCKED`.
+
+Scope completed on the user-approved server target:
+
+- Host ref: `66.163.122.103`.
+- Isolated smoke root: `/opt/claude-platform-aws-smoke-2fdfb945-e6889da`.
+- Report root: `/opt/claude-platform-aws-smoke-2fdfb945-e6889da/reports/aws-platform-smoke-20260628T013618Z-1`.
+- Sub2API archive commit: `2fdfb945268bcb8ab2f08c6288869afd035b9e16`.
+- CC Gateway archive commit: `e6889daac6babde65e52716ffc5acdc8b5ad2314`.
+- Sub2API archive SHA256: `933e33cff5adbb014256d926695de685a7fd0d30b14be07e4fd6051c8617cf2a`.
+- CC Gateway archive SHA256: `6d7aa5a9f5d75cf7d7fbe75a61a49586031c05f4aa85a79456dba9bd1bb87d6b`.
+- Runner image tag: `claude-platform-aws-smoke-runner:2fdfb945-e6889da`.
+
+Official public-doc sanity check:
+
+- The user-provided Claude Platform on AWS docs page was checked for non-secret facts only: the page contains `anthropic-workspace-id`, `aws-external-anthropic`, `ANTHROPIC_AWS_API_KEY`, `x-api-key`, and `SigV4` references.
+- This supports the existing plan shape: `aws-external-anthropic.{region}.api.aws`, server-owned `anthropic-workspace-id`, and separate API-key/SigV4 auth considerations.
+- The raw workspace IDs mentioned by the user were treated as sensitive and were not written into the repository, report, command log summaries, or evidence docs.
+
+Smoke result:
+
+- `real_aws_upstream`: `false`.
+- `no_live_aws_canary`: `true`.
+- `no_3012_change`: `true`.
+- `no_3017_restart_or_deploy`: `true`.
+- CP0 production auth profile: `BLOCKED_AUTH_PROFILE`.
+- Mocked auth profile: `x_api_key` only; this remains mock evidence and does not production-enable `x_api_key`.
+- Endpoint evidence: safe `endpoint_ref:aws-external-anthropic-us-east-1`, region `us-east-1`, request shape `/v1/messages_empty_query`.
+- Workspace evidence: safe `workspace_ref`/booleans only; no raw workspace value recorded.
+
+Server smoke commands/results:
+
+```bash
+# CC Gateway in isolated Docker runner
+npx tsx tests/claude-platform-aws-cp7-sigv4.test.ts
+# -> 3 passed, 0 failed
+
+npx tsx tests/claude-platform-aws-cp5.test.ts
+# -> 17 passed, 0 failed
+
+npx tsx tests/preflight-safety.test.ts
+# -> 8 passed, 0 failed
+
+npm run build
+# -> passed
+
+# Sub2API in isolated Docker runner
+cd /work/sub2api/backend
+go test ./internal/service -run 'TestCP6AWSMockEvidenceFlagsAllInternalHeaders|TestClaudePlatformAWSLocalFullChainE2EUsesCCGatewayAndSafeMockUpstream' -count=1 -v
+# -> ok; focused CP6 E2E and evidence tests passed
+
+go test ./internal/service -run 'TestClaudePlatformAWS|TestGatewayService_(BuildClaudePlatformAWS|CCGatewayClaudePlatformAWS|GetAccessTokenClaudePlatformAWS|ClaudePlatformAWS)|TestFormalPoolOperationsRuntime.*ClaudePlatformAWS|TestFormalPoolRuntimeRegistrationReplay.*ClaudePlatformAWS|TestCCGatewayFormalPoolAWSAttestationMatchesSharedCanonicalFixture|TestCP6AWSMockEvidenceFlagsAllInternalHeaders' -count=1
+# -> ok
+
+go test ./internal/config -run 'TestLoadDefaultCCGatewayConfig|TestLoadCCGatewayConfigFromEnv|TestLoadRejectsCCGatewayWithoutIndependent|TestLoadRejectsCCGatewayNonHTTPBaseURL' -count=1
+# -> ok
+```
+
+Sensitive-artifact checks:
+
+- Smoke script internal report scan: `sensitive_scan = PASS`, findings `[]`.
+- Host-side precise scan over `report.json`, `sensitive-scan.json`, `host-precise-sensitive-scan.json`, and `run.log`: `PASS`, findings `[]`.
+- The only broader phrase-based triage hit was a test title containing the words `canonical request`; inspection showed it was a safe test-name assertion line, not a canonical request/string-to-sign/HMAC input or output leak.
+- Server `ss -ltnp | grep -E ':(3012|3017)\b'` produced no matching listener output during this smoke evidence check.
+
+Harness issue and resolution:
+
+- The first server run failed before Sub2API CP6 E2E because the container harness mapped the CC Gateway checkout through a symlink and the Go `require.DirExists` check treated that fixed developer path as a file.
+- Root cause was the server-only smoke harness path mapping, not production code.
+- The rerun mounted the same CC Gateway checkout directly at the fixed CP6 test path inside the isolated Docker container. No production code, no 3012 service, and no 3017 deployment were changed.
+
+Remaining gates after CP9:
+
+- CP9 is server-side mock/simulated full-chain evidence only; it is not live AWS proof and not deployed 3017 production equivalence.
+- CP0 remains `BLOCKED_AUTH_PROFILE` until a real target endpoint/workspace/API-key proof selects exactly one production auth profile (`x_api_key` or `bearer_api_key`) with no silent fallback.
+- Formal-pool production traffic remains blocked until CP0, deployed image/config/profile equivalence, explicit tiny live-smoke approval, and safe live evidence all pass.

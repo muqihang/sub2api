@@ -289,7 +289,7 @@ Remaining degraded/blocking scopes:
 
 ## 2026-06-27 Plan 59 Claude Platform on AWS evidence refresh
 
-Status for plan `docs/anti-ban/59-claude-platform-on-aws-formal-pool-integration-plan.md`: `PASS_LOCAL_TARGETED_WITH_PRODUCTION_BLOCKERS` after CP7 review. Local/mock Sub2API and CC Gateway checkpoint evidence is green through the optional SigV4 phase, but production remains blocked by CP0 real auth-profile proof, deployed equivalence, and explicit live-smoke approval.
+Status for plan `docs/anti-ban/59-claude-platform-on-aws-formal-pool-integration-plan.md`: `PASS_LOCAL_AND_SERVER_MOCK_TARGETED_WITH_PRODUCTION_BLOCKERS` after CP9 server-side simulated full-chain smoke. Local/mock Sub2API and CC Gateway checkpoint evidence is green through the optional SigV4 phase and an isolated server mock run, but production remains blocked by CP0 real auth-profile proof, deployed 3017 equivalence, and explicit live-smoke approval.
 
 Tracked final evidence map for plan 59: `docs/anti-ban/59-claude-platform-on-aws-final-evidence-map.md`.
 
@@ -309,6 +309,7 @@ Local safe evidence now recorded for plan 59:
 - CC Gateway local targeted/full tests cover account/credential/workspace binding, workspace binding HMAC, endpoint/region/path/query, egress/proxy, session ledger, provider-scoped beta/request-shape/cache profiles, final verifier ordering, and no post-verifier semantic mutation for the AWS provider path.
 - CP6 local full-chain E2E proves local Sub2API -> local CC Gateway -> safe mock AWS upstream routing for two AWS workspace account identities with distinct proxy refs and no direct bypass.
 - CP7 optional SigV4 mock/canonical tests pass behind an explicit gate and do not reuse the Bedrock signer. This is not live SigV4 evidence.
+- CP9 server-side simulated full-chain smoke passed on host ref `66.163.122.103` using isolated archived commits `2fdfb945268bcb8ab2f08c6288869afd035b9e16` and `e6889daac6babde65e52716ffc5acdc8b5ad2314`; report root `/opt/claude-platform-aws-smoke-2fdfb945-e6889da/reports/aws-platform-smoke-20260628T013618Z-1`; `real_aws_upstream=false`, sensitive scans pass, no 3012 change, and no 3017 restart/deploy.
 
 Remaining blockers stay explicit:
 
@@ -316,10 +317,11 @@ Remaining blockers stay explicit:
 |---|---|---|
 | Real CP0 auth profile proof | `BLOCKED_AUTH_PROFILE` | No real target workspace/API-key evidence has selected exactly one of `x_api_key` or `bearer_api_key`. |
 | Broad Sub2API Go suite | `BLOCKED_HISTORICAL_OR_EXTERNAL` | CP1 audit records historical/external failures unrelated to `fa50af8cfa26`/plan 59; broad green is not claimed. |
-| Deployed 3017/CC Gateway equivalence | `BLOCKED_EXTERNAL_EVIDENCE` | No rebuild/restart/deploy/equivalence proof was performed. |
+| Server mock full-chain smoke | `PASS_SERVER_MOCK_SIMULATED_FULL_CHAIN` | Isolated server runner passed CP7 SigV4, CP5 AWS, preflight, build, Sub2API CP6 E2E, AWS regression, config authority, and safe report scans without live AWS or 3012/3017 changes. |
+| Deployed 3017/CC Gateway equivalence | `BLOCKED_EXTERNAL_EVIDENCE` | No 3017 rebuild/restart/deploy/equivalence proof was performed. |
 | Tiny live AWS smoke | `BLOCKED_USER_APPROVAL_AND_EXTERNAL_EVIDENCE` | Requires CP0 proof, deployed equivalence, explicit user approval, and tiny cost envelope. |
 
-Sensitive evidence policy for this plan 59 refresh: records contain only commit refs, safe endpoint/profile/workspace refs, statuses, counts, file paths, and omission reasons. No raw workspace ID, API key, Authorization value, `x-api-key` value, raw prompt/body/response, canonical request/string-to-sign output, raw HMAC input/output, cookie, proxy credential, or raw telemetry is recorded.
+Sensitive evidence policy for this plan 59 refresh: records contain only commit refs, safe endpoint/profile/workspace refs, statuses, counts, safe server/report paths, SHA256s, and omission reasons. No raw workspace ID, API key, Authorization value, `x-api-key` value, raw prompt/body/response, canonical request/string-to-sign output, raw HMAC input/output, cookie, proxy credential, or raw telemetry is recorded.
 
 ## Sub2API / CC Gateway responsibility boundary
 
