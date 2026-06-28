@@ -490,18 +490,22 @@ func (r *claudePlatformAWSAccountTestRepo) GetByID(context.Context, int64) (*Acc
 }
 
 type claudePlatformAWSAccountTestUpstream struct {
-	resp     *http.Response
-	err      error
-	lastReq  *http.Request
-	lastBody []byte
+	resp         *http.Response
+	err          error
+	lastReq      *http.Request
+	lastBody     []byte
+	lastProxyURL string
+	lastProfile  *tlsfingerprint.Profile
 }
 
 func (u *claudePlatformAWSAccountTestUpstream) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
 	return u.DoWithTLS(req, proxyURL, accountID, accountConcurrency, nil)
 }
 
-func (u *claudePlatformAWSAccountTestUpstream) DoWithTLS(req *http.Request, _ string, _ int64, _ int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+func (u *claudePlatformAWSAccountTestUpstream) DoWithTLS(req *http.Request, proxyURL string, _ int64, _ int, profile *tlsfingerprint.Profile) (*http.Response, error) {
 	u.lastReq = req
+	u.lastProxyURL = proxyURL
+	u.lastProfile = profile
 	if req != nil && req.Body != nil {
 		body, err := io.ReadAll(req.Body)
 		if err != nil {
@@ -514,4 +518,66 @@ func (u *claudePlatformAWSAccountTestUpstream) DoWithTLS(req *http.Request, _ st
 		return nil, u.err
 	}
 	return u.resp, nil
+}
+
+func TestGatewayService_ForwardClaudePlatformAWSFormalPoolUsesCCGatewayWithoutAccountProxy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
+	markClaudePlatformAWSFormalPoolForRequestTest(t, account)
+	account.Proxy = &Proxy{
+		ID:       *account.ProxyID,
+		Name:     "connect-proxy-should-not-be-used",
+		Protocol: "http",
+		Host:     "connect-proxy",
+		Port:     8080,
+		Status:   StatusActive,
+	}
+	cfg := ccGatewayTestConfig(PlatformAnthropic)
+	refreshClaudePlatformAWSFormalPoolAuthorityForRequestTest(t, account, cfg)
+	upstream := &claudePlatformAWSAccountTestUpstream{resp: newAnthropicSuccessResponse()}
+	svc := &GatewayService{
+		cfg:                 cfg,
+		httpUpstream:        upstream,
+		tlsFPProfileService: &TLSFingerprintProfileService{},
+	}
+	c := claudePlatformAWSRequestTestContext()
+	body := []byte(`{"model":"claude-sonnet-4-6","stream":false,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"client-account\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":"fixture"}]}`)
+
+	result, err := svc.Forward(context.Background(), c, account, parseAnthropicRequestForTest(t, body))
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, upstream.lastReq)
+	require.Equal(t, "http://cc-gateway:8443/v1/messages", upstream.lastReq.URL.String())
+	require.Empty(t, upstream.lastReq.URL.RawQuery)
+	require.Empty(t, upstream.lastProxyURL, "claude-platform-aws formal-pool traffic must not use the account proxy around CC Gateway")
+	require.Nil(t, upstream.lastProfile, "claude-platform-aws formal-pool traffic must not use direct account TLS fingerprinting around CC Gateway")
+	require.Equal(t, "ccg-token", getHeaderRaw(upstream.lastReq.Header, ccGatewayTokenHeader))
+	require.Equal(t, PlatformAnthropic, getHeaderRaw(upstream.lastReq.Header, ccGatewayProviderHeader))
+	require.Equal(t, "apikey", getHeaderRaw(upstream.lastReq.Header, ccGatewayTokenTypeHeader))
+	require.NotEmpty(t, getHeaderRaw(upstream.lastReq.Header, ccGatewayFormalPoolContextHeader))
+	require.NotEmpty(t, getHeaderRaw(upstream.lastReq.Header, ccGatewayFormalPoolSignatureHeader))
+	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "anthropic-workspace-id"), "Sub2API must not send raw workspace to CC Gateway; CC Gateway injects final workspace")
+	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "anthropic-beta"), "AWS Platform provider-scoped beta policy strips downstream beta before CC Gateway")
+}
+
+func refreshClaudePlatformAWSFormalPoolAuthorityForRequestTest(t *testing.T, account *Account, cfg *config.Config) {
+	t.Helper()
+	delete(account.Extra, ccGatewayExtraAccountRef)
+	delete(account.Extra, ccGatewayExtraProxyIdentityRef)
+	delete(account.Extra, ccGatewayExtraCredentialRef)
+	delete(account.Extra, ccGatewayExtraCredentialBindingHMAC)
+	delete(account.Extra, ClaudePlatformAWSExtraWorkspaceRef)
+	delete(account.Extra, ClaudePlatformAWSExtraWorkspaceBindingHMAC)
+	delete(account.Extra, ClaudePlatformAWSExtraEndpointRef)
+	validation, err := ValidateClaudePlatformAWSAccountWithCCGatewayConfig(account, cfg)
+	require.NoError(t, err)
+	account.Extra[ccGatewayExtraAccountRef] = validation.AccountRef
+	account.Extra[ccGatewayExtraProxyIdentityRef] = validation.ProxyIdentityRef
+	account.Extra[ccGatewayExtraCredentialRef] = validation.CredentialRef
+	account.Extra[ccGatewayExtraCredentialBindingHMAC] = validation.CredentialBindingHMAC
+	account.Extra[ClaudePlatformAWSExtraWorkspaceRef] = validation.WorkspaceRef
+	account.Extra[ClaudePlatformAWSExtraWorkspaceBindingHMAC] = validation.WorkspaceBindingHMAC
+	account.Extra[ClaudePlatformAWSExtraEndpointRef] = validation.EndpointRef
+	account.Extra[ClaudePlatformAWSExtraRegion] = validation.Region
 }
