@@ -2869,6 +2869,7 @@ var formalPoolAdminProtectedExtraKeys = map[string]struct{}{
 	"cc_gateway_proxy_identity_ref":                        {},
 	"cc_gateway_persona_profile":                           {},
 	"cc_gateway_trusted_egress_profile_ref":                {},
+	"cc_gateway_egress_tls_profile_ref":                    {},
 	"cc_gateway_profile_policy_version":                    {},
 	"cc_gateway_billing_shape_policy":                      {},
 	"cc_gateway_request_shape_profile_ref":                 {},

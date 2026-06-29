@@ -53,6 +53,7 @@ const (
 	ccGatewayExtraProxyIdentityRef      = "cc_gateway_proxy_identity_ref"
 	ccGatewayExtraPersonaProfile        = "cc_gateway_persona_profile"
 	ccGatewayExtraTrustedEgressProfile  = "cc_gateway_trusted_egress_profile_ref"
+	ccGatewayExtraEgressTLSProfileRef   = "cc_gateway_egress_tls_profile_ref"
 	ccGatewayExtraProfilePolicyVersion  = "cc_gateway_profile_policy_version"
 	ccGatewayExtraBillingShapePolicy    = "cc_gateway_billing_shape_policy"
 	ccGatewayExtraRequestShapeProfile   = "cc_gateway_request_shape_profile_ref"
@@ -64,6 +65,7 @@ const (
 	ccGatewayExtraBillingCCH = "billing_cch_mode"
 
 	ccGatewayDefaultTrustedEgressProfileRef  = "strip_attribution"
+	ccGatewayDefaultEgressTLSProfileRef      = "tls-profile:claude-code-2.1.179-real-oracle-tcp-v1"
 	ccGatewayDefault2179ProfilePolicyVersion = "claude_code_2_1_179_cp1_degraded_v1"
 	ccGatewayDefaultBillingShapePolicy       = "strip"
 	ccGatewayDefault2179RequestShapeProfile  = "claude_code_2_1_179_messages_streaming_tooldefs_degraded_v1"
@@ -457,6 +459,7 @@ func applyCCGatewayFormalPoolAttestationWithPersona(req *http.Request, cfg *conf
 	credentialRef := strings.TrimSpace(ccGatewayCredentialRef(account))
 	credentialBinding := strings.TrimSpace(ccGatewayCredentialBindingHMAC(account))
 	proxyIdentityRef := strings.TrimSpace(ccGatewayProxyIdentityRef(account))
+	egressTLSProfileRef, tlsProfileOK := ccGatewayEgressTLSProfileRef(account)
 	personaProfile := strings.TrimSpace(personaOverride)
 	if personaProfile == "" {
 		personaProfile = strings.TrimSpace(ccGatewayPersonaProfile(account))
@@ -471,6 +474,9 @@ func applyCCGatewayFormalPoolAttestationWithPersona(req *http.Request, cfg *conf
 	}
 	if personaProfile == "" {
 		missing = append(missing, "persona_profile")
+	}
+	if egressTLSProfileRef == "" {
+		missing = append(missing, "egress_tls_profile_ref")
 	}
 	if sessionID == "" {
 		missing = append(missing, "session_id")
@@ -508,6 +514,10 @@ func applyCCGatewayFormalPoolAttestationWithPersona(req *http.Request, cfg *conf
 	if !isSafeLedgerRef(credentialRef) || !isSafeLedgerRef(proxyIdentityRef) {
 		return fmt.Errorf("cc gateway formal-pool attestation refs are unsafe")
 	}
+	if !tlsProfileOK {
+		return fmt.Errorf("cc gateway formal-pool attestation egress_tls_profile_ref is unsafe")
+	}
+	stripClientTLSProfileHints(req)
 	routeClass := ccGatewayRouteClassFromRequest(req)
 	path := "/v1/messages"
 	if req.URL != nil {
@@ -530,6 +540,7 @@ func applyCCGatewayFormalPoolAttestationWithPersona(req *http.Request, cfg *conf
 		"timestamp_ms":               time.Now().UnixMilli(),
 		"token_type":                 strings.TrimSpace(getHeaderRaw(req.Header, ccGatewayTokenTypeHeader)),
 		"trusted_egress_profile_ref": ccGatewayTrustedEgressProfileRef(account),
+		"egress_tls_profile_ref":     egressTLSProfileRef,
 		"profile_policy_version":     ccGatewayProfilePolicyVersion(account),
 		"billing_shape_policy":       ccGatewayBillingShapePolicy(account),
 		"request_shape_profile_ref":  ccGatewayAttestationRequestShapeProfileRef(account),
@@ -814,6 +825,17 @@ func ccGatewayTrustedEgressProfileRef(account *Account) string {
 	return ccGatewayDefaultTrustedEgressProfileRef
 }
 
+func ccGatewayEgressTLSProfileRef(account *Account) (string, bool) {
+	if account != nil {
+		raw := strings.TrimSpace(account.GetExtraString(ccGatewayExtraEgressTLSProfileRef))
+		if raw != "" {
+			value := safeTLSProfileRef(raw)
+			return value, value != ""
+		}
+	}
+	return ccGatewayDefaultEgressTLSProfileRef, true
+}
+
 func ccGatewayProfilePolicyVersion(account *Account) string {
 	if account != nil {
 		if v := safeProfileRef(account.GetExtraString(ccGatewayExtraProfilePolicyVersion)); v != "" {
@@ -849,6 +871,58 @@ func ccGatewayCacheParityProfileRef(account *Account) string {
 		}
 	}
 	return ccGatewayDefault2179CacheParityProfile
+}
+
+func safeTLSProfileRef(raw string) string {
+	value := safeProfileRef(raw)
+	if value == "" || !strings.HasPrefix(value, "tls-profile:") {
+		return ""
+	}
+	lower := strings.ToLower(value)
+	for _, forbidden := range []string{"secret", "token", "api-key", "apikey", "sk-", "bearer", "basic", "sha256:", "md5:", "clienthello", "cipher", "extension", "pcap", "cert", "key"} {
+		if strings.Contains(lower, forbidden) {
+			return ""
+		}
+	}
+	return value
+}
+
+func isCCGatewayClientTLSProfileHintKey(key string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(key), "-", "_"), ":", "_"))
+	switch normalized {
+	case "egress_tls_profile_ref", "tls_profile", "tls_profile_ref", "client_tls_profile", "client_tls_profile_ref", "cc_gateway_egress_tls_profile_ref", "x_cc_egress_tls_profile_ref", "x_cc_tls_profile_ref", "x_sub2api_tls_profile", "x_sub2api_egress_tls_profile", "x_tls_profile":
+		return true
+	default:
+		return strings.Contains(normalized, "tls_profile") || strings.Contains(normalized, "egress_tls")
+	}
+}
+
+func stripClientTLSProfileHints(req *http.Request) {
+	if req == nil {
+		return
+	}
+	if req.URL != nil {
+		q := req.URL.Query()
+		changed := false
+		for key := range q {
+			if isCCGatewayClientTLSProfileHintKey(key) {
+				delete(q, key)
+				changed = true
+			}
+		}
+		if changed {
+			req.URL.RawQuery = q.Encode()
+		}
+	}
+	for _, key := range []string{
+		"x-cc-egress-tls-profile-ref",
+		"x-cc-tls-profile-ref",
+		"x-sub2api-tls-profile",
+		"x-sub2api-egress-tls-profile",
+		"x-tls-profile",
+	} {
+		req.Header.Del(key)
+	}
 }
 
 func safeProfileRef(raw string) string {
@@ -893,7 +967,11 @@ func ccGatewayObservedClientProfileForBody(req *http.Request, routeClass string,
 		keys := make([]string, 0)
 		unknownKeys := 0
 		gjson.ParseBytes(body).ForEach(func(k, _ gjson.Result) bool {
-			key := ccGatewayObservedSafeTopLevelBodyKey(k.String())
+			rawKey := k.String()
+			if isCCGatewayClientTLSProfileHintKey(rawKey) {
+				return true
+			}
+			key := ccGatewayObservedSafeTopLevelBodyKey(rawKey)
 			if key != "" {
 				keys = append(keys, key)
 			} else {
@@ -941,7 +1019,11 @@ func ccGatewayRouteClassFromRequest(req *http.Request) string {
 }
 
 func ccGatewayObservedSafeTopLevelBodyKey(raw string) string {
-	switch strings.TrimSpace(raw) {
+	key := strings.TrimSpace(raw)
+	if isCCGatewayClientTLSProfileHintKey(key) {
+		return ""
+	}
+	switch key {
 	case "anthropic_beta",
 		"context_management",
 		"max_tokens",
@@ -955,7 +1037,7 @@ func ccGatewayObservedSafeTopLevelBodyKey(raw string) string {
 		"thinking",
 		"tool_choice",
 		"tools":
-		return strings.TrimSpace(raw)
+		return key
 	default:
 		return ""
 	}
@@ -1006,7 +1088,10 @@ func collectCCGatewayBillingHeaderTexts(body []byte) []string {
 				walk(child)
 			}
 		case map[string]any:
-			for _, child := range x {
+			for key, child := range x {
+				if isCCGatewayClientTLSProfileHintKey(key) {
+					continue
+				}
 				walk(child)
 			}
 		}

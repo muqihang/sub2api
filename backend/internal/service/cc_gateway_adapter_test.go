@@ -1238,6 +1238,9 @@ func TestCCGatewayFormalPoolAttestationMatchesSharedContractFixture(t *testing.T
 	account.Extra["cc_gateway_credential_ref"] = fixture.Account["credential_ref"]
 	account.Extra["cc_gateway_egress_bucket"] = fixture.Account["egress_bucket"]
 	account.Extra["cc_gateway_proxy_identity_ref"] = fixture.Account["proxy_identity_ref"]
+	fixture.Account["egress_tls_profile_ref"] = "tls-profile:shared-fixture-contract-nondefault-v1"
+	fixture.ValidContext["egress_tls_profile_ref"] = fixture.Account["egress_tls_profile_ref"]
+	account.Extra["cc_gateway_egress_tls_profile_ref"] = fixture.Account["egress_tls_profile_ref"]
 	account.Extra["cc_gateway_persona_profile"] = fixture.Account["persona_profile"]
 	account.Extra["claude_code_device_id"] = fixture.Account["device_id"]
 	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
@@ -1251,7 +1254,7 @@ func TestCCGatewayFormalPoolAttestationMatchesSharedContractFixture(t *testing.T
 	for _, key := range []string{
 		"method", "route_class", "path", "account_id", "token_type", "credential_ref", "credential_source",
 		"egress_bucket", "proxy_identity_ref", "policy_version", "persona_profile", "session_id",
-		"trusted_egress_profile_ref", "profile_policy_version", "billing_shape_policy",
+		"trusted_egress_profile_ref", "egress_tls_profile_ref", "profile_policy_version", "billing_shape_policy",
 		"request_shape_profile_ref", "cache_parity_profile_ref",
 	} {
 		require.Equal(t, fixture.ValidContext[key], ctx[key], key)
