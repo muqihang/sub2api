@@ -73,7 +73,7 @@ func (r *FormalPoolGatewayHealthcheckRunner) RunHealthcheck(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	body, err := formalPoolHealthcheckBody()
+	body, err := formalPoolHealthcheckBody(account)
 	if err != nil {
 		return nil, err
 	}
@@ -193,11 +193,15 @@ func (r *FormalPoolGatewayHealthcheckRunner) ccGatewayMessagesURL() (string, err
 
 const formalPoolHealthcheckModel = "claude-haiku-4-5-20251001"
 
-func formalPoolHealthcheckBody() ([]byte, error) {
+func formalPoolHealthcheckBody(account ...*Account) ([]byte, error) {
+	sessionID := formalPoolHealthcheckSessionID(nil)
+	if len(account) > 0 {
+		sessionID = formalPoolHealthcheckSessionID(account[0])
+	}
 	return json.Marshal(map[string]any{
 		"model":      formalPoolHealthcheckModel,
 		"max_tokens": 64,
-		"metadata":   map[string]any{"user_id": `{"device_id":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","session_id":"123e4567-e89b-42d3-a456-426614174005"}`},
+		"metadata":   map[string]any{"user_id": fmt.Sprintf(`{"device_id":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","session_id":"%s"}`, sessionID)},
 		"stream":     false,
 		"system": []map[string]any{
 			{"type": "text", "text": "<env>\nPlatform: darwin\nShell: zsh\nOS Version: Darwin 24.4.0\nWorking directory: /tmp/formal-pool-healthcheck\n</env>"},
@@ -206,6 +210,22 @@ func formalPoolHealthcheckBody() ([]byte, error) {
 		"messages": []map[string]any{{"role": "user", "content": []map[string]any{{"type": "text", "text": "Return a compact healthcheck JSON object with ok true."}}}},
 		"tools":    []map[string]any{},
 	})
+}
+
+func formalPoolHealthcheckSessionID(account *Account) string {
+	seed := "formal-pool-healthcheck"
+	if account != nil {
+		parts := []string{
+			strings.TrimSpace(ccGatewayAccountRef(account)),
+			strings.TrimSpace(resolveCCGatewayEgressBucket(account)),
+			strings.TrimSpace(ccGatewayProxyIdentityRef(account)),
+		}
+		joined := strings.Join(parts, "|")
+		if strings.Trim(joined, "|") != "" {
+			seed = "formal-pool-healthcheck|" + joined
+		}
+	}
+	return claudeCodeUUIDLikeFromDigest(scopedStickyHMACBytes("formal_pool_healthcheck_session", seed))
 }
 
 func headerTruthy(v string) bool {

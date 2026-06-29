@@ -154,6 +154,32 @@ func TestFormalPoolGatewayHealthcheckSessionLedgerBindsHealthcheckPersona(t *tes
 	require.Contains(t, string(raw), `"policy_version": "2_1_179"`)
 }
 
+func TestFormalPoolGatewayHealthcheckUsesAccountScopedSessionForBoundaryLedger(t *testing.T) {
+	resetClaudeCodeSessionBoundaryLedgerForTest()
+	t.Setenv("SUB2API_CLAUDE_CODE_SESSION_BOUNDARY_LEDGER_FILE", filepath.Join(t.TempDir(), "formal-pool-session-ledger.json"))
+	accountA := newFormalPoolHealthcheckAccount()
+	accountA.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+	accountB := newFormalPoolHealthcheckAccount()
+	accountB.ID = 7002
+	accountB.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+	accountB.Extra["cc_gateway_account_ref"] = "hmac-sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	accountB.Extra[ccGatewayExtraCredentialRef] = "opaque:credential-ref:v1:healthcheck-cred-b"
+	accountB.Extra[ccGatewayExtraProxyIdentityRef] = "hmac-sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	accountB.Extra["cc_gateway_egress_bucket"] = "bucket-b"
+	accountB.Extra["claude_code_device_id"] = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	repo := &formalPoolHealthcheckRepo{formalRateLimitRepo{accountsByID: map[int64]*Account{
+		accountA.ID: accountA,
+		accountB.ID: accountB,
+	}}}
+	upstream := &formalPoolHealthcheckUpstream{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"X-Cc-Gateway-Seen": []string{"1"}, "X-Cc-Gateway-Raw-Capture-Ref": []string{"hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}, Body: io.NopCloser(strings.NewReader("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))}}
+	runner := NewFormalPoolGatewayHealthcheckRunner(repo, upstream, newFormalPoolHealthcheckConfig(), nil)
+
+	_, err := runner.RunHealthcheck(context.Background(), FormalPoolAcceptanceInput{AccountID: accountA.ID, AccountRef: formalPoolHealthcheckAccountRefForTest, EgressBucket: "bucket-a", ProxyRef: formalPoolHealthcheckProxyRefForTest, PoolProfile: PoolProfileNormal})
+	require.NoError(t, err)
+	_, err = runner.RunHealthcheck(context.Background(), FormalPoolAcceptanceInput{AccountID: accountB.ID, AccountRef: accountB.GetExtraString("cc_gateway_account_ref"), EgressBucket: "bucket-b", ProxyRef: accountB.GetExtraString(ccGatewayExtraProxyIdentityRef), PoolProfile: PoolProfileNormal})
+	require.NoError(t, err)
+}
+
 func TestFormalPoolGatewayHealthcheckRunnerUsesClaudeCodeLiteBodyWithoutOneMillionContext(t *testing.T) {
 	t.Parallel()
 	const wantPersonaProfile = "claude_code_2_1_179_native_degraded"
