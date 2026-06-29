@@ -1709,6 +1709,53 @@ func completeHealthcheckEvidenceExtraForProxy(proxyID int64) map[string]any {
 	return extra
 }
 
+func TestFormalPoolOperationsRuntimeRegisterPersistsCanonicalCCGatewayPolicyProfiles(t *testing.T) {
+	proxyID := int64(5903)
+	account := &Account{
+		ID:          9101,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeSetupToken,
+		Status:      StatusActive,
+		Schedulable: true,
+		ProxyID:     &proxyID,
+		Credentials: map[string]any{"access_token": "access-token", "refresh_token": "refresh-token", "scope": "user:inference"},
+		Extra: map[string]any{
+			FormalPoolExtraOnboardingStage:      FormalPoolStageProduction,
+			FormalPoolExtraRuntimeRegistered:    "false",
+			FormalPoolExtraRuntimeRegisteredAt:  "",
+			FormalPoolExtraCredentialGeneration: "1",
+			ccGatewayExtraEnabled:               "true",
+			ccGatewayExtraCanaryOnly:            "false",
+			ccGatewayExtraPolicyVersion:         "2.1.175",
+			ccGatewayExtraProfilePolicyVersion:  "claude_code_2_1_175_legacy",
+			ccGatewayExtraEgressBucketEnabled:   "true",
+			ccGatewayExtraEgressBucket:          "bucket-a",
+			"cc_gateway_routes":                 string(ccGatewayRouteNativeMessages),
+		},
+	}
+	store := newFormalPoolOperationsMutableStore(account)
+	runtime := &formalPoolOperationsRuntimeFake{}
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{
+		Accounts:                          store,
+		Proxy:                             &formalPoolOperationsProxyFake{proxy: &Proxy{ID: proxyID, Protocol: "http", Host: "127.0.0.1", Port: 8080, Status: StatusActive}},
+		CCGatewayRuntime:                  runtime,
+		Now:                               func() time.Time { return time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC) },
+		CCGatewayContextAttestationSecret: "formal-pool-runtime-binding-local-test-secret",
+	})
+
+	_, err := svc.RuntimeRegister(context.Background(), account.ID)
+
+	require.NoError(t, err)
+	require.True(t, runtime.called)
+	require.Equal(t, ccGatewayAnthropicPolicyVersion, account.GetExtraString(ccGatewayExtraPolicyVersion))
+	require.Equal(t, ccGatewayDefault2179ProfilePolicyVersion, account.GetExtraString(ccGatewayExtraProfilePolicyVersion))
+	require.Equal(t, ccGatewayDefaultTrustedEgressProfileRef, account.GetExtraString(ccGatewayExtraTrustedEgressProfile))
+	require.Equal(t, ccGatewayDefaultBillingShapePolicy, account.GetExtraString(ccGatewayExtraBillingShapePolicy))
+	require.Equal(t, ccGatewayDefault2179RequestShapeProfile, account.GetExtraString(ccGatewayExtraRequestShapeProfile))
+	require.Equal(t, ccGatewayDefault2179CacheParityProfile, account.GetExtraString(ccGatewayExtraCacheParityProfile))
+	require.Equal(t, ccGatewayDefaultEgressTLSProfileRef, account.GetExtraString(ccGatewayExtraEgressTLSProfileRef))
+}
+
 func TestFormalPoolOperationsRuntimeRegistrationInputCarriesClaudePlatformAWSAuthority(t *testing.T) {
 	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
 	markClaudePlatformAWSFormalPoolForRequestTest(t, account)

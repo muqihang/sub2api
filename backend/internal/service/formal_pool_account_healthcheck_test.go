@@ -190,6 +190,22 @@ func TestFormalPoolGatewayHealthcheckRunnerUsesClaudeCodeLiteBodyWithoutOneMilli
 	require.Equal(t, wantPersonaProfile, getHeaderRaw(upstream.lastHeaders, ccGatewayHealthcheckPersonaHeader))
 }
 
+func TestFormalPoolGatewayHealthcheckBodyUsesUUIDSessionID(t *testing.T) {
+	t.Parallel()
+	body, err := formalPoolHealthcheckBody()
+	require.NoError(t, err)
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(body, &parsed))
+	metadata, ok := parsed["metadata"].(map[string]any)
+	require.True(t, ok)
+	userID, ok := metadata["user_id"].(string)
+	require.True(t, ok)
+	var user map[string]string
+	require.NoError(t, json.Unmarshal([]byte(userID), &user))
+	require.Regexp(t, `^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, user["session_id"])
+	require.NotEqual(t, "formal-pool-healthcheck", user["session_id"])
+}
+
 func TestFormalPoolGatewayHealthcheckRunnerQuarantinesAuthFailure(t *testing.T) {
 	t.Parallel()
 	account := newFormalPoolHealthcheckAccount()

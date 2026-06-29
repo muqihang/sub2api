@@ -197,7 +197,7 @@ func formalPoolHealthcheckBody() ([]byte, error) {
 	return json.Marshal(map[string]any{
 		"model":      formalPoolHealthcheckModel,
 		"max_tokens": 64,
-		"metadata":   map[string]any{"user_id": `{"device_id":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","session_id":"formal-pool-healthcheck"}`},
+		"metadata":   map[string]any{"user_id": `{"device_id":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","session_id":"123e4567-e89b-42d3-a456-426614174005"}`},
 		"stream":     false,
 		"system": []map[string]any{
 			{"type": "text", "text": "<env>\nPlatform: darwin\nShell: zsh\nOS Version: Darwin 24.4.0\nWorking directory: /tmp/formal-pool-healthcheck\n</env>"},

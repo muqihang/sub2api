@@ -1362,16 +1362,15 @@ func (s *FormalPoolOperationsService) runtimeRegisterUnlogged(ctx context.Contex
 		return result, infraerrors.BadRequest("RUNTIME_REGISTRATION_FAILED", "runtime registration failed")
 	}
 	now := s.now()
-	extra := map[string]any{
-		FormalPoolExtraRuntimeRegistered:      "true",
-		FormalPoolExtraRuntimeRegisteredAt:    formalPoolTimestamp(now),
-		FormalPoolExtraLastFailureOrigin:      "",
-		FormalPoolExtraLastFailureCode:        "",
-		FormalPoolExtraLastFailureSource:      "",
-		FormalPoolExtraLastCCGatewayErrorCode: "",
-		FormalPoolExtraQuarantineReason:       "",
-		FormalPoolExtraQuarantineAt:           "",
-	}
+	extra := ccGatewayCanonicalRuntimeAuthorityExtra(account)
+	extra[FormalPoolExtraRuntimeRegistered] = "true"
+	extra[FormalPoolExtraRuntimeRegisteredAt] = formalPoolTimestamp(now)
+	extra[FormalPoolExtraLastFailureOrigin] = ""
+	extra[FormalPoolExtraLastFailureCode] = ""
+	extra[FormalPoolExtraLastFailureSource] = ""
+	extra[FormalPoolExtraLastCCGatewayErrorCode] = ""
+	extra[FormalPoolExtraQuarantineReason] = ""
+	extra[FormalPoolExtraQuarantineAt] = ""
 	if !formalPoolStageAtLeastHealthcheck(account) {
 		extra["onboarding_state"] = FormalPoolStageRuntimeRegistered
 		extra[FormalPoolExtraOnboardingStage] = FormalPoolStageRuntimeRegistered
@@ -1387,6 +1386,31 @@ func (s *FormalPoolOperationsService) runtimeRegisterUnlogged(ctx context.Contex
 		return nil, err
 	}
 	return s.accountResult(ctx, account.ID, updated)
+}
+
+func ccGatewayCanonicalRuntimeAuthorityExtra(account *Account) map[string]any {
+	extra := map[string]any{
+		ccGatewayExtraPolicyVersion:        ccGatewayAnthropicPolicyVersion,
+		ccGatewayExtraProfilePolicyVersion: ccGatewayDefault2179ProfilePolicyVersion,
+		ccGatewayExtraTrustedEgressProfile: ccGatewayTrustedEgressProfileRef(account),
+		ccGatewayExtraBillingShapePolicy:   ccGatewayBillingShapePolicy(account),
+		ccGatewayExtraEgressTLSProfileRef:  ccGatewayDefaultEgressTLSProfileRef,
+	}
+	if tlsProfileRef, ok := ccGatewayEgressTLSProfileRef(account); ok && tlsProfileRef != "" {
+		extra[ccGatewayExtraEgressTLSProfileRef] = tlsProfileRef
+	}
+	if account != nil && account.IsClaudePlatformAWS() {
+		if ref := safeProfileRef(account.GetExtraString(ClaudePlatformAWSExtraRequestShapeProfileRef)); ref != "" {
+			extra[ccGatewayExtraRequestShapeProfile] = ref
+		}
+		if ref := safeProfileRef(account.GetExtraString(ClaudePlatformAWSExtraCacheParityProfileRef)); ref != "" {
+			extra[ccGatewayExtraCacheParityProfile] = ref
+		}
+		return extra
+	}
+	extra[ccGatewayExtraRequestShapeProfile] = ccGatewayRequestShapeProfileRef(account)
+	extra[ccGatewayExtraCacheParityProfile] = ccGatewayCacheParityProfileRef(account)
+	return extra
 }
 
 func (s *FormalPoolOperationsService) runtimeRegistrationInput(ctx context.Context, account *Account) (FormalPoolCCGatewayRuntimeRegistration, error) {
