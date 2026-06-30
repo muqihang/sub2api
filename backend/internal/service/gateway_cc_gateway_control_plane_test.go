@@ -204,6 +204,8 @@ func TestCCGatewayControlPlaneQuarantineClassifier(t *testing.T) {
 		{name: "candidate model blocked with risk quarantines", code: "candidate_model_opus_blocked", message: "risk text detected", status: http.StatusUnprocessableEntity, want: true},
 		{name: "forbidden with model not trusted quarantines", code: "forbidden", message: "model not trusted", status: http.StatusForbidden, want: true},
 		{name: "untrusted billing input is request-level block", code: "signing_untrusted_billing_input", status: http.StatusForbidden, want: false},
+		{name: "observed client profile unapproved is request-level block", code: "formal_pool_observed_client_profile_unapproved", message: "Formal-pool observed client version is below the approved minimum for this profile", status: http.StatusForbidden, want: false},
+		{name: "observed client profile unknown body keys is request-level block", code: "formal_pool_observed_client_profile_unapproved", message: "Formal-pool observed client profile contains unknown body keys", status: http.StatusForbidden, want: false},
 		{name: "missing account identity", code: "missing_account_identity", status: http.StatusForbidden, want: true},
 		{name: "missing identity", code: "missing_identity", status: http.StatusForbidden, want: true},
 		{name: "missing egress", code: "missing_egress", status: http.StatusForbidden, want: true},

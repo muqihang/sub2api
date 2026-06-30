@@ -82,6 +82,8 @@ func (r *FormalPoolGatewayHealthcheckRunner) RunHealthcheck(ctx context.Context,
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "claude-cli/"+ccGatewayAnthropicPolicyVersion+" (formal-pool-healthcheck)")
+	setHeaderRaw(req.Header, ClaudeCodeNativeClaudeCodeVersionHeader, ccGatewayAnthropicPolicyVersion)
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
 	req.Header.Set("authorization", "Bearer "+account.GetCredential("access_token"))

@@ -8104,6 +8104,9 @@ func shouldQuarantineCCGatewayControlPlane(code string, message string, statusCo
 	if isCCGatewayRequestLevelBillingReject(code, text) {
 		return false
 	}
+	if isCCGatewayRequestLevelObservedClientProfileReject(code, text) {
+		return false
+	}
 
 	quarantineSignals := []string{
 		"missing_account_identity",
@@ -8142,6 +8145,30 @@ func shouldQuarantineCCGatewayControlPlaneForAccount(account *Account, code stri
 
 func isCCGatewayRequestLevelBillingReject(code string, text string) bool {
 	return code == "signing_untrusted_billing_input" || strings.Contains(text, "signing_untrusted_billing_input")
+}
+
+func isCCGatewayRequestLevelObservedClientProfileReject(code string, text string) bool {
+	if code != "formal_pool_observed_client_profile_unapproved" && !strings.Contains(text, "formal_pool_observed_client_profile_unapproved") {
+		return false
+	}
+	hardRiskSignals := []string{
+		"missing_account_identity",
+		"missing_identity",
+		"missing_egress",
+		"egress_proxy_failure",
+		"proxy_mismatch",
+		"fallback",
+		"verifier",
+		"invalid_auth",
+		"forbidden",
+		"risk",
+	}
+	for _, signal := range hardRiskSignals {
+		if strings.Contains(text, signal) {
+			return false
+		}
+	}
+	return true
 }
 
 func isCCGatewayEstablishedAccountTransientProxyFailure(account *Account, text string) bool {

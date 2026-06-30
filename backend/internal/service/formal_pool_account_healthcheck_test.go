@@ -115,6 +115,26 @@ func TestFormalPoolGatewayHealthcheckRunnerPassesWithSafeEvidence(t *testing.T) 
 	require.Equal(t, "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", got.RawCaptureRef)
 }
 
+func TestFormalPoolGatewayHealthcheckRunnerSeedsCanonicalObservedClientProfile(t *testing.T) {
+	t.Parallel()
+	account := newFormalPoolHealthcheckAccount()
+	repo := &formalPoolHealthcheckRepo{formalRateLimitRepo{accountsByID: map[int64]*Account{account.ID: account}}}
+	upstream := &formalPoolHealthcheckUpstream{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"X-Cc-Gateway-Seen": []string{"1"}, "X-Cc-Gateway-Raw-Capture-Ref": []string{"hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}, Body: io.NopCloser(strings.NewReader("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))}}
+	runner := NewFormalPoolGatewayHealthcheckRunner(repo, upstream, newFormalPoolHealthcheckConfig(), nil)
+
+	_, err := runner.RunHealthcheck(context.Background(), FormalPoolAcceptanceInput{AccountID: account.ID, AccountRef: formalPoolHealthcheckAccountRefForTest, EgressBucket: "bucket-a", ProxyRef: formalPoolHealthcheckProxyRefForTest, PoolProfile: PoolProfileNormal})
+
+	require.NoError(t, err)
+	require.Equal(t, "claude-cli/"+ccGatewayAnthropicPolicyVersion+" (formal-pool-healthcheck)", upstream.lastHeaders.Get("User-Agent"))
+	require.Equal(t, ccGatewayAnthropicPolicyVersion, getHeaderRaw(upstream.lastHeaders, ClaudeCodeNativeClaudeCodeVersionHeader))
+	ctx := decodeCCGatewayFormalPoolContextForTest(t, &http.Request{Header: upstream.lastHeaders})
+	observed, ok := ctx["observed_client_profile"].(map[string]any)
+	require.True(t, ok, "%#v", ctx["observed_client_profile"])
+	require.Equal(t, ccGatewayAnthropicPolicyVersion, observed["cli_version_bucket"])
+	require.Equal(t, "messages", observed["route_class"])
+	require.NotContains(t, observed, "unknown_top_level_body_key_count")
+}
+
 func TestFormalPoolGatewayHealthcheckRunnerSendsAttestedFormalPoolContext(t *testing.T) {
 	t.Parallel()
 	account := newFormalPoolHealthcheckAccount()
