@@ -596,7 +596,7 @@ func TestGatewayService_CCGatewayAPIKeyPassthroughObservedVersionCapturedBeforeS
 	applyCCGatewayAPIKeyFormalPoolContextForTest(account)
 
 	c := ccGatewayTestContext("/v1/messages")
-	c.Request.Header.Set("User-Agent", "claude-cli/2.1.191 (external, cli)")
+	c.Request.Header.Set("User-Agent", "claude-cli/2.1.195 (external, sdk-cli)")
 	req, _, err := (&GatewayService{
 		cfg:             ccGatewayTestConfig(PlatformAnthropic),
 		identityService: NewIdentityService(ccGatewayIdentityCache{}),
@@ -605,7 +605,7 @@ func TestGatewayService_CCGatewayAPIKeyPassthroughObservedVersionCapturedBeforeS
 
 	ctx := decodeCCGatewayFormalPoolContextForTest(t, req)
 	observed := ctx["observed_client_profile"].(map[string]any)
-	require.Equal(t, "2.1.191", observed["cli_version_bucket"])
+	require.Equal(t, "2.1.195", observed["cli_version_bucket"])
 	require.Equal(t, "strip_attribution", ctx["trusted_egress_profile_ref"])
 	require.Equal(t, "strip", ctx["billing_shape_policy"])
 }
@@ -623,7 +623,7 @@ func TestGatewayService_CCGatewayAPIKeyCountTokensObservedVersionCapturedBeforeS
 	applyCCGatewayAPIKeyFormalPoolContextForTest(account)
 
 	c := ccGatewayTestContext("/v1/messages/count_tokens")
-	c.Request.Header.Set("User-Agent", "claude-cli/2.1.191 (external, cli)")
+	c.Request.Header.Set("User-Agent", "claude-cli/2.1.195 (external, sdk-cli)")
 	req, err := (&GatewayService{
 		cfg:             ccGatewayTestConfig(PlatformAnthropic),
 		identityService: NewIdentityService(ccGatewayIdentityCache{}),
@@ -632,7 +632,7 @@ func TestGatewayService_CCGatewayAPIKeyCountTokensObservedVersionCapturedBeforeS
 
 	ctx := decodeCCGatewayFormalPoolContextForTest(t, req)
 	observed := ctx["observed_client_profile"].(map[string]any)
-	require.Equal(t, "2.1.191", observed["cli_version_bucket"])
+	require.Equal(t, "2.1.195", observed["cli_version_bucket"])
 	require.Equal(t, "count_tokens", ctx["route_class"])
 	require.Equal(t, "strip_attribution", ctx["trusted_egress_profile_ref"])
 }
@@ -1008,6 +1008,28 @@ func TestGatewayService_CCGatewayFormalPoolContextCarriesServerSelected2179Profi
 	requireValidCCGatewayFormalPoolSignatureForTest(t, req, "formal-pool-attestation-secret-test")
 }
 
+func TestGatewayService_CCGatewayFormalPoolLocksCanonicalPolicyWhenContextVersionIsDifferent(t *testing.T) {
+	account := newAnthropicOAuthAccountForClaudeForwardTest()
+	account.Extra["cc_gateway_enabled"] = "true"
+	account.Extra["cc_gateway_canary_only"] = "false"
+	account.Extra["cc_gateway_policy_version"] = ccGatewayAnthropicPolicyVersion
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	ctx := WithCCGatewayExplicitCanaryRequest(SetClaudeCodeVersion(context.Background(), "2.1.153"), CCGatewayAnthropicCanaryRequest{
+		AccountID:      account.ID,
+		Route:          "/v1/messages",
+		Method:         http.MethodPost,
+		BillingCCHMode: "sign",
+		EgressBucket:   "bucket-a",
+	})
+
+	applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
+
+	require.Equal(t, ccGatewayAnthropicPolicyVersion, getHeaderRaw(req.Header, ccGatewayPolicyVersionHeader))
+	require.Empty(t, getHeaderRaw(req.Header, ccGatewayTrustedPersonaHeader))
+}
+
 func TestGatewayService_CCGatewayFormalPoolDefaultStripRemovesDownstreamBillingMaterial(t *testing.T) {
 	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
 	cchMarker := "cch=" + "12345;"
@@ -1124,7 +1146,7 @@ func TestGatewayService_CCGatewayFormalPoolUnknownObservedVersionDoesNotPromoteP
 	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
 
 	c := ccGatewayTestContext("/v1/messages")
-	c.Request.Header.Set("User-Agent", "claude-cli/2.1.191 (external, cli)")
+	c.Request.Header.Set("User-Agent", "claude-cli/2.1.195 (external, sdk-cli)")
 	req, _, err := (&GatewayService{
 		cfg:             ccGatewayTestConfig(PlatformAnthropic),
 		identityService: NewIdentityService(ccGatewayIdentityCache{}),
@@ -1133,7 +1155,13 @@ func TestGatewayService_CCGatewayFormalPoolUnknownObservedVersionDoesNotPromoteP
 
 	ctx := decodeCCGatewayFormalPoolContextForTest(t, req)
 	observed := ctx["observed_client_profile"].(map[string]any)
-	require.Equal(t, "2.1.191", observed["cli_version_bucket"])
+	require.Equal(t, "2.1.195", observed["cli_version_bucket"])
+	require.Equal(t, ccGatewayAnthropicPolicyVersion, ctx["policy_version"])
+	require.Equal(t, ccGatewayDefaultPersonaProfile, ctx["persona_profile"])
+	require.Equal(t, ccGatewayDefault2179ProfilePolicyVersion, ctx["profile_policy_version"])
+	require.Equal(t, ccGatewayDefault2179RequestShapeProfile, ctx["request_shape_profile_ref"])
+	require.Equal(t, ccGatewayDefault2179CacheParityProfile, ctx["cache_parity_profile_ref"])
+	require.Equal(t, ccGatewayDefaultEgressTLSProfileRef, ctx["egress_tls_profile_ref"])
 	require.Equal(t, "strip_attribution", ctx["trusted_egress_profile_ref"])
 	require.Equal(t, "strip", ctx["billing_shape_policy"])
 }

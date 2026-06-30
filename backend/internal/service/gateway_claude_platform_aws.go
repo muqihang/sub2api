@@ -174,8 +174,10 @@ func (s *GatewayService) buildUpstreamRequestClaudePlatformAWSCCGateway(
 	if err != nil {
 		return nil, nil, err
 	}
+	observedClientHeaders := http.Header{}
 	clientHeaders := http.Header{}
 	if c != nil && c.Request != nil {
+		observedClientHeaders = c.Request.Header
 		clientHeaders = SanitizeClaudePlatformAWSInboundHeaders(c.Request.Header)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
@@ -188,7 +190,8 @@ func (s *GatewayService) buildUpstreamRequestClaudePlatformAWSCCGateway(
 	setHeaderRaw(req.Header, "content-type", "application/json")
 	setHeaderRaw(req.Header, "anthropic-version", "2023-06-01")
 	setHeaderRaw(req.Header, "x-api-key", strings.TrimSpace(account.GetCredential("api_key")))
-	ctx = withCCGatewayObservedClientProfileSeed(ctx, clientHeaders)
+	ctx = withCCGatewayObservedClientProfileSeed(ctx, observedClientHeaders)
+	req = req.WithContext(ctx)
 	if c != nil && c.Request != nil {
 		seedCCGatewayClaudeCodeSessionMappingInput(ctx, req, c.Request.Header)
 	}

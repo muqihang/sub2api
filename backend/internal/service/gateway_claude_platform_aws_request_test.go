@@ -561,6 +561,37 @@ func TestGatewayService_ForwardClaudePlatformAWSFormalPoolUsesCCGatewayWithoutAc
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "anthropic-beta"), "AWS Platform provider-scoped beta policy strips downstream beta before CC Gateway")
 }
 
+func TestGatewayService_ClaudePlatformAWSFormalPoolObservedVersionUsesRawClientHeadersBeforeSanitize(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
+	markClaudePlatformAWSFormalPoolForRequestTest(t, account)
+	cfg := ccGatewayTestConfig(PlatformAnthropic)
+	refreshClaudePlatformAWSFormalPoolAuthorityForRequestTest(t, account, cfg)
+	upstream := &claudePlatformAWSAccountTestUpstream{resp: newAnthropicSuccessResponse()}
+	svc := &GatewayService{
+		cfg:                 cfg,
+		httpUpstream:        upstream,
+		tlsFPProfileService: &TLSFingerprintProfileService{},
+	}
+	c := claudePlatformAWSRequestTestContext()
+	c.Request.Header.Set("User-Agent", "claude-cli/2.1.195 (external, sdk-cli)")
+	body := []byte(`{"model":"claude-sonnet-4-6","stream":false,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":"fixture"}]}`)
+
+	result, err := svc.Forward(context.Background(), c, account, parseAnthropicRequestForTest(t, body))
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, upstream.lastReq)
+	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "user-agent"), "client User-Agent must not be forwarded to CC Gateway as authority")
+	ctx := decodeCCGatewayFormalPoolContextForTest(t, upstream.lastReq)
+	observed := ctx["observed_client_profile"].(map[string]any)
+	require.Equal(t, "2.1.195", observed["cli_version_bucket"])
+	require.Equal(t, ccGatewayAnthropicPolicyVersion, ctx["policy_version"])
+	require.Equal(t, ccGatewayDefault2179ProfilePolicyVersion, ctx["profile_policy_version"])
+	require.Equal(t, account.GetExtraString(ClaudePlatformAWSExtraRequestShapeProfileRef), ctx["request_shape_profile_ref"])
+	require.Equal(t, account.GetExtraString(ClaudePlatformAWSExtraCacheParityProfileRef), ctx["cache_parity_profile_ref"])
+}
+
 func refreshClaudePlatformAWSFormalPoolAuthorityForRequestTest(t *testing.T, account *Account, cfg *config.Config) {
 	t.Helper()
 	delete(account.Extra, ccGatewayExtraAccountRef)

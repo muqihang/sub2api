@@ -609,6 +609,12 @@ func applyCCGatewayAnthropicPolicyVersion(ctx context.Context, req *http.Request
 	if req == nil {
 		return
 	}
+	if IsFormalPoolAccount(account) {
+		if version := strings.TrimSpace(account.GetExtraString(ccGatewayExtraPolicyVersion)); version != "" && ccGatewayPolicyVersionCompatible(version) {
+			setHeaderRaw(req.Header, ccGatewayPolicyVersionHeader, ccGatewayAnthropicPolicyVersion)
+		}
+		return
+	}
 	trustedPersona := ccGatewayTrustedPersonaContext(ctx)
 	if trustedPersona {
 		if version := strings.TrimSpace(GetClaudeCodeVersion(ctx)); version != "" {
