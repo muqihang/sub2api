@@ -4802,6 +4802,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	}
 
 	isStrictClaudeCode := account != nil && account.IsOAuth() && IsClaudeCodeClient(ctx)
+	if c != nil && IsClaudeVSCodeUserAgent(c.GetHeader("User-Agent")) {
+		isStrictClaudeCode = false
+	}
 	legacyLooksLikeClaudeCode := false
 	if c != nil {
 		legacyLooksLikeClaudeCode = isClaudeCodeClient(c.GetHeader("User-Agent"), parsed.MetadataUserID)
@@ -10510,6 +10513,9 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	}
 
 	isStrictClaudeCode := account != nil && account.IsOAuth() && IsClaudeCodeClient(ctx)
+	if c != nil && IsClaudeVSCodeUserAgent(c.GetHeader("User-Agent")) {
+		isStrictClaudeCode = false
+	}
 	legacyLooksLikeClaudeCode := false
 	if c != nil {
 		legacyLooksLikeClaudeCode = isClaudeCodeClient(c.GetHeader("User-Agent"), parsed.MetadataUserID)

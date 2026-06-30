@@ -272,6 +272,14 @@ func (v *ClaudeCodeValidator) ExtractVersion(ua string) string {
 	return ExtractCLIVersion(ua)
 }
 
+// IsClaudeVSCodeUserAgent reports whether the inbound client identifies as the
+// Claude VSCode extension family. It may pass ClaudeCodeOnly admission, but it
+// must not trigger raw OAuth strict passthrough; formal-pool/CC Gateway handles
+// it as observed-only input with server-selected canonical upstream identity.
+func IsClaudeVSCodeUserAgent(ua string) bool {
+	return regexp.MustCompile(`(?i)^\s*claude-vscode(?:/\d+\.\d+\.\d+(?:[.+-][A-Za-z0-9._-]+)?)?(?:\s|\(|;|$)`).MatchString(ua)
+}
+
 // SetClaudeCodeVersion 将 Claude Code 版本号设置到 context 中
 func SetClaudeCodeVersion(ctx context.Context, version string) context.Context {
 	return context.WithValue(ctx, ctxkey.ClaudeCodeVersion, version)

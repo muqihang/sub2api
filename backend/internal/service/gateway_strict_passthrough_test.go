@@ -98,6 +98,23 @@ func parseAnthropicRequestForTest(t *testing.T, body []byte) *ParsedRequest {
 	return parsed
 }
 
+func TestStrictPassthrough_DoesNotTreatClaudeVSCodeAsRawPassthrough(t *testing.T) {
+	upstream := &anthropicHTTPUpstreamRecorder{resp: newAnthropicSuccessResponse()}
+	svc := newAnthropicForwardTestService(upstream)
+	account := newAnthropicOAuthAccountForClaudeForwardTest()
+	c, ctx := newAnthropicForwardTestContext("/v1/messages", true)
+	c.Request.Header.Set("User-Agent", "claude-vscode/2.1.196.b90")
+	c.Request.Header.Set("Anthropic-Beta", "client-vscode-beta")
+	body := []byte(`{"model":"claude-opus-4-8","stream":false,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.196.b90; cc_entrypoint=claude-vscode;"},{"type":"text","text":"You are a Claude agent, built on Anthropic's Claude Agent SDK."}],"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"acct-client\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"output_config":{"effort":"high"}}`)
+
+	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+	require.NoError(t, err)
+	require.NotNil(t, upstream.lastReq)
+	require.False(t, bytes.Equal(body, upstream.lastBody), "claude-vscode must not use raw strict passthrough outside CC Gateway")
+	require.NotEqual(t, "claude-vscode/2.1.196.b90", getHeaderRaw(upstream.lastReq.Header, "User-Agent"))
+	require.NotEqual(t, "client-vscode-beta", getHeaderRaw(upstream.lastReq.Header, "anthropic-beta"))
+}
+
 func TestStrictPassthrough_ForwardBodyBytesUnchanged(t *testing.T) {
 	upstream := &anthropicHTTPUpstreamRecorder{resp: newAnthropicSuccessResponse()}
 	svc := newAnthropicForwardTestService(upstream)
@@ -305,6 +322,23 @@ func TestApplyClaudeCodeOAuthMimicryToBody_UsesSafeDefaultFingerprintOnCacheMiss
 	parsedUID := ParseMetadataUserID(uidRaw)
 	require.NotNil(t, parsedUID)
 	require.Equal(t, cache.setFingerprint.ClientID, parsedUID.DeviceID)
+}
+
+func TestStrictPassthrough_CountTokensDoesNotTreatClaudeVSCodeAsRawPassthrough(t *testing.T) {
+	upstream := &anthropicHTTPUpstreamRecorder{resp: newAnthropicCountTokensSuccessResponse()}
+	svc := newAnthropicForwardTestService(upstream)
+	account := newAnthropicOAuthAccountForClaudeForwardTest()
+	c, ctx := newAnthropicForwardTestContext("/v1/messages/count_tokens", true)
+	c.Request.Header.Set("User-Agent", "claude-vscode/2.1.196.b90")
+	c.Request.Header.Set("Anthropic-Beta", "client-vscode-beta")
+	body := []byte(`{"model":"claude-opus-4-8","system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.196.b90; cc_entrypoint=claude-vscode;"},{"type":"text","text":"You are a Claude agent, built on Anthropic's Claude Agent SDK."}],"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"acct-client\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"output_config":{"effort":"high"}}`)
+
+	err := svc.ForwardCountTokens(ctx, c, account, parseAnthropicRequestForTest(t, body))
+	require.NoError(t, err)
+	require.NotNil(t, upstream.lastReq)
+	require.False(t, bytes.Equal(body, upstream.lastBody), "claude-vscode count_tokens must not use raw strict passthrough outside CC Gateway")
+	require.NotEqual(t, "claude-vscode/2.1.196.b90", getHeaderRaw(upstream.lastReq.Header, "User-Agent"))
+	require.NotEqual(t, "client-vscode-beta", getHeaderRaw(upstream.lastReq.Header, "anthropic-beta"))
 }
 
 func TestStrictPassthrough_CountTokensBodyBytesUnchangedAndNoAcceptEncoding(t *testing.T) {
