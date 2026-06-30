@@ -14,7 +14,7 @@ const ccGatewayRealOracleTLSProfileRefForTest = "tls-profile:claude-code-2.1.179
 
 func TestCCGatewayFormalPoolAttestationIncludesServerSelectedTLSProfileRef(t *testing.T) {
 	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
-	body := []byte(`{"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"client-session\"}"},"model":"claude-sonnet-4-6","egress_tls_profile_ref":"tls-profile:client-forged-body","tls_profile":{"ref":"tls-profile:client-forged-nested"},"messages":[{"role":"user","content":"hi"}]}`)
+	body := []byte(`{"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"client-session\"}"},"model":"claude-sonnet-4-6","egress_tls_profile_ref":"tls-profile:client-forged-body","egressTlsProfileRef":"tls-profile:client-forged-camel-body","ccGatewayEgressTlsProfileRef":"tls-profile:client-forged-cc-camel-body","tls_profile":{"ref":"tls-profile:client-forged-nested"},"messages":[{"role":"user","content":"hi"}]}`)
 	account := newAnthropicOAuthAccountForClaudeForwardTest()
 	account.Extra["cc_gateway_enabled"] = "true"
 	account.Extra["cc_gateway_canary_only"] = "false"
@@ -33,7 +33,7 @@ func TestCCGatewayFormalPoolAttestationIncludesServerSelectedTLSProfileRef(t *te
 	c := ccGatewayTestContext("/v1/messages")
 	c.Request.Header.Set("x-cc-egress-tls-profile-ref", "tls-profile:client-forged-header")
 	c.Request.Header.Set("x-sub2api-tls-profile", "tls-profile:client-forged-sub2api")
-	c.Request.URL.RawQuery = "egress_tls_profile_ref=tls-profile:client-forged-query"
+	c.Request.URL.RawQuery = "egress_tls_profile_ref=tls-profile:client-forged-query&egressTlsProfileRef=tls-profile:client-forged-camel-query"
 	req, _, err := (&GatewayService{
 		cfg:             ccGatewayTestConfig(PlatformAnthropic),
 		identityService: NewIdentityService(ccGatewayIdentityCache{}),

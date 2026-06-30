@@ -28,7 +28,7 @@ if __package__ in {None, ""}:
 from tools import claude_code_real_oracle_loopback as app_oracle
 
 ALLOWED_RUNTIME_VERSIONS = app_oracle.ALLOWED_RUNTIME_VERSIONS
-SUMMARY_SOURCES = {"claude_code_cli", "sub2api_utls_builtin", "cc_gateway_node_agent", "unit"}
+SUMMARY_SOURCES = {"claude_code_cli", "sub2api_utls_builtin", "cc_gateway_node_agent", "cc_gateway_utls_sidecar", "unit"}
 FORBIDDEN_TLS_KEYS = {
     "raw_clienthello",
     "raw_client_hello",
@@ -264,6 +264,42 @@ def summarize_clienthello_bytes(
     validate_safe_tls_summary(summary.to_safe_dict())
     return summary
 
+
+def expected_doc63_claude_code_2179_summary() -> dict[str, Any]:
+    return TLSSummary(
+        source="claude_code_cli",
+        version="2.1.179",
+        ja3_hash="e97f5146a7009cc2918b50e903b6ff8d",
+        ja4="t13d0017h1_18560269b2cb_f2afa5bfee90",
+        alpn_protocols=("http/1.1",),
+        tls_versions=("0x0304", "0x0303"),
+        cipher_count=17,
+        extension_count=12,
+        grease_present=False,
+        node_version_bucket="not_applicable",
+        openssl_version_bucket="not_applicable",
+        agent_package_versions={},
+        raw_clienthello_omitted_reason="raw_clienthello_forbidden",
+        timestamp_utc=utc_now(),
+    ).to_safe_dict()
+
+
+def compare_sidecar_summary_to_doc63_oracle(observed: dict[str, Any]) -> dict[str, Any]:
+    validate_safe_tls_summary(observed)
+    expected = expected_doc63_claude_code_2179_summary()
+    compared = ("ja3_hash", "ja4", "alpn_protocols", "tls_versions", "cipher_count", "extension_count", "grease_present")
+    diffs = [key for key in compared if observed.get(key) != expected.get(key)]
+    status = "SAFE_SUMMARY_EQUIVALENCE_MATCH" if not diffs else "BLOCKED_TLS_ENGINE_MISMATCH"
+    return {
+        "schema": "formal_pool_sidecar_tls_oracle_comparison.v1",
+        "status": status,
+        "claim_scope": "safe_summary_only",
+        "difference_fields": diffs,
+        "expected_profile_ref": "tls-profile:claude-code-2.1.179-real-oracle-tcp-v1",
+        "expected_summary_bucket": "tls-bucket:claude-code-real-oracle-2179",
+        "raw_clienthello_omitted_reason": "raw_clienthello_forbidden",
+        "timestamp_utc": utc_now(),
+    }
 
 def validate_safe_tls_summary(payload: dict[str, Any]) -> None:
     if not isinstance(payload, dict):

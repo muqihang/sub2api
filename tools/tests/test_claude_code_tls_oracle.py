@@ -280,5 +280,40 @@ class ClaudeCodeTLSOracleTest(unittest.TestCase):
         self.assertEqual(calls[0][0][4], "http://127.0.0.1:49999")
 
 
+class ClaudeCodeTLSSidecarOracleTest(unittest.TestCase):
+    def test_sidecar_summary_source_is_safe_and_compared_to_doc63_oracle(self):
+        observed = tls_oracle.TLSSummary(
+            source="cc_gateway_utls_sidecar",
+            version="tls-profile:claude-code-2.1.179-real-oracle-tcp-v1",
+            ja3_hash="dc782a9d905fdcee1223a3d4e8108bc6",
+            ja4="t13d0017h1_18560269b2cb_dd86c69b7cb0",
+            alpn_protocols=("http/1.1",),
+            tls_versions=("0x0304", "0x0303"),
+            cipher_count=17,
+            extension_count=13,
+            grease_present=False,
+            node_version_bucket="not_applicable",
+            openssl_version_bucket="not_applicable",
+            agent_package_versions={},
+            raw_clienthello_omitted_reason="raw_clienthello_forbidden",
+            timestamp_utc="2026-06-30T00:00:00Z",
+        )
+        safe = observed.to_safe_dict()
+        result = tls_oracle.compare_sidecar_summary_to_doc63_oracle(safe)
+        self.assertEqual(result["status"], "BLOCKED_TLS_ENGINE_MISMATCH")
+        self.assertIn("ja3_hash", result["difference_fields"])
+        self.assertIn("extension_count", result["difference_fields"])
+        dumped = json.dumps(result).lower()
+        self.assertIn("raw_clienthello_omitted_reason", dumped)
+        self.assertNotIn("010000", dumped)
+        self.assertNotIn("pcap", dumped)
+        self.assertNotIn("private key", dumped)
+
+    def test_sidecar_summary_match_is_safe_summary_equivalence_only(self):
+        expected = tls_oracle.expected_doc63_claude_code_2179_summary()
+        result = tls_oracle.compare_sidecar_summary_to_doc63_oracle(expected)
+        self.assertEqual(result["status"], "SAFE_SUMMARY_EQUIVALENCE_MATCH")
+        self.assertEqual(result["claim_scope"], "safe_summary_only")
+
 if __name__ == "__main__":
     unittest.main()

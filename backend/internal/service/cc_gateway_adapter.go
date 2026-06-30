@@ -894,12 +894,17 @@ func safeTLSProfileRef(raw string) string {
 }
 
 func isCCGatewayClientTLSProfileHintKey(key string) bool {
-	normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(key), "-", "_"), ":", "_"))
+	lower := strings.ToLower(strings.TrimSpace(key))
+	normalized := strings.ReplaceAll(strings.ReplaceAll(lower, "-", "_"), ":", "_")
+	compact := strings.NewReplacer("_", "", "-", "", ":", "", ".", "").Replace(lower)
 	switch normalized {
 	case "egress_tls_profile_ref", "tls_profile", "tls_profile_ref", "client_tls_profile", "client_tls_profile_ref", "cc_gateway_egress_tls_profile_ref", "x_cc_egress_tls_profile_ref", "x_cc_tls_profile_ref", "x_sub2api_tls_profile", "x_sub2api_egress_tls_profile", "x_tls_profile":
 		return true
 	default:
-		return strings.Contains(normalized, "tls_profile") || strings.Contains(normalized, "egress_tls")
+		return strings.Contains(normalized, "tls_profile") ||
+			strings.Contains(normalized, "egress_tls") ||
+			strings.Contains(compact, "tlsprofile") ||
+			strings.Contains(compact, "egresstls")
 	}
 }
 
