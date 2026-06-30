@@ -16,11 +16,11 @@ type ClaudeCodeValidator struct{}
 
 var (
 	// User-Agent 匹配官方 Claude Code 客户端家族，大小写不敏感。
-	// 支持 claude-cli、claude-code、Claude Code、ClaudeCode，版本号可选。
-	claudeCodeUAPattern = regexp.MustCompile(`(?i)^\s*(?:claude-cli|claude[-\s]?code)(?:/\d+\.\d+\.\d+(?:[-+][A-Za-z0-9._-]*)?)?(?:\s|\(|;|$)`)
+	// 支持 claude-cli、claude-code、Claude Code、ClaudeCode、claude-vscode，版本号可选。
+	claudeCodeUAPattern = regexp.MustCompile(`(?i)^\s*(?:claude-cli|claude[-\s]?code|claude-vscode)(?:/\d+\.\d+\.\d+(?:[.+-][A-Za-z0-9._-]+)?)?(?:\s|\(|;|$)`)
 
 	// 带捕获组的版本提取正则。和 UA 判定保持同一官方客户端家族。
-	claudeCodeUAVersionPattern = regexp.MustCompile(`(?i)^\s*(?:claude-cli|claude[-\s]?code)/(\d+\.\d+\.\d+)`)
+	claudeCodeUAVersionPattern = regexp.MustCompile(`(?i)^\s*(?:claude-cli|claude[-\s]?code|claude-vscode)/(\d+\.\d+\.\d+)`)
 
 	// System prompt 相似度阈值（默认 0.5，和 claude-relay-service 一致）
 	systemPromptThreshold = 0.5

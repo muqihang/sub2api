@@ -79,6 +79,23 @@ func TestClaudeCodeValidator_MessagesAcceptsOfficialClaudeCodeUAFamily(t *testin
 	}
 }
 
+func TestClaudeCodeValidator_MessagesAcceptsClaudeVSCodeObservedShape(t *testing.T) {
+	validator := NewClaudeCodeValidator()
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/v1/messages", nil)
+	req.Header.Set("User-Agent", "claude-vscode/2.1.196.b90")
+
+	ok := validator.Validate(req, map[string]any{
+		"model": "claude-opus-4-8",
+		"system": []any{
+			map[string]any{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.196.b90; cc_entrypoint=claude-vscode;"},
+			map[string]any{"type": "text", "text": "You are a Claude agent, built on Anthropic's Claude Agent SDK."},
+		},
+		"metadata":      map[string]any{"user_id": validClaudeCodeJSONMetadataUserID()},
+		"output_config": map[string]any{"effort": "high"},
+	})
+	require.True(t, ok)
+}
+
 func TestClaudeCodeValidator_MessagesToleratesStrippedHeadersWithStrongEvidence(t *testing.T) {
 	validator := NewClaudeCodeValidator()
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/v1/messages", nil)
