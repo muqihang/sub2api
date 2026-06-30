@@ -958,9 +958,10 @@ func ccGatewayObservedClientProfile(req *http.Request, routeClass string) map[st
 }
 
 func ccGatewayObservedClientProfileForBody(req *http.Request, routeClass string, body []byte) map[string]any {
+	billingHeaders := collectCCGatewayBillingHeaderTexts(body)
 	profile := map[string]any{
 		"schema_version":     "observed_client_profile.v1",
-		"cli_version_bucket": ccGatewayObservedCLIVersionBucket(req),
+		"cli_version_bucket": ccGatewayObservedCLIVersionBucketWithBillingHeaders(req, billingHeaders),
 		"route_class":        sanitizeReasonCode(routeClass),
 	}
 	if req == nil {
@@ -995,7 +996,6 @@ func ccGatewayObservedClientProfileForBody(req *http.Request, routeClass string,
 		profile["output_config_present"] = gjson.GetBytes(body, "output_config").Exists()
 		profile["context_management_present"] = gjson.GetBytes(body, "context_management").Exists()
 	}
-	billingHeaders := collectCCGatewayBillingHeaderTexts(body)
 	profile["billing_block_count"] = len(billingHeaders)
 	profile["billing_shape"] = ccGatewayBillingShapeFromObservedHeaders(billingHeaders)
 	profile["cc_entrypoint_bucket"] = ccGatewayEntrypointBucketFromObservedHeaders(billingHeaders)
@@ -1062,10 +1062,28 @@ func ccGatewayObservedCLIVersionBucket(req *http.Request) string {
 }
 
 func ccGatewayObservedCLIVersionBucketFromHeaders(headers http.Header) string {
-	for _, raw := range []string{
+	return ccGatewayObservedCLIVersionBucketFromValues(
 		getHeaderRaw(headers, "User-Agent"),
 		getHeaderRaw(headers, ClaudeCodeNativeClaudeCodeVersionHeader),
-	} {
+	)
+}
+
+func ccGatewayObservedCLIVersionBucketWithBillingHeaders(req *http.Request, billingHeaders []string) string {
+	values := make([]string, 0, 2+len(billingHeaders))
+	if req != nil {
+		if seed, ok := req.Context().Value(ccGatewayObservedClientProfileContextKey{}).(ccGatewayObservedClientProfileSeed); ok {
+			if version := strings.TrimSpace(seed.CLIVersionBucket); version != "" && version != "unknown" {
+				return version
+			}
+		}
+		values = append(values, getHeaderRaw(req.Header, "User-Agent"), getHeaderRaw(req.Header, ClaudeCodeNativeClaudeCodeVersionHeader))
+	}
+	values = append(values, billingHeaders...)
+	return ccGatewayObservedCLIVersionBucketFromValues(values...)
+}
+
+func ccGatewayObservedCLIVersionBucketFromValues(values ...string) string {
+	for _, raw := range values {
 		if match := regexp.MustCompile(`\b(\d+\.\d+\.\d+)\b`).FindStringSubmatch(raw); len(match) == 2 {
 			return match[1]
 		}
@@ -1129,6 +1147,8 @@ func ccGatewayEntrypointBucketFromObservedHeaders(headers []string) string {
 			return "cli"
 		case "sdk-cli":
 			return "sdk-cli"
+		case "claude-vscode":
+			return "claude-vscode"
 		default:
 			return "other"
 		}

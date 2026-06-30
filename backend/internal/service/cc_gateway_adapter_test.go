@@ -1008,6 +1008,55 @@ func TestGatewayService_CCGatewayFormalPoolContextCarriesServerSelected2179Profi
 	requireValidCCGatewayFormalPoolSignatureForTest(t, req, "formal-pool-attestation-secret-test")
 }
 
+func TestGatewayService_CCGatewayFormalPoolObservedClaudeVSCodeShapeIsAuditOnly(t *testing.T) {
+	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
+	body := []byte(`{"max_tokens":64000,"messages":[{"role":"user","content":[{"type":"text","text":"safe local fixture"}]}],"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"client-session\"}"},"model":"claude-opus-4-8","output_config":{"effort":"high","format":{"type":"json_schema","schema":{"type":"object","additionalProperties":false,"properties":{"title":{"type":"string"}},"required":["title"]}}},"stream":true,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.196.b90; cc_entrypoint=claude-vscode;"},{"type":"text","text":"safe system fixture"}],"thinking":{"type":"disabled"},"tools":[]}`)
+	account := newAnthropicOAuthAccountForClaudeForwardTest()
+	account.Extra["cc_gateway_enabled"] = "true"
+	account.Extra["cc_gateway_canary_only"] = "false"
+	account.Extra["cc_gateway_policy_version"] = ccGatewayAnthropicPolicyVersion
+	account.Extra["cc_gateway_routes"] = "native_messages,native_count_tokens,chat_completions,responses"
+	account.Extra["cc_gateway_egress_bucket_enabled"] = "true"
+	account.Extra["cc_gateway_egress_bucket"] = "bucket-a"
+	account.Extra["cc_gateway_account_ref"] = "hmac-sha256:" + strings.Repeat("c", 64)
+	formalPoolApplyCompleteSchedulingEvidenceForTest(account)
+	account.Extra[ccGatewayExtraCredentialRef] = "opaque:credential-ref:v1:cred-a"
+	account.Extra[ccGatewayExtraProxyIdentityRef] = "opaque:proxy-ref:v1:bucket-a"
+	account.Extra[ccGatewayExtraPersonaProfile] = ccGatewayDefaultPersonaProfile
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+
+	c := ccGatewayTestContext("/v1/messages")
+	c.Request.Header.Set("User-Agent", "Claude VSCode title generator")
+	c.Request.Header.Set("x-cc-trusted-egress-profile-ref", "client-signed-cch")
+	c.Request.Header.Set("x-cc-egress-tls-profile-ref", "tls-profile:client-forged")
+	c.Request.Header.Set("x-cc-billing-shape-policy", "signed_cch")
+	c.Request.Header.Set("x-cc-observed-client-profile", `{"cli_version_bucket":"9.9.9","cc_entrypoint_bucket":"client"}`)
+
+	req, _, err := (&GatewayService{
+		cfg:             ccGatewayTestConfig(PlatformAnthropic),
+		identityService: NewIdentityService(ccGatewayIdentityCache{}),
+	}).buildUpstreamRequest(context.Background(), c, account, body, "oauth-token", "oauth", "claude-opus-4-8", true, false, false)
+	require.NoError(t, err)
+
+	ctx := decodeCCGatewayFormalPoolContextForTest(t, req)
+	observed := ctx["observed_client_profile"].(map[string]any)
+	require.Equal(t, "2.1.196", observed["cli_version_bucket"])
+	require.Equal(t, "claude-vscode", observed["cc_entrypoint_bucket"])
+	require.Equal(t, "no_cch", observed["billing_shape"])
+	require.Equal(t, float64(1), observed["billing_block_count"])
+	require.Equal(t, true, observed["output_config_present"])
+	require.Contains(t, observed["top_level_body_keys"], "output_config")
+	require.NotContains(t, observed, "unknown_top_level_body_key_count")
+	require.Equal(t, ccGatewayAnthropicPolicyVersion, ctx["policy_version"])
+	require.Equal(t, ccGatewayDefaultPersonaProfile, ctx["persona_profile"])
+	require.Equal(t, ccGatewayDefault2179ProfilePolicyVersion, ctx["profile_policy_version"])
+	require.Equal(t, ccGatewayDefault2179RequestShapeProfile, ctx["request_shape_profile_ref"])
+	require.Equal(t, ccGatewayDefault2179CacheParityProfile, ctx["cache_parity_profile_ref"])
+	require.Equal(t, ccGatewayDefaultEgressTLSProfileRef, ctx["egress_tls_profile_ref"])
+	require.Equal(t, "strip_attribution", ctx["trusted_egress_profile_ref"])
+	require.Equal(t, "strip", ctx["billing_shape_policy"])
+}
+
 func TestGatewayService_CCGatewayFormalPoolLocksCanonicalPolicyWhenContextVersionIsDifferent(t *testing.T) {
 	account := newAnthropicOAuthAccountForClaudeForwardTest()
 	account.Extra["cc_gateway_enabled"] = "true"
