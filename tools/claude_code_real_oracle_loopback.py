@@ -38,6 +38,36 @@ APPLICATION_SCENARIOS = (
 )
 SENSITIVE_HEADER_NAMES = {"authorization", "x-api-key", "cookie", "proxy-authorization"}
 ENV_ALLOWLIST = {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "TZ", "TMPDIR"}
+SNI_PRESERVING_FORBIDDEN_INHERITED_ENV = {
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+    "npm_config_proxy",
+    "npm_config_http_proxy",
+    "npm_config_https_proxy",
+    "npm_config_cafile",
+    "npm_config_ca",
+    "npm_config_strict_ssl",
+    "NPM_CONFIG_PROXY",
+    "NPM_CONFIG_HTTP_PROXY",
+    "NPM_CONFIG_HTTPS_PROXY",
+    "NPM_CONFIG_CAFILE",
+    "NPM_CONFIG_CA",
+    "NPM_CONFIG_STRICT_SSL",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_API_BASE_URL",
+    "NODE_EXTRA_CA_CERTS",
+    "NODE_TLS_REJECT_UNAUTHORIZED",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "CURL_CA_BUNDLE",
+    "REQUESTS_CA_BUNDLE",
+}
 
 
 def utc_now() -> str:
@@ -184,6 +214,120 @@ def evaluate_egress_guard(
     }
 
 
+def _empty_sni_preserving_blocked_summary(guard_type: str = "not_available") -> dict[str, Any]:
+    summary = _empty_blocked_summary(guard_type)
+    summary.update(
+        {
+            "provider_direct_tcp_blocked": False,
+            "provider_tcp_connect_unexpected_success": False,
+            "non_loopback_proxy_env_rejected": False,
+            "proxy_env_only_external_path_blocked": False,
+            "real_provider_through_non_loopback_proxy_blocked": False,
+            "npm_proxy_endpoint_trust_env_rejected": False,
+            "real_provider_host_bucket": "anthropic_api",
+        }
+    )
+    return summary
+
+
+def evaluate_sni_preserving_egress_guard(
+    *,
+    same_scope_self_tests: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Evaluate Plan 69's stricter same-scope guard for logical provider captures."""
+    if same_scope_self_tests is None:
+        return _empty_sni_preserving_blocked_summary()
+    guard_type = str(same_scope_self_tests.get("guard_type", "not_available"))
+    summary = _empty_sni_preserving_blocked_summary(guard_type)
+    required_true = (
+        "deny_all_except_loopback",
+        "loopback_collector_reachable",
+        "ipv4_external_tcp_blocked",
+        "ipv6_external_tcp_blocked",
+        "dns_udp_external_blocked",
+        "proxy_env_only_rejected",
+        "provider_direct_tcp_blocked",
+        "non_loopback_proxy_env_rejected",
+        "proxy_env_only_external_path_blocked",
+        "real_provider_through_non_loopback_proxy_blocked",
+        "npm_proxy_endpoint_trust_env_rejected",
+    )
+    for key in required_true:
+        summary[key] = same_scope_self_tests.get(key, False) is True
+    summary["provider_tcp_connect_unexpected_success"] = same_scope_self_tests.get("provider_tcp_connect_unexpected_success") is True
+    passed = (
+        guard_type in HARD_GUARD_TYPES
+        and all(same_scope_self_tests.get(key) is True for key in required_true)
+        and same_scope_self_tests.get("provider_tcp_connect_unexpected_success") is False
+    )
+    if not passed:
+        summary["status"] = "BLOCKED_DYNAMIC_EGRESS_GUARD"
+        summary["blocked_external_probe_bucket"] = "not_proven"
+        summary["allowed_destination_bucket"] = "loopback_only_not_proven"
+        return summary
+    summary["status"] = "PASS"
+    summary["allowed_destination_bucket"] = "loopback_only"
+    summary["blocked_external_probe_bucket"] = "blocked"
+    return summary
+
+
+CP2_EGRESS_GUARD_BOOL_KEYS = {
+    "deny_all_except_loopback",
+    "loopback_collector_reachable",
+    "ipv4_external_tcp_blocked",
+    "ipv6_external_tcp_blocked",
+    "dns_udp_external_blocked",
+    "proxy_env_only_rejected",
+    "provider_direct_tcp_blocked",
+    "provider_tcp_connect_unexpected_success",
+    "non_loopback_proxy_env_rejected",
+    "proxy_env_only_external_path_blocked",
+    "real_provider_through_non_loopback_proxy_blocked",
+    "npm_proxy_endpoint_trust_env_rejected",
+    "real_cli_executed",
+    "sidecar_executed",
+}
+CP2_EGRESS_GUARD_METADATA_KEYS = {"status", "guard_type", "timestamp_utc"}
+CP2_EGRESS_GUARD_REQUIRED_TRUE_KEYS = CP2_EGRESS_GUARD_BOOL_KEYS - {
+    "provider_tcp_connect_unexpected_success",
+    "real_cli_executed",
+    "sidecar_executed",
+}
+
+
+def safe_cp2_egress_guard_evidence(summary: dict[str, Any]) -> dict[str, Any]:
+    evidence: dict[str, Any] = {
+        "status": str(summary.get("status", "BLOCKED_DYNAMIC_EGRESS_GUARD")),
+        "guard_type": str(summary.get("guard_type", "not_available")),
+        "timestamp_utc": str(summary.get("timestamp_utc", utc_now())),
+    }
+    for key in sorted(CP2_EGRESS_GUARD_BOOL_KEYS):
+        evidence[key] = summary.get(key) is True
+    validate_safe_cp2_egress_guard(evidence)
+    return evidence
+
+
+def validate_safe_cp2_egress_guard(payload: dict[str, Any]) -> None:
+    allowed = CP2_EGRESS_GUARD_BOOL_KEYS | CP2_EGRESS_GUARD_METADATA_KEYS
+    extra = set(payload) - allowed
+    missing = ({"status", "guard_type", "timestamp_utc"} | CP2_EGRESS_GUARD_BOOL_KEYS) - set(payload)
+    if extra or missing:
+        raise ValueError(f"CP2 guard schema mismatch missing={sorted(missing)} extra={sorted(extra)}")
+    if payload["status"] not in {"PASS", "BLOCKED_DYNAMIC_EGRESS_GUARD"}:
+        raise ValueError("unsafe CP2 status bucket")
+    if payload["guard_type"] not in HARD_GUARD_TYPES | {"not_available", "external_manual_proof"}:
+        raise ValueError("unsafe CP2 guard_type bucket")
+    for key in CP2_EGRESS_GUARD_BOOL_KEYS:
+        if type(payload[key]) is not bool:  # noqa: E721 - reject bool-like ints/strings explicitly.
+            raise ValueError(f"CP2 guard field {key} must be a strict bool")
+    if payload["status"] == "PASS":
+        missing_true = sorted(key for key in CP2_EGRESS_GUARD_REQUIRED_TRUE_KEYS if payload[key] is not True)
+        if missing_true:
+            raise ValueError(f"CP2 PASS missing required true fields: {missing_true}")
+        if payload["provider_tcp_connect_unexpected_success"] is not False:
+            raise ValueError("CP2 PASS requires provider_tcp_connect_unexpected_success=false")
+
+
 def _probe_tcp_blocked(host: str, port: int, family: socket.AddressFamily, timeout: float) -> bool:
     sock = socket.socket(family, socket.SOCK_STREAM)
     sock.settimeout(timeout)
@@ -229,8 +373,13 @@ def run_sandbox_exec_same_scope_self_tests(timeout: float = 0.8) -> dict[str, An
 import json
 import socket
 import sys
+import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[2])
+from tools import claude_code_real_oracle_loopback as oracle
 
 class H(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -260,6 +409,48 @@ def udp_blocked(host, port, timeout):
     finally:
         sock.close()
 
+def provider_tcp_probe_blocked(timeout):
+    try:
+        sock = socket.create_connection(("api.anthropic.com", 443), timeout=timeout)
+        sock.close()
+        return False, True
+    except OSError:
+        return True, False
+
+def wrapper_rejects_non_loopback_proxy():
+    try:
+        oracle.build_sni_preserving_cli_env(
+            temp_root=Path(tempfile.mkdtemp(prefix="cp2-wrapper-proxy-", dir="/private/tmp")),
+            base_env={"PATH": "/usr/bin:/bin"},
+            connect_proxy_url="http://192.0.2.10:8080",
+        )
+        return False
+    except ValueError:
+        return True
+
+def wrapper_rejects_npm_proxy_endpoint_trust_env():
+    keys = [
+        "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy",
+        "NO_PROXY", "no_proxy", "npm_config_proxy", "npm_config_http_proxy",
+        "npm_config_https_proxy", "npm_config_cafile", "npm_config_ca",
+        "npm_config_strict_ssl", "NPM_CONFIG_PROXY", "NPM_CONFIG_HTTP_PROXY",
+        "NPM_CONFIG_HTTPS_PROXY", "NPM_CONFIG_CAFILE", "NPM_CONFIG_CA",
+        "NPM_CONFIG_STRICT_SSL", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_API_BASE_URL",
+        "NODE_EXTRA_CA_CERTS", "NODE_TLS_REJECT_UNAUTHORIZED", "SSL_CERT_FILE",
+        "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE",
+    ]
+    for key in keys:
+        try:
+            oracle.build_sni_preserving_cli_env(
+                temp_root=Path(tempfile.mkdtemp(prefix="cp2-wrapper-env-", dir="/private/tmp")),
+                base_env={"PATH": "/usr/bin:/bin", key: "unsafe"},
+                connect_proxy_url="http://127.0.0.1:9",
+            )
+            return False
+        except ValueError:
+            continue
+    return True
+
 timeout = float(sys.argv[1])
 server = ThreadingHTTPServer(("127.0.0.1", 0), H)
 threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -272,6 +463,10 @@ finally:
     server.shutdown()
     server.server_close()
 
+provider_blocked, provider_unexpected = provider_tcp_probe_blocked(timeout)
+non_loopback_proxy_rejected = wrapper_rejects_non_loopback_proxy()
+npm_proxy_trust_rejected = wrapper_rejects_npm_proxy_endpoint_trust_env()
+
 print(json.dumps({
     "guard_type": "container_loopback_only",
     "deny_all_except_loopback": True,
@@ -280,17 +475,24 @@ print(json.dumps({
     "ipv6_external_tcp_blocked": tcp_blocked("2606:4700:4700::1111", 443, timeout),
     "dns_udp_external_blocked": udp_blocked("1.1.1.1", 53, timeout),
     "proxy_env_only_rejected": True,
+    "provider_direct_tcp_blocked": provider_blocked,
+    "provider_tcp_connect_unexpected_success": provider_unexpected,
+    "non_loopback_proxy_env_rejected": non_loopback_proxy_rejected,
+    "proxy_env_only_external_path_blocked": provider_blocked,
+    "real_provider_through_non_loopback_proxy_blocked": non_loopback_proxy_rejected and provider_blocked,
+    "npm_proxy_endpoint_trust_env_rejected": npm_proxy_trust_rejected,
 }, sort_keys=True))
 '''
     cmd = [
         "sandbox-exec",
         "-p",
         sandbox_exec_loopback_profile(),
-        sys.executable,
-        "-c",
-        probe_script,
-        str(timeout),
-    ]
+            sys.executable,
+            "-c",
+            probe_script,
+            str(timeout),
+            str(Path(__file__).resolve().parents[1]),
+        ]
     try:
         result = subprocess.run(cmd, text=True, capture_output=True, timeout=10, check=False)
         if result.returncode != 0:
@@ -533,6 +735,65 @@ def build_isolated_cli_env(
     return env
 
 
+def _is_loopback_http_proxy_url(proxy_url: str) -> bool:
+    parsed = urlsplit(proxy_url)
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"} or parsed.port is None:
+        return False
+    if parsed.username or parsed.password:
+        return False
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        return False
+    return True
+
+
+def build_sni_preserving_cli_env(
+    *,
+    temp_root: Path,
+    base_env: dict[str, str] | None = None,
+    connect_proxy_url: str,
+    include_dummy_api_key: bool = False,
+) -> dict[str, str]:
+    source = dict(os.environ if base_env is None else base_env)
+    inherited_forbidden = sorted(key for key in source if key in SNI_PRESERVING_FORBIDDEN_INHERITED_ENV)
+    if inherited_forbidden:
+        raise ValueError(f"unsafe inherited environment for SNI-preserving oracle: {inherited_forbidden}")
+    if not _is_loopback_http_proxy_url(connect_proxy_url):
+        raise ValueError("SNI-preserving oracle requires an explicit loopback HTTP CONNECT proxy")
+
+    temp_root.mkdir(parents=True, exist_ok=True)
+    home = temp_root / "home"
+    xdg_config = temp_root / "xdg-config"
+    xdg_cache = temp_root / "xdg-cache"
+    xdg_data = temp_root / "xdg-data"
+    npm_cache = temp_root / "npm-cache"
+    for path in (home, xdg_config, xdg_cache, xdg_data, npm_cache):
+        path.mkdir(parents=True, exist_ok=True)
+
+    env = {key: value for key, value in source.items() if key in ENV_ALLOWLIST and isinstance(value, str)}
+    env.update(
+        {
+            "HOME": str(home),
+            "XDG_CONFIG_HOME": str(xdg_config),
+            "XDG_CACHE_HOME": str(xdg_cache),
+            "XDG_DATA_HOME": str(xdg_data),
+            "CLAUDE_CONFIG_DIR": str(xdg_config / "claude"),
+            "CLAUDE_CACHE_DIR": str(xdg_cache / "claude"),
+            "npm_config_cache": str(npm_cache),
+            "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+            "CLAUDE_CODE_API_BASE_URL": "https://api.anthropic.com",
+            "ANTHROPIC_AUTH_TOKEN": "local-oracle-dummy-token",
+            "HTTPS_PROXY": connect_proxy_url,
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+            "CLAUDE_CODE_DISABLE_TELEMETRY": "1",
+            "CLAUDE_CODE_SIMPLE": "1",
+        }
+    )
+    if include_dummy_api_key:
+        env["ANTHROPIC_API_KEY"] = "local-oracle-dummy-key"
+    return env
+
+
 def _extract_platform_binary(runtime_root: Path, version: str, temp_root: Path) -> Path:
     tarball = runtime_root / "platform" / f"anthropic-ai-claude-code-darwin-arm64-{version}.tgz"
     if not tarball.exists():
@@ -723,17 +984,26 @@ def prove_egress(args: argparse.Namespace) -> int:
         same_scope = run_sandbox_exec_same_scope_self_tests()
     elif args.run_same_scope_self_tests:
         same_scope = run_same_scope_self_tests(args.guard_type)
-    summary = evaluate_egress_guard(manual_proof=manual_proof, same_scope_self_tests=same_scope)
-    atomic_write_json(evidence_root / "egress-guard-summary.json", summary)
-    print(json.dumps(summary, sort_keys=True))
-    return 0 if summary["status"] == "PASS" else 2
+    legacy_summary = evaluate_egress_guard(manual_proof=manual_proof, same_scope_self_tests=same_scope)
+    strict_summary = evaluate_sni_preserving_egress_guard(same_scope_self_tests=same_scope)
+    strict_summary["real_cli_executed"] = False
+    strict_summary["sidecar_executed"] = False
+    cp2_evidence = safe_cp2_egress_guard_evidence(strict_summary)
+    atomic_write_json(evidence_root / "cp2-egress-guard.json", cp2_evidence)
+    atomic_write_json(evidence_root / "egress-guard-summary.json", legacy_summary)
+    print(json.dumps(cp2_evidence, sort_keys=True))
+    return 0 if cp2_evidence["status"] == "PASS" else 2
 
 
 def capture_application_oracle(args: argparse.Namespace) -> int:
     evidence_root = ensure_evidence_dir(Path(args.evidence_root))
     scratch_root = resolve_cli_scratch_root(evidence_root=evidence_root, scratch_root=Path(args.scratch_root) if args.scratch_root else None)
-    guard_path = evidence_root / "egress-guard-summary.json"
-    guard = json.loads(guard_path.read_text(encoding="utf-8")) if guard_path.exists() else _empty_blocked_summary()
+    guard_path = evidence_root / "cp2-egress-guard.json"
+    guard = json.loads(guard_path.read_text(encoding="utf-8")) if guard_path.exists() else safe_cp2_egress_guard_evidence(_empty_sni_preserving_blocked_summary())
+    try:
+        validate_safe_cp2_egress_guard(guard)
+    except ValueError:
+        guard = safe_cp2_egress_guard_evidence(_empty_sni_preserving_blocked_summary())
     versions = list(args.runtime_version or ALLOWED_RUNTIME_VERSIONS)
     if guard.get("status") != "PASS":
         rows = write_blocked_application_summary(evidence_root, versions)

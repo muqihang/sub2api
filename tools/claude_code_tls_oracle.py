@@ -28,7 +28,14 @@ if __package__ in {None, ""}:
 from tools import claude_code_real_oracle_loopback as app_oracle
 
 ALLOWED_RUNTIME_VERSIONS = app_oracle.ALLOWED_RUNTIME_VERSIONS
-SUMMARY_SOURCES = {"claude_code_cli", "sub2api_utls_builtin", "cc_gateway_node_agent", "cc_gateway_utls_sidecar", "unit"}
+SUMMARY_SOURCES = {
+    "claude_code_cli",
+    "claude_code_cli_sni_preserving",
+    "sub2api_utls_builtin",
+    "cc_gateway_node_agent",
+    "cc_gateway_utls_sidecar",
+    "unit",
+}
 FORBIDDEN_TLS_KEYS = {
     "raw_clienthello",
     "raw_client_hello",
@@ -40,6 +47,14 @@ FORBIDDEN_TLS_KEYS = {
     "raw_private_key",
     "key",
     "cert",
+    "raw_request_body",
+    "raw_response",
+    "authorization",
+    "x-api-key",
+    "cookie",
+    "workspace_id",
+    "proxy_authorization",
+    "proxy-authorization",
 }
 REQUIRED_SAFE_SUMMARY_KEYS = {
     "source",
@@ -54,9 +69,16 @@ REQUIRED_SAFE_SUMMARY_KEYS = {
     "node_version_bucket",
     "openssl_version_bucket",
     "agent_package_versions",
+    "sni_present",
+    "sni_host_bucket",
+    "logical_target_host_bucket",
+    "host_header_bucket",
     "raw_clienthello_omitted_reason",
     "timestamp_utc",
 }
+SAFE_SNI_HOST_BUCKETS = {"anthropic_api", "not_present", "not_recorded", "unexpected"}
+SAFE_LOGICAL_TARGET_BUCKETS = {"anthropic_api", "not_recorded", "unexpected"}
+SAFE_HOST_HEADER_BUCKETS = {"anthropic_api", "not_observed_tls_only", "unexpected"}
 GREASE_VALUES = {0x0A0A + (i << 8) + i for i in range(0, 0x100, 0x10)}
 TLS_VERSION_NAMES = {
     0x0301: "0x0301",
@@ -86,6 +108,10 @@ class TLSSummary:
     agent_package_versions: dict[str, str]
     raw_clienthello_omitted_reason: str
     timestamp_utc: str
+    sni_present: bool = False
+    sni_host_bucket: str = "not_recorded"
+    logical_target_host_bucket: str = "not_recorded"
+    host_header_bucket: str = "not_observed_tls_only"
 
     def to_safe_dict(self) -> dict[str, Any]:
         payload = {
@@ -101,6 +127,10 @@ class TLSSummary:
             "node_version_bucket": self.node_version_bucket,
             "openssl_version_bucket": self.openssl_version_bucket,
             "agent_package_versions": dict(self.agent_package_versions),
+            "sni_present": self.sni_present,
+            "sni_host_bucket": self.sni_host_bucket,
+            "logical_target_host_bucket": self.logical_target_host_bucket,
+            "host_header_bucket": self.host_header_bucket,
             "raw_clienthello_omitted_reason": self.raw_clienthello_omitted_reason,
             "timestamp_utc": self.timestamp_utc,
         }
@@ -134,6 +164,50 @@ def _safe_hex_version(value: int) -> str:
     return TLS_VERSION_NAMES.get(value, f"0x{value:04x}")
 
 
+def bucket_sni_host(host: str | None) -> str:
+    if host is None:
+        return "not_present"
+    return "anthropic_api" if host.lower().rstrip(".") == "api.anthropic.com" else "unexpected"
+
+
+def bucket_host_header(host: str | None) -> str:
+    if host is None:
+        return "not_observed_tls_only"
+    normalized = host.lower().rstrip(".")
+    if normalized in {"api.anthropic.com", "api.anthropic.com:443"}:
+        return "anthropic_api"
+    return "unexpected"
+
+
+def classify_sni_oracle_context(payload: dict[str, Any]) -> str:
+    if payload.get("sni_present") is True and payload.get("sni_host_bucket") == "anthropic_api":
+        return "PRODUCTION_LOGICAL_HOST_SNI_ORACLE"
+    if payload.get("sni_present") is False and payload.get("sni_host_bucket") == "not_present":
+        return "NON_PRODUCTION_NO_SNI_ORACLE"
+    return "SNI_ORACLE_CONTEXT_INSUFFICIENT"
+
+
+def _parse_sni_host_bucket(ext_data: bytes) -> tuple[bool, str]:
+    if len(ext_data) < 2:
+        return False, "not_present"
+    list_len = _u16(ext_data, 0)
+    pos = 2
+    end = min(2 + list_len, len(ext_data))
+    while pos + 3 <= end:
+        name_type = ext_data[pos]
+        name_len = _u16(ext_data, pos + 1)
+        pos += 3
+        raw_name = ext_data[pos : pos + name_len]
+        pos += name_len
+        if name_type != 0:
+            continue
+        try:
+            return True, bucket_sni_host(raw_name.decode("ascii"))
+        except UnicodeDecodeError:
+            return True, "unexpected"
+    return False, "not_present"
+
+
 def _parse_clienthello(data: bytes) -> dict[str, Any]:
     if len(data) < 9 or data[0] != 0x16:
         raise ValueError("not a TLS handshake record")
@@ -162,6 +236,8 @@ def _parse_clienthello(data: bytes) -> dict[str, Any]:
     point_formats: list[int] = []
     supported_versions: list[int] = []
     alpn_protocols: list[str] = []
+    sni_present = False
+    sni_host_bucket = "not_present"
     if pos < len(hello):
         ext_total_len = _u16(hello, pos)
         pos += 2
@@ -173,7 +249,9 @@ def _parse_clienthello(data: bytes) -> dict[str, Any]:
             ext_data = hello[pos : pos + ext_len]
             pos += ext_len
             extensions.append(ext_type)
-            if ext_type == 10 and len(ext_data) >= 2:
+            if ext_type == 0:
+                sni_present, sni_host_bucket = _parse_sni_host_bucket(ext_data)
+            elif ext_type == 10 and len(ext_data) >= 2:
                 glen = _u16(ext_data, 0)
                 groups = [_u16(ext_data, i) for i in range(2, min(2 + glen, len(ext_data)), 2)]
             elif ext_type == 11 and len(ext_data) >= 1:
@@ -202,6 +280,8 @@ def _parse_clienthello(data: bytes) -> dict[str, Any]:
         "point_formats": point_formats,
         "supported_versions": supported_versions,
         "alpn_protocols": alpn_protocols,
+        "sni_present": sni_present,
+        "sni_host_bucket": sni_host_bucket,
     }
 
 
@@ -241,10 +321,14 @@ def summarize_clienthello_bytes(
     node_version_bucket: str = "not_applicable",
     openssl_version_bucket: str = "not_applicable",
     agent_package_versions: dict[str, str] | None = None,
+    logical_target_host_bucket: str | None = None,
+    host_header_bucket: str = "not_observed_tls_only",
 ) -> TLSSummary:
     parsed = _parse_clienthello(data)
     versions = parsed["supported_versions"] or [parsed["legacy_version"]]
     grease_present = any(_is_grease(v) for values in (parsed["cipher_suites"], parsed["extensions"], parsed["groups"], versions) for v in values)
+    if logical_target_host_bucket is None:
+        logical_target_host_bucket = "anthropic_api" if source == "claude_code_cli_sni_preserving" and parsed["sni_host_bucket"] == "anthropic_api" else "not_recorded"
     summary = TLSSummary(
         source=source,
         version=version,
@@ -258,6 +342,10 @@ def summarize_clienthello_bytes(
         node_version_bucket=node_version_bucket,
         openssl_version_bucket=openssl_version_bucket,
         agent_package_versions=agent_package_versions or {},
+        sni_present=bool(parsed["sni_present"]),
+        sni_host_bucket=str(parsed["sni_host_bucket"]),
+        logical_target_host_bucket=logical_target_host_bucket,
+        host_header_bucket=host_header_bucket,
         raw_clienthello_omitted_reason="raw_clienthello_forbidden",
         timestamp_utc=utc_now(),
     )
@@ -316,6 +404,14 @@ def validate_safe_tls_summary(payload: dict[str, Any]) -> None:
         raise ValueError("raw ClientHello omission reason is required")
     if payload["source"] not in SUMMARY_SOURCES:
         raise ValueError("unsafe TLS source bucket")
+    if not isinstance(payload["sni_present"], bool):
+        raise ValueError("sni_present must be a bool")
+    if payload["sni_host_bucket"] not in SAFE_SNI_HOST_BUCKETS:
+        raise ValueError("unsafe SNI host bucket")
+    if payload["logical_target_host_bucket"] not in SAFE_LOGICAL_TARGET_BUCKETS:
+        raise ValueError("unsafe logical target host bucket")
+    if payload["host_header_bucket"] not in SAFE_HOST_HEADER_BUCKETS:
+        raise ValueError("unsafe Host header bucket")
     if not isinstance(payload["ja3_hash"], str) or len(payload["ja3_hash"]) != 32:
         raise ValueError("ja3_hash must be an md5 hex digest")
     material = json.dumps(payload, sort_keys=True)
@@ -467,6 +563,82 @@ class ClientHelloCollector:
         return int(self._server.server_address[1])
 
     def __enter__(self) -> "ClientHelloCollector":
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+class SNIPreservingConnectCollector:
+    """Loopback-only CONNECT collector for logical api.anthropic.com SNI captures."""
+
+    allowed_authority = "api.anthropic.com:443"
+
+    def __init__(self, *, source: str, version: str):
+        self.source = source
+        self.version = version
+        self.safe_events: list[dict[str, Any]] = []
+        parent = self
+
+        class Handler(socketserver.StreamRequestHandler):
+            def handle(self) -> None:
+                try:
+                    first = self.rfile.readline(4096)
+                    try:
+                        first_text = first.decode("ascii").strip()
+                    except UnicodeDecodeError:
+                        return
+                    parts = first_text.split()
+                    if len(parts) != 3 or parts[0] != "CONNECT" or parts[1] != parent.allowed_authority:
+                        self.wfile.write(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
+                        self.wfile.flush()
+                        return
+                    rejected = False
+                    while True:
+                        line = self.rfile.readline(4096)
+                        if line in {b"\r\n", b"\n", b""}:
+                            break
+                        if line.lower().startswith(b"proxy-authorization:"):
+                            rejected = True
+                    if rejected:
+                        self.wfile.write(b"HTTP/1.1 407 Proxy Authentication Required\r\nConnection: close\r\n\r\n")
+                        self.wfile.flush()
+                        return
+                    self.wfile.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                    self.wfile.flush()
+                    data = self.connection.recv(8192)
+                    if not data:
+                        return
+                    summary = summarize_clienthello_bytes(
+                        data,
+                        source=parent.source,
+                        version=parent.version,
+                        logical_target_host_bucket="anthropic_api",
+                        host_header_bucket="not_observed_tls_only",
+                    ).to_safe_dict()
+                    parent.safe_events.append(summary)
+                except Exception:
+                    return
+
+        class Server(socketserver.ThreadingTCPServer):
+            allow_reuse_address = True
+            daemon_threads = True
+
+        self._server = Server(("127.0.0.1", 0), Handler)
+        self._thread: threading.Thread | None = None
+
+    @property
+    def port(self) -> int:
+        return int(self._server.server_address[1])
+
+    @property
+    def proxy_url(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    def __enter__(self) -> "SNIPreservingConnectCollector":
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
         return self
@@ -667,6 +839,76 @@ def capture_real_cli_tls(version: str, runtime_root: Path, evidence_temp_root: P
         except subprocess.TimeoutExpired:
             pass
         return collector.summaries[0] if collector.summaries else None
+
+
+def _cp2_guard_status_from_latest(evidence_root: Path | None = None) -> dict[str, Any]:
+    if evidence_root is None:
+        return {"status": "BLOCKED_DYNAMIC_EGRESS_GUARD"}
+    path = evidence_root / "cp2-egress-guard.json"
+    if not path.exists():
+        return {"status": "BLOCKED_DYNAMIC_EGRESS_GUARD"}
+    try:
+        guard = json.loads(path.read_text(encoding="utf-8"))
+        app_oracle.validate_safe_cp2_egress_guard(guard)
+        return guard
+    except Exception:
+        return {"status": "BLOCKED_DYNAMIC_EGRESS_GUARD"}
+
+
+def capture_real_cli_sni_preserving_tls(
+    version: str,
+    runtime_root: Path,
+    evidence_temp_root: Path,
+    timeout_seconds: float = 12.0,
+    *,
+    runner: Any = subprocess.run,
+    extractor: Any = app_oracle._extract_platform_binary,  # noqa: SLF001 - local harness reuse
+    collector_factory: Any = SNIPreservingConnectCollector,
+    guard_evaluator: Any | None = None,
+) -> dict[str, Any] | None:
+    guard = guard_evaluator() if guard_evaluator is not None else {"status": "BLOCKED_DYNAMIC_EGRESS_GUARD"}
+    if guard.get("status") != "PASS":
+        return None
+    run_root = Path(tempfile.mkdtemp(prefix=f"cc-sni-tls-{version}-", dir=str(evidence_temp_root)))
+    binary = extractor(runtime_root, version, run_root)
+    with collector_factory(source="claude_code_cli_sni_preserving", version=version) as collector:
+        env = app_oracle.build_sni_preserving_cli_env(
+            temp_root=run_root / "isolated-env",
+            connect_proxy_url=collector.proxy_url,
+            include_dummy_api_key=True,
+        )
+        env["ANTHROPIC_MODEL"] = "claude-sonnet-4-5"
+        cmd = [
+            "sandbox-exec",
+            "-p",
+            app_oracle.sandbox_exec_loopback_profile(),
+            str(binary),
+            "--bare",
+            "--print",
+            "--output-format",
+            "json",
+            "--model",
+            "claude-sonnet-4-5",
+            "--max-turns",
+            "1",
+            "Reply with exactly: local tls oracle ok",
+        ]
+        try:
+            runner(
+                cmd,
+                cwd=str(run_root),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            pass
+        if not collector.safe_events:
+            return None
+        return dict(collector.safe_events[0])
 
 
 def sub2api_builtin_static_summary() -> TLSSummary:

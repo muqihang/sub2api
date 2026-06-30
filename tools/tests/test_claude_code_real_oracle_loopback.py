@@ -66,6 +66,211 @@ class ClaudeCodeRealOracleLoopbackTest(unittest.TestCase):
             self.assertEqual(summary["blocked_external_probe_bucket"], "not_proven")
             self.assertTrue(summary["proxy_env_only_rejected"])
 
+    def test_sni_preserving_guard_requires_provider_and_proxy_self_tests(self):
+        same_scope = {
+            "guard_type": "container_loopback_only",
+            "deny_all_except_loopback": True,
+            "loopback_collector_reachable": True,
+            "ipv4_external_tcp_blocked": True,
+            "ipv6_external_tcp_blocked": True,
+            "dns_udp_external_blocked": True,
+            "proxy_env_only_rejected": True,
+        }
+        summary = oracle.evaluate_sni_preserving_egress_guard(same_scope_self_tests=same_scope)
+
+        self.assertEqual(summary["status"], "BLOCKED_DYNAMIC_EGRESS_GUARD")
+        self.assertFalse(summary["provider_direct_tcp_blocked"])
+        self.assertFalse(summary["real_provider_through_non_loopback_proxy_blocked"])
+        self.assertFalse(summary["proxy_env_only_external_path_blocked"])
+
+        same_scope.update({
+            "provider_direct_tcp_blocked": True,
+            "provider_tcp_connect_unexpected_success": False,
+            "non_loopback_proxy_env_rejected": True,
+            "proxy_env_only_external_path_blocked": True,
+            "real_provider_through_non_loopback_proxy_blocked": True,
+            "npm_proxy_endpoint_trust_env_rejected": True,
+        })
+        summary = oracle.evaluate_sni_preserving_egress_guard(same_scope_self_tests=same_scope)
+
+        self.assertEqual(summary["status"], "PASS")
+        self.assertTrue(summary["provider_direct_tcp_blocked"])
+        self.assertFalse(summary["provider_tcp_connect_unexpected_success"])
+        self.assertTrue(summary["real_provider_through_non_loopback_proxy_blocked"])
+
+    def test_sni_preserving_guard_requires_strict_true_booleans_for_each_required_field(self):
+        required = {
+            "guard_type": "container_loopback_only",
+            "deny_all_except_loopback": True,
+            "loopback_collector_reachable": True,
+            "ipv4_external_tcp_blocked": True,
+            "ipv6_external_tcp_blocked": True,
+            "dns_udp_external_blocked": True,
+            "proxy_env_only_rejected": True,
+            "provider_direct_tcp_blocked": True,
+            "provider_tcp_connect_unexpected_success": False,
+            "non_loopback_proxy_env_rejected": True,
+            "proxy_env_only_external_path_blocked": True,
+            "real_provider_through_non_loopback_proxy_blocked": True,
+            "npm_proxy_endpoint_trust_env_rejected": True,
+        }
+        self.assertEqual(oracle.evaluate_sni_preserving_egress_guard(same_scope_self_tests=required)["status"], "PASS")
+
+        for key in [k for k in required if k not in {"guard_type", "provider_tcp_connect_unexpected_success"}]:
+            with self.subTest(key=key, value="true-string"):
+                candidate = dict(required)
+                candidate[key] = "true"
+                self.assertEqual(oracle.evaluate_sni_preserving_egress_guard(same_scope_self_tests=candidate)["status"], "BLOCKED_DYNAMIC_EGRESS_GUARD")
+            with self.subTest(key=key, value="missing"):
+                candidate = dict(required)
+                candidate.pop(key)
+                self.assertEqual(oracle.evaluate_sni_preserving_egress_guard(same_scope_self_tests=candidate)["status"], "BLOCKED_DYNAMIC_EGRESS_GUARD")
+            with self.subTest(key=key, value=False):
+                candidate = dict(required)
+                candidate[key] = False
+                self.assertEqual(oracle.evaluate_sni_preserving_egress_guard(same_scope_self_tests=candidate)["status"], "BLOCKED_DYNAMIC_EGRESS_GUARD")
+
+        unexpected = dict(required)
+        unexpected["provider_tcp_connect_unexpected_success"] = True
+        self.assertEqual(oracle.evaluate_sni_preserving_egress_guard(same_scope_self_tests=unexpected)["status"], "BLOCKED_DYNAMIC_EGRESS_GUARD")
+
+        unexpected_string = dict(required)
+        unexpected_string["provider_tcp_connect_unexpected_success"] = "false"
+        self.assertEqual(oracle.evaluate_sni_preserving_egress_guard(same_scope_self_tests=unexpected_string)["status"], "BLOCKED_DYNAMIC_EGRESS_GUARD")
+
+    def test_sni_preserving_prove_egress_writes_cp2_evidence_and_legacy_guard_copy(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as td:
+            evidence = Path(td) / "safe"
+            cmd = [
+                sys.executable,
+                "tools/claude_code_real_oracle_loopback.py",
+                "prove-egress",
+                "--evidence-root",
+                str(evidence),
+                "--runtime-version",
+                "2.1.179",
+                "--runtime-root",
+                str(Path(td) / "runtime"),
+                "--run-same-scope-self-tests",
+                "--guard-type",
+                "container_loopback_only",
+            ]
+            result = subprocess.run(cmd, cwd=Path(__file__).resolve().parents[2], text=True, capture_output=True, check=False)
+
+            self.assertEqual(result.returncode, 2)
+            self.assertTrue((evidence / "cp2-egress-guard.json").exists())
+            self.assertTrue((evidence / "egress-guard-summary.json").exists())
+            cp2 = json.loads((evidence / "cp2-egress-guard.json").read_text())
+            self.assertEqual(cp2["status"], "BLOCKED_DYNAMIC_EGRESS_GUARD")
+            self.assertIn("provider_direct_tcp_blocked", cp2)
+            self.assertNotIn("tcp_probe_payload_bytes_sent", cp2)
+
+    def test_capture_application_oracle_requires_strict_cp2_guard_file(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as td:
+            evidence = Path(td) / "safe"
+            evidence.mkdir(parents=True)
+            legacy_pass = oracle.evaluate_egress_guard(same_scope_self_tests={
+                "guard_type": "container_loopback_only",
+                "deny_all_except_loopback": True,
+                "loopback_collector_reachable": True,
+                "ipv4_external_tcp_blocked": True,
+                "ipv6_external_tcp_blocked": True,
+                "dns_udp_external_blocked": True,
+                "proxy_env_only_rejected": True,
+            })
+            (evidence / "egress-guard-summary.json").write_text(json.dumps(legacy_pass))
+
+            cmd = [
+                sys.executable,
+                "tools/claude_code_real_oracle_loopback.py",
+                "capture-application-oracle",
+                "--evidence-root",
+                str(evidence),
+                "--runtime-version",
+                "2.1.179",
+                "--runtime-root",
+                str(Path(td) / "runtime"),
+            ]
+            result = subprocess.run(cmd, cwd=Path(__file__).resolve().parents[2], text=True, capture_output=True, check=False)
+
+            self.assertEqual(result.returncode, 2)
+            matrix = json.loads((evidence / "application-oracle-summary.json").read_text())
+            self.assertEqual({row["status"] for row in matrix}, {"blocked_by_egress_guard"})
+
+    def test_cp2_guard_validator_rejects_inconsistent_pass_semantics(self):
+        payload = {
+            "status": "PASS",
+            "guard_type": "container_loopback_only",
+            "timestamp_utc": "2026-06-30T00:00:00Z",
+            "deny_all_except_loopback": True,
+            "loopback_collector_reachable": True,
+            "ipv4_external_tcp_blocked": True,
+            "ipv6_external_tcp_blocked": True,
+            "dns_udp_external_blocked": True,
+            "proxy_env_only_rejected": True,
+            "provider_direct_tcp_blocked": True,
+            "provider_tcp_connect_unexpected_success": False,
+            "non_loopback_proxy_env_rejected": True,
+            "proxy_env_only_external_path_blocked": True,
+            "real_provider_through_non_loopback_proxy_blocked": True,
+            "npm_proxy_endpoint_trust_env_rejected": True,
+            "real_cli_executed": False,
+            "sidecar_executed": False,
+        }
+        oracle.validate_safe_cp2_egress_guard(payload)
+
+        inconsistent = dict(payload)
+        inconsistent["provider_direct_tcp_blocked"] = False
+        with self.assertRaises(ValueError):
+            oracle.validate_safe_cp2_egress_guard(inconsistent)
+
+        unexpected = dict(payload)
+        unexpected["provider_tcp_connect_unexpected_success"] = True
+        with self.assertRaises(ValueError):
+            oracle.validate_safe_cp2_egress_guard(unexpected)
+
+    def test_capture_application_oracle_blocks_inconsistent_cp2_pass_file(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as td:
+            evidence = Path(td) / "safe"
+            evidence.mkdir(parents=True)
+            cp2 = {
+                "status": "PASS",
+                "guard_type": "container_loopback_only",
+                "timestamp_utc": "2026-06-30T00:00:00Z",
+                "deny_all_except_loopback": True,
+                "loopback_collector_reachable": True,
+                "ipv4_external_tcp_blocked": True,
+                "ipv6_external_tcp_blocked": True,
+                "dns_udp_external_blocked": True,
+                "proxy_env_only_rejected": True,
+                "provider_direct_tcp_blocked": False,
+                "provider_tcp_connect_unexpected_success": False,
+                "non_loopback_proxy_env_rejected": True,
+                "proxy_env_only_external_path_blocked": True,
+                "real_provider_through_non_loopback_proxy_blocked": True,
+                "npm_proxy_endpoint_trust_env_rejected": True,
+                "real_cli_executed": False,
+                "sidecar_executed": False,
+            }
+            (evidence / "cp2-egress-guard.json").write_text(json.dumps(cp2))
+
+            cmd = [
+                sys.executable,
+                "tools/claude_code_real_oracle_loopback.py",
+                "capture-application-oracle",
+                "--evidence-root",
+                str(evidence),
+                "--runtime-version",
+                "2.1.179",
+                "--runtime-root",
+                str(Path(td) / "runtime"),
+            ]
+            result = subprocess.run(cmd, cwd=Path(__file__).resolve().parents[2], text=True, capture_output=True, check=False)
+
+            self.assertEqual(result.returncode, 2)
+            matrix = json.loads((evidence / "application-oracle-summary.json").read_text())
+            self.assertEqual({row["status"] for row in matrix}, {"blocked_by_egress_guard"})
+
     def test_safe_request_summary_redacts_headers_and_body_values(self):
         summary = oracle.summarize_http_request(
             method="POST",
@@ -133,6 +338,92 @@ class ClaudeCodeRealOracleLoopbackTest(unittest.TestCase):
             self.assertNotIn(forbidden_key, env)
         self.assertNotIn("local-anthropic-placeholder", json.dumps(env))
         self.assertNotIn("local-openai-placeholder", json.dumps(env))
+
+    def test_sni_preserving_environment_allows_only_loopback_connect_proxy(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as td:
+            env = oracle.build_sni_preserving_cli_env(
+                temp_root=Path(td),
+                base_env={"PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"},
+                connect_proxy_url="http://127.0.0.1:41000",
+                include_dummy_api_key=True,
+            )
+
+        self.assertEqual(env["PATH"], "/usr/bin:/bin")
+        self.assertEqual(env["HTTPS_PROXY"], "http://127.0.0.1:41000")
+        self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://api.anthropic.com")
+        self.assertEqual(env["CLAUDE_CODE_API_BASE_URL"], "https://api.anthropic.com")
+        self.assertEqual(env["ANTHROPIC_API_KEY"], "local-oracle-dummy-key")
+        self.assertNotIn("NODE_TLS_REJECT_UNAUTHORIZED", env)
+        self.assertNotIn("NODE_EXTRA_CA_CERTS", env)
+
+    def test_sni_preserving_environment_rejects_inherited_proxy_endpoint_and_trust_material(self):
+        forbidden = [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+            "npm_config_proxy",
+            "npm_config_http_proxy",
+            "npm_config_https_proxy",
+            "npm_config_cafile",
+            "npm_config_ca",
+            "npm_config_strict_ssl",
+            "NPM_CONFIG_PROXY",
+            "NPM_CONFIG_HTTP_PROXY",
+            "NPM_CONFIG_HTTPS_PROXY",
+            "NPM_CONFIG_CAFILE",
+            "NPM_CONFIG_CA",
+            "NPM_CONFIG_STRICT_SSL",
+            "ANTHROPIC_BASE_URL",
+            "CLAUDE_CODE_API_BASE_URL",
+            "NODE_EXTRA_CA_CERTS",
+            "NODE_TLS_REJECT_UNAUTHORIZED",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "CURL_CA_BUNDLE",
+            "REQUESTS_CA_BUNDLE",
+        ]
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as td:
+            for key in forbidden:
+                with self.subTest(key=key):
+                    with self.assertRaises(ValueError):
+                        oracle.build_sni_preserving_cli_env(
+                            temp_root=Path(td) / key.replace("_", "-"),
+                            base_env={"PATH": "/usr/bin:/bin", key: "unsafe"},
+                            connect_proxy_url="http://127.0.0.1:41000",
+                        )
+
+    def test_sni_preserving_environment_rejects_non_loopback_proxy_url(self):
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as td:
+            for proxy_url in ("http://192.0.2.10:8080", "http://example.com:8080", "socks5://127.0.0.1:9050"):
+                with self.subTest(proxy_url=proxy_url):
+                    with self.assertRaises(ValueError):
+                        oracle.build_sni_preserving_cli_env(
+                            temp_root=Path(td) / str(abs(hash(proxy_url))),
+                            base_env={"PATH": "/usr/bin:/bin"},
+                            connect_proxy_url=proxy_url,
+                        )
+
+    def test_sni_preserving_environment_rejects_proxy_credentials_path_query_and_fragment(self):
+        unsafe_proxy_urls = (
+            "http://" + "user" + ":" + "pass" + "@127.0.0.1:41000",
+            "http://127.0.0.1:41000/proxy",
+            "http://127.0.0.1:41000?token=secret",
+            "http://127.0.0.1:41000#fragment",
+        )
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as td:
+            for proxy_url in unsafe_proxy_urls:
+                with self.subTest(proxy_url=proxy_url):
+                    with self.assertRaises(ValueError):
+                        oracle.build_sni_preserving_cli_env(
+                            temp_root=Path(td) / str(abs(hash(proxy_url))),
+                            base_env={"PATH": "/usr/bin:/bin"},
+                            connect_proxy_url=proxy_url,
+                        )
 
     def test_blocked_application_matrix_has_explicit_status_for_each_version_and_scenario(self):
         matrix = oracle.build_blocked_application_matrix(["2.1.179", "2.1.181", "2.1.195"])

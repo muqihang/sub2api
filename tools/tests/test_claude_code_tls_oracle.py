@@ -1,11 +1,42 @@
 import json
+import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 from tools import claude_code_tls_oracle as tls_oracle
+
+
+def synthetic_clienthello(server_name: str | None = "api.anthropic.com") -> bytes:
+    extensions = []
+    if server_name is not None:
+        encoded = server_name.encode("ascii")
+        server_name_list = b"\x00" + len(encoded).to_bytes(2, "big") + encoded
+        sni_body = len(server_name_list).to_bytes(2, "big") + server_name_list
+        extensions.append((0, sni_body))
+    alpn_body = b"\x00\x0c\x02h2\x08http/1.1"
+    extensions.append((16, alpn_body))
+    extensions.append((43, b"\x04\x03\x04\x03\x03"))
+    extensions.append((10, b"\x00\x04\x00\x1d\x00\x17"))
+    extensions.append((11, b"\x01\x00"))
+    ext_blob = b"".join(
+        ext_type.to_bytes(2, "big") + len(ext_body).to_bytes(2, "big") + ext_body
+        for ext_type, ext_body in extensions
+    )
+    hello = (
+        b"\x03\x03"
+        + b"\x11" * 32
+        + b"\x00"
+        + b"\x00\x04\x0a\x0a\x13\x01"
+        + b"\x01\x00"
+        + len(ext_blob).to_bytes(2, "big")
+        + ext_blob
+    )
+    handshake = b"\x01" + len(hello).to_bytes(3, "big") + hello
+    return b"\x16\x03\x01" + len(handshake).to_bytes(2, "big") + handshake
 
 
 class ClaudeCodeTLSOracleTest(unittest.TestCase):
@@ -152,6 +183,87 @@ class ClaudeCodeTLSOracleTest(unittest.TestCase):
         self.assertEqual(summary.raw_clienthello_omitted_reason, "raw_clienthello_forbidden")
         self.assertNotIn("0100006b", dumped)
 
+    def test_clienthello_parser_emits_sni_bucket_for_api_anthropic(self):
+        summary = tls_oracle.summarize_clienthello_bytes(
+            synthetic_clienthello("api.anthropic.com"),
+            source="claude_code_cli_sni_preserving",
+            version="2.1.179",
+        )
+        safe = summary.to_safe_dict()
+
+        self.assertTrue(safe["sni_present"])
+        self.assertEqual(safe["sni_host_bucket"], "anthropic_api")
+        self.assertEqual(safe["logical_target_host_bucket"], "anthropic_api")
+        dumped = json.dumps(safe, sort_keys=True)
+        self.assertNotIn("api.anthropic.com", dumped)
+        self.assertNotIn("6170692e616e7468726f7069632e636f6d", dumped)
+
+    def test_no_sni_clienthello_is_non_production_oracle_context(self):
+        summary = tls_oracle.summarize_clienthello_bytes(
+            synthetic_clienthello(None),
+            source="unit",
+            version="no-sni",
+        )
+        safe = summary.to_safe_dict()
+
+        self.assertFalse(safe["sni_present"])
+        self.assertEqual(safe["sni_host_bucket"], "not_present")
+        self.assertEqual(tls_oracle.classify_sni_oracle_context(safe), "NON_PRODUCTION_NO_SNI_ORACLE")
+
+    def test_sni_preserving_connect_proxy_accepts_only_api_anthropic_443(self):
+        with tls_oracle.SNIPreservingConnectCollector(source="unit", version="synthetic") as collector:
+            def connect(authority: str) -> bytes:
+                with socket.create_connection(("127.0.0.1", collector.port), timeout=2.0) as sock:
+                    sock.sendall(f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n".encode("ascii"))
+                    data = sock.recv(128)
+                    if data.startswith(b"HTTP/1.1 200"):
+                        sock.sendall(synthetic_clienthello("api.anthropic.com"))
+                    return data
+
+            self.assertIn(b"200 Connection Established", connect("api.anthropic.com:443"))
+            for authority in ("127.0.0.1:443", "localhost:443", "tls.sub2api.org:443", "api.anthropic.com:8443"):
+                with self.subTest(authority=authority):
+                    self.assertNotIn(b"200 Connection Established", connect(authority))
+
+            deadline = time.time() + 2
+            while not collector.safe_events and time.time() < deadline:
+                time.sleep(0.01)
+
+            self.assertEqual(collector.safe_events[0]["logical_target_host_bucket"], "anthropic_api")
+            self.assertEqual(collector.safe_events[0]["sni_host_bucket"], "anthropic_api")
+            self.assertEqual(collector.safe_events[0]["host_header_bucket"], "not_observed_tls_only")
+
+    def test_sni_preserving_evidence_rejects_raw_material_and_secrets(self):
+        safe = tls_oracle.summarize_clienthello_bytes(
+            synthetic_clienthello("api.anthropic.com"),
+            source="claude_code_cli_sni_preserving",
+            version="2.1.179",
+        ).to_safe_dict()
+        forbidden_payloads = {
+            "raw_clienthello": "0100006b",
+            "pcap": "pcap bytes",
+            "private_key": "-----BEGIN " + "PRIVATE KEY-----",
+            "certificate": "-----BEGIN " + "CERTIFICATE-----",
+            "raw_request_body": "raw prompt should not leak",
+            "authorization": "Bearer secret",
+            "x-api-key": "secret",
+            "cookie": "session=secret",
+            "workspace_id": "workspace-123",
+            "proxy_authorization": "Basic secret",
+        }
+        for key, value in forbidden_payloads.items():
+            candidate = dict(safe)
+            candidate[key] = value
+            with self.subTest(key=key):
+                with self.assertRaises(ValueError):
+                    tls_oracle.validate_safe_tls_summary(candidate)
+
+    def test_host_header_bucket_never_contains_raw_header_value(self):
+        self.assertEqual(tls_oracle.bucket_host_header("api.anthropic.com"), "anthropic_api")
+        self.assertEqual(tls_oracle.bucket_host_header("api.anthropic.com:443"), "anthropic_api")
+        self.assertEqual(tls_oracle.bucket_host_header(None), "not_observed_tls_only")
+        self.assertEqual(tls_oracle.bucket_host_header("evil.example"), "unexpected")
+
     def test_write_summary_file_rejects_unsafe_rows(self):
         with tempfile.TemporaryDirectory(dir="/private/tmp") as td:
             out = Path(td) / "tls.json"
@@ -278,6 +390,65 @@ class ClaudeCodeTLSOracleTest(unittest.TestCase):
         self.assertIn("getProxyAgent", calls[0][0][3])
         self.assertNotIn("require(", calls[0][0][3])
         self.assertEqual(calls[0][0][4], "http://127.0.0.1:49999")
+
+    def test_real_cli_sni_capture_uses_logical_api_host_and_loopback_proxy(self):
+        class FakeCollector:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.proxy_url = "http://127.0.0.1:47777"
+                self.safe_events = [
+                    tls_oracle.TLSSummary(
+                        source="claude_code_cli_sni_preserving",
+                        version="2.1.179",
+                        ja3_hash="e" * 32,
+                        ja4="t13d0017h1_eeeeeeeeeeee_ffffffffffff",
+                        alpn_protocols=("http/1.1",),
+                        tls_versions=("0x0304", "0x0303"),
+                        cipher_count=17,
+                        extension_count=13,
+                        grease_present=False,
+                        node_version_bucket="claude-code-bundled",
+                        openssl_version_bucket="claude-code-bundled",
+                        agent_package_versions={},
+                        sni_present=True,
+                        sni_host_bucket="anthropic_api",
+                        logical_target_host_bucket="anthropic_api",
+                        host_header_bucket="not_observed_tls_only",
+                        raw_clienthello_omitted_reason="raw_clienthello_forbidden",
+                        timestamp_utc="2026-06-30T00:00:00Z",
+                    ).to_safe_dict()
+                ]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+        calls = []
+
+        def fake_runner(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return subprocess.CompletedProcess(cmd, 1)
+
+        summary = tls_oracle.capture_real_cli_sni_preserving_tls(
+            "2.1.179",
+            Path("/tmp/runtime"),
+            Path(tempfile.mkdtemp(dir="/private/tmp")),
+            runner=fake_runner,
+            extractor=lambda _root, _version, run_root: run_root / "claude",
+            collector_factory=FakeCollector,
+            guard_evaluator=lambda: {"status": "PASS"},
+        )
+
+        self.assertEqual(summary["source"], "claude_code_cli_sni_preserving")
+        self.assertEqual(summary["logical_target_host_bucket"], "anthropic_api")
+        self.assertTrue(calls)
+        env = calls[0][1]["env"]
+        self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://api.anthropic.com")
+        self.assertEqual(env["CLAUDE_CODE_API_BASE_URL"], "https://api.anthropic.com")
+        self.assertEqual(env["HTTPS_PROXY"], "http://127.0.0.1:47777")
+        self.assertNotIn("https://127.0.0.1", json.dumps(env))
 
 
 class ClaudeCodeTLSSidecarOracleTest(unittest.TestCase):
