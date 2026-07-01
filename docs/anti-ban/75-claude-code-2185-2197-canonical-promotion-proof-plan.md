@@ -72,7 +72,7 @@ Because npm tags and model docs may change, CP0 must re-check these anchors befo
 - Do not regress Plan74: real Go/uTLS sidecar must remain fail-closed and Node direct HTTPS fallback must remain `0` in local-only tests.
 - Do not write raw request bodies, raw prompts, raw responses, raw decoded domain/keyword lists, raw ClientHello, raw TLS records, pcap, HAR, secrets, cookies, account UUID/email, workspace IDs, proxy credentials, private keys, certificates, mock CA material, or raw native binaries into repo/docs/evidence/logs/fixtures.
 - Evidence may contain only safe summaries: version numbers, hashes, counts, enum buckets, booleans, redacted command results, path-only route buckets, synthetic fixture labels, and test status.
-- Public npm tarballs may be stored under `/private/tmp/.../public-npm-cache` with sha256 provenance, but unpacked runtime copies containing native binaries should be deleted only with explicit user approval or avoided by using temporary extraction directories that are cleaned by the harness itself.
+- Public npm tarballs may be stored under `/private/tmp/.../public-npm-cache` with sha256 provenance. Do not delete scratch, extracted packages, or native runtime copies without explicit user approval. Prefer creating isolated timestamped temp directories under `/private/tmp` and leaving them uncommitted; if cleanup is necessary for leak-risk remediation, stop and request approval first. Final report must record whether scratch cleanup was skipped, approved, or not needed.
 - If any checkpoint cannot prove loopback-only behavior, stop with the appropriate blocked final decision.
 - If any checkpoint discovers a new unsupported upstream behavior for `2.1.197`, do not silently fall back to partial promotion; choose an explicit blocked/fallback decision.
 
@@ -99,6 +99,19 @@ Allowed implementation outcomes by decision:
 | `PROMOTE_STABLE_2185_ONLY_SONNET5_BLOCKED` | Yes, to `2.1.185` only | No | Yes, separate plan required, Sonnet 5 blocked |
 | `COMPAT_ONLY_NO_PROMOTION` | No | No | No, write gap plan |
 | Any `BLOCKED_*` | No | No | No, remediate blocker first |
+
+Decision precedence when multiple conditions apply:
+
+1. If npm/version oracle is insufficient, choose `BLOCKED_VERSION_ORACLE_GAP`.
+2. Else if loopback/local-only egress guard is insufficient, choose `BLOCKED_LOCAL_ONLY_EGRESS_GUARD`.
+3. Else if TLS oracle or sidecar proof is insufficient, choose `BLOCKED_TLS_ORACLE_GAP`.
+4. Else if Plan72 environment-residue defense regresses, choose `BLOCKED_ENV_RESIDUE_REGRESSION`.
+5. Else if family admission is regressed or not closed, choose `BLOCKED_FAMILY_ADMISSION_REGRESSION`.
+6. Else if control-plane/model/Sonnet-5 proof is insufficient, choose `BLOCKED_CONTROL_PLANE_GAP`.
+7. Else if CCH/billing/attribution proof is insufficient, choose `BLOCKED_CCH_BILLING_GAP`.
+8. Else if `2.1.197` passes all gates, choose `PROMOTE_CANONICAL_2197_MOCK_E2E_READY`.
+9. Else if `2.1.197` is blocked only by Sonnet/model gate but `2.1.185` passes every non-Sonnet gate, choose `PROMOTE_STABLE_2185_ONLY_SONNET5_BLOCKED`.
+10. Else, choose `COMPAT_ONLY_NO_PROMOTION` only when no promotion is allowed but safe compatibility work is complete and no higher-priority blocker applies.
 
 ## Canonical authority fields that must be updated together
 
@@ -203,7 +216,7 @@ Required subdirectories:
 
 - `safe/`: committed-safe summaries only.
 - `public-npm-cache/`: optional public npm tarballs and sha256 provenance.
-- `scratch/`: temporary extraction/runtime workspace; avoid preserving native binary copies if not needed.
+- `scratch/`: temporary extraction/runtime workspace. Leave scratch uncommitted and do not delete it without explicit user approval; if a leak scan requires cleanup, stop and request approval first.
 
 Only `safe/` summaries may be referenced in the final report. Do not commit evidence root files.
 
@@ -224,7 +237,7 @@ Only `safe/` summaries may be referenced in the final report. Do not commit evid
 
 Expected blocker decisions:
 
-- If official docs cannot be reached but npm metadata is reachable, continue with `official_doc_status=unreachable` and require CP3 dynamic/model proof before any promotion.
+- If official docs cannot be reached but npm metadata is reachable, continue with `official_doc_status=unreachable`, but promotion is forbidden unless CP2 loopback dynamic oracle and CP4 control-plane/model/Sonnet-5 matrix independently prove the required model behavior for the selected candidate.
 - If npm metadata cannot be reached, stop with `BLOCKED_VERSION_ORACLE_GAP`.
 
 ### CP1 - Static package provenance and diff audit
@@ -321,6 +334,28 @@ Required pass criteria:
 - Every Plan68 blocker is either closed with evidence or carried into a blocked/fallback decision.
 - No `>=2.1.179` observed client version can self-promote to new canonical, no-CCH, signed-CCH, or Sonnet 5 authority.
 
+### CP4.5 - Family admission and observed-only policy closure
+
+**Goal:** Close the Plan68 family-policy gap before any canonical promotion.
+
+- [ ] Build a family admission matrix for `cli`, `desktop`, `vscode_extension`, and `unknown_future`.
+- [ ] Record evidence status for each family bucket:
+  - `cli`: dynamic loopback proof required for version candidates.
+  - `desktop`: if GUI dynamic remains blocked, classify explicitly as `static_only_admitted_observed_only`, `blocked`, or `not_supported`; do not imply dynamic proof.
+  - `vscode_extension`: if GUI/extension dynamic remains blocked, classify explicitly as `static_only_admitted_observed_only`, `blocked`, or `not_supported`; do not imply dynamic proof.
+  - `unknown_future`: default fail-closed unless a server-side allow policy explicitly maps it to observed-only admission without authority.
+- [ ] Confirm family bucket can only appear in `observed_client_profile` and cannot affect canonical version, model policy, beta token set, CCH/billing policy, TLS profile, env residue profile, locale profile, base-url residue profile, or upstream user-agent.
+- [ ] Confirm a forged family field in headers/query/body/metadata/tool fields cannot enter the authority tuple.
+- [ ] If Desktop/VS Code are admitted without dynamic proof, require final report language: `family_dynamic_incomplete_but_observed_only_admission_proven`; production/live canary must later choose whether to enable or restrict these buckets.
+- [ ] If family admission policy cannot be proven safe, final decision must be `BLOCKED_FAMILY_ADMISSION_REGRESSION` or `COMPAT_ONLY_NO_PROMOTION`; promotion is forbidden.
+- [ ] Write `$EVIDENCE_ROOT/safe/cp4-family-admission-matrix.json`.
+
+Required pass criteria:
+
+- CLI/Desktop/official VS Code are not wrongly blocked when policy says they are admitted observed-only.
+- Unknown/future family cannot enter canonical path by version number or forged family hint alone.
+- Family never changes server-selected canonical tuple.
+
 ### CP5 - Sub2API failing tests for selected canonical tuple
 
 **Goal:** Prove Sub2API will sign only server-selected candidate canonical refs and will not let observed client data control promotion.
@@ -333,6 +368,7 @@ Write failing tests first. Required cases:
 - [ ] User-forged profile refs in headers/query/body/metadata/tool fields cannot alter canonical tuple.
 - [ ] User-forged version/family/env residue cannot alter canonical tuple.
 - [ ] Observed profile still records safe `cli_version_bucket`, `client_family_bucket`, and env residue buckets for audit only.
+- [ ] Family matrix cases cover `cli`, `desktop`, `vscode_extension`, and `unknown_future`; known admitted families remain observed-only, and `unknown_future` fails closed unless a server-side allow policy explicitly admits it as observed-only.
 - [ ] Contract vectors include selected candidate refs and reject mixed tuple fields.
 
 Expected before implementation: FAIL on missing candidate tuple support or missing vector coverage.
@@ -365,6 +401,8 @@ Write failing tests first. Required cases:
 - [ ] Mixed tuple, e.g. `policy_version=2.1.197` with `egress_tls_profile_ref=2.1.179`, fails closed.
 - [ ] Observed client `2.1.179` with server canonical `2.1.197` emits upstream `user-agent` and beta/model shape for `2.1.197`, not `2.1.179`.
 - [ ] Observed client `2.1.197` with server canonical `2.1.185` emits upstream `2.1.185` shape or Sonnet 5 fail-closed policy, not `2.1.197`.
+- [ ] Rollback canonical `2.1.179` tuple is explicitly accepted and rewrites upstream shape back to `2.1.179` while still preserving Plan72/Plan74 guards.
+- [ ] Family matrix cases cover `cli`, `desktop`, `vscode_extension`, and `unknown_future`; family is observed-only and unknown/future cannot enter canonical path through forged hints.
 - [ ] `anthropic-beta` output is exactly candidate canonical token set from CP4.
 - [ ] body/header have no `x-anthropic-billing-header`, no raw `cch=`, and no client attribution unless CP4 exact proof authorizes otherwise.
 - [ ] Plan72 canonical date marker rewrite still passes for candidate canonical.
@@ -395,20 +433,31 @@ Required pass criteria:
 
 ### CP9 - Local mock E2E promotion proof
 
-**Goal:** Prove the complete Sub2API -> CC Gateway -> real sidecar -> local collector/mock upstream chain for the selected candidate.
+**Goal:** Prove the complete Sub2API -> CC Gateway -> real sidecar -> local collector/mock upstream chain for the primary, fallback, and rollback canonical tuples required by the final decision.
 
 - [ ] Use independent local ports only, excluding `3012`, `3017`, `18080`, and `18081`.
 - [ ] Use same-scope loopback-only egress guard.
-- [ ] Run E2E for selected primary/fallback candidate:
-  - observed inbound `2.1.179` with canonical candidate;
-  - observed inbound `2.1.185` with canonical candidate;
-  - observed inbound `2.1.197` with canonical candidate;
+- [ ] If the intended final decision is `PROMOTE_CANONICAL_2197_MOCK_E2E_READY`, run all three canonical tuple E2E sets:
+  - primary `2.1.197` E2E, including Sonnet 5 behavior;
+  - stable fallback `2.1.185` E2E, with Sonnet 5 fail-closed unless CP4 proves support;
+  - rollback `2.1.179` E2E.
+- [ ] If the intended final decision is `PROMOTE_STABLE_2185_ONLY_SONNET5_BLOCKED`, run:
+  - stable fallback `2.1.185` E2E;
+  - rollback `2.1.179` E2E;
+  - a recorded `2.1.197` blocked reason from the highest-priority failed gate.
+- [ ] For each E2E canonical tuple that is run, include:
+  - observed inbound `2.1.179` with that canonical tuple;
+  - observed inbound `2.1.185` with that canonical tuple;
+  - observed inbound `2.1.197` with that canonical tuple;
   - env residue noncanonical system marker canonicalized;
   - synthetic nonofficial base-url/domain/keyword residue stripped or safe-bucketed;
-  - Sonnet 5 request behavior according to selected candidate policy;
+  - Sonnet 5 request behavior according to that canonical tuple policy;
   - `count_tokens` route if supported;
   - tool-use capable request;
   - streaming route if applicable.
+- [ ] Test canonical tuple switching `2.1.197 -> 2.1.185 -> 2.1.179`:
+  - new sessions may use the newly selected tuple;
+  - existing sessions with changed tuple must fail closed as session authority drift.
 - [ ] Capture mock upstream safe summary:
   - canonical user-agent bucket;
   - beta token set hash/bucket;
@@ -423,8 +472,10 @@ Required pass criteria:
 
 Required pass criteria:
 
-- The mock upstream sees one stable canonical identity per selected candidate, independent of observed user version/family/env residue.
-- TLS summary matches selected candidate oracle/profile.
+- The mock upstream sees one stable canonical identity per canonical tuple under test, independent of observed user version/family/env residue.
+- Required primary/fallback/rollback E2E sets are present for the final decision label.
+- TLS summary matches the oracle/profile for every canonical tuple under test.
+- Session authority drift fails closed when canonical tuple changes inside an existing session.
 - No real upstream access occurs.
 
 ### CP10 - Regression test suite and leak scan
@@ -463,6 +514,7 @@ Leak scan requirements:
 - Scan modified repo files, tests, reports, and `$EVIDENCE_ROOT/safe`.
 - Block on raw secrets, raw prompts/bodies/responses, raw decoded domain/keyword list, raw TLS/pcap/HAR, cert/key material, account identifiers, proxy credentials, native binary copies in repo, or raw long minified source dumps.
 - Write `$EVIDENCE_ROOT/safe/cp10-leak-scan-summary.json`.
+- Record `scratch_cleanup_status` as one of `not_needed`, `skipped_requires_user_approval`, or `approved_by_user`, and do not perform cleanup unless approval is explicit.
 
 Required pass criteria:
 
@@ -475,7 +527,7 @@ Required pass criteria:
 
 - [ ] Write final report: `/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-platform-aws-formal-pool/docs/anti-ban/75-claude-code-2185-2197-canonical-promotion-evidence-report.md`.
 - [ ] Include:
-  - exact final decision label;
+  - exact final decision label and the decision-precedence path used to choose it;
   - npm/doc target lock snapshot;
   - proof matrix for `2.1.179`, `2.1.185`, `2.1.197`;
   - static diff safe summary;
@@ -485,6 +537,7 @@ Required pass criteria:
   - Sub2API and CC Gateway test results;
   - mock E2E result;
   - rollback knobs;
+  - scratch cleanup status and whether user approval was requested/received;
   - non-goals: no production deployment, no live canary, no real upstream calls.
 - [ ] Request exactly one high-spec review agent after CP9 or CP10, with focus on:
   - promotion proof completeness;
