@@ -79,6 +79,67 @@ func TestCCGatewayFormalPoolEnvResidueRefsAreServerSelectedWithObservedSafeBucke
 	requireValidCCGatewayFormalPoolSignatureForTest(t, req, "formal-pool-attestation-secret-test")
 }
 
+func TestCCGatewayObservedEnvResidueExternalIssueAnchorBuckets(t *testing.T) {
+	dateCases := []struct {
+		name           string
+		body           string
+		wantDate       string
+		wantApostrophe string
+	}{
+		{
+			name:           "ascii apostrophe with hyphen date",
+			body:           `{"system":[{"type":"text","text":"Today's date is 2026-06-30."}]}`,
+			wantDate:       "hyphen",
+			wantApostrophe: "ascii",
+		},
+		{
+			name:           "right single quote with slash date",
+			body:           `{"system":[{"type":"text","text":"Today\u2019s date is 2026/06/30."}]}`,
+			wantDate:       "slash",
+			wantApostrophe: "unicode_variant_1",
+		},
+		{
+			name:           "modifier letter apostrophe with hyphen date",
+			body:           `{"system":[{"type":"text","text":"Today\u02bcs date is 2026-06-30."}]}`,
+			wantDate:       "hyphen",
+			wantApostrophe: "unicode_variant_2",
+		},
+		{
+			name:           "modifier letter prime with slash date",
+			body:           `{"system":[{"type":"text","text":"Today\u02b9s date is 2026/06/30."}]}`,
+			wantDate:       "slash",
+			wantApostrophe: "unicode_variant_3",
+		},
+	}
+	for _, tc := range dateCases {
+		t.Run(tc.name, func(t *testing.T) {
+			dateFormat, apostrophe, observed := ccGatewayObservedDateMarkerBuckets([]byte(tc.body))
+			require.True(t, observed)
+			require.Equal(t, tc.wantDate, dateFormat)
+			require.Equal(t, tc.wantApostrophe, apostrophe)
+		})
+	}
+
+	baseURLCases := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{name: "synthetic China TLD residue", url: "https://fixture.example.cn", want: "china_tld"},
+		{name: "synthetic AI keyword residue", url: "https://model-lab.invalid", want: "ai_lab_keyword"},
+		{name: "synthetic proxy resale residue", url: "https://fixture-proxy.invalid", want: "claude_proxy_resale_like"},
+	}
+	for _, tc := range baseURLCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptestRequestForEnvResidueProfileTest()
+			req.Header.Set("Anthropic-Base-Url", tc.url)
+			bucket, observed := ccGatewayObservedBaseURLCategoryBucket(req, nil)
+			require.True(t, observed)
+			require.Equal(t, tc.want, bucket)
+		})
+	}
+}
+
 func TestCCGatewayFormalPoolEnvResidueClientFamilyObservedOnly(t *testing.T) {
 	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
 	cases := []struct {
@@ -215,11 +276,12 @@ func httptestRequestForEnvResidueProfileTest() *http.Request {
 }
 
 func TestCCGatewayFormalPoolEnvResidueStripsOnlyAllowedAuthoritySurfacesAndUpdatesWireBody(t *testing.T) {
-	body := []byte(`{"system":[{"type":"text","text":"safe system"}],"metadata":{"env_residue_profile_ref":"env-residue-profile:metadata-forged","timeZone":"Pacific/Forged","baseUrl":"fixture-base-url","proxyUrl":"fixture-proxy-url"},"tools":[{"name":"Tool","description":"safe fixture","metadata":{"ANTHROPIC_BASE_URL":"https://neutral-gateway.test.invalid"},"input_schema":{"type":"object","properties":{"city":{"type":"string","HTTP_PROXY":"http://127.0.0.1:8080"}}}}],"unrelated":{"locale_profile_ref":"locale-profile:must-remain-out-of-scope"},"messages":[{"role":"user","content":[{"type":"text","text":"safe fixture text"}]}]}`)
+	body := []byte(`{"system":[{"type":"text","text":"safe system"}],"metadata":{"env_residue_profile_ref":"env-residue-profile:metadata-forged","TZ":"Asia/Shanghai","timeZone":"Asia/Urumqi","baseUrl":"fixture-base-url","proxyUrl":"fixture-proxy-url"},"tools":[{"name":"Tool","description":"safe fixture","metadata":{"ANTHROPIC_BASE_URL":"https://neutral-gateway.test.invalid"},"input_schema":{"type":"object","properties":{"city":{"type":"string","HTTP_PROXY":"http://127.0.0.1:8080"}}}}],"unrelated":{"locale_profile_ref":"locale-profile:must-remain-out-of-scope"},"messages":[{"role":"user","content":[{"type":"text","text":"safe fixture text"}]}]}`)
 	rewritten, changed := stripClientEnvResidueProfileHintsFromBody(body)
 	require.True(t, changed)
 	require.NotContains(t, string(rewritten), "metadata-forged")
-	require.NotContains(t, string(rewritten), "Pacific/Forged")
+	require.NotContains(t, string(rewritten), "Asia/Shanghai")
+	require.NotContains(t, string(rewritten), "Asia/Urumqi")
 	require.NotContains(t, string(rewritten), "fixture-base-url")
 	require.NotContains(t, string(rewritten), "fixture-proxy-url")
 	require.NotContains(t, string(rewritten), "neutral-gateway.test.invalid")
@@ -229,6 +291,7 @@ func TestCCGatewayFormalPoolEnvResidueStripsOnlyAllowedAuthoritySurfacesAndUpdat
 	require.NoError(t, json.Unmarshal(rewritten, &parsed))
 	metadata := parsed["metadata"].(map[string]any)
 	require.NotContains(t, metadata, "env_residue_profile_ref")
+	require.NotContains(t, metadata, "TZ")
 	require.NotContains(t, metadata, "timeZone")
 	require.NotContains(t, metadata, "baseUrl")
 	require.NotContains(t, metadata, "proxyUrl")

@@ -1385,7 +1385,7 @@ func ccGatewayObservedDateMarkerBuckets(body []byte) (string, string, bool) {
 	dateFormat := "not_observed"
 	apostrophe := "not_observed"
 	observed := false
-	re := regexp.MustCompile(`(?i)Today(['\x{2019}\x{2018}\x{02BC}])s date is ([0-9]{4})([-/])([0-9]{2})[-/]([0-9]{2})\.`)
+	re := regexp.MustCompile(`(?i)Today(['\x{2019}\x{02BC}\x{02B9}])s date is ([0-9]{4})([-/])([0-9]{2})[-/]([0-9]{2})\.`)
 	for _, text := range texts {
 		match := re.FindStringSubmatch(text)
 		if len(match) == 0 {
@@ -1397,9 +1397,9 @@ func ccGatewayObservedDateMarkerBuckets(body []byte) (string, string, bool) {
 			apostrophe = "ascii"
 		case "\u2019":
 			apostrophe = "unicode_variant_1"
-		case "\u2018":
-			apostrophe = "unicode_variant_2"
 		case "\u02bc":
+			apostrophe = "unicode_variant_2"
+		case "\u02b9":
 			apostrophe = "unicode_variant_3"
 		default:
 			apostrophe = "other"

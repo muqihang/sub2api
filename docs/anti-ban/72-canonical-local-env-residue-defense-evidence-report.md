@@ -50,6 +50,20 @@ Accepted Plan71 limitations:
 - Desktop and VS Code dynamic oracle coverage remains blocked.
 - These limitations do not block conservative server-selected canonical rewrite and verifier behavior for Plan72 local/mock readiness.
 
+## External issue anchors
+
+Plan72 now treats the two user-provided public-post excerpts and the attached screenshot as external issue anchors, recorded only as a safe summary. The anchors assert a local-environment residue mechanism involving non-official base URL routing, China timezone buckets, domain-list and AI-keyword classifications, apostrophe variants, and date separator variants.
+
+Safety handling for these anchors:
+
+- The raw post text, screenshot contents, and raw decoded 147-domain list were not copied into source, fixtures, or evidence.
+- Tests use synthetic fixture hosts and safe bucket labels only.
+- Coverage explicitly includes four apostrophe buckets: ASCII, right single quote, modifier-letter apostrophe, and modifier-letter prime.
+- Coverage includes both `YYYY-MM-DD` and `YYYY/MM/DD` date separators.
+- Coverage includes `Asia/Shanghai` and `Asia/Urumqi` as rejected/stripped local timezone residue on authority surfaces.
+- Coverage includes non-official `ANTHROPIC_BASE_URL` residue plus synthetic domain and AI-keyword safe buckets.
+- CC Gateway final upstream system marker remains canonical US Pacific, ASCII apostrophe, and hyphen date when a recognized marker is present; marker absence is still allowed and no marker is injected.
+
 ## Implemented authority refs
 
 Sub2API now server-selects and HMAC-signs these authority refs into formal-pool context:
@@ -70,7 +84,7 @@ Sub2API changes:
 - Added observed-only safe buckets for client family and local environment residue.
 - Added canonical refs to formal-pool HMAC attestation and shared contract vectors.
 - Synced mutated request body back to the upstream wire body.
-- Added regression coverage for alias forms including snake_case, camelCase, kebab-case, timezone, base-url, and proxy URL hints.
+- Added regression coverage for alias forms including snake_case, camelCase, kebab-case, timezone, base-url, proxy URL hints, four apostrophe variants, both date separators, Asia/Shanghai, Asia/Urumqi, and synthetic domain/AI-keyword residue buckets.
 
 Targeted gate:
 
@@ -90,7 +104,7 @@ CC Gateway changes:
 - Added safe observed profile keys and enum validation.
 - Added env residue profile verification and session authority binding.
 - Added AWS scoped formal-pool env residue verification and binding.
-- Added canonical Pacific date marker rewrite for recognized system markers.
+- Added canonical Pacific date marker rewrite for recognized system markers, including ASCII/right-single-quote/modifier-letter-apostrophe/modifier-letter-prime variants and hyphen/slash date separators.
 - Added fail-closed final verifier before sidecar/upstream egress and on retry/replay attempts.
 - Final verifier covers headers, query, system text, system text block extra fields, and allowed structural body fields.
 - Final verifier skips only `messages[*].content`, not sibling structural fields under `messages[*]`.
@@ -123,7 +137,7 @@ Result: PASS (`cp4-cc-gateway-config-test-final-rerun.txt`; earlier pass retaine
 Local/mock tests demonstrated:
 
 - Upstream-bound system marker is canonical when present or absent when not present.
-- Noncanonical apostrophe/date separator residue is rewritten or rejected.
+- Noncanonical apostrophe/date separator residue is rewritten or rejected, including the external-anchor four-apostrophe and hyphen/slash date cases.
 - Headers and query reject env/base-url/proxy/timezone/profile residue aliases.
 - Allowed structural body fields reject env/profile/base-url/timezone/proxy hints.
 - `messages[*].content` is not scanned or rewritten.
@@ -149,6 +163,7 @@ Summary:
 - Blocking findings: `0`.
 - Decision: `PASS`.
 - Synthetic fixture tokens/hosts/profile refs, TLS guard literal mentions, and workspace fixture refs were counted only; matched snippets were not stored.
+- Additional external-anchor leak scan: `plan72-external-anchor-leak-scan-summary.json`, schema `plan72_external_anchor_leak_scan.v1`, decision `PASS`, blocking findings `0`.
 
 ## Review status
 
