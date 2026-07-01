@@ -66,7 +66,8 @@ Because npm tags and model docs may change, CP0 must re-check these anchors befo
 - Do not call real Anthropic, AWS, Vertex, Bedrock, OpenAI, DeepSeek, credentialed, paid, or non-local upstreams.
 - Do not run a live canary in this plan.
 - Do not use production account credentials, OAuth tokens, API keys, billing headers, session cookies, proxy credentials, or production account identifiers.
-- Do not use client version, client family, client timezone, client base URL, client proxy, client domain/keyword residue, or user-supplied profile refs as authority for upstream identity.
+- Do not use client version, client family, client platform/OS/editor/terminal, client timezone, client base URL, client proxy, client domain/keyword residue, or user-supplied profile refs as authority for upstream identity.
+- Do not assume `2.1.197` uses only the Plan72 date-marker residue channel; CP1/CP2 must scan for new local-environment residue markers and classify them safely before promotion.
 - Do not enable `no_cch`, `signed_cch`, native CCH, strict native parity, or production sidecar egress unless exact proof gates explicitly cover them and the plan's final decision allows them. Default posture remains `strip_attribution` unless proven otherwise.
 - Do not regress Plan72: system date marker, timezone, base URL, proxy, domain/keyword residue must remain server-canonicalized or fail-closed.
 - Do not regress Plan74: real Go/uTLS sidecar must remain fail-closed and Node direct HTTPS fallback must remain `0` in local-only tests.
@@ -132,6 +133,7 @@ Required tuple fields:
 - canonical CCH/billing policy
 - canonical tool/control-plane behavior
 - canonical model mapping policy, including Sonnet 5 behavior
+- canonical platform/runtime persona policy, including OS/arch/editor/terminal buckets if present in upstream shape
 - canonical TLS expected safe summary if the new candidate's TLS differs from Plan70/73/74
 
 The tuple must be HMAC-signed by Sub2API and verified by CC Gateway. The tuple must be included in session authority binding so one formal-pool session cannot drift between canonical versions.
@@ -144,12 +146,18 @@ The executor must produce a matrix for `2.1.179`, `2.1.185`, and `2.1.197`. Hist
 |---|---|---|---|
 | npm tarball hash/provenance | Required | Required | Required |
 | static package/runtime diff | Required | Required | Required |
+| platform/native package scope | Required baseline | Required | Required |
 | system/date/env residue behavior | Required baseline | Required | Required |
+| new/unknown residue marker scan | Required baseline | Required | Required |
 | `anthropic-beta` bucket | Required baseline | Required | Required |
 | CCH/billing/attribution behavior | Required baseline | Required | Required |
 | tools schema behavior | Required baseline | Required | Required |
+| MCP/permission/editor/tool metadata buckets | Required baseline | Required | Required |
 | `count_tokens` behavior | Required baseline | Required | Required |
+| streaming/SSE behavior | Required baseline | Required | Required |
+| error/retry/rate-limit behavior | Required baseline | Required | Required |
 | control-plane/model list behavior | Required baseline | Required | Required |
+| auth/account/remote-control endpoint buckets | Required baseline | Required | Required |
 | Sonnet 5 behavior | Not expected | Expected blocked/absent unless proven | Required |
 | TLS SNI safe summary | Required baseline from Plan70 | Required capture/compare | Required capture/compare |
 | CC Gateway canonical rewrite/verifier | Required | Required | Required |
@@ -265,6 +273,23 @@ Required static pass criteria:
 - The executor can identify whether `2.1.185` differs materially from `2.1.179` on beta/CCH/billing/tools/control-plane/env-residue/model behavior.
 - If static analysis discovers raw credential handling, unknown exfiltration surfaces, or unclassifiable minified/native behavior affecting upstream shape, stop with `BLOCKED_VERSION_ORACLE_GAP` unless dynamic CPs can safely disambiguate without real upstream.
 
+### CP1.5 - Platform, runtime, settings, and hidden-residue surface audit
+
+**Goal:** Prevent a narrow macOS/local CLI capture from missing platform-, settings-, editor-, or new-residue-specific upstream shape changes.
+
+- [ ] Identify every public Claude Code package involved for the local platform and any deployment-relevant platform package that can be inspected safely, such as darwin-arm64, linux-x64, linux-arm64, or other npm-distributed native/runtime packages. Record unavailable platform packages explicitly as `not_available` or `not_inspected_with_reason`.
+- [ ] Define the server-selected canonical platform/runtime persona for promotion, for example a safe bucket such as `canonical_platform_persona=darwin_arm64_cli` or another evidence-backed bucket. Do not let inbound user OS/arch/editor/terminal choose this persona.
+- [ ] Static-scan safe buckets for upstream-visible platform/runtime fields: OS, arch, terminal, shell, IDE/editor, extension host, MCP presence, permission mode, project/workspace metadata, and remote-control flags.
+- [ ] Static-scan safe buckets for settings/config/env surfaces that may alter upstream shape, including model-selection envs, settings files, allowed tools, MCP servers, telemetry/debug flags, proxy envs, remote-control flags, and custom base URL variables. Do not record raw paths, raw config contents, or secrets.
+- [ ] Static-scan for new residue/covert-marker shapes beyond Plan72's `Today<apostrophe>s date is <date>.` marker. Record only marker-shape buckets and hashes. If a new unhandled upstream-visible residue marker is found, promotion is forbidden until CP5-CP9 include canonicalization or fail-closed verification for it.
+- [ ] Write `$EVIDENCE_ROOT/safe/cp1_5-platform-runtime-settings-residue-audit.json`.
+
+Required pass criteria:
+
+- The final report states exactly which platform/runtime persona the canonical profile represents.
+- Any platform, editor, MCP, permission, settings, or remote-control field that can affect upstream shape is either canonicalized server-side, stripped, fail-closed, or proven absent.
+- Missing platform coverage cannot be silently treated as proof; it must be recorded as a limitation and reflected in the final decision.
+
 ### CP2 - Loopback-only dynamic oracle harness for CLI candidates
 
 **Goal:** Capture candidate request-shape safe summaries without real upstream and without credentials.
@@ -275,13 +300,17 @@ Required static pass criteria:
 - [ ] Capture safe summaries for representative request shapes:
   - basic messages request;
   - streaming request if Claude Code emits a distinct shape;
-  - tool-use capable request;
+  - tool-use capable request, including tool metadata and permission/tool-choice buckets if emitted;
+  - MCP-configured and MCP-absent buckets if safely simulatable with synthetic local MCP metadata only;
   - `count_tokens` request;
+  - streaming/SSE request and non-streaming request;
   - model/control-plane request or model-list path if locally observable;
   - Sonnet 5 selection/model config path for `2.1.197` if locally observable;
   - unsupported/absent Sonnet 5 behavior for `2.1.185`;
-  - env-residue date marker variants under neutral, Asia/Shanghai, Asia/Urumqi, official base URL, nonofficial synthetic base URL, synthetic domain bucket, and synthetic AI-keyword bucket.
-- [ ] Capture only safe summaries: method, path bucket, header-name presence, header value hash/bucket for nonsecret known canonical strings, body structural keys, model id bucket, beta token set hash/bucket, cch/billing presence booleans, system marker bucket, token/count shape bucket, and response handling bucket.
+  - env-residue date marker variants under neutral, Asia/Shanghai, Asia/Urumqi, official base URL, nonofficial synthetic base URL, synthetic domain bucket, and synthetic AI-keyword bucket;
+  - settings/config variation buckets for synthetic safe model env, tool permission mode, debug/telemetry flags, and remote-control/base-url flags if locally observable;
+  - error, retry, 401/403/429/5xx, and rate-limit response handling buckets from the loopback mock, because upstream-visible retries or fallback endpoints can change account risk.
+- [ ] Capture only safe summaries: method, path bucket, header-name presence, header value hash/bucket for nonsecret known canonical strings, body structural keys, model id bucket, beta token set hash/bucket, cch/billing presence booleans, system marker bucket, new residue marker bucket, platform/runtime persona bucket, tool/MCP/permission buckets, streaming/SSE bucket, token/count shape bucket, error/retry bucket, and response handling bucket.
 - [ ] Write `$EVIDENCE_ROOT/safe/cp2-cli-dynamic-oracle-summary.json`.
 
 Required dynamic pass criteria:
@@ -317,9 +346,12 @@ Required TLS pass criteria for `2.1.197` promotion:
 - [ ] Build a safe matrix comparing `2.1.179`, `2.1.185`, and `2.1.197` for:
   - `anthropic-beta` token set and ordering bucket;
   - `thinking-token-count` or equivalent app-layer token accounting bucket;
-  - tool-use schema and tool metadata buckets;
+  - tool-use schema, tool metadata, permission mode, tool-choice, and MCP presence buckets;
   - `count_tokens` request/response shape buckets;
+  - streaming/SSE request and response framing buckets;
+  - error/retry/rate-limit behavior buckets;
   - model/control-plane path buckets;
+  - auth/account/remote-control endpoint buckets using dummy credentials and loopback only;
   - Sonnet 5 model id/model alias behavior;
   - CCH/billing header/body/metadata presence;
   - attribution stripping requirements.
@@ -366,8 +398,9 @@ Write failing tests first. Required cases:
 - [ ] With server candidate set to `2.1.185`, the same observed versions sign canonical `policy_version=2.1.185`; Sonnet 5 model requests fail closed or are marked unsupported according to CP4 policy.
 - [ ] With rollback candidate set to `2.1.179`, canonical returns to `2.1.179` refs.
 - [ ] User-forged profile refs in headers/query/body/metadata/tool fields cannot alter canonical tuple.
-- [ ] User-forged version/family/env residue cannot alter canonical tuple.
-- [ ] Observed profile still records safe `cli_version_bucket`, `client_family_bucket`, and env residue buckets for audit only.
+- [ ] User-forged version/family/platform/OS/editor/terminal/settings/env residue cannot alter canonical tuple.
+- [ ] Observed profile still records safe `cli_version_bucket`, `client_family_bucket`, platform/runtime persona bucket, settings bucket, and env residue buckets for audit only.
+- [ ] New/unknown residue marker-looking shapes from CP1.5 fail closed unless a canonicalizer/final verifier test explicitly covers them.
 - [ ] Family matrix cases cover `cli`, `desktop`, `vscode_extension`, and `unknown_future`; known admitted families remain observed-only, and `unknown_future` fails closed unless a server-side allow policy explicitly admits it as observed-only.
 - [ ] Contract vectors include selected candidate refs and reject mixed tuple fields.
 
@@ -403,6 +436,8 @@ Write failing tests first. Required cases:
 - [ ] Observed client `2.1.197` with server canonical `2.1.185` emits upstream `2.1.185` shape or Sonnet 5 fail-closed policy, not `2.1.197`.
 - [ ] Rollback canonical `2.1.179` tuple is explicitly accepted and rewrites upstream shape back to `2.1.179` while still preserving Plan72/Plan74 guards.
 - [ ] Family matrix cases cover `cli`, `desktop`, `vscode_extension`, and `unknown_future`; family is observed-only and unknown/future cannot enter canonical path through forged hints.
+- [ ] Platform/OS/editor/terminal/settings/MCP hints are observed-only buckets and cannot alter canonical tuple or upstream identity.
+- [ ] New/unknown residue marker-looking shapes fail closed unless CP1.5/CP5 added an exact canonicalizer/final verifier.
 - [ ] `anthropic-beta` output is exactly candidate canonical token set from CP4.
 - [ ] body/header have no `x-anthropic-billing-header`, no raw `cch=`, and no client attribution unless CP4 exact proof authorizes otherwise.
 - [ ] Plan72 canonical date marker rewrite still passes for candidate canonical.
@@ -450,11 +485,14 @@ Required pass criteria:
   - observed inbound `2.1.185` with that canonical tuple;
   - observed inbound `2.1.197` with that canonical tuple;
   - env residue noncanonical system marker canonicalized;
+  - any CP1.5 new residue marker either canonicalized or fail-closed;
   - synthetic nonofficial base-url/domain/keyword residue stripped or safe-bucketed;
+  - synthetic platform/OS/editor/terminal/settings/MCP hints remain observed-only and do not alter canonical upstream identity;
   - Sonnet 5 request behavior according to that canonical tuple policy;
   - `count_tokens` route if supported;
   - tool-use capable request;
-  - streaming route if applicable.
+  - streaming route if applicable;
+  - loopback mock error/retry/rate-limit paths prove no non-loopback fallback and no authority drift.
 - [ ] Test canonical tuple switching `2.1.197 -> 2.1.185 -> 2.1.179`:
   - new sessions may use the newly selected tuple;
   - existing sessions with changed tuple must fail closed as session authority drift.
@@ -463,6 +501,9 @@ Required pass criteria:
   - beta token set hash/bucket;
   - model id bucket;
   - body structural shape hash/bucket;
+  - platform/runtime persona bucket;
+  - tool/MCP/permission bucket;
+  - streaming/error/retry bucket;
   - no billing/CCH booleans unless exactly authorized;
   - canonical date marker bucket;
   - TLS safe summary match boolean;
@@ -531,9 +572,10 @@ Required pass criteria:
   - npm/doc target lock snapshot;
   - proof matrix for `2.1.179`, `2.1.185`, `2.1.197`;
   - static diff safe summary;
+  - platform/runtime/settings/new-residue audit summary;
   - dynamic oracle safe summary;
   - TLS oracle/sidecar result;
-  - control-plane/tools/count_tokens/beta/CCH/billing matrix;
+  - control-plane/tools/MCP/permissions/count_tokens/streaming/error-retry/beta/CCH/billing matrix;
   - Sub2API and CC Gateway test results;
   - mock E2E result;
   - rollback knobs;
@@ -547,6 +589,7 @@ Required pass criteria:
   - Plan72 env residue regressions;
   - Plan74 TLS/Node fallback regressions;
   - Sonnet 5/model control-plane gaps;
+  - platform/runtime/settings/new-residue capture gaps;
   - leak/secret/raw evidence risk.
 - [ ] Address required review edits.
 - [ ] Run `git diff --check` in both worktrees.
@@ -580,7 +623,7 @@ Even if Plan75 ends with `PROMOTE_CANONICAL_2197_MOCK_E2E_READY`, it still does 
 
 ## Self-review checklist
 
-- Spec coverage: This plan covers primary promotion to `2.1.197`, stable fallback `2.1.185`, rollback `2.1.179`, static analysis, dynamic capture, TLS oracle, control-plane/tools/count_tokens, Sonnet 5, CCH/billing, env residue, family observed-only, Sub2API, CC Gateway, sidecar, mock E2E, leak scan, and review.
+- Spec coverage: This plan covers primary promotion to `2.1.197`, stable fallback `2.1.185`, rollback `2.1.179`, static analysis, platform/runtime/settings/new-residue audit, dynamic capture, TLS oracle, control-plane/tools/MCP/permissions/count_tokens/streaming/error-retry, Sonnet 5, CCH/billing, env residue, family observed-only, Sub2API, CC Gateway, sidecar, mock E2E, leak scan, and review.
 - Placeholder scan: No `TBD`, `TODO`, `implement later`, or unspecified final decision is intentionally left.
 - Authority model: User observed version/family/env residue never controls canonical upstream identity.
 - Safety model: No production ports, real upstreams, production credentials, raw secrets, raw prompts, raw domain lists, raw TLS, or live canary are allowed.
