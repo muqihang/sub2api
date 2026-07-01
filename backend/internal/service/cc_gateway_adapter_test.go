@@ -1333,6 +1333,7 @@ func TestCCGatewayFormalPoolAttestationMatchesSharedContractFixture(t *testing.T
 		"egress_bucket", "proxy_identity_ref", "policy_version", "persona_profile", "session_id",
 		"trusted_egress_profile_ref", "egress_tls_profile_ref", "profile_policy_version", "billing_shape_policy",
 		"request_shape_profile_ref", "cache_parity_profile_ref",
+		"env_residue_profile_ref", "locale_profile_ref", "base_url_residue_profile_ref",
 	} {
 		require.Equal(t, fixture.ValidContext[key], ctx[key], key)
 	}

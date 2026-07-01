@@ -58,6 +58,9 @@ const (
 	ccGatewayExtraBillingShapePolicy    = "cc_gateway_billing_shape_policy"
 	ccGatewayExtraRequestShapeProfile   = "cc_gateway_request_shape_profile_ref"
 	ccGatewayExtraCacheParityProfile    = "cc_gateway_cache_parity_profile_ref"
+	ccGatewayExtraEnvResidueProfileRef  = "cc_gateway_env_residue_profile_ref"
+	ccGatewayExtraLocaleProfileRef      = "cc_gateway_locale_profile_ref"
+	ccGatewayExtraBaseURLResidueProfile = "cc_gateway_base_url_residue_profile_ref"
 	openAIGatewayExtraEgressFallback    = "openai_gateway_egress_bucket"
 
 	ccGatewayExtraEnabled    = "cc_gateway_enabled"
@@ -70,6 +73,9 @@ const (
 	ccGatewayDefaultBillingShapePolicy       = "strip"
 	ccGatewayDefault2179RequestShapeProfile  = "claude_code_2_1_179_messages_streaming_tooldefs_degraded_v1"
 	ccGatewayDefault2179CacheParityProfile   = "claude_code_2_1_179_cache_parity_degraded_v1"
+	ccGatewayDefaultEnvResidueProfileRef     = "env-residue-profile:claude-code-2.1.179-us-pacific-official-anthropic-v1"
+	ccGatewayDefaultLocaleProfileRef         = "locale-profile:us-pacific-v1"
+	ccGatewayDefaultBaseURLResidueProfileRef = "base-url-residue-profile:official-anthropic-v1"
 
 	// Final shared-pool policy is anchored to the verified Claude Code 2.1.179
 	// profile. Stale compatible account metadata is admission-only and final
@@ -102,8 +108,9 @@ type ccGatewayExplicitCanaryLocalOnlyContextKey struct{}
 type ccGatewayObservedClientProfileContextKey struct{}
 
 type ccGatewayObservedClientProfileSeed struct {
-	CLIVersionBucket string
-	ObservedProfile  map[string]any
+	CLIVersionBucket   string
+	ClientFamilyBucket string
+	ObservedProfile    map[string]any
 }
 
 func WithCCGatewayExplicitCanaryRequest(ctx context.Context, req CCGatewayAnthropicCanaryRequest) context.Context {
@@ -132,7 +139,12 @@ func withCCGatewayObservedClientProfileSeed(ctx context.Context, headers http.He
 	if version == "" {
 		version = "unknown"
 	}
-	return context.WithValue(ctx, ccGatewayObservedClientProfileContextKey{}, ccGatewayObservedClientProfileSeed{CLIVersionBucket: version})
+	family := ccGatewayClientFamilyBucketFromValues(
+		getHeaderRaw(headers, "User-Agent"),
+		getHeaderRaw(headers, "X-Claude-Code-Client-Family"),
+		getHeaderRaw(headers, "X-Client-Family"),
+	)
+	return context.WithValue(ctx, ccGatewayObservedClientProfileContextKey{}, ccGatewayObservedClientProfileSeed{CLIVersionBucket: version, ClientFamilyBucket: family})
 }
 
 func attachCCGatewayObservedClientProfileSnapshot(req *http.Request) {
@@ -517,34 +529,50 @@ func applyCCGatewayFormalPoolAttestationWithPersona(req *http.Request, cfg *conf
 	if !tlsProfileOK {
 		return fmt.Errorf("cc gateway formal-pool attestation egress_tls_profile_ref is unsafe")
 	}
+	envResidueProfileRef, envResidueOK := ccGatewayEnvResidueProfileRef(account)
+	localeProfileRef, localeOK := ccGatewayLocaleProfileRef(account)
+	baseURLResidueProfileRef, baseURLOK := ccGatewayBaseURLResidueProfileRef(account)
+	if !envResidueOK {
+		return fmt.Errorf("cc gateway formal-pool attestation env_residue_profile_ref is unsafe")
+	}
+	if !localeOK {
+		return fmt.Errorf("cc gateway formal-pool attestation locale_profile_ref is unsafe")
+	}
+	if !baseURLOK {
+		return fmt.Errorf("cc gateway formal-pool attestation base_url_residue_profile_ref is unsafe")
+	}
 	stripClientTLSProfileHints(req)
+	stripClientEnvResidueProfileHints(req)
 	routeClass := ccGatewayRouteClassFromRequest(req)
 	path := "/v1/messages"
 	if req.URL != nil {
 		path = strings.TrimSpace(req.URL.Path)
 	}
 	ctx := map[string]any{
-		"account_id":                 strings.TrimSpace(getHeaderRaw(req.Header, ccGatewayAccountIDHeader)),
-		"credential_source":          "server_account_credentials",
-		"credential_ref":             credentialRef,
-		"egress_bucket":              strings.TrimSpace(getHeaderRaw(req.Header, ccGatewayEgressBucketHeader)),
-		"method":                     strings.ToUpper(strings.TrimSpace(req.Method)),
-		"nonce":                      "nonce-" + strconv.FormatInt(time.Now().UnixNano(), 10),
-		"observed_client_profile":    ccGatewayObservedClientProfile(req, routeClass),
-		"path":                       path,
-		"persona_profile":            personaProfile,
-		"policy_version":             strings.TrimSpace(getHeaderRaw(req.Header, ccGatewayPolicyVersionHeader)),
-		"proxy_identity_ref":         proxyIdentityRef,
-		"route_class":                routeClass,
-		"session_id":                 sessionID,
-		"timestamp_ms":               time.Now().UnixMilli(),
-		"token_type":                 strings.TrimSpace(getHeaderRaw(req.Header, ccGatewayTokenTypeHeader)),
-		"trusted_egress_profile_ref": ccGatewayTrustedEgressProfileRef(account),
-		"egress_tls_profile_ref":     egressTLSProfileRef,
-		"profile_policy_version":     ccGatewayProfilePolicyVersion(account),
-		"billing_shape_policy":       ccGatewayBillingShapePolicy(account),
-		"request_shape_profile_ref":  ccGatewayAttestationRequestShapeProfileRef(account),
-		"cache_parity_profile_ref":   ccGatewayAttestationCacheParityProfileRef(account),
+		"account_id":                   strings.TrimSpace(getHeaderRaw(req.Header, ccGatewayAccountIDHeader)),
+		"credential_source":            "server_account_credentials",
+		"credential_ref":               credentialRef,
+		"egress_bucket":                strings.TrimSpace(getHeaderRaw(req.Header, ccGatewayEgressBucketHeader)),
+		"method":                       strings.ToUpper(strings.TrimSpace(req.Method)),
+		"nonce":                        "nonce-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		"observed_client_profile":      ccGatewayObservedClientProfile(req, routeClass),
+		"path":                         path,
+		"persona_profile":              personaProfile,
+		"policy_version":               strings.TrimSpace(getHeaderRaw(req.Header, ccGatewayPolicyVersionHeader)),
+		"proxy_identity_ref":           proxyIdentityRef,
+		"route_class":                  routeClass,
+		"session_id":                   sessionID,
+		"timestamp_ms":                 time.Now().UnixMilli(),
+		"token_type":                   strings.TrimSpace(getHeaderRaw(req.Header, ccGatewayTokenTypeHeader)),
+		"trusted_egress_profile_ref":   ccGatewayTrustedEgressProfileRef(account),
+		"egress_tls_profile_ref":       egressTLSProfileRef,
+		"env_residue_profile_ref":      envResidueProfileRef,
+		"locale_profile_ref":           localeProfileRef,
+		"base_url_residue_profile_ref": baseURLResidueProfileRef,
+		"profile_policy_version":       ccGatewayProfilePolicyVersion(account),
+		"billing_shape_policy":         ccGatewayBillingShapePolicy(account),
+		"request_shape_profile_ref":    ccGatewayAttestationRequestShapeProfileRef(account),
+		"cache_parity_profile_ref":     ccGatewayAttestationCacheParityProfileRef(account),
 	}
 	if credentialBinding != "" {
 		ctx["credential_binding_hmac"] = credentialBinding
@@ -842,6 +870,29 @@ func ccGatewayEgressTLSProfileRef(account *Account) (string, bool) {
 	return ccGatewayDefaultEgressTLSProfileRef, true
 }
 
+func ccGatewayEnvResidueProfileRef(account *Account) (string, bool) {
+	return ccGatewayResidueAuthorityProfileRef(account, ccGatewayExtraEnvResidueProfileRef, ccGatewayDefaultEnvResidueProfileRef, "env-residue-profile:")
+}
+
+func ccGatewayLocaleProfileRef(account *Account) (string, bool) {
+	return ccGatewayResidueAuthorityProfileRef(account, ccGatewayExtraLocaleProfileRef, ccGatewayDefaultLocaleProfileRef, "locale-profile:")
+}
+
+func ccGatewayBaseURLResidueProfileRef(account *Account) (string, bool) {
+	return ccGatewayResidueAuthorityProfileRef(account, ccGatewayExtraBaseURLResidueProfile, ccGatewayDefaultBaseURLResidueProfileRef, "base-url-residue-profile:")
+}
+
+func ccGatewayResidueAuthorityProfileRef(account *Account, extraKey, defaultValue, prefix string) (string, bool) {
+	if account != nil {
+		raw := strings.TrimSpace(account.GetExtraString(extraKey))
+		if raw != "" {
+			value := safeEnvResidueAuthorityProfileRef(raw, prefix)
+			return value, value != ""
+		}
+	}
+	return defaultValue, true
+}
+
 func ccGatewayProfilePolicyVersion(account *Account) string {
 	if account != nil {
 		if v := safeProfileRef(account.GetExtraString(ccGatewayExtraProfilePolicyVersion)); v != "" {
@@ -893,6 +944,20 @@ func safeTLSProfileRef(raw string) string {
 	return value
 }
 
+func safeEnvResidueAuthorityProfileRef(raw, prefix string) string {
+	value := safeProfileRef(raw)
+	if value == "" || !strings.HasPrefix(value, prefix) {
+		return ""
+	}
+	lower := strings.ToLower(value)
+	for _, forbidden := range []string{"secret", "token", "api-key", "apikey", "sk-", "bearer", "basic", "http:", "https:", "anthropic_base_url", "http_proxy", "https_proxy", "all_proxy", "no_proxy", "tz=", "clienthello", "pcap", "cert", "key"} {
+		if strings.Contains(lower, forbidden) {
+			return ""
+		}
+	}
+	return value
+}
+
 func isCCGatewayClientTLSProfileHintKey(key string) bool {
 	lower := strings.ToLower(strings.TrimSpace(key))
 	normalized := strings.ReplaceAll(strings.ReplaceAll(lower, "-", "_"), ":", "_")
@@ -905,6 +970,42 @@ func isCCGatewayClientTLSProfileHintKey(key string) bool {
 			strings.Contains(normalized, "egress_tls") ||
 			strings.Contains(compact, "tlsprofile") ||
 			strings.Contains(compact, "egresstls")
+	}
+}
+
+func isCCGatewayClientEnvResidueHintKey(key string) bool {
+	lower := strings.ToLower(strings.TrimSpace(key))
+	normalized := strings.ReplaceAll(strings.ReplaceAll(lower, "-", "_"), ":", "_")
+	compact := strings.NewReplacer("_", "", "-", "", ":", "", ".", "").Replace(lower)
+	switch normalized {
+	case "env_residue_profile_ref", "locale_profile_ref", "base_url_residue_profile_ref",
+		"cc_gateway_env_residue_profile_ref", "cc_gateway_locale_profile_ref", "cc_gateway_base_url_residue_profile_ref",
+		"x_cc_env_residue_profile_ref", "x_cc_locale_profile_ref", "x_cc_base_url_residue_profile_ref",
+		"anthropic_base_url", "base_url", "proxy_url", "http_proxy", "https_proxy", "all_proxy", "no_proxy", "tz", "timezone":
+		return true
+	default:
+		return strings.Contains(normalized, "env_residue_profile") ||
+			strings.Contains(normalized, "locale_profile") ||
+			strings.Contains(normalized, "base_url_residue_profile") ||
+			strings.Contains(normalized, "anthropic_base_url") ||
+			strings.Contains(normalized, "base_url") ||
+			strings.Contains(normalized, "proxy_url") ||
+			strings.Contains(normalized, "http_proxy") ||
+			strings.Contains(normalized, "https_proxy") ||
+			strings.Contains(normalized, "all_proxy") ||
+			strings.Contains(normalized, "no_proxy") ||
+			compact == "tz" ||
+			compact == "timezone" ||
+			strings.Contains(compact, "envresidueprofile") ||
+			strings.Contains(compact, "localeprofile") ||
+			strings.Contains(compact, "baseurlresidueprofile") ||
+			strings.Contains(compact, "anthropicbaseurl") ||
+			compact == "baseurl" ||
+			compact == "proxyurl" ||
+			strings.Contains(compact, "httpproxy") ||
+			strings.Contains(compact, "httpsproxy") ||
+			strings.Contains(compact, "allproxy") ||
+			strings.Contains(compact, "noproxy")
 	}
 }
 
@@ -933,6 +1034,144 @@ func stripClientTLSProfileHints(req *http.Request) {
 		"x-tls-profile",
 	} {
 		req.Header.Del(key)
+	}
+}
+
+func stripClientEnvResidueProfileHints(req *http.Request) {
+	if req == nil {
+		return
+	}
+	if req.URL != nil {
+		q := req.URL.Query()
+		changed := false
+		for key := range q {
+			if isCCGatewayClientEnvResidueHintKey(key) {
+				delete(q, key)
+				changed = true
+			}
+		}
+		if changed {
+			req.URL.RawQuery = q.Encode()
+		}
+	}
+	for _, key := range []string{
+		"x-cc-env-residue-profile-ref",
+		"x-cc-locale-profile-ref",
+		"x-cc-base-url-residue-profile-ref",
+		"x-sub2api-env-residue-profile-ref",
+		"x-sub2api-locale-profile-ref",
+		"x-sub2api-base-url-residue-profile-ref",
+		"anthropic-base-url",
+		"base-url",
+		"http-proxy",
+		"https-proxy",
+		"all-proxy",
+		"no-proxy",
+		"tz",
+	} {
+		req.Header.Del(key)
+	}
+	body := claudeCodeReadRequestBody(req)
+	if len(body) == 0 {
+		return
+	}
+	rewritten, changed := stripClientEnvResidueProfileHintsFromBody(body)
+	if changed {
+		claudeCodeReplaceRequestBody(req, rewritten)
+	}
+}
+
+func stripClientEnvResidueProfileHintsFromBody(body []byte) ([]byte, bool) {
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return body, false
+	}
+	changed := stripClientEnvResidueHintsFromTopLevel(parsed)
+	if !changed {
+		return body, false
+	}
+	rewritten, err := json.Marshal(parsed)
+	if err != nil {
+		return body, false
+	}
+	return rewritten, true
+}
+
+func stripClientEnvResidueHintsFromTopLevel(body map[string]any) bool {
+	changed := false
+	for key, child := range body {
+		if isCCGatewayClientEnvResidueHintKey(key) {
+			delete(body, key)
+			changed = true
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "metadata":
+			if stripClientEnvResidueHintsFromAllowedSurface(child) {
+				changed = true
+			}
+		case "tools":
+			if stripClientEnvResidueHintsFromTools(child) {
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+func stripClientEnvResidueHintsFromTools(v any) bool {
+	tools, ok := v.([]any)
+	if !ok {
+		return false
+	}
+	changed := false
+	for _, item := range tools {
+		tool, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		for key, child := range tool {
+			if isCCGatewayClientEnvResidueHintKey(key) {
+				delete(tool, key)
+				changed = true
+				continue
+			}
+			switch strings.ToLower(strings.TrimSpace(key)) {
+			case "metadata", "input_schema", "schema", "parameters", "fields", "properties":
+				if stripClientEnvResidueHintsFromAllowedSurface(child) {
+					changed = true
+				}
+			}
+		}
+	}
+	return changed
+}
+
+func stripClientEnvResidueHintsFromAllowedSurface(v any) bool {
+	switch x := v.(type) {
+	case []any:
+		changed := false
+		for _, child := range x {
+			if stripClientEnvResidueHintsFromAllowedSurface(child) {
+				changed = true
+			}
+		}
+		return changed
+	case map[string]any:
+		changed := false
+		for key, child := range x {
+			if isCCGatewayClientEnvResidueHintKey(key) {
+				delete(x, key)
+				changed = true
+				continue
+			}
+			if stripClientEnvResidueHintsFromAllowedSurface(child) {
+				changed = true
+			}
+		}
+		return changed
+	default:
+		return false
 	}
 }
 
@@ -980,7 +1219,7 @@ func ccGatewayObservedClientProfileForBody(req *http.Request, routeClass string,
 		unknownKeys := 0
 		gjson.ParseBytes(body).ForEach(func(k, _ gjson.Result) bool {
 			rawKey := k.String()
-			if isCCGatewayClientTLSProfileHintKey(rawKey) {
+			if isCCGatewayClientTLSProfileHintKey(rawKey) || isCCGatewayClientEnvResidueHintKey(rawKey) {
 				return true
 			}
 			key := ccGatewayObservedSafeTopLevelBodyKey(rawKey)
@@ -1001,6 +1240,8 @@ func ccGatewayObservedClientProfileForBody(req *http.Request, routeClass string,
 		profile["output_config_present"] = gjson.GetBytes(body, "output_config").Exists()
 		profile["context_management_present"] = gjson.GetBytes(body, "context_management").Exists()
 	}
+	profile["client_family_bucket"] = ccGatewayClientFamilyBucket(req, billingHeaders)
+	applyCCGatewayObservedEnvResidueBuckets(profile, req, body)
 	profile["billing_block_count"] = len(billingHeaders)
 	profile["billing_shape"] = ccGatewayBillingShapeFromObservedHeaders(billingHeaders)
 	profile["cc_entrypoint_bucket"] = ccGatewayEntrypointBucketFromObservedHeaders(billingHeaders)
@@ -1031,7 +1272,7 @@ func ccGatewayRouteClassFromRequest(req *http.Request) string {
 
 func ccGatewayObservedSafeTopLevelBodyKey(raw string) string {
 	key := strings.TrimSpace(raw)
-	if isCCGatewayClientTLSProfileHintKey(key) {
+	if isCCGatewayClientTLSProfileHintKey(key) || isCCGatewayClientEnvResidueHintKey(key) {
 		return ""
 	}
 	switch key {
@@ -1094,6 +1335,294 @@ func ccGatewayObservedCLIVersionBucketFromValues(values ...string) string {
 		}
 	}
 	return "unknown"
+}
+
+func ccGatewayClientFamilyBucket(req *http.Request, billingHeaders []string) string {
+	if req != nil {
+		if seed, ok := req.Context().Value(ccGatewayObservedClientProfileContextKey{}).(ccGatewayObservedClientProfileSeed); ok {
+			if family := strings.TrimSpace(seed.ClientFamilyBucket); family != "" && family != "unknown" {
+				return family
+			}
+		}
+	}
+	values := make([]string, 0, 3+len(billingHeaders))
+	if req != nil {
+		values = append(values, getHeaderRaw(req.Header, "User-Agent"), getHeaderRaw(req.Header, "X-Claude-Code-Client-Family"), getHeaderRaw(req.Header, "X-Client-Family"))
+	}
+	values = append(values, billingHeaders...)
+	return ccGatewayClientFamilyBucketFromValues(values...)
+}
+
+func ccGatewayClientFamilyBucketFromValues(values ...string) string {
+	for _, raw := range values {
+		lower := strings.ToLower(raw)
+		switch {
+		case strings.Contains(lower, "claude-vscode") || strings.Contains(lower, "vscode") || strings.Contains(lower, "vs code"):
+			return "vscode"
+		case strings.Contains(lower, "desktop"):
+			return "desktop"
+		case strings.Contains(lower, "claude-cli") || strings.Contains(lower, "sdk-cli") || regexp.MustCompile(`(?i)\bcc_entrypoint=cli;`).MatchString(raw):
+			return "cli"
+		}
+	}
+	return "unknown"
+}
+
+func applyCCGatewayObservedEnvResidueBuckets(profile map[string]any, req *http.Request, body []byte) {
+	dateFormat, apostrophe, markerObserved := ccGatewayObservedDateMarkerBuckets(body)
+	baseURLCategory, baseURLObserved := ccGatewayObservedBaseURLCategoryBucket(req, body)
+	proxyBucket, proxyObserved := ccGatewayObservedProxyEnvBucket(req, body)
+	envHintObserved := ccGatewayEnvResidueHintObserved(req, body)
+	profile["local_env_residue_present"] = markerObserved || baseURLObserved || proxyObserved || envHintObserved
+	profile["date_format_bucket"] = dateFormat
+	profile["apostrophe_bucket"] = apostrophe
+	profile["base_url_category_bucket"] = baseURLCategory
+	profile["proxy_env_bucket"] = proxyBucket
+}
+
+func ccGatewayObservedDateMarkerBuckets(body []byte) (string, string, bool) {
+	texts := ccGatewaySystemTextBlocks(body)
+	dateFormat := "not_observed"
+	apostrophe := "not_observed"
+	observed := false
+	re := regexp.MustCompile(`(?i)Today(['\x{2019}\x{2018}\x{02BC}])s date is ([0-9]{4})([-/])([0-9]{2})[-/]([0-9]{2})\.`)
+	for _, text := range texts {
+		match := re.FindStringSubmatch(text)
+		if len(match) == 0 {
+			continue
+		}
+		observed = true
+		switch match[1] {
+		case "'":
+			apostrophe = "ascii"
+		case "\u2019":
+			apostrophe = "unicode_variant_1"
+		case "\u2018":
+			apostrophe = "unicode_variant_2"
+		case "\u02bc":
+			apostrophe = "unicode_variant_3"
+		default:
+			apostrophe = "other"
+		}
+		switch match[3] {
+		case "-":
+			dateFormat = "hyphen"
+		case "/":
+			dateFormat = "slash"
+		default:
+			dateFormat = "other"
+		}
+		break
+	}
+	return dateFormat, apostrophe, observed
+}
+
+func ccGatewaySystemTextBlocks(body []byte) []string {
+	if len(body) == 0 {
+		return nil
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil
+	}
+	system, ok := parsed["system"]
+	if !ok {
+		return nil
+	}
+	var out []string
+	switch v := system.(type) {
+	case string:
+		out = append(out, v)
+	case []any:
+		for _, item := range v {
+			switch block := item.(type) {
+			case string:
+				out = append(out, block)
+			case map[string]any:
+				if typ, _ := block["type"].(string); typ != "" && typ != "text" {
+					continue
+				}
+				if text, _ := block["text"].(string); text != "" {
+					out = append(out, text)
+				}
+			}
+		}
+	}
+	return out
+}
+
+func ccGatewayObservedBaseURLCategoryBucket(req *http.Request, body []byte) (string, bool) {
+	var values []string
+	if req != nil {
+		for _, key := range []string{"Anthropic-Base-Url", "Base-Url"} {
+			if v := strings.TrimSpace(getHeaderRaw(req.Header, key)); v != "" {
+				values = append(values, v)
+			}
+		}
+		if req.URL != nil {
+			for key, vals := range req.URL.Query() {
+				if isCCGatewayBaseURLLiteralKey(key) {
+					values = append(values, vals...)
+				}
+			}
+		}
+	}
+	values = append(values, ccGatewayCollectStringValuesForHintKeys(body, func(key string) bool {
+		return isCCGatewayBaseURLLiteralKey(key)
+	})...)
+	for _, value := range values {
+		if bucket := ccGatewayBaseURLCategoryBucket(value); bucket != "" {
+			return bucket, true
+		}
+	}
+	return "not_observed", false
+}
+
+func isCCGatewayBaseURLResidueKey(key string) bool {
+	lower := strings.ToLower(strings.TrimSpace(key))
+	normalized := strings.ReplaceAll(strings.ReplaceAll(lower, "-", "_"), ":", "_")
+	compact := strings.NewReplacer("_", "", "-", "", ":", "", ".", "").Replace(lower)
+	return normalized == "anthropic_base_url" ||
+		normalized == "base_url" ||
+		normalized == "base_url_residue_profile_ref" ||
+		strings.Contains(normalized, "anthropic_base_url") ||
+		strings.Contains(normalized, "base_url_residue") ||
+		strings.Contains(compact, "anthropicbaseurl") ||
+		strings.Contains(compact, "baseurlresidue")
+}
+
+func isCCGatewayBaseURLLiteralKey(key string) bool {
+	lower := strings.ToLower(strings.TrimSpace(key))
+	normalized := strings.ReplaceAll(strings.ReplaceAll(lower, "-", "_"), ":", "_")
+	compact := strings.NewReplacer("_", "", "-", "", ":", "", ".", "").Replace(lower)
+	return normalized == "anthropic_base_url" ||
+		normalized == "base_url" ||
+		strings.Contains(normalized, "anthropic_base_url") ||
+		strings.Contains(compact, "anthropicbaseurl")
+}
+
+func ccGatewayBaseURLCategoryBucket(raw string) string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value == "" {
+		return ""
+	}
+	if strings.Contains(value, "api.anthropic.com") || strings.Contains(value, "anthropic.com") {
+		return "official_anthropic"
+	}
+	if strings.Contains(value, ".cn") {
+		return "china_tld"
+	}
+	if strings.Contains(value, "gateway") || strings.Contains(value, "localhost") || strings.Contains(value, "127.0.0.1") || strings.Contains(value, "test.invalid") {
+		return "neutral_gateway"
+	}
+	if strings.Contains(value, ".org") {
+		return "china_org_domain"
+	}
+	if strings.Contains(value, "cloud") {
+		return "china_cloud_domain"
+	}
+	if strings.Contains(value, "ai") || strings.Contains(value, "lab") {
+		return "ai_lab_keyword"
+	}
+	if strings.Contains(value, "proxy") || strings.Contains(value, "resale") {
+		return "claude_proxy_resale_like"
+	}
+	return "unknown"
+}
+
+func ccGatewayObservedProxyEnvBucket(req *http.Request, body []byte) (string, bool) {
+	var values []string
+	if req != nil {
+		for _, key := range []string{"HTTP-Proxy", "HTTPS-Proxy", "All-Proxy", "No-Proxy"} {
+			if v := strings.TrimSpace(getHeaderRaw(req.Header, key)); v != "" {
+				values = append(values, v)
+			}
+		}
+		if req.URL != nil {
+			for key, vals := range req.URL.Query() {
+				if isCCGatewayProxyEnvResidueKey(key) {
+					values = append(values, vals...)
+				}
+			}
+		}
+	}
+	values = append(values, ccGatewayCollectStringValuesForHintKeys(body, isCCGatewayProxyEnvResidueKey)...)
+	if len(values) == 0 {
+		return "no_proxy_env", false
+	}
+	for _, value := range values {
+		lower := strings.ToLower(strings.TrimSpace(value))
+		if strings.Contains(lower, "127.0.0.1") || strings.Contains(lower, "localhost") || strings.Contains(lower, "[::1]") {
+			continue
+		}
+		if strings.Contains(lower, "no_proxy") || strings.Contains(lower, "no-proxy") {
+			return "no_proxy_bypass_guarded", true
+		}
+		return "non_loopback_proxy_rejected", true
+	}
+	return "loopback_proxy_only", true
+}
+
+func isCCGatewayProxyEnvResidueKey(key string) bool {
+	lower := strings.ToLower(strings.TrimSpace(key))
+	normalized := strings.ReplaceAll(strings.ReplaceAll(lower, "-", "_"), ":", "_")
+	compact := strings.NewReplacer("_", "", "-", "", ":", "", ".", "").Replace(lower)
+	return normalized == "http_proxy" || normalized == "https_proxy" || normalized == "all_proxy" || normalized == "no_proxy" ||
+		strings.Contains(normalized, "http_proxy") || strings.Contains(normalized, "https_proxy") ||
+		strings.Contains(normalized, "all_proxy") || strings.Contains(normalized, "no_proxy") ||
+		strings.Contains(compact, "httpproxy") || strings.Contains(compact, "httpsproxy") ||
+		strings.Contains(compact, "allproxy") || strings.Contains(compact, "noproxy")
+}
+
+func ccGatewayEnvResidueHintObserved(req *http.Request, body []byte) bool {
+	if req != nil {
+		if strings.TrimSpace(getHeaderRaw(req.Header, "TZ")) != "" {
+			return true
+		}
+		if req.URL != nil {
+			for key := range req.URL.Query() {
+				if isCCGatewayClientEnvResidueHintKey(key) {
+					return true
+				}
+			}
+		}
+	}
+	return len(ccGatewayCollectStringValuesForHintKeys(body, isCCGatewayClientEnvResidueHintKey)) > 0
+}
+
+func ccGatewayCollectStringValuesForHintKeys(body []byte, keyMatch func(string) bool) []string {
+	if len(body) == 0 || keyMatch == nil {
+		return nil
+	}
+	var parsed any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil
+	}
+	var out []string
+	var walk func(any, string)
+	walk = func(v any, parentKey string) {
+		switch x := v.(type) {
+		case map[string]any:
+			for key, child := range x {
+				if keyMatch(key) {
+					if text, ok := child.(string); ok {
+						out = append(out, text)
+					}
+					continue
+				}
+				if strings.EqualFold(parentKey, "messages") || strings.EqualFold(key, "messages") {
+					continue
+				}
+				walk(child, key)
+			}
+		case []any:
+			for _, child := range x {
+				walk(child, parentKey)
+			}
+		}
+	}
+	walk(parsed, "")
+	return out
 }
 
 func collectCCGatewayBillingHeaderTexts(body []byte) []string {

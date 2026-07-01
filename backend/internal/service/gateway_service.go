@@ -5943,6 +5943,9 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 		if err := applyCCGatewayFormalPoolAttestation(req, s.cfg, account); err != nil {
 			return nil, nil, err
 		}
+		if attestedBody := claudeCodeReadRequestBody(req); len(attestedBody) > 0 {
+			body = attestedBody
+		}
 	}
 
 	if getHeaderRaw(req.Header, "content-type") == "" {
@@ -7109,6 +7112,9 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		}
 		if err := applyCCGatewayFormalPoolAttestation(req, s.cfg, account); err != nil {
 			return nil, nil, err
+		}
+		if attestedBody := claudeCodeReadRequestBody(req); len(attestedBody) > 0 {
+			body = attestedBody
 		}
 	}
 
@@ -11181,6 +11187,9 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		}
 		if err := applyCCGatewayFormalPoolAttestation(req, s.cfg, account); err != nil {
 			return nil, nil, err
+		}
+		if attestedBody := claudeCodeReadRequestBody(req); len(attestedBody) > 0 {
+			body = attestedBody
 		}
 	}
 

@@ -210,6 +210,9 @@ func (s *GatewayService) buildUpstreamRequestClaudePlatformAWSCCGateway(
 	if err := applyCCGatewayFormalPoolAttestation(req, s.cfg, account); err != nil {
 		return nil, nil, err
 	}
+	if attestedBody := claudeCodeReadRequestBody(req); len(attestedBody) > 0 {
+		body = attestedBody
+	}
 	_ = modelID
 	return req, body, nil
 }
