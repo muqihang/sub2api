@@ -57,6 +57,12 @@ Add these HMAC-signed context fields for formal-pool requests:
 
 These refs are selected only from account/server config. They are never read from user headers, query parameters, request bodies, observed client profile, or client family.
 
+Optional refs are allowed only if the executor proves they reduce ambiguity without changing scope:
+
+- `date_marker_profile_ref`: optional auditability split for the date-marker policy; not required because `locale_profile_ref` plus `env_residue_profile_ref` already define the canonical date marker.
+- `canonical_user_agent_profile_ref`: optional auditability split for future family expansion; not required because existing version/persona/profile refs and final verifier already lock upstream identity.
+- `client_family_policy_ref`: not recommended as an authority ref. If added, it must remain admission/audit-only and must not affect upstream identity.
+
 ### Canonical upstream residue policy
 
 For `env-residue-profile:claude-code-2.1.179-us-pacific-official-anthropic-v1`:
@@ -67,7 +73,25 @@ For `env-residue-profile:claude-code-2.1.179-us-pacific-official-anthropic-v1`:
 - Do not inject a date marker when none exists. Absence is allowed for family compatibility until Desktop/VS Code dynamic oracle coverage exists.
 - If a system field contains a recognized noncanonical Claude Code date marker, rewrite only that marker to the canonical marker.
 - If a system field contains an unrecognized local-env marker shape, raw `ANTHROPIC_BASE_URL`, proxy env variable literal, or direct local proxy/base-url residue in system content, fail closed.
-- User message content is not scanned or modified for these markers; only upstream-bound `system` content and upstream headers are in scope.
+- User message content is not scanned or modified for these markers; only upstream-bound `system` content and upstream headers/query/allowed structural authority fields are in scope.
+
+Recognized Claude Code date marker shapes for this plan are limited to exact `Today<apostrophe>s date is <date>.` sentences in `system` string or array text blocks, where:
+
+- `<apostrophe>` is ASCII `'` or one of the Plan71 observed Unicode variants.
+- `<date>` is ISO-like `YYYY-MM-DD` or slash `YYYY/MM/DD`.
+- The sentence is a standalone date marker or a standalone text block; ordinary system instructions containing unrelated dates are not rewritten.
+- Absence of the marker is allowed and must not cause injection.
+- Any other local-env marker-looking shape in `system` is unrecognized and must fail closed.
+
+### Safe bucket classification strategy
+
+Plan72 must not copy the raw Plan71 decoded domain/keyword list into source code, fixtures, docs, or evidence. If bucket classification is needed in runtime code or tests, use one of these safe strategies only:
+
+- high-level heuristic buckets such as TLD suffix, loopback, official host, or redacted synthetic fixture domains;
+- hash/HMAC lookup over a private server-side list where the raw list is not committed;
+- Plan71 safe evidence buckets as constants, never raw domain or keyword strings from the decoded list.
+
+The implementation may classify `ai_lab_keyword` or `claude_proxy_resale_like` only from redacted synthetic fixtures or private hashed lookup. It must not persist the raw keyword/domain list.
 
 ### Observed-only client profile additions
 
@@ -148,7 +172,8 @@ Write failing tests first covering:
   - `locale_profile_ref=locale-profile:us-pacific-v1`
   - `base_url_residue_profile_ref=base-url-residue-profile:official-anthropic-v1`
   - `policy_version=2.1.179`
-- [ ] User-forged query/body/header keys such as `env_residue_profile_ref`, `locale_profile_ref`, `base_url_residue_profile_ref`, `ANTHROPIC_BASE_URL`, `HTTP_PROXY`, `HTTPS_PROXY`, `TZ`, and similar camelCase variants cannot alter attested authority refs.
+- [ ] User-forged query/body/header keys such as `env_residue_profile_ref`, `locale_profile_ref`, `base_url_residue_profile_ref`, `ANTHROPIC_BASE_URL`, `HTTP_PROXY`, `HTTPS_PROXY`, `TZ`, and similar camelCase/kebab-case/snake_case variants cannot alter attested authority refs.
+- [ ] User-forged nested authority keys in `metadata`, tool definitions, tool metadata, and tool fields are stripped or treated as observed-only safe buckets and cannot alter attested authority refs.
 - [ ] CLI/Desktop/VS Code family hints become `client_family_bucket` only and do not affect canonical refs.
 - [ ] Raw body/prompt/domain values are not written into test golden output; assertions use safe buckets only.
 
@@ -160,7 +185,8 @@ Expected result before implementation: FAIL on missing fields or missing strippi
 
 - [ ] Add constants for the three canonical refs.
 - [ ] Add helper `ccGatewayEnvResidueProfileRef(account)`, `ccGatewayLocaleProfileRef(account)`, and `ccGatewayBaseURLResidueProfileRef(account)` with safe account extra override only if explicitly configured server-side; default to canonical values.
-- [ ] Extend client-hint stripping to remove env residue profile hints from query/body/header authority surfaces.
+- [ ] Extend client-hint stripping to remove env residue profile hints from query/body/header authority surfaces, including camelCase/kebab-case/snake_case aliases.
+- [ ] Extend stripping/classification to allowed structural body fields only: top-level keys, `metadata`, tool definitions, tool metadata, and tool fields. Do not scan or modify `messages[*].content`.
 - [ ] Extend observed profile snapshot with safe buckets from system content and family/user-agent classification.
 - [ ] Add the three canonical refs to the HMAC-signed formal-pool attestation context.
 - [ ] Update shared contract vectors.
@@ -173,8 +199,10 @@ Expected result before implementation: FAIL on missing fields or missing strippi
 Write failing tests first covering:
 
 - [ ] Missing `env_residue_profile_ref`, `locale_profile_ref`, or `base_url_residue_profile_ref` fails with `missing_env_residue_profile_ref` or `malformed_formal_pool_context_attestation`.
-- [ ] Unsafe refs containing URL, credential-like, raw domain list, or raw env variable material fail.
+- [ ] Malformed attestation cases fail closed: bad base64, bad JSON, bad HMAC, duplicate/conflicting semantic fields, and expired timestamp.
+- [ ] Unsafe refs fail closed: unknown profile ref, URL-like ref, credential-like ref, raw env-var-like ref, raw domain-list-like ref, newline-bearing ref.
 - [ ] Mismatched refs fail with `formal_pool_context_mismatch` or `formal_pool_env_residue_profile_unapproved`.
+- [ ] AWS scoped formal-pool context requires the three refs, signs them, validates them, and binds them with `provider_kind`, `upstream_host`, `allowed_upstream_path`, request shape, and cache refs.
 - [ ] Session ledger rejects the same session if canonical residue refs change between requests.
 - [ ] Observed client residue fields are accepted only from the safe key set and cannot override authority refs.
 
@@ -189,6 +217,7 @@ Expected result before implementation: FAIL.
 - [ ] Extend `isSafeObservedClientProfile` to allow the new safe observed-only keys with bounded enum values.
 - [ ] Add `verifyFormalPoolEnvResidueProfiles(config, attested, accountIdentity)`.
 - [ ] Add new refs to `FormalPoolSessionAuthorityBinding` and `sameFormalPoolSessionAuthority`.
+- [ ] Ensure AWS scoped formal-pool verification applies the same env residue profile verification before AWS upstream egress.
 - [ ] Update config examples and tests to include the canonical refs where formal-pool strict mode is enabled.
 
 ### CP5 - Canonical rewrite and final verifier
@@ -197,12 +226,17 @@ Expected result before implementation: FAIL.
 
 - [ ] Implement pure function `canonicalClaudeCodeDateMarker(now, timezone)` that returns ASCII apostrophe + hyphen date for `America/Los_Angeles`.
 - [ ] Implement system-only rewrite for recognized Claude Code date markers in JSON `system` string or array text blocks.
-- [ ] Do not modify user `messages[*].content`.
+- [ ] Test recognized marker variants: ASCII apostrophe + hyphen date, Unicode apostrophe + hyphen date, ASCII apostrophe + slash date, Unicode apostrophe + slash date, and wrong-date-but-recognized marker rewritten to canonical server date.
+- [ ] Test unrecognized marker variants fail closed: malformed date, extra embedded classification text, env/base-url literal near the marker, non-standalone marker inside ordinary system instructions, and mixed multiple conflicting markers.
+- [ ] Test marker absence is allowed and does not inject a new marker.
+- [ ] Test normal system text containing ordinary dates but no Claude Code marker is not rewritten.
+- [ ] Do not modify, scan for policy decisions, or rewrite user `messages[*].content`.
 - [ ] Do not inject a marker when absent.
 - [ ] Reject upstream-bound system content containing raw `ANTHROPIC_BASE_URL`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, or `TZ=` literals.
 - [ ] Reject unrecognized date marker variants after rewrite.
-- [ ] Verify upstream headers do not contain local env/proxy/base-url authority headers or forwarded local env residues.
-- [ ] Run final verifier after billing/CCH strip/sign rewrite and before sidecar/upstream egress.
+- [ ] Verify upstream headers and URL/query do not contain local env/proxy/base-url authority headers or forwarded local env residues.
+- [ ] Verify allowed structural body authority fields do not contain env/profile/base-url/TZ/proxy hints: top-level keys, `metadata`, tool definitions, tool metadata, and tool fields. Exclude `messages[*].content` from this scan/rewrite.
+- [ ] Run final verifier after billing/CCH strip/sign rewrite and before sidecar/upstream egress on every attempt.
 - [ ] Return explicit fail-closed error code, recommended: `formal_pool_env_residue_verifier_failed`.
 
 ### CP6 - Family observed-only admission
@@ -234,8 +268,11 @@ Required assertions:
 
 - [ ] Upstream captured body has canonical marker if a marker was present.
 - [ ] Upstream captured body has no noncanonical apostrophe/date separator residue.
-- [ ] Upstream captured headers have no local env/proxy/base-url residue.
+- [ ] Upstream captured headers and query have no local env/proxy/base-url residue.
+- [ ] Upstream captured allowed structural body fields have no env/profile/base-url/TZ/proxy authority hints, including nested metadata and tool fields.
 - [ ] `observed_client_profile` records safe residue buckets but authority refs stay canonical.
+- [ ] AWS scoped formal-pool path includes the three refs in signed context, binds them in session authority, and runs the final verifier before AWS upstream egress.
+- [ ] Retry/replay path: every upstream attempt reruns canonical rewrite + final verifier and cannot reuse an unverified body.
 - [ ] Billing/CCH strip behavior remains unchanged.
 - [ ] Node direct HTTPS fallback remains `0` in sidecar-enabled formal-pool tests.
 - [ ] No real upstream requests occur.
@@ -262,6 +299,7 @@ If test names differ, record the actual targeted command and why it covers these
 
 - [ ] Scan modified Sub2API files, modified CC Gateway files, tests, docs, and `$EVIDENCE_ROOT/safe`.
 - [ ] Fail on raw body/prompt/response, raw decoded domain/keyword list, raw ClientHello/pcap, secrets, tokens, key/cert material, account UUID/email, workspace IDs, or proxy credentials.
+- [ ] Scan generated evidence schema keys, error codes, and reason strings so they do not include raw env/domain/token fragments.
 - [ ] Generate `/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-platform-aws-formal-pool/docs/anti-ban/72-canonical-local-env-residue-defense-evidence-report.md`.
 - [ ] Include CP0-CP8 statuses, safe evidence root, tests, code changes, final decision, and remaining blockers.
 - [ ] Dispatch one review agent for final review. Required review focus:
@@ -281,7 +319,8 @@ To return `CANONICAL_ENV_RESIDUE_MOCK_E2E_READY`, all must be true:
 - Client-supplied env/profile/base-url/TZ/proxy hints cannot alter authority refs.
 - CC Gateway verifies the refs and binds them in session authority.
 - Upstream-bound system residue is canonical or absent.
-- Noncanonical or raw env/base-url/proxy residue in system/header fails closed.
+- Final verifier covers headers, URL/query, system content, and allowed structural body authority fields. It explicitly excludes user `messages[*].content` from scanning/rewrite.
+- Noncanonical or raw env/base-url/proxy residue in system/header/query/allowed structural body fields fails closed.
 - CLI/Desktop/VS Code family indicators are observed-only and do not change upstream authority.
 - Existing canonical `2.1.179` version lock, strip billing/CCH policy, and Plan73/74 TLS sidecar behavior remain intact.
 - All targeted tests pass.
