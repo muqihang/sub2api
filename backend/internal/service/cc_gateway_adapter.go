@@ -73,6 +73,12 @@ const (
 	ccGatewayDefaultBillingShapePolicy       = "strip"
 	ccGatewayDefault2179RequestShapeProfile  = "claude_code_2_1_179_messages_streaming_tooldefs_degraded_v1"
 	ccGatewayDefault2179CacheParityProfile   = "claude_code_2_1_179_cache_parity_degraded_v1"
+	ccGateway2185PersonaProfile              = "claude-code-2.1.185-macos-local"
+	ccGateway2197PersonaProfile              = "claude-code-2.1.197-macos-local"
+	ccGateway2197ProfilePolicyVersion        = "claude_code_2_1_197_plan76_sonnet5_policy_v1"
+	ccGateway2197RequestShapeProfile         = "claude_code_2_1_197_messages_streaming_tooldefs_sonnet5_v1"
+	ccGateway2197CacheParityProfile          = "claude_code_2_1_197_cache_parity_sonnet5_v1"
+	ccGateway2197EgressTLSProfileRef         = "tls-profile:claude-code-2.1.197-real-oracle-tcp-v1"
 	ccGatewayDefaultEnvResidueProfileRef     = "env-residue-profile:claude-code-2.1.179-us-pacific-official-anthropic-v1"
 	ccGatewayDefaultLocaleProfileRef         = "locale-profile:us-pacific-v1"
 	ccGatewayDefaultBaseURLResidueProfileRef = "base-url-residue-profile:official-anthropic-v1"
@@ -431,7 +437,7 @@ func applyCCGatewayAnthropicHeaders(req *http.Request, cfg *config.Config, accou
 	setHeaderRaw(req.Header, ccGatewayAccountIDHeader, ccGatewayAccountRef(account))
 	setHeaderRaw(req.Header, ccGatewayProviderHeader, PlatformAnthropic)
 	setHeaderRaw(req.Header, ccGatewayTokenTypeHeader, tokenType)
-	setHeaderRaw(req.Header, ccGatewayPolicyVersionHeader, ccGatewayAnthropicPolicyVersion)
+	setHeaderRaw(req.Header, ccGatewayPolicyVersionHeader, ccGatewayCanonicalTupleForAccount(account).PolicyVersion)
 	setHeaderRaw(req.Header, ccGatewayCredentialRefHeader, ccGatewayCredentialRef(account))
 	// Formal shared-pool Anthropic routing must not send raw email/account/org
 	// identity headers to CC Gateway. Account identity is selected by the
@@ -639,7 +645,7 @@ func applyCCGatewayAnthropicPolicyVersion(ctx context.Context, req *http.Request
 	}
 	if IsFormalPoolAccount(account) {
 		if version := strings.TrimSpace(account.GetExtraString(ccGatewayExtraPolicyVersion)); version != "" && ccGatewayPolicyVersionCompatible(version) {
-			setHeaderRaw(req.Header, ccGatewayPolicyVersionHeader, ccGatewayAnthropicPolicyVersion)
+			setHeaderRaw(req.Header, ccGatewayPolicyVersionHeader, ccGatewayCanonicalTupleForAccount(account).PolicyVersion)
 		}
 		return
 	}
@@ -657,10 +663,10 @@ func applyCCGatewayAnthropicPolicyVersion(ctx context.Context, req *http.Request
 	}
 	if account != nil {
 		// Stale compatible account metadata is admission-only. Do not mutate DB Extra
-		// here, but canonicalize final normal outbound persona to the verified
-		// final policy version.
+		// here, but canonicalize final normal outbound persona to the server-selected
+		// formal-pool tuple.
 		if version := strings.TrimSpace(account.GetExtraString(ccGatewayExtraPolicyVersion)); version != "" && ccGatewayPolicyVersionCompatible(version) {
-			setHeaderRaw(req.Header, ccGatewayPolicyVersionHeader, ccGatewayAnthropicPolicyVersion)
+			setHeaderRaw(req.Header, ccGatewayPolicyVersionHeader, ccGatewayCanonicalTupleForAccount(account).PolicyVersion)
 		}
 	}
 }
@@ -840,14 +846,53 @@ func ccGatewayProxyIdentityRef(account *Account) string {
 	return strings.TrimSpace(account.GetExtraString("proxy_identity_ref"))
 }
 
+type ccGatewayCanonicalTupleProfile struct {
+	PolicyVersion          string
+	PersonaProfile         string
+	EgressTLSProfileRef    string
+	ProfilePolicyVersion   string
+	RequestShapeProfileRef string
+	CacheParityProfileRef  string
+}
+
+func ccGatewayCanonicalTupleForAccount(account *Account) ccGatewayCanonicalTupleProfile {
+	version := ""
+	if account != nil {
+		version = strings.TrimSpace(account.GetExtraString(ccGatewayExtraPolicyVersion))
+	}
+	switch version {
+	case "2.1.197":
+		return ccGatewayCanonicalTupleProfile{
+			PolicyVersion:          "2.1.197",
+			PersonaProfile:         ccGateway2197PersonaProfile,
+			EgressTLSProfileRef:    ccGateway2197EgressTLSProfileRef,
+			ProfilePolicyVersion:   ccGateway2197ProfilePolicyVersion,
+			RequestShapeProfileRef: ccGateway2197RequestShapeProfile,
+			CacheParityProfileRef:  ccGateway2197CacheParityProfile,
+		}
+	case "2.1.185":
+		return ccGatewayCanonicalTupleProfile{
+			PolicyVersion:          "2.1.185",
+			PersonaProfile:         ccGateway2185PersonaProfile,
+			EgressTLSProfileRef:    ccGatewayDefaultEgressTLSProfileRef,
+			ProfilePolicyVersion:   ccGatewayDefault2179ProfilePolicyVersion,
+			RequestShapeProfileRef: ccGatewayDefault2179RequestShapeProfile,
+			CacheParityProfileRef:  ccGatewayDefault2179CacheParityProfile,
+		}
+	default:
+		return ccGatewayCanonicalTupleProfile{
+			PolicyVersion:          ccGatewayAnthropicPolicyVersion,
+			PersonaProfile:         ccGatewayDefaultPersonaProfile,
+			EgressTLSProfileRef:    ccGatewayDefaultEgressTLSProfileRef,
+			ProfilePolicyVersion:   ccGatewayDefault2179ProfilePolicyVersion,
+			RequestShapeProfileRef: ccGatewayDefault2179RequestShapeProfile,
+			CacheParityProfileRef:  ccGatewayDefault2179CacheParityProfile,
+		}
+	}
+}
+
 func ccGatewayPersonaProfile(account *Account) string {
-	if account == nil {
-		return ""
-	}
-	if v := strings.TrimSpace(account.GetExtraString(ccGatewayExtraPersonaProfile)); v != "" {
-		return v
-	}
-	return ""
+	return ccGatewayCanonicalTupleForAccount(account).PersonaProfile
 }
 
 func ccGatewayTrustedEgressProfileRef(account *Account) string {
@@ -860,14 +905,14 @@ func ccGatewayTrustedEgressProfileRef(account *Account) string {
 }
 
 func ccGatewayEgressTLSProfileRef(account *Account) (string, bool) {
-	if account != nil {
+	if account != nil && account.IsClaudePlatformAWS() {
 		raw := strings.TrimSpace(account.GetExtraString(ccGatewayExtraEgressTLSProfileRef))
 		if raw != "" {
 			value := safeTLSProfileRef(raw)
 			return value, value != ""
 		}
 	}
-	return ccGatewayDefaultEgressTLSProfileRef, true
+	return ccGatewayCanonicalTupleForAccount(account).EgressTLSProfileRef, true
 }
 
 func ccGatewayEnvResidueProfileRef(account *Account) (string, bool) {
@@ -894,12 +939,12 @@ func ccGatewayResidueAuthorityProfileRef(account *Account, extraKey, defaultValu
 }
 
 func ccGatewayProfilePolicyVersion(account *Account) string {
-	if account != nil {
+	if account != nil && account.IsClaudePlatformAWS() {
 		if v := safeProfileRef(account.GetExtraString(ccGatewayExtraProfilePolicyVersion)); v != "" {
 			return v
 		}
 	}
-	return ccGatewayDefault2179ProfilePolicyVersion
+	return ccGatewayCanonicalTupleForAccount(account).ProfilePolicyVersion
 }
 
 func ccGatewayBillingShapePolicy(account *Account) string {
@@ -913,21 +958,21 @@ func ccGatewayBillingShapePolicy(account *Account) string {
 }
 
 func ccGatewayRequestShapeProfileRef(account *Account) string {
-	if account != nil {
+	if account != nil && account.IsClaudePlatformAWS() {
 		if v := safeProfileRef(account.GetExtraString(ccGatewayExtraRequestShapeProfile)); v != "" {
 			return v
 		}
 	}
-	return ccGatewayDefault2179RequestShapeProfile
+	return ccGatewayCanonicalTupleForAccount(account).RequestShapeProfileRef
 }
 
 func ccGatewayCacheParityProfileRef(account *Account) string {
-	if account != nil {
+	if account != nil && account.IsClaudePlatformAWS() {
 		if v := safeProfileRef(account.GetExtraString(ccGatewayExtraCacheParityProfile)); v != "" {
 			return v
 		}
 	}
-	return ccGatewayDefault2179CacheParityProfile
+	return ccGatewayCanonicalTupleForAccount(account).CacheParityProfileRef
 }
 
 func safeTLSProfileRef(raw string) string {
@@ -1709,10 +1754,10 @@ func ccGatewayAccountEmail(account *Account) string {
 
 func ccGatewayPolicyVersionCompatible(version string) bool {
 	// Keep this as an explicit verified-corpus gate, not a broad semver range.
-	// 2.1.171 was not published; 2.1.172+ are not admitted unless promoted to
-	// an explicit verified profile such as the current 2.1.175 final persona.
+	// 2.1.171 was not published; later patches are not admitted unless promoted
+	// to an explicit verified profile such as the Plan76 fallback/primary tuples.
 	switch strings.TrimSpace(version) {
-	case "2.1.150", "2.1.153", "2.1.169", "2.1.170", ccGatewayAnthropicPolicyVersion:
+	case "2.1.150", "2.1.153", "2.1.169", "2.1.170", "2.1.185", "2.1.197", ccGatewayAnthropicPolicyVersion:
 		return true
 	default:
 		return false

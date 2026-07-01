@@ -883,7 +883,7 @@ func TestGatewayService_CCGatewayFormalPoolAttestationRejectsMissingPersonaProfi
 	require.NotContains(t, err.Error(), PoolProfileNormal)
 }
 
-func TestCCGatewayPersonaProfileRequiresExplicitFormalPoolProfile(t *testing.T) {
+func TestCCGatewayPersonaProfileUsesCanonicalTupleWhenClientExtraMissing(t *testing.T) {
 	account := newAnthropicOAuthAccountForClaudeForwardTest()
 	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
 	account.Extra[FormalPoolExtraPoolProfileEffective] = PoolProfileNormal
@@ -899,9 +899,11 @@ func TestCCGatewayPersonaProfileRequiresExplicitFormalPoolProfile(t *testing.T) 
 	setHeaderRaw(req.Header, "X-Claude-Code-Session-Id", "server-session")
 
 	err := applyCCGatewayFormalPoolAttestation(req, ccGatewayTestConfig(PlatformAnthropic), account)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "persona_profile")
-	require.NotContains(t, err.Error(), PoolProfileNormal)
+	require.NoError(t, err)
+	ctx := decodeCCGatewayFormalPoolContextForTest(t, req)
+	require.Equal(t, ccGatewayDefaultPersonaProfile, ctx["persona_profile"])
+	require.Equal(t, ccGatewayAnthropicPolicyVersion, ctx["policy_version"])
+	require.NotContains(t, ctx, PoolProfileNormal)
 }
 
 func TestGatewayService_CCGatewayAnthropicOAuthBuildsAttestedFormalPoolContextFromServerState(t *testing.T) {
@@ -954,6 +956,111 @@ func TestGatewayService_CCGatewayAnthropicOAuthBuildsAttestedFormalPoolContextFr
 	require.Equal(t, "opaque:credential-ref:v1:cred-a", getHeaderRaw(req.Header, "x-cc-credential-ref"))
 	requireValidCCGatewayFormalPoolSignatureForTest(t, req, "formal-pool-attestation-secret-test")
 	require.Empty(t, getHeaderRaw(req.Header, ccGatewayTrustedPersonaHeader))
+}
+
+func plan76FormalPoolCanonicalTupleAccountForTest(version string) *Account {
+	account := newAnthropicOAuthAccountForClaudeForwardTest()
+	account.Extra["cc_gateway_enabled"] = "true"
+	account.Extra["cc_gateway_canary_only"] = "false"
+	account.Extra["cc_gateway_policy_version"] = version
+	account.Extra["cc_gateway_routes"] = "native_messages,native_count_tokens,chat_completions,responses"
+	account.Extra["cc_gateway_egress_bucket_enabled"] = "true"
+	account.Extra["cc_gateway_egress_bucket"] = "bucket-a"
+	account.Extra["cc_gateway_account_ref"] = "hmac-sha256:" + strings.Repeat("c", 64)
+	formalPoolApplyCompleteSchedulingEvidenceForTest(account)
+	account.Extra[ccGatewayExtraCredentialRef] = "opaque:credential-ref:v1:cred-a"
+	account.Extra[ccGatewayExtraProxyIdentityRef] = "opaque:proxy-ref:v1:bucket-a"
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+	return account
+}
+
+func plan76FormalPoolMessagesBodyForTest(model, sessionID string) []byte {
+	return []byte(`{"model":"` + model + `","stream":true,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"` + sessionID + `\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"safe local fixture"}]}],"tools":[{"name":"Bash","input_schema":{"type":"object"}}]}`)
+}
+
+func requirePlan76CanonicalTupleForTest(t *testing.T, ctx map[string]any, version string) {
+	t.Helper()
+	require.Equal(t, version, ctx["policy_version"])
+	require.Equal(t, "strip_attribution", ctx["trusted_egress_profile_ref"])
+	require.Equal(t, "strip", ctx["billing_shape_policy"])
+	switch version {
+	case "2.1.197":
+		require.Equal(t, "claude-code-2.1.197-macos-local", ctx["persona_profile"])
+		require.Equal(t, "claude_code_2_1_197_plan76_sonnet5_policy_v1", ctx["profile_policy_version"])
+		require.Equal(t, "claude_code_2_1_197_messages_streaming_tooldefs_sonnet5_v1", ctx["request_shape_profile_ref"])
+		require.Equal(t, "claude_code_2_1_197_cache_parity_sonnet5_v1", ctx["cache_parity_profile_ref"])
+		require.Equal(t, "tls-profile:claude-code-2.1.197-real-oracle-tcp-v1", ctx["egress_tls_profile_ref"])
+	case "2.1.185":
+		require.Equal(t, "claude-code-2.1.185-macos-local", ctx["persona_profile"])
+		require.Equal(t, ccGatewayDefault2179ProfilePolicyVersion, ctx["profile_policy_version"])
+		require.Equal(t, ccGatewayDefault2179RequestShapeProfile, ctx["request_shape_profile_ref"])
+		require.Equal(t, ccGatewayDefault2179CacheParityProfile, ctx["cache_parity_profile_ref"])
+		require.Equal(t, ccGatewayDefaultEgressTLSProfileRef, ctx["egress_tls_profile_ref"])
+	case "2.1.179":
+		require.Equal(t, ccGatewayDefaultPersonaProfile, ctx["persona_profile"])
+		require.Equal(t, ccGatewayDefault2179ProfilePolicyVersion, ctx["profile_policy_version"])
+		require.Equal(t, ccGatewayDefault2179RequestShapeProfile, ctx["request_shape_profile_ref"])
+		require.Equal(t, ccGatewayDefault2179CacheParityProfile, ctx["cache_parity_profile_ref"])
+		require.Equal(t, ccGatewayDefaultEgressTLSProfileRef, ctx["egress_tls_profile_ref"])
+	default:
+		t.Fatalf("unexpected version %s", version)
+	}
+}
+
+func TestGatewayService_CCGatewayFormalPoolPlan76ServerSelectedCanonicalTuples(t *testing.T) {
+	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
+	cases := []struct {
+		name             string
+		candidateVersion string
+		observedVersion  string
+		model            string
+		sessionID        string
+	}{
+		{"primary_2197_observed_2179", "2.1.197", "2.1.179", "claude-sonnet-5", "client-session-2197-2179"},
+		{"primary_2197_observed_2185", "2.1.197", "2.1.185", "claude-sonnet-5", "client-session-2197-2185"},
+		{"primary_2197_observed_2197", "2.1.197", "2.1.197", "claude-sonnet-5", "client-session-2197-2197"},
+		{"primary_2197_observed_safe_future", "2.1.197", "2.1.198", "claude-sonnet-5", "client-session-2197-2198"},
+		{"fallback_2185", "2.1.185", "2.1.197", "claude-sonnet-4-6", "client-session-2185"},
+		{"rollback_2179", "2.1.179", "2.1.197", "claude-sonnet-4-6", "client-session-2179"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			account := plan76FormalPoolCanonicalTupleAccountForTest(tc.candidateVersion)
+			account.Extra[ccGatewayExtraPersonaProfile] = "client-forged-persona"
+			account.Extra[ccGatewayExtraProfilePolicyVersion] = "client_forged_policy"
+			account.Extra[ccGatewayExtraRequestShapeProfile] = "client_forged_request_shape"
+			account.Extra[ccGatewayExtraCacheParityProfile] = "client_forged_cache"
+			account.Extra[ccGatewayExtraEgressTLSProfileRef] = "tls-profile:client-forged"
+
+			c := ccGatewayTestContext("/v1/messages")
+			c.Request.Header.Set("User-Agent", "claude-cli/"+tc.observedVersion+" (external, cli)")
+			c.Request.Header.Set("x-cc-policy-version", "client-forged")
+			c.Request.Header.Set("x-cc-profile-policy-version", "client-forged")
+			c.Request.Header.Set("x-cc-request-shape-profile-ref", "client-forged")
+			c.Request.Header.Set("x-cc-cache-parity-profile-ref", "client-forged")
+
+			req, _, err := (&GatewayService{
+				cfg:             ccGatewayTestConfig(PlatformAnthropic),
+				identityService: NewIdentityService(ccGatewayIdentityCache{}),
+			}).buildUpstreamRequest(context.Background(), c, account, plan76FormalPoolMessagesBodyForTest(tc.model, tc.sessionID), "oauth-token", "oauth", tc.model, true, false, false)
+			require.NoError(t, err)
+			require.Equal(t, tc.candidateVersion, getHeaderRaw(req.Header, ccGatewayPolicyVersionHeader))
+
+			ctx := decodeCCGatewayFormalPoolContextForTest(t, req)
+			requirePlan76CanonicalTupleForTest(t, ctx, tc.candidateVersion)
+			observed := ctx["observed_client_profile"].(map[string]any)
+			require.Equal(t, tc.observedVersion, observed["cli_version_bucket"])
+			require.Equal(t, "messages", observed["route_class"])
+		})
+	}
+}
+
+func TestGatewayService_CCGatewayFormalPoolPlan76RejectsUnknownCanonicalCandidate(t *testing.T) {
+	account := plan76FormalPoolCanonicalTupleAccountForTest("2.1.198")
+	use, err := (&GatewayService{cfg: ccGatewayTestConfig(PlatformAnthropic)}).selectCCGatewayAnthropicRoute(account, ccGatewayRouteNativeMessages)
+	require.False(t, use)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "policy version mismatch")
 }
 
 func TestGatewayService_CCGatewayFormalPoolContextCarriesServerSelected2179ProfileRefs(t *testing.T) {
@@ -1315,9 +1422,7 @@ func TestCCGatewayFormalPoolAttestationMatchesSharedContractFixture(t *testing.T
 	account.Extra["cc_gateway_credential_ref"] = fixture.Account["credential_ref"]
 	account.Extra["cc_gateway_egress_bucket"] = fixture.Account["egress_bucket"]
 	account.Extra["cc_gateway_proxy_identity_ref"] = fixture.Account["proxy_identity_ref"]
-	fixture.Account["egress_tls_profile_ref"] = "tls-profile:shared-fixture-contract-nondefault-v1"
-	fixture.ValidContext["egress_tls_profile_ref"] = fixture.Account["egress_tls_profile_ref"]
-	account.Extra["cc_gateway_egress_tls_profile_ref"] = fixture.Account["egress_tls_profile_ref"]
+	account.Extra["cc_gateway_egress_tls_profile_ref"] = "tls-profile:shared-fixture-contract-nondefault-v1"
 	account.Extra["cc_gateway_persona_profile"] = fixture.Account["persona_profile"]
 	account.Extra["claude_code_device_id"] = fixture.Account["device_id"]
 	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
@@ -1560,6 +1665,8 @@ func TestGatewayService_SelectCCGatewayAnthropicRouteFailsClosedOnRouteAndLifecy
 
 func TestCCGatewayPolicyVersionCompatibleAllowsOldCCHCompatibleVersionsOnly(t *testing.T) {
 	require.True(t, ccGatewayPolicyVersionCompatible("2.1.179"), "2.1.179 is the CP1 oracle-verified production anchor")
+	require.True(t, ccGatewayPolicyVersionCompatible("2.1.185"), "2.1.185 is the Plan76 stable fallback tuple")
+	require.True(t, ccGatewayPolicyVersionCompatible("2.1.197"), "2.1.197 is the Plan76 primary canonical tuple")
 	require.True(t, ccGatewayPolicyVersionCompatible("2.1.150"))
 	require.True(t, ccGatewayPolicyVersionCompatible("2.1.153"))
 	require.True(t, ccGatewayPolicyVersionCompatible("2.1.169"))
@@ -1567,6 +1674,7 @@ func TestCCGatewayPolicyVersionCompatibleAllowsOldCCHCompatibleVersionsOnly(t *t
 	require.False(t, ccGatewayPolicyVersionCompatible("2.1.151"), "unverified patches must not be inferred from the corpus")
 	require.False(t, ccGatewayPolicyVersionCompatible("2.1.171"), "2.1.171 was not published and must not be treated as a verified profile")
 	require.False(t, ccGatewayPolicyVersionCompatible("2.1.172"), "2.1.172 is not a registered Sub2API admission profile")
+	require.False(t, ccGatewayPolicyVersionCompatible("2.1.198"), "safe-future observed clients are admission-only and cannot self-select canonical identity")
 	require.False(t, ccGatewayPolicyVersionCompatible("2.1.126.test"))
 	require.False(t, ccGatewayPolicyVersionCompatible("2.2.0"))
 	require.False(t, ccGatewayPolicyVersionCompatible("3.0.0"))

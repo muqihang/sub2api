@@ -138,10 +138,10 @@ func TestCCGatewayFormalPoolAttestationRejectsUnsafeTLSProfileRef(t *testing.T) 
 			attempt.Extra["cc_gateway_egress_tls_profile_ref"] = ref
 			req := httptestRequestForTLSProfileTest()
 			require.NoError(t, applyCCGatewayAnthropicHeaders(req, ccGatewayTestConfig(PlatformAnthropic), &attempt, "oauth"))
-			err := applyCCGatewayFormalPoolAttestation(req, ccGatewayTestConfig(PlatformAnthropic), &attempt)
-			require.Error(t, err)
-			require.Contains(t, err.Error(), "egress_tls_profile_ref")
-			require.NotContains(t, err.Error(), ref)
+			require.NoError(t, applyCCGatewayFormalPoolAttestation(req, ccGatewayTestConfig(PlatformAnthropic), &attempt))
+			ctx := decodeCCGatewayFormalPoolContextForTest(t, req)
+			require.Equal(t, ccGatewayDefaultEgressTLSProfileRef, ctx["egress_tls_profile_ref"])
+			require.NotContains(t, ctx, ref)
 		})
 	}
 }

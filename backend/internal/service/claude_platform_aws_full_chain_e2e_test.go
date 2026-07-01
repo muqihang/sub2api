@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -49,7 +48,7 @@ func TestClaudePlatformAWSLocalFullChainE2EUsesCCGatewayAndSafeMockUpstream(t *t
 	c, ctx, rec := newCP6AWSClientContext(t, jointClientStripSessionID)
 	body := []byte(`{
 		"model":"claude-sonnet-4-6",
-		"stream":false,
+		"stream":true,
 		"max_tokens":32,
 		"metadata":{"user_id":"{\"session_id\":\"123e4567-e89b-42d3-a456-426614174999\"}"},
 		"anthropic_beta":["advisor-tool-2026-03-01","prompt-caching-scope-2026-01-05"],
@@ -413,8 +412,14 @@ func startCP6AWSMockUpstream(t *testing.T, accounts ...*Account) *cp6AWSMockUpst
 		case mock.seen <- evidence:
 		default:
 		}
-		w.Header().Set("content-type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		w.Header().Set("content-type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "event: message_start\n")
+		_, _ = fmt.Fprint(w, `data: {"type":"message_start","message":{"id":"msg_cp6","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-6","usage":{"input_tokens":1,"output_tokens":0}}}`+"\n\n")
+		_, _ = fmt.Fprint(w, "event: message_delta\n")
+		_, _ = fmt.Fprint(w, `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`+"\n\n")
+		_, _ = fmt.Fprint(w, "event: message_stop\n")
+		_, _ = fmt.Fprint(w, `data: {"type":"message_stop"}`+"\n\n")
 	}))
 	t.Cleanup(mock.server.Close)
 	return mock

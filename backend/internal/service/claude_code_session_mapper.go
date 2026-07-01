@@ -905,13 +905,19 @@ func claudeCodeSessionBetaPolicyRef(account *Account) string {
 }
 
 func claudeCodeSessionPolicyVersion(ctx context.Context, account *Account) string {
+	if IsFormalPoolAccount(account) {
+		if version := strings.TrimSpace(account.GetExtraString(ccGatewayExtraPolicyVersion)); version != "" && ccGatewayPolicyVersionCompatible(version) {
+			return ccGatewayCanonicalTupleForAccount(account).PolicyVersion
+		}
+		return ""
+	}
 	if ccGatewayTrustedPersonaContext(ctx) {
 		if version := strings.TrimSpace(GetClaudeCodeVersion(ctx)); version != "" && ccGatewayPolicyVersionCompatible(version) {
 			return version
 		}
 	}
 	if version := strings.TrimSpace(account.GetExtraString(ccGatewayExtraPolicyVersion)); version != "" && ccGatewayPolicyVersionCompatible(version) {
-		return ccGatewayAnthropicPolicyVersion
+		return ccGatewayCanonicalTupleForAccount(account).PolicyVersion
 	}
 	return ""
 }
