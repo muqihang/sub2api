@@ -58,6 +58,8 @@ Plan76 must close these gaps or explicitly implement/prove fail-closed gateway p
 - Do not run live canary.
 - Do not call real Anthropic, AWS, Vertex, Bedrock, OpenAI, DeepSeek, credentialed, paid, or non-local upstreams.
 - Do not use real OAuth/API keys, session cookies, account identifiers, billing credentials, proxy credentials, or production DB/account data.
+- All Claude Code CLI/npm runtime dynamic execution must be hermetic: use temporary `HOME`, temporary config/cache dirs, `env -i` or an explicit environment allowlist, dummy credentials only, and no inherited user shell/app environment. Explicitly clear or block real `ANTHROPIC_*`, `CLAUDE_*`, AWS/GCP/Azure credentials, OAuth/session variables, proxy variables, MCP variables/config paths, base URL variables, Claude settings paths, and telemetry/debug envs unless a synthetic value is intentionally injected for a test.
+- MCP tests must use only synthetic local MCP config/server fixtures created for the test. Never read or import the user's real MCP config, Claude settings, shell profile, keychain, browser state, or workspace secrets.
 - Do not use client version, client family, client platform/OS/editor/terminal, client timezone, client base URL, client proxy, client domain/keyword residue, settings, MCP config, or user-supplied refs as authority for upstream identity.
 - Default attribution posture remains `strip_attribution`; do not enable `no_cch`, `signed_cch`, native CCH, or strict native parity in this plan.
 - Preserve Plan72 env-residue canonicalization/fail-closed behavior.
@@ -96,12 +98,12 @@ Decision precedence:
 5. Else if `count_tokens` cannot be observed or fail-closed by gateway policy, choose `BLOCKED_COUNT_TOKENS_GAP`.
 6. Else if MCP configured shape cannot be observed or fail-closed by gateway policy, choose `BLOCKED_MCP_SHAPE_GAP`.
 7. Else if non-streaming shape cannot be observed or fail-closed by gateway policy, choose `BLOCKED_NON_STREAMING_SHAPE_GAP`.
-8. Else if model/control-plane paths cannot be observed or fail-closed by gateway policy, choose `BLOCKED_MODEL_CONTROL_PLANE_GAP`.
-9. Else if Sonnet 5 behavior for `2.1.197` or fail-closed behavior for `2.1.185` cannot be proven, choose `BLOCKED_SONNET5_POLICY_GAP`.
-10. Else if CCH/billing/attribution proof regresses, choose `BLOCKED_CCH_BILLING_GAP`.
-11. Else if gaps are closed but promotion implementation was not resumed, choose `CONTROL_PLANE_GAPS_CLOSED_READY_FOR_PLAN75_CP5_CP9`.
-12. Else if `2.1.197` full resumed CP5-CP9 proof passes, choose `PROMOTE_CANONICAL_2197_MOCK_E2E_READY`.
-13. Else if only `2.1.185` non-Sonnet fallback passes and `2.1.197` remains blocked only by Sonnet/model gate, choose `PROMOTE_STABLE_2185_ONLY_SONNET5_BLOCKED`.
+8. Else if CCH/billing/attribution proof regresses, choose `BLOCKED_CCH_BILLING_GAP`.
+9. Else if `2.1.197` model/control-plane or Sonnet 5 proof remains blocked, but `2.1.185` passes every non-Sonnet gate, Sonnet 5 is fail-closed under `2.1.185`, rollback `2.1.179` passes, and CP6-CP8 fallback/rollback mock E2E passes, choose `PROMOTE_STABLE_2185_ONLY_SONNET5_BLOCKED`.
+10. Else if model/control-plane paths cannot be observed or fail-closed by gateway policy for the selected target, choose `BLOCKED_MODEL_CONTROL_PLANE_GAP`.
+11. Else if Sonnet 5 behavior for `2.1.197` or fail-closed behavior for `2.1.185` cannot be proven for the selected target, choose `BLOCKED_SONNET5_POLICY_GAP`.
+12. Else if gaps are closed but promotion implementation was not resumed, choose `CONTROL_PLANE_GAPS_CLOSED_READY_FOR_PLAN75_CP5_CP9`.
+13. Else if `2.1.197` full resumed CP5-CP9 proof passes, choose `PROMOTE_CANONICAL_2197_MOCK_E2E_READY`.
 14. Else choose `COMPAT_ONLY_NO_PROMOTION` only when no promotion is allowed but safe compatibility/fail-closed work is complete and no higher-priority blocker applies.
 
 ## Key design principle for closing gaps
@@ -112,6 +114,10 @@ A gap may be closed in one of two ways:
 2. **Policy closure:** prove with tests that the gateway never forwards the unobserved shape for formal-pool accounts, returning a deterministic fail-closed error instead.
 
 Do not infer unobserved upstream shape from static strings alone. Static evidence can guide tests, but promotion requires observed-shape closure or policy closure.
+
+For `2.1.197` Sonnet 5 positive support, official docs and static strings prove only that a model id or feature exists. They do not prove the app-layer request, beta, control-plane, count_tokens, or model-policy shape. If Plan76 does not observe enough `2.1.197` Sonnet 5 request/control-plane shape and does not implement an exact server-side canonical policy with fail-closed guards for unobserved subpaths, Sonnet 5 must remain fail-closed and the final decision must be `BLOCKED_SONNET5_POLICY_GAP` or `BLOCKED_MODEL_CONTROL_PLANE_GAP`.
+
+Every blocker closure record must use this schema for each version and blocker: `closure_method`, `route_method_bucket`, `header_key_set_bucket`, `beta_token_set_hash_or_bucket`, `body_structural_schema_hash_or_bucket`, `model_id_alias_bucket`, `streaming_flag_bucket`, `mcp_configured_absent_diff_bucket`, `error_http_status_bucket`, `stable_error_code`, `guard_before_upstream_or_sidecar_send`, `real_upstream_count`, and `non_loopback_attempt_count`.
 
 ## File map
 
@@ -189,6 +195,8 @@ Blockers:
 
 For each candidate version `2.1.179`, `2.1.185`, `2.1.197`, build a strategy matrix for:
 
+- [ ] Define the hermetic execution wrapper used by CP3: temporary `HOME`, temporary config/cache dirs, explicit env allowlist, dummy credentials, cleared proxy/base-url/MCP/settings/secret envs, and same-scope loopback-only egress guard.
+- [ ] Define the blocker closure matrix schema exactly as required in the Key design principle section, and require every CP3/CP4 closure row to populate every field.
 - `count_tokens`:
   - Try documented/local CLI invocation, environment/config trigger, direct local API path fixture, or gateway policy closure.
   - If Claude Code CLI cannot emit count_tokens locally, define explicit formal-pool policy: reject or route count_tokens only after canonical shape proof.
@@ -235,12 +243,13 @@ Expected before implementation: FAIL on missing guards or missing stable errors.
 **Goal:** Retry dynamic oracle capture with targeted triggers and record safe results.
 
 - [ ] Reuse Plan75 package cache or redownload public tarballs with provenance if needed.
-- [ ] Run `2.1.179`, `2.1.185`, and `2.1.197` under same-scope loopback-only egress guard.
-- [ ] For `count_tokens`, attempt every CP1 safe trigger. Record observed shape bucket or `not_emitted_after_safe_triggers`.
-- [ ] For MCP, run synthetic local MCP configured and MCP absent cases. Record whether upstream body/header/path changes occur as safe buckets.
-- [ ] For non-streaming, run safe `stream=false` or equivalent triggers if available. Record shape or `cli_always_stream_true_under_safe_triggers`.
-- [ ] For model/control-plane, run safe model alias/config triggers and dummy loopback endpoints. Record path/model/header/body buckets.
-- [ ] For Sonnet 5, record `2.1.197` `claude-sonnet-5` model bucket behavior and `2.1.185` behavior under the same synthetic request scenario.
+- [ ] Run `2.1.179`, `2.1.185`, and `2.1.197` under the CP1 hermetic execution wrapper and same-scope loopback-only egress guard.
+- [ ] Prove the harness does not read user real `HOME`, Claude settings, MCP config, proxy config, shell profiles, keychain/browser state, or workspace secrets; record only safe booleans.
+- [ ] For `count_tokens`, attempt every CP1 safe trigger. Record observed shape bucket or `not_emitted_after_safe_triggers`, and populate the required blocker closure matrix fields.
+- [ ] For MCP, run only synthetic local MCP configured and MCP absent cases under temporary config. Record whether upstream body/header/path changes occur as safe buckets, and populate the required blocker closure matrix fields.
+- [ ] For non-streaming, run safe `stream=false` or equivalent triggers if available. Record shape or `cli_always_stream_true_under_safe_triggers`, and populate the required blocker closure matrix fields.
+- [ ] For model/control-plane, run safe model alias/config triggers and dummy loopback endpoints. Record path/model/header/body buckets, and populate the required blocker closure matrix fields.
+- [ ] For Sonnet 5, record `2.1.197` `claude-sonnet-5` model bucket behavior and `2.1.185` behavior under the same synthetic request scenario; static strings/docs alone are insufficient for positive support. Populate the required blocker closure matrix fields.
 - [ ] Record real upstream request count `0` and non-loopback attempt count `0`.
 - [ ] Write `$EVIDENCE_ROOT/safe/cp3-targeted-dynamic-capture-summary.json`.
 
@@ -256,16 +265,18 @@ Required pass criteria:
 
 - [ ] Implement fail-closed guards for unresolved count_tokens, MCP configured shape, non-streaming shape, and model/control-plane paths.
 - [ ] If CP3 captured a safe shape, implement canonical rewrite/verifier for that shape instead of blocking it.
-- [ ] Implement `2.1.197` canonical model policy allowing Sonnet 5 only under server-selected canonical tuple.
+- [ ] Implement `2.1.197` canonical model policy allowing Sonnet 5 only under server-selected canonical tuple, and only if CP3 observed enough Sonnet 5 request/control-plane shape or CP4 fail-closes every unobserved Sonnet 5 subpath.
 - [ ] Implement `2.1.185` Sonnet 5 fail-closed policy if fallback remains available.
 - [ ] Ensure all guards run before any upstream/sidecar send.
 - [ ] Ensure no policy reads observed client version/family/settings/MCP/user model hint as authority.
+- [ ] Produce `$EVIDENCE_ROOT/safe/cp4-blocker-closure-matrix.json` with every required closure matrix field for every blocker/version.
 - [ ] Run CP2 tests until PASS.
 - [ ] Write `$EVIDENCE_ROOT/safe/cp4-policy-closure-tests.txt`.
 
 Required pass criteria:
 
-- Every Plan75 blocker is closed by observed-shape canonical support or deterministic fail-closed policy.
+- Every Plan75 blocker is closed by observed-shape canonical support or deterministic fail-closed policy, with full closure matrix fields populated.
+- Positive Sonnet 5 support for `2.1.197` is not based solely on docs/static strings; unobserved subpaths are fail-closed.
 - No fallback to Node direct HTTPS.
 - Plan72 env residue and Plan75 TLS tests still pass.
 
@@ -280,7 +291,7 @@ Review Plan76 CP0-CP4 evidence and code. Decide whether Plan75 BLOCKED_CONTROL_P
 Return PASS, PASS_WITH_REQUIRED_EDITS, or FAIL.
 ```
 
-- [ ] If review returns REQUIRED_EDITS, fix and rerun relevant tests.
+- [ ] CP5 must reach final `PASS` before CP6 begins. If review returns `PASS_WITH_REQUIRED_EDITS`, fix them, rerun relevant tests, and obtain the same reviewer PASS or record a complete required-edit resolution mapping accepted by an equivalent review gate. Without final PASS/resolved mapping, stop with the appropriate blocked decision.
 - [ ] If review returns FAIL, choose the appropriate `BLOCKED_*` final decision.
 - [ ] If review returns PASS, write `$EVIDENCE_ROOT/safe/cp5-review-verdict.json` and continue.
 
@@ -315,6 +326,7 @@ Write or enable failing tests first, then implement:
 - [ ] Rollback `2.1.179` tuple is accepted and rewrites upstream back to `2.1.179` shape.
 - [ ] `2.1.197` TLS profile from Plan75 is selectable only by server-selected canonical tuple and matches sidecar safe oracle.
 - [ ] Count_tokens/MCP/non-streaming/control-plane policies from CP4 remain enforced under promoted tuple.
+- [ ] Promotion path asserts attribution remains stripped unless CP4 gave exact authorization: no `x-anthropic-billing-*`, no raw/native CCH, no signed/no-CCH mode, and no client attribution in upstream headers/body/metadata.
 - [ ] Plan72 env residue final verifier still runs.
 - [ ] Session authority ledger rejects tuple drift.
 - [ ] Node direct HTTPS fallback remains `0`.
@@ -330,7 +342,7 @@ Required pass criteria:
 
 **Goal:** Prove the complete promoted path locally before any production gate.
 
-Use independent loopback ports only, excluding `3012`, `3017`, `18080`, `18081`.
+Use independent loopback ports only, excluding `3012`, `3017`, `18080`, `18081`. CP8 must run under a same-scope loopback-only egress guard at Plan74/75 strength: block DNS, IPv4/IPv6 non-loopback, UDP, inherited proxy env, provider direct TCP, and any non-local upstream path; record a safe guard summary.
 
 Run E2E sets:
 
@@ -342,7 +354,8 @@ Run E2E sets:
 - [ ] Count_tokens/MCP/non-streaming/model-control-plane cases either pass with canonical observed shape or fail closed according to CP4 policy.
 - [ ] Env residue noncanonical markers are canonicalized or fail closed according to Plan72/CP4 policy.
 - [ ] TLS safe summary matches `2.1.197` oracle for promoted tuple and rollback/fallback profiles for those tuples.
-- [ ] Node direct HTTPS fallback count `0`; real upstream request count `0`.
+- [ ] Upstream safe summary asserts no `x-anthropic-billing-*`, no raw/native CCH, no signed/no-CCH mode, and no client attribution unless explicitly authorized by CP4.
+- [ ] Node direct HTTPS fallback count `0`; real upstream request count `0`; non-loopback attempt count `0`.
 - [ ] Write `$EVIDENCE_ROOT/safe/cp8-three-version-mock-e2e-summary.json`.
 
 Required pass criteria:
@@ -384,7 +397,7 @@ go test ./...
 Leak scan:
 
 - Scan modified files, report, safe evidence, tests, profile code.
-- Block on raw prompts/bodies/responses, raw domain lists, raw TLS/pcap/HAR, secrets, cert/key material, native dumps, account identifiers, proxy credentials, and raw minified source dumps.
+- Block on raw prompts/bodies/responses, raw domain lists, raw TLS/pcap/HAR, secrets, cert/key material, native dumps, account identifiers, proxy credentials, raw minified source dumps, and accidental CCH/billing/client-attribution evidence leakage.
 - Record `$EVIDENCE_ROOT/safe/cp9-leak-scan-summary.json`.
 - Record scratch cleanup status as `not_needed`, `skipped_requires_user_approval`, or `approved_by_user`.
 
@@ -397,18 +410,19 @@ Review Plan76 final evidence and code. Decide whether the Plan75 control-plane b
 Return PASS, PASS_WITH_REQUIRED_EDITS, or FAIL.
 ```
 
-- [ ] Address REQUIRED_EDITS if any.
+- [ ] CP10 must reach final `PASS` before any final report may claim `PROMOTE_CANONICAL_2197_MOCK_E2E_READY`, `PROMOTE_STABLE_2185_ONLY_SONNET5_BLOCKED`, or `CONTROL_PLANE_GAPS_CLOSED_READY_FOR_PLAN75_CP5_CP9`. If review returns `PASS_WITH_REQUIRED_EDITS`, address every edit, rerun relevant tests, and either obtain reviewer PASS or include an accepted required-edit resolution mapping. Otherwise choose the appropriate blocked decision.
 - [ ] Write final report: `/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/claude-platform-aws-formal-pool/docs/anti-ban/76-claude-code-2197-control-plane-gap-closure-evidence-report.md`.
 - [ ] Include:
   - final decision label and decision precedence path;
   - CP0-CP10 status table;
-  - exact Plan75 blockers and closure method for each;
+  - exact Plan75 blockers and closure method for each, including the full blocker closure matrix fields;
   - dynamic capture retry safe summary;
   - policy closure test summary;
   - Sub2API canonical tuple result;
   - CC Gateway canonical tuple result;
-  - three-version mock E2E result;
+  - three-version mock E2E result and same-scope loopback-only egress guard summary;
   - TLS regression result;
+  - CCH/billing/attribution strip assertions;
   - Plan72 env residue regression result;
   - test results;
   - leak scan;
@@ -436,8 +450,9 @@ Report:
 
 - This plan does not redo Plan75 solved surfaces except regression testing.
 - This plan targets the exact CP2/CP4 gaps from Plan75.
-- Every unobserved shape must be observed or fail-closed before promotion resumes.
+- Every unobserved shape must be observed or fail-closed before promotion resumes, with full closure matrix fields.
+- All dynamic CLI/runtime execution is hermetic and never reads user real configs/secrets.
 - `2.1.197` promotion remains the primary objective.
 - `2.1.185` fallback and `2.1.179` rollback are tested in mock E2E if promotion resumes.
-- No real upstream, production deployment, forbidden ports, or production credentials are used.
+- No real upstream, production deployment, forbidden ports, production credentials, CCH/billing side-channel, or client attribution side-channel is used.
 - Scratch deletion requires explicit user approval.
