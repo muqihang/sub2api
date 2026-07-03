@@ -82,17 +82,18 @@ func (r *FormalPoolGatewayHealthcheckRunner) RunHealthcheck(ctx context.Context,
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "claude-cli/"+ccGatewayAnthropicPolicyVersion+" (formal-pool-healthcheck)")
-	setHeaderRaw(req.Header, ClaudeCodeNativeClaudeCodeVersionHeader, ccGatewayAnthropicPolicyVersion)
+	tuple := ccGatewayCanonicalTupleForAccount(account)
+	req.Header.Set("User-Agent", "claude-cli/"+tuple.PolicyVersion+" (formal-pool-healthcheck)")
+	setHeaderRaw(req.Header, ClaudeCodeNativeClaudeCodeVersionHeader, tuple.PolicyVersion)
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
 	req.Header.Set("authorization", "Bearer "+account.GetCredential("access_token"))
-	setHeaderRaw(req.Header, ccGatewayHealthcheckPersonaHeader, ccGatewayHealthcheckNon1MProfile)
+	setHeaderRaw(req.Header, ccGatewayHealthcheckPersonaHeader, tuple.PersonaProfile)
 	if err := applyCCGatewayAnthropicHeaders(req, r.cfg, account, "oauth"); err != nil {
 		return nil, err
 	}
 	applyCCGatewayAnthropicPolicyVersion(ctx, req, account)
-	if err := applyCCGatewayFormalPoolAttestationWithPersona(req, r.cfg, account, ccGatewayHealthcheckNon1MProfile); err != nil {
+	if err := applyCCGatewayFormalPoolAttestationWithPersona(req, r.cfg, account, tuple.PersonaProfile); err != nil {
 		return nil, err
 	}
 

@@ -841,7 +841,7 @@ func TestFormalPoolRuntimeIdentityExtraLeavesCredentialBindingEmptyWhenAccessTok
 	}
 }
 
-func TestFormalPoolRuntimeIdentityExtraDefaultsTo2179NativeDegradedPersona(t *testing.T) {
+func TestFormalPoolRuntimeIdentityExtraDefaultsToPrimary2197Persona(t *testing.T) {
 	extra := formalPoolRuntimeIdentityExtra(
 		"hmac-sha256:"+strings.Repeat("a", 64),
 		"hmac-sha256:"+strings.Repeat("b", 64),
@@ -850,8 +850,8 @@ func TestFormalPoolRuntimeIdentityExtraDefaultsTo2179NativeDegradedPersona(t *te
 		"1",
 	)
 
-	if got := extra[ccGatewayExtraPersonaProfile]; got != "claude_code_2_1_179_native_degraded" {
-		t.Fatalf("persona profile = %v, want 2.1.179 native degraded", got)
+	if got := extra[ccGatewayExtraPersonaProfile]; got != ccGateway2197PersonaProfile {
+		t.Fatalf("persona profile = %v, want primary 2.1.197 canonical", got)
 	}
 }
 

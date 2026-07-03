@@ -380,11 +380,17 @@ func TestFormalPoolSetupTokenCookieCreateRegistersRuntimeAndKeepsAccountUnschedu
 	if acct.created.Extra["cc_gateway_account_ref"] != got.AccountRef || acct.created.Extra["cc_gateway_enabled"] != "true" || acct.created.Extra["cc_gateway_canary_only"] != "false" {
 		t.Fatalf("bad setup-token formal extra: %#v got=%#v", acct.created.Extra, got)
 	}
+	if acct.created.Extra[ccGatewayExtraPolicyVersion] != "2.1.197" || acct.created.Extra[ccGatewayExtraPersonaProfile] != ccGateway2197PersonaProfile {
+		t.Fatalf("setup-token account must default to primary canonical tuple: %#v", acct.created.Extra)
+	}
 	if !runtime.called || runtime.input.AccountRef != got.AccountRef || runtime.input.EgressBucket != got.EgressBucket || runtime.input.ProxyURL != "http://proxy.local:443" {
 		t.Fatalf("runtime registration missing or wrong: %#v got=%#v", runtime.input, got)
 	}
 	if runtime.input.TokenType != "oauth" || runtime.input.CredentialProof != "Bearer setup-access" {
 		t.Fatalf("setup-token runtime registration proof must come from server-side setup-token credentials: %#v", runtime.input)
+	}
+	if runtime.input.PolicyVersion != "2.1.197" || runtime.input.PersonaVariant != ccGateway2197PersonaProfile {
+		t.Fatalf("setup-token runtime registration must use primary canonical tuple: %#v", runtime.input)
 	}
 	if !got.CCGatewayRuntimeRegistered || got.OAuthSummary == nil || !got.OAuthSummary.ScopeContainsUserInference || got.OAuthSummary.ScopeContainsClaudeCode {
 		t.Fatalf("bad setup-token safe summary/session: %#v", got)

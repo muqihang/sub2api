@@ -855,6 +855,21 @@ type ccGatewayCanonicalTupleProfile struct {
 	CacheParityProfileRef  string
 }
 
+func ccGatewayPrimaryCanonicalPolicyVersion() string {
+	return "2.1.197"
+}
+
+func ccGatewayPrimaryCanonicalTuple() ccGatewayCanonicalTupleProfile {
+	return ccGatewayCanonicalTupleProfile{
+		PolicyVersion:          ccGatewayPrimaryCanonicalPolicyVersion(),
+		PersonaProfile:         ccGateway2197PersonaProfile,
+		EgressTLSProfileRef:    ccGateway2197EgressTLSProfileRef,
+		ProfilePolicyVersion:   ccGateway2197ProfilePolicyVersion,
+		RequestShapeProfileRef: ccGateway2197RequestShapeProfile,
+		CacheParityProfileRef:  ccGateway2197CacheParityProfile,
+	}
+}
+
 func ccGatewayCanonicalTupleForAccount(account *Account) ccGatewayCanonicalTupleProfile {
 	version := ""
 	if account != nil {
@@ -862,14 +877,7 @@ func ccGatewayCanonicalTupleForAccount(account *Account) ccGatewayCanonicalTuple
 	}
 	switch version {
 	case "2.1.197":
-		return ccGatewayCanonicalTupleProfile{
-			PolicyVersion:          "2.1.197",
-			PersonaProfile:         ccGateway2197PersonaProfile,
-			EgressTLSProfileRef:    ccGateway2197EgressTLSProfileRef,
-			ProfilePolicyVersion:   ccGateway2197ProfilePolicyVersion,
-			RequestShapeProfileRef: ccGateway2197RequestShapeProfile,
-			CacheParityProfileRef:  ccGateway2197CacheParityProfile,
-		}
+		return ccGatewayPrimaryCanonicalTuple()
 	case "2.1.185":
 		return ccGatewayCanonicalTupleProfile{
 			PolicyVersion:          "2.1.185",
