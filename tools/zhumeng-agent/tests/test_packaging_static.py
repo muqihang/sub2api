@@ -33,3 +33,26 @@ def test_pyproject_exposes_zhumeng_claude_script():
     data = tomllib.loads(path.read_text(encoding="utf-8"))
 
     assert data["project"]["scripts"]["zhumeng-claude"] == "zhumeng_agent.cli:zhumeng_claude_main"
+
+
+def test_root_build_embeds_frontend_after_building_dist():
+    root = Path(__file__).resolve().parents[3]
+    makefile = (root / "Makefile").read_text(encoding="utf-8")
+    backend_makefile = (root / "backend" / "Makefile").read_text(encoding="utf-8")
+
+    build_target = makefile.split("build:", 1)[1].split("\n", 1)[0]
+    assert "build-frontend" in build_target
+    assert "build-backend" in build_target
+    assert build_target.index("build-frontend") < build_target.index("build-backend")
+    assert "-tags embed" in backend_makefile
+
+
+def test_deploy_embed_build_is_the_documented_production_build():
+    root = Path(__file__).resolve().parents[3]
+    deploy_makefile = (root / "deploy" / "Makefile").read_text(encoding="utf-8")
+    readme = (root / "README.md").read_text(encoding="utf-8")
+
+    assert "build-embed" in deploy_makefile
+    assert "-tags embed" in deploy_makefile
+    assert "go build -tags embed" in readme
+

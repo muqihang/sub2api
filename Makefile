@@ -8,8 +8,8 @@ FRONTEND_CRITICAL_VITEST := \
 	src/components/user/profile/__tests__/ProfileInfoCard.spec.ts \
 	src/views/admin/__tests__/SettingsView.spec.ts
 
-# 一键编译前后端
-build: build-backend build-frontend
+# 一键编译前后端。先产出 frontend dist，再构建带 embed 标签的后端，避免生产根路径变成 API-only 404。
+build: build-frontend build-backend
 
 # 编译后端（复用 backend/Makefile）
 build-backend:
