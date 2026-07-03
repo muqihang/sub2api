@@ -373,6 +373,13 @@ func (m *ClaudeCodeSessionMapper) enforceBoundary(input ClaudeCodeSessionMapInpu
 			prev.TrustedEgressProfileRef != attempted.TrustedEgressProfileRef ||
 			prev.DeviceRef != attempted.DeviceRef ||
 			prev.ServerSessionRef != attempted.ServerSessionRef {
+			if enforceFormalPool && claudeCodeSessionBoundaryAllowsCanonicalPromotion(prev, attempted) {
+				if err := persistClaudeCodeSessionBoundaryLedgerEntryToDisk(key, attempted); err != nil {
+					return &ClaudeCodeSessionBoundaryError{Code: "claude_native_session_boundary_ledger_unavailable"}
+				}
+				claudeCodeSessionBoundaryLedger.Store(key, attempted)
+				return nil
+			}
 			return &ClaudeCodeSessionBoundaryError{
 				Code:                          "claude_native_session_boundary_failed",
 				PreviousAccountRef:            prev.AccountRef,
@@ -409,6 +416,60 @@ func (m *ClaudeCodeSessionMapper) enforceBoundary(input ClaudeCodeSessionMapInpu
 		}
 	}
 	return nil
+}
+
+func claudeCodeSessionBoundaryAllowsCanonicalPromotion(prev, attempted claudeCodeSessionBoundaryBinding) bool {
+	if prev.ProviderFamily != "anthropic_formal_pool" || attempted.ProviderFamily != "anthropic_formal_pool" {
+		return false
+	}
+	if !claudeCodeSessionBoundaryMatchesCanonicalTarget2197(attempted) {
+		return false
+	}
+	if !claudeCodeSessionBoundaryMatchesLegacyCanonicalSource(prev) {
+		return false
+	}
+	return prev.AccountRef == attempted.AccountRef &&
+		prev.CredentialRef == attempted.CredentialRef &&
+		prev.EgressBucket == attempted.EgressBucket &&
+		prev.ProxyIdentityRef == attempted.ProxyIdentityRef &&
+		prev.EgressProfileRef == attempted.EgressProfileRef &&
+		prev.BillingShapePolicy == attempted.BillingShapePolicy &&
+		prev.ProviderFamily == attempted.ProviderFamily &&
+		prev.ProviderKind == attempted.ProviderKind &&
+		prev.WorkspaceRef == attempted.WorkspaceRef &&
+		prev.WorkspaceBindingHMAC == attempted.WorkspaceBindingHMAC &&
+		prev.EndpointRef == attempted.EndpointRef &&
+		prev.Region == attempted.Region &&
+		prev.AuthScheme == attempted.AuthScheme &&
+		prev.BetaPolicyRef == attempted.BetaPolicyRef &&
+		prev.TrustedEgressProfileRef == attempted.TrustedEgressProfileRef &&
+		prev.DeviceRef == attempted.DeviceRef
+}
+
+func claudeCodeSessionBoundaryMatchesLegacyCanonicalSource(binding claudeCodeSessionBoundaryBinding) bool {
+	switch binding.PolicyVersion {
+	case sanitizeReasonCode(ccGatewayAnthropicPolicyVersion):
+		return binding.PersonaProfile == sanitizeReasonCode(ccGatewayDefaultPersonaProfile) &&
+			binding.ProfilePolicyVersion == sanitizeReasonCode(ccGatewayDefault2179ProfilePolicyVersion) &&
+			binding.RequestShapeProfileRef == sanitizeReasonCode(ccGatewayDefault2179RequestShapeProfile) &&
+			binding.CacheParityProfileRef == sanitizeReasonCode(ccGatewayDefault2179CacheParityProfile)
+	case sanitizeReasonCode("2.1.185"):
+		return binding.PersonaProfile == sanitizeReasonCode(ccGateway2185PersonaProfile) &&
+			binding.ProfilePolicyVersion == sanitizeReasonCode(ccGatewayDefault2179ProfilePolicyVersion) &&
+			binding.RequestShapeProfileRef == sanitizeReasonCode(ccGatewayDefault2179RequestShapeProfile) &&
+			binding.CacheParityProfileRef == sanitizeReasonCode(ccGatewayDefault2179CacheParityProfile)
+	default:
+		return false
+	}
+}
+
+func claudeCodeSessionBoundaryMatchesCanonicalTarget2197(binding claudeCodeSessionBoundaryBinding) bool {
+	target := ccGatewayPrimaryCanonicalTuple()
+	return binding.PolicyVersion == sanitizeReasonCode(target.PolicyVersion) &&
+		binding.PersonaProfile == sanitizeReasonCode(target.PersonaProfile) &&
+		binding.ProfilePolicyVersion == sanitizeReasonCode(target.ProfilePolicyVersion) &&
+		binding.RequestShapeProfileRef == sanitizeReasonCode(target.RequestShapeProfileRef) &&
+		binding.CacheParityProfileRef == sanitizeReasonCode(target.CacheParityProfileRef)
 }
 
 func claudeCodeSessionFormalPoolBoundaryContextComplete(input ClaudeCodeSessionMapInput) bool {

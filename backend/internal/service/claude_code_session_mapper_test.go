@@ -156,6 +156,58 @@ func TestClaudeCodeSessionMapperRejectsBoundarySwapWithSafeAudit(t *testing.T) {
 	require.NotContains(t, string(dumped), "raw body")
 }
 
+func TestClaudeCodeSessionMapperAllowsSafeFormalPoolCanonicalPromotionTo2197(t *testing.T) {
+	t.Setenv("SUB2API_SESSION_BUDGET_HMAC_KEY", "sub2api-session-budget-test-key")
+	ledgerPath := useClaudeCodeSessionBoundaryLedgerFileForTest(t)
+
+	mapper := NewClaudeCodeSessionMapperFromEnv()
+	base := ClaudeCodeSessionMapInput{
+		UserScope:            "user:cp39-promotion",
+		BoundaryScope:        "user:cp39-promotion",
+		EnforceBoundary:      true,
+		FormalPoolProduction: true,
+		AccountRef:           "opaque:acct:formal-a",
+		CredentialRef:        "opaque:credential-ref:v1:cred-a",
+		DeviceID:             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		AccountUUID:          "opaque:acct:formal-a",
+		EgressBucket:         "bucket-a",
+		ProxyIdentityRef:     "opaque:proxy-ref:v1:bucket-a",
+		PolicyVersion:        "2.1.179",
+		PersonaProfile:       "claude_code_2_1_179_native_degraded",
+		ProviderFamily:       "anthropic_formal_pool",
+		RawSessionID:         "11111111-2222-4333-8444-555555555555",
+	}
+	applyCP2FormalPoolProfileTupleForTest(&base)
+	first, err := mapper.Map(base)
+	require.NoError(t, err)
+	require.NotEmpty(t, first.SessionID)
+
+	promoted := base
+	promoted.PolicyVersion = "2.1.197"
+	promoted.PersonaProfile = "claude-code-2.1.197-macos-local"
+	promoted.EgressProfileRef = "strip_attribution"
+	promoted.ProfilePolicyVersion = "claude_code_2_1_197_plan76_sonnet5_policy_v1"
+	promoted.BillingShapePolicy = "strip"
+	promoted.RequestShapeProfileRef = "claude_code_2_1_197_messages_streaming_tooldefs_sonnet5_v1"
+	promoted.CacheParityProfileRef = "claude_code_2_1_197_cache_parity_sonnet5_v1"
+	second, err := mapper.Map(promoted)
+	require.NoError(t, err)
+	require.NotEmpty(t, second.SessionID)
+
+	resetClaudeCodeSessionBoundaryLedgerForTest()
+	third, err := mapper.Map(promoted)
+	require.NoError(t, err)
+	require.Equal(t, second.SessionID, third.SessionID)
+
+	raw, err := os.ReadFile(ledgerPath)
+	require.NoError(t, err)
+	text := string(raw)
+	require.Contains(t, text, `"policy_version": "2_1_197"`)
+	require.Contains(t, text, `"persona_profile": "claude-code-2_1_197-macos-local"`)
+	require.NotContains(t, text, base.RawSessionID)
+	require.NotContains(t, text, base.DeviceID)
+}
+
 func TestClaudeCodeSessionMapperRejectsFormalPoolAuthorityFieldSwitches(t *testing.T) {
 	t.Setenv("SUB2API_SESSION_BUDGET_HMAC_KEY", "sub2api-session-budget-test-key")
 	resetClaudeCodeSessionBoundaryLedgerForTest()
@@ -301,12 +353,12 @@ func TestCCGatewayClaudeCodeSessionMappingCarriesClaudePlatformAWSTuple(t *testi
 			ccGatewayExtraEnabled:                                  "true",
 			ccGatewayExtraCanaryOnly:                               "false",
 			ccGatewayExtraPolicyVersion:                            ccGatewayAnthropicPolicyVersion,
-				ccGatewayExtraAccountRef:                               formalPoolSafeRef("account", "cpaws-a"),
-				ccGatewayExtraCredentialRef:                            formalPoolSafeRef("credential", "cpaws-a"),
+			ccGatewayExtraAccountRef:                               formalPoolSafeRef("account", "cpaws-a"),
+			ccGatewayExtraCredentialRef:                            formalPoolSafeRef("credential", "cpaws-a"),
 			ccGatewayExtraCredentialBindingHMAC:                    "hmac-sha256:" + strings.Repeat("a", 64),
 			ccGatewayExtraEgressBucket:                             "egress:cpaws-a",
 			ccGatewayExtraEgressBucketEnabled:                      "true",
-				ccGatewayExtraProxyIdentityRef:                         formalPoolSafeRef("proxy", "cpaws-a"),
+			ccGatewayExtraProxyIdentityRef:                         formalPoolSafeRef("proxy", "cpaws-a"),
 			ccGatewayExtraPersonaProfile:                           ccGatewayDefaultPersonaProfile,
 			ccGatewayExtraTrustedEgressProfile:                     "strip_attribution",
 			ccGatewayExtraProfilePolicyVersion:                     "claude_code_2_1_179_cp1_degraded_v1",
