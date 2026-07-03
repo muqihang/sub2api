@@ -48,7 +48,7 @@ func TestGatewayHandlerNativeCountTokensAttestationValidatesAndSetsContext(t *te
 	require.True(t, summary.ReplaySafetyApplied)
 }
 
-func TestGatewayHandlerNativeCountTokensRespondsLocallyBeforeAccountSelection(t *testing.T) {
+func TestGatewayHandlerNativeCountTokensFailsClosedBeforeAccountSelection(t *testing.T) {
 	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "native-attestation-test-secret")
 	t.Setenv("SUB2API_CLAUDE_CODE_NATIVE_FORMAL_POOL_MODELS", "claude-sonnet-4-6")
 	gin.SetMode(gin.TestMode)
@@ -70,10 +70,9 @@ func TestGatewayHandlerNativeCountTokensRespondsLocallyBeforeAccountSelection(t 
 	h := &GatewayHandler{}
 	h.CountTokens(c)
 
-	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, http.StatusForbidden, rec.Code)
 	require.NotContains(t, rec.Body.String(), "count-token-prompt-must-not-leak")
-	require.Equal(t, "claude-sonnet-4-6", gjson.Get(rec.Body.String(), "model").String())
-	require.Greater(t, gjson.Get(rec.Body.String(), "input_tokens").Int(), int64(1))
+	require.Equal(t, "formal_pool_count_tokens_profile_unapproved", gjson.Get(rec.Body.String(), "error.type").String())
 }
 
 func TestGatewayHandlerBridgeCountTokensRespondsLocallyWithoutPromptLeak(t *testing.T) {

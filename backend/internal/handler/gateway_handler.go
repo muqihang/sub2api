@@ -2280,7 +2280,7 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 	}
 
 	if nativeClaudeCodeAttested {
-		sendNativeCountTokensLocalResponse(c, parsedReq.Model, body)
+		h.errorResponse(c, http.StatusForbidden, "formal_pool_count_tokens_profile_unapproved", "Claude Code formal-pool count_tokens is not approved")
 		return
 	}
 
