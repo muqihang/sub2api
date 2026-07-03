@@ -613,7 +613,7 @@ func TestFormalPoolOperationsRuntimeRegister_UsesAccountProxyAndBucket(t *testin
 	require.Equal(t, ccGatewayAccountRef(store.account), runtime.input.AccountRef)
 	require.Equal(t, "claude-bucket-from-account", runtime.input.EgressBucket)
 	require.Equal(t, formalPoolSafeRef("proxy", "77"), runtime.input.ProxyRef)
-	require.Equal(t, ccGatewayAnthropicPolicyVersion, runtime.input.PolicyVersion)
+	require.Equal(t, ccGatewayPrimaryCanonicalPolicyVersion(), runtime.input.PolicyVersion)
 	require.Equal(t, "preserve_downstream_session_id", runtime.input.SessionPolicy)
 	require.Equal(t, "oauth", runtime.input.TokenType)
 	require.Equal(t, "Bearer access", runtime.input.CredentialProof)
@@ -1747,10 +1747,117 @@ func TestFormalPoolOperationsRuntimeRegisterPersistsCanonicalCCGatewayPolicyProf
 
 	require.NoError(t, err)
 	require.True(t, runtime.called)
-	require.Equal(t, ccGatewayAnthropicPolicyVersion, account.GetExtraString(ccGatewayExtraPolicyVersion))
-	require.Equal(t, ccGatewayDefault2179ProfilePolicyVersion, account.GetExtraString(ccGatewayExtraProfilePolicyVersion))
+	require.Equal(t, ccGatewayPrimaryCanonicalPolicyVersion(), runtime.input.PolicyVersion)
+	require.Equal(t, ccGatewayPrimaryCanonicalTuple().PersonaProfile, runtime.input.PersonaVariant)
+	require.Equal(t, ccGatewayPrimaryCanonicalPolicyVersion(), account.GetExtraString(ccGatewayExtraPolicyVersion))
+	require.Equal(t, ccGatewayPrimaryCanonicalTuple().PersonaProfile, account.GetExtraString(ccGatewayExtraPersonaProfile))
+	require.Equal(t, ccGatewayPrimaryCanonicalTuple().ProfilePolicyVersion, account.GetExtraString(ccGatewayExtraProfilePolicyVersion))
 	require.Equal(t, ccGatewayDefaultTrustedEgressProfileRef, account.GetExtraString(ccGatewayExtraTrustedEgressProfile))
 	require.Equal(t, ccGatewayDefaultBillingShapePolicy, account.GetExtraString(ccGatewayExtraBillingShapePolicy))
+	require.Equal(t, ccGatewayPrimaryCanonicalTuple().RequestShapeProfileRef, account.GetExtraString(ccGatewayExtraRequestShapeProfile))
+	require.Equal(t, ccGatewayPrimaryCanonicalTuple().CacheParityProfileRef, account.GetExtraString(ccGatewayExtraCacheParityProfile))
+	require.Equal(t, ccGatewayPrimaryCanonicalTuple().EgressTLSProfileRef, account.GetExtraString(ccGatewayExtraEgressTLSProfileRef))
+}
+
+func TestFormalPoolOperationsRuntimeRegisterPreservesExplicitRollbackTupleRole(t *testing.T) {
+	proxyID := int64(5904)
+	account := &Account{
+		ID:          9102,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeSetupToken,
+		Status:      StatusActive,
+		Schedulable: true,
+		ProxyID:     &proxyID,
+		Credentials: map[string]any{"access_token": "access-token", "refresh_token": "refresh-token", "scope": "user:inference"},
+		Extra: map[string]any{
+			FormalPoolExtraOnboardingStage:      FormalPoolStageProduction,
+			FormalPoolExtraRuntimeRegistered:    "false",
+			FormalPoolExtraRuntimeRegisteredAt:  "",
+			FormalPoolExtraCredentialGeneration: "1",
+			ccGatewayExtraEnabled:               "true",
+			ccGatewayExtraCanaryOnly:            "false",
+			ccGatewayExtraPolicyVersion:         ccGatewayAnthropicPolicyVersion,
+			"cc_gateway_canonical_tuple_role":   "rollback",
+			ccGatewayExtraEgressBucketEnabled:   "true",
+			ccGatewayExtraEgressBucket:          "bucket-rollback",
+			"cc_gateway_routes":                 string(ccGatewayRouteNativeMessages),
+		},
+	}
+	for k, v := range formalPoolRuntimeIdentityExtra("hmac-sha256:"+strings.Repeat("a", 64), formalPoolSafeRef("proxy", "5904"), account.Credentials, "formal-pool-runtime-binding-local-test-secret", "1") {
+		account.Extra[k] = v
+	}
+	account.Extra[ccGatewayExtraAccountRef] = "hmac-sha256:" + strings.Repeat("a", 64)
+	store := newFormalPoolOperationsMutableStore(account)
+	runtime := &formalPoolOperationsRuntimeFake{}
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{
+		Accounts:                          store,
+		Proxy:                             &formalPoolOperationsProxyFake{proxy: &Proxy{ID: proxyID, Protocol: "http", Host: "127.0.0.1", Port: 8080, Status: StatusActive}},
+		CCGatewayRuntime:                  runtime,
+		Now:                               func() time.Time { return time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC) },
+		CCGatewayContextAttestationSecret: "formal-pool-runtime-binding-local-test-secret",
+	})
+
+	_, err := svc.RuntimeRegister(context.Background(), account.ID)
+
+	require.NoError(t, err)
+	require.True(t, runtime.called)
+	require.Equal(t, ccGatewayAnthropicPolicyVersion, runtime.input.PolicyVersion)
+	require.Equal(t, ccGatewayDefaultPersonaProfile, runtime.input.PersonaVariant)
+	require.Equal(t, ccGatewayAnthropicPolicyVersion, account.GetExtraString(ccGatewayExtraPolicyVersion))
+	require.Equal(t, ccGatewayDefaultPersonaProfile, account.GetExtraString(ccGatewayExtraPersonaProfile))
+	require.Equal(t, ccGatewayDefault2179ProfilePolicyVersion, account.GetExtraString(ccGatewayExtraProfilePolicyVersion))
+	require.Equal(t, ccGatewayDefault2179RequestShapeProfile, account.GetExtraString(ccGatewayExtraRequestShapeProfile))
+	require.Equal(t, ccGatewayDefault2179CacheParityProfile, account.GetExtraString(ccGatewayExtraCacheParityProfile))
+	require.Equal(t, ccGatewayDefaultEgressTLSProfileRef, account.GetExtraString(ccGatewayExtraEgressTLSProfileRef))
+}
+
+func TestFormalPoolOperationsRuntimeRegisterPreservesExplicitFallback2185TupleRole(t *testing.T) {
+	proxyID := int64(5905)
+	account := &Account{
+		ID:          9103,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeSetupToken,
+		Status:      StatusActive,
+		Schedulable: true,
+		ProxyID:     &proxyID,
+		Credentials: map[string]any{"access_token": "access-token", "refresh_token": "refresh-token", "scope": "user:inference"},
+		Extra: map[string]any{
+			FormalPoolExtraOnboardingStage:      FormalPoolStageProduction,
+			FormalPoolExtraRuntimeRegistered:    "false",
+			FormalPoolExtraRuntimeRegisteredAt:  "",
+			FormalPoolExtraCredentialGeneration: "1",
+			ccGatewayExtraEnabled:               "true",
+			ccGatewayExtraCanaryOnly:            "false",
+			ccGatewayExtraPolicyVersion:         "2.1.185",
+			"cc_gateway_canonical_tuple_role":   "fallback",
+			ccGatewayExtraEgressBucketEnabled:   "true",
+			ccGatewayExtraEgressBucket:          "bucket-fallback",
+			"cc_gateway_routes":                 string(ccGatewayRouteNativeMessages),
+		},
+	}
+	for k, v := range formalPoolRuntimeIdentityExtra("hmac-sha256:"+strings.Repeat("b", 64), formalPoolSafeRef("proxy", "5905"), account.Credentials, "formal-pool-runtime-binding-local-test-secret", "1") {
+		account.Extra[k] = v
+	}
+	account.Extra[ccGatewayExtraAccountRef] = "hmac-sha256:" + strings.Repeat("b", 64)
+	store := newFormalPoolOperationsMutableStore(account)
+	runtime := &formalPoolOperationsRuntimeFake{}
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{
+		Accounts:                          store,
+		Proxy:                             &formalPoolOperationsProxyFake{proxy: &Proxy{ID: proxyID, Protocol: "http", Host: "127.0.0.1", Port: 8080, Status: StatusActive}},
+		CCGatewayRuntime:                  runtime,
+		Now:                               func() time.Time { return time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC) },
+		CCGatewayContextAttestationSecret: "formal-pool-runtime-binding-local-test-secret",
+	})
+
+	_, err := svc.RuntimeRegister(context.Background(), account.ID)
+
+	require.NoError(t, err)
+	require.True(t, runtime.called)
+	require.Equal(t, "2.1.185", runtime.input.PolicyVersion)
+	require.Equal(t, ccGateway2185PersonaProfile, runtime.input.PersonaVariant)
+	require.Equal(t, "2.1.185", account.GetExtraString(ccGatewayExtraPolicyVersion))
+	require.Equal(t, ccGateway2185PersonaProfile, account.GetExtraString(ccGatewayExtraPersonaProfile))
+	require.Equal(t, ccGatewayDefault2179ProfilePolicyVersion, account.GetExtraString(ccGatewayExtraProfilePolicyVersion))
 	require.Equal(t, ccGatewayDefault2179RequestShapeProfile, account.GetExtraString(ccGatewayExtraRequestShapeProfile))
 	require.Equal(t, ccGatewayDefault2179CacheParityProfile, account.GetExtraString(ccGatewayExtraCacheParityProfile))
 	require.Equal(t, ccGatewayDefaultEgressTLSProfileRef, account.GetExtraString(ccGatewayExtraEgressTLSProfileRef))

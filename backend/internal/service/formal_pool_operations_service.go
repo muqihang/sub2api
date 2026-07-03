@@ -1389,15 +1389,19 @@ func (s *FormalPoolOperationsService) runtimeRegisterUnlogged(ctx context.Contex
 }
 
 func ccGatewayCanonicalRuntimeAuthorityExtra(account *Account) map[string]any {
+	tuple := ccGatewayFormalPoolOperationsCanonicalTuple(account)
 	extra := map[string]any{
-		ccGatewayExtraPolicyVersion:        ccGatewayAnthropicPolicyVersion,
-		ccGatewayExtraProfilePolicyVersion: ccGatewayDefault2179ProfilePolicyVersion,
+		ccGatewayExtraPolicyVersion:        tuple.PolicyVersion,
+		ccGatewayExtraProfilePolicyVersion: tuple.ProfilePolicyVersion,
 		ccGatewayExtraTrustedEgressProfile: ccGatewayTrustedEgressProfileRef(account),
 		ccGatewayExtraBillingShapePolicy:   ccGatewayBillingShapePolicy(account),
-		ccGatewayExtraEgressTLSProfileRef:  ccGatewayDefaultEgressTLSProfileRef,
+		ccGatewayExtraEgressTLSProfileRef:  tuple.EgressTLSProfileRef,
 	}
-	if tlsProfileRef, ok := ccGatewayEgressTLSProfileRef(account); ok && tlsProfileRef != "" {
-		extra[ccGatewayExtraEgressTLSProfileRef] = tlsProfileRef
+	if account != nil && account.IsClaudePlatformAWS() {
+		tlsProfileRef, ok := ccGatewayEgressTLSProfileRef(account)
+		if ok && tlsProfileRef != "" {
+			extra[ccGatewayExtraEgressTLSProfileRef] = tlsProfileRef
+		}
 	}
 	if account != nil && account.IsClaudePlatformAWS() {
 		if ref := safeProfileRef(account.GetExtraString(ClaudePlatformAWSExtraRequestShapeProfileRef)); ref != "" {
@@ -1408,9 +1412,19 @@ func ccGatewayCanonicalRuntimeAuthorityExtra(account *Account) map[string]any {
 		}
 		return extra
 	}
-	extra[ccGatewayExtraRequestShapeProfile] = ccGatewayRequestShapeProfileRef(account)
-	extra[ccGatewayExtraCacheParityProfile] = ccGatewayCacheParityProfileRef(account)
+	extra[ccGatewayExtraRequestShapeProfile] = tuple.RequestShapeProfileRef
+	extra[ccGatewayExtraCacheParityProfile] = tuple.CacheParityProfileRef
 	return extra
+}
+
+func ccGatewayFormalPoolOperationsCanonicalTuple(account *Account) ccGatewayCanonicalTupleProfile {
+	if account != nil {
+		switch strings.TrimSpace(strings.ToLower(account.GetExtraString("cc_gateway_canonical_tuple_role"))) {
+		case "rollback", "fallback":
+			return ccGatewayCanonicalTupleForAccount(account)
+		}
+	}
+	return ccGatewayPrimaryCanonicalTuple()
 }
 
 func (s *FormalPoolOperationsService) runtimeRegistrationInput(ctx context.Context, account *Account) (FormalPoolCCGatewayRuntimeRegistration, error) {
@@ -1456,6 +1470,7 @@ func (s *FormalPoolOperationsService) runtimeRegistrationInput(ctx context.Conte
 	if !claudeCodeDeviceIDRe.MatchString(deviceID) {
 		return FormalPoolCCGatewayRuntimeRegistration{}, infraerrors.BadRequest("CC_GATEWAY_DEVICE_ID_REQUIRED", "cc gateway account-owned device id is required")
 	}
+	tuple := ccGatewayFormalPoolOperationsCanonicalTuple(account)
 	reg := FormalPoolCCGatewayRuntimeRegistration{
 		AccountRef:            accountRef,
 		CredentialRef:         credentialRef,
@@ -1465,8 +1480,8 @@ func (s *FormalPoolOperationsService) runtimeRegistrationInput(ctx context.Conte
 		EgressBucket:          egressBucket,
 		ProxyURL:              normalized,
 		ProxyRef:              proxyIdentityRef,
-		PolicyVersion:         ccGatewayAnthropicPolicyVersion,
-		PersonaVariant:        fmt.Sprintf("claude-code-%s-macos-local", ccGatewayAnthropicPolicyVersion),
+		PolicyVersion:         tuple.PolicyVersion,
+		PersonaVariant:        tuple.PersonaProfile,
 		SessionPolicy:         "preserve_downstream_session_id",
 		DeviceID:              strings.ToLower(deviceID),
 	}
@@ -1517,6 +1532,7 @@ func (s *FormalPoolOperationsService) ensureRuntimeIdentityEvidence(ctx context.
 	}
 	identityAccount := cloneClaudePlatformAWSAccountWithExtraOverlay(account, authorityExtra)
 	identity := formalPoolRuntimeIdentityExtraForAccount(identityAccount, accountRef, proxyIdentityRef, s.ccGatewayRuntimeBindingSecret(), generation)
+	identity[ccGatewayExtraPersonaProfile] = ccGatewayFormalPoolOperationsCanonicalTuple(account).PersonaProfile
 	if len(authorityExtra) == 0 &&
 		account.GetExtraString(ccGatewayExtraAccountRef) == accountRef &&
 		strings.TrimSpace(resolveCCGatewayEgressBucket(account)) == egressBucket &&
