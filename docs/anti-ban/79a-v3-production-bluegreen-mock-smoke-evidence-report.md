@@ -169,6 +169,6 @@ Note: direct chain counter read by guessed chain name returned a safe error buck
 ## Commits
 
 - Sub2API implementation fix: `e315607f8 fix: fail closed formal pool count tokens`.
-- This report: pending commit.
+- Initial report commit: `47c868f4d docs: add plan79a v3 bluegreen smoke evidence report`; current HEAD contains this metadata correction.
 - No CC Gateway code changes were made in Plan79A-v3.
 - No server scratch logs, secrets, or backups are committed.
