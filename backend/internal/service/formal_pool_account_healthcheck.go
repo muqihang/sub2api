@@ -220,6 +220,7 @@ func formalPoolHealthcheckSessionID(account *Account) string {
 	if account != nil {
 		parts := []string{
 			strings.TrimSpace(ccGatewayAccountRef(account)),
+			strings.TrimSpace(ccGatewayCredentialRef(account)),
 			strings.TrimSpace(resolveCCGatewayEgressBucket(account)),
 			strings.TrimSpace(ccGatewayProxyIdentityRef(account)),
 		}

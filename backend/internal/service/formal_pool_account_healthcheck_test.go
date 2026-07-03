@@ -228,6 +228,27 @@ func TestFormalPoolGatewayHealthcheckUsesAccountScopedSessionForBoundaryLedger(t
 	require.NoError(t, err)
 }
 
+func TestFormalPoolGatewayHealthcheckRotatedCredentialGetsFreshBoundarySession(t *testing.T) {
+	resetClaudeCodeSessionBoundaryLedgerForTest()
+	t.Setenv("SUB2API_CLAUDE_CODE_SESSION_BOUNDARY_LEDGER_FILE", filepath.Join(t.TempDir(), "formal-pool-session-ledger.json"))
+	account := newFormalPoolHealthcheckAccount()
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+	repo := &formalPoolHealthcheckRepo{formalRateLimitRepo{accountsByID: map[int64]*Account{account.ID: account}}}
+	upstream := &formalPoolHealthcheckUpstream{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"X-Cc-Gateway-Seen": []string{"1"}, "X-Cc-Gateway-Raw-Capture-Ref": []string{"hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}, Body: io.NopCloser(strings.NewReader("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))}}
+	runner := NewFormalPoolGatewayHealthcheckRunner(repo, upstream, newFormalPoolHealthcheckConfig(), nil)
+
+	_, err := runner.RunHealthcheck(context.Background(), FormalPoolAcceptanceInput{AccountID: account.ID, AccountRef: formalPoolHealthcheckAccountRefForTest, EgressBucket: "bucket-a", ProxyRef: formalPoolHealthcheckProxyRefForTest, PoolProfile: PoolProfileNormal})
+	require.NoError(t, err)
+	firstBody := append([]byte(nil), upstream.lastBody...)
+
+	account.Extra[ccGatewayExtraCredentialRef] = "opaque:credential-ref:v1:healthcheck-cred-rotated"
+	upstream.resp = &http.Response{StatusCode: http.StatusOK, Header: http.Header{"X-Cc-Gateway-Seen": []string{"1"}, "X-Cc-Gateway-Raw-Capture-Ref": []string{"hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}, Body: io.NopCloser(strings.NewReader("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))}
+	_, err = runner.RunHealthcheck(context.Background(), FormalPoolAcceptanceInput{AccountID: account.ID, AccountRef: formalPoolHealthcheckAccountRefForTest, EgressBucket: "bucket-a", ProxyRef: formalPoolHealthcheckProxyRefForTest, PoolProfile: PoolProfileNormal})
+	require.NoError(t, err)
+	require.Equal(t, 2, upstream.requests)
+	require.NotEqual(t, formalPoolHealthcheckSessionFromBodyForTest(t, firstBody), formalPoolHealthcheckSessionFromBodyForTest(t, upstream.lastBody))
+}
+
 func TestFormalPoolGatewayHealthcheckRunnerUsesClaudeCodeLiteBodyWithoutOneMillionContext(t *testing.T) {
 	t.Parallel()
 	const wantPersonaProfile = "claude-code-2.1.197-macos-local"
@@ -278,6 +299,19 @@ func TestFormalPoolGatewayHealthcheckBodyUsesUUIDSessionID(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(userID), &user))
 	require.Regexp(t, `^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, user["session_id"])
 	require.NotEqual(t, "formal-pool-healthcheck", user["session_id"])
+}
+
+func formalPoolHealthcheckSessionFromBodyForTest(t *testing.T, body []byte) string {
+	t.Helper()
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(body, &parsed))
+	metadata, ok := parsed["metadata"].(map[string]any)
+	require.True(t, ok)
+	userID, ok := metadata["user_id"].(string)
+	require.True(t, ok)
+	var user map[string]string
+	require.NoError(t, json.Unmarshal([]byte(userID), &user))
+	return user["session_id"]
 }
 
 func TestFormalPoolGatewayHealthcheckRunnerQuarantinesAuthFailure(t *testing.T) {
