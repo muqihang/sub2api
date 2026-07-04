@@ -16,6 +16,7 @@ import (
 const (
 	formalPoolHealthcheckSeenHeader   = "X-CC-Gateway-Seen"
 	formalPoolHealthcheckRawRefHeader = "X-CC-Gateway-Raw-Capture-Ref"
+	formalPoolHealthcheckErrorHeader  = "X-CC-Gateway-Error-Code"
 )
 
 type FormalPoolGatewayHealthcheckRunner struct {
@@ -114,7 +115,11 @@ func (r *FormalPoolGatewayHealthcheckRunner) RunHealthcheck(ctx context.Context,
 	result.FallbackDetected = headerTruthy(resp.Header.Get("X-CC-Gateway-Fallback-Detected")) || strings.Contains(strings.ToLower(string(responseBody)), "fallback")
 	result.ProxyMismatch = headerTruthy(resp.Header.Get("X-CC-Gateway-Proxy-Mismatch"))
 	result.RiskTextDetected = formalPoolRiskTextDetected(responseBody)
-	result.SafeErrorCode, result.SafeErrorBucket = formalPoolHealthcheckSafeClassification(resp.StatusCode, responseBody, result)
+	if code := sanitizeReasonCode(resp.Header.Get(formalPoolHealthcheckErrorHeader)); code != "" {
+		result.SafeErrorCode, result.SafeErrorBucket = code, "cc_gateway"
+	} else {
+		result.SafeErrorCode, result.SafeErrorBucket = formalPoolHealthcheckSafeClassification(resp.StatusCode, responseBody, result)
+	}
 
 	add("directed_healthcheck_status_200", resp.StatusCode == http.StatusOK, result.StatusCodeBucket)
 	add("cc_gateway_seen", result.CCGatewaySeen, "cc gateway response evidence required")
