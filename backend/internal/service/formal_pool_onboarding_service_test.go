@@ -857,6 +857,30 @@ func TestFormalPoolRuntimeIdentityExtraDefaultsToPrimary2197Persona(t *testing.T
 	}
 }
 
+func TestFormalPoolOnboardingDefaultMCPConnectorDisabled(t *testing.T) {
+	extra := formalPoolDefaultExtra(
+		&formalPoolOnboardingSessionRecord{
+			EgressBucket: "bucket-a",
+			PoolProfile:  PoolProfileNormal,
+		},
+		"hmac-sha256:"+strings.Repeat("a", 64),
+		map[string]any{},
+	)
+
+	if got := extra["cc_gateway_mcp_connector_enabled"]; got != "false" {
+		t.Fatalf("cc_gateway_mcp_connector_enabled = %v, want false", got)
+	}
+	if got := extra["cc_gateway_mcp_connector_policy_ref"]; got != "" {
+		t.Fatalf("cc_gateway_mcp_connector_policy_ref = %v, want empty by default", got)
+	}
+	if got := extra["cc_gateway_mcp_connector_allowed_hosts_bucket"]; got != "empty" {
+		t.Fatalf("cc_gateway_mcp_connector_allowed_hosts_bucket = %v, want empty by default", got)
+	}
+	if got := extra["cc_gateway_mcp_connector_allowed_models_bucket"]; got != "empty" {
+		t.Fatalf("cc_gateway_mcp_connector_allowed_models_bucket = %v, want empty by default", got)
+	}
+}
+
 func TestFormalPoolSafeSummaryRecursiveScan(t *testing.T) {
 	dangerous := []map[string]any{
 		{"nested": map[string]any{"proxy_password": "should-not-appear"}},

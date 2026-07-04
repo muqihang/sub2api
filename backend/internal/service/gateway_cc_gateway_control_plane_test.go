@@ -221,6 +221,39 @@ func TestCCGatewayControlPlane_FormalPoolPlan76RequestShapeDoesNotQuarantine(t *
 	}
 }
 
+func TestCCGatewayControlPlane_MCPConnectorRequestLevelRejectDoesNotQuarantine(t *testing.T) {
+	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
+	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newCCGatewayControlPlaneResponse(http.StatusForbidden, "formal_pool_mcp_connector_disabled")}
+	svc := newCCGatewayBoundaryService(upstream)
+	account := newCCGatewayBoundaryAccount()
+	formalPoolApplyCompleteSchedulingEvidenceForTest(account)
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageWarming
+	account.Extra[FormalPoolExtraPoolProfileEffective] = PoolProfileNormal
+	repo := &formalRateLimitRepo{accountsByID: map[int64]*Account{account.ID: account}}
+	sink := &recordingBudgetLedgerSink{}
+	svc.accountRepo = repo
+	svc.sessionBudgetObserve = sink
+	c, ctx := newCCGatewayBoundaryContext("/v1/messages")
+	body := mcpConnectorBodyForTest(t, "claude-opus-4-8")
+
+	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cc gateway control-plane error")
+	require.Equal(t, FormalPoolStageWarming, repo.accountsByID[account.ID].Extra[FormalPoolExtraOnboardingStage])
+	require.True(t, repo.accountsByID[account.ID].Schedulable)
+	require.NotEqual(t, StatusError, repo.accountsByID[account.ID].Status)
+	require.Empty(t, repo.accountsByID[account.ID].Extra[FormalPoolExtraRiskEventRef])
+	require.NotEmpty(t, sink.risks)
+	observed := false
+	for _, risk := range sink.risks {
+		if risk.ActionRecommendation == BudgetActionObserve {
+			observed = true
+		}
+	}
+	require.True(t, observed, "request-level MCP connector reject should emit an observe action")
+}
+
 func TestCCGatewayControlPlaneQuarantineClassifier(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -248,6 +281,12 @@ func TestCCGatewayControlPlaneQuarantineClassifier(t *testing.T) {
 		{name: "observed client profile unapproved is request-level block", code: "formal_pool_observed_client_profile_unapproved", message: "Formal-pool observed client version is below the approved minimum for this profile", status: http.StatusForbidden, want: false},
 		{name: "observed client profile unknown body keys is request-level block", code: "formal_pool_observed_client_profile_unapproved", message: "Formal-pool observed client profile contains unknown body keys", status: http.StatusForbidden, want: false},
 		{name: "mcp configured shape is request-level block", code: "formal_pool_mcp_shape_unapproved", message: "Formal-pool MCP configured shape is not approved", status: http.StatusForbidden, want: false},
+		{name: "mcp connector disabled is request-level block", code: "formal_pool_mcp_connector_disabled", message: "Formal-pool MCP connector is disabled", status: http.StatusForbidden, want: false},
+		{name: "mcp connector disabled generic forbidden text is request-level block", code: "formal_pool_mcp_connector_disabled", message: "Forbidden", status: http.StatusForbidden, want: false},
+		{name: "mcp account policy missing is request-level block", code: "formal_pool_mcp_connector_account_disabled", message: "Formal-pool MCP connector account policy is missing", status: http.StatusForbidden, want: false},
+		{name: "mcp unsafe url is request-level block", code: "formal_pool_mcp_unsafe_url_unapproved", message: "Formal-pool MCP URL is not approved", status: http.StatusForbidden, want: false},
+		{name: "mcp raw credential is request-level block", code: "formal_pool_mcp_raw_credential_unapproved", message: "Formal-pool MCP credential shape is not approved", status: http.StatusForbidden, want: false},
+		{name: "mcp host with proxy mismatch still quarantines", code: "formal_pool_mcp_host_unapproved", message: "proxy_mismatch", status: http.StatusForbidden, want: true},
 		{name: "non-streaming shape is request-level block", code: "formal_pool_non_streaming_profile_unapproved", message: "Formal-pool non-streaming profile is not approved", status: http.StatusForbidden, want: false},
 		{name: "count tokens shape is request-level block", code: "formal_pool_count_tokens_profile_unapproved", message: "Formal-pool count_tokens path is not approved", status: http.StatusForbidden, want: false},
 		{name: "model version unsupported is request-level block", code: "formal_pool_model_version_unsupported", message: "Formal-pool Sonnet 5 requires the server-selected 2.1.197 canonical tuple", status: http.StatusForbidden, want: false},

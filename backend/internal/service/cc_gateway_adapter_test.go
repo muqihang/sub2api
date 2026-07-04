@@ -1284,6 +1284,146 @@ func TestGatewayService_CCGatewayFormalPoolObservedClientProfileDropsUnknownBody
 	require.NotContains(t, string(encodedContextJSON), unknownBodyKey)
 }
 
+func mcpConnectorBodyForTest(t *testing.T, model string) []byte {
+	t.Helper()
+	host := strings.Join([]string{"docs", "example", "invalid"}, ".")
+	body, err := json.Marshal(map[string]any{
+		"model":       model,
+		"stream":      true,
+		"mcp_servers": []any{map[string]any{"type": "url", "name": "docs", "url": "https" + "://" + host + "/mcp"}},
+		"tools":       []any{map[string]any{"type": "mcp_toolset", "mcp_server_name": "docs"}},
+		"metadata":    map[string]any{"user_id": `{"device_id":"client-device","session_id":"client-session"}`},
+		"messages":    []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": "hi"}}}},
+	})
+	require.NoError(t, err)
+	return body
+}
+
+func TestGatewayService_CCGatewayObservedProfileMCPConnectorSafeBuckets(t *testing.T) {
+	body := mcpConnectorBodyForTest(t, "claude-opus-4-8")
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+
+	profile := ccGatewayObservedClientProfileForBody(req, "messages", body)
+
+	require.Equal(t, "official_remote_url_connector", profile["mcp_shape_bucket"])
+	require.Equal(t, "1", profile["mcp_server_count_bucket"])
+	require.Equal(t, "1", profile["mcp_toolset_count_bucket"])
+	require.Equal(t, "absent", profile["mcp_auth_bucket"])
+	require.Contains(t, profile["top_level_body_keys"], "mcp_servers")
+	encoded, err := json.Marshal(profile)
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "docs.example.invalid")
+	require.NotContains(t, string(encoded), "docs")
+}
+
+func TestGatewayService_CCGatewayObservedProfileMCPConnectorUnsafeBuckets(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-4-8","stream":true,"mcp_servers":[{"type":"stdio","name":"local","command":"node","env":{"TOKEN":"redacted-fixture"}}],"tools":[{"type":"mcp_toolset","mcp_server_name":"local"}],"messages":[{"role":"user","content":"hi"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+
+	profile := ccGatewayObservedClientProfileForBody(req, "messages", body)
+
+	require.Equal(t, "local_config_shape", profile["mcp_shape_bucket"])
+	require.Equal(t, "1", profile["mcp_server_count_bucket"])
+	require.Equal(t, "1", profile["mcp_toolset_count_bucket"])
+	require.Equal(t, "present_redacted", profile["mcp_auth_bucket"])
+	encoded, err := json.Marshal(profile)
+	require.NoError(t, err)
+	require.NotContains(t, strings.ToLower(string(encoded)), "redacted-fixture")
+	require.NotContains(t, strings.ToLower(string(encoded)), "token")
+}
+
+func TestGatewayService_CCGatewayFormalPoolAttestationMCPConnectorPolicyOptIn(t *testing.T) {
+	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
+	body := mcpConnectorBodyForTest(t, "claude-opus-4-8")
+	account := newAnthropicOAuthAccountForClaudeForwardTest()
+	account.Extra["cc_gateway_enabled"] = "true"
+	account.Extra["cc_gateway_canary_only"] = "false"
+	account.Extra["cc_gateway_policy_version"] = "2.1.197"
+	account.Extra["cc_gateway_routes"] = "native_messages,native_count_tokens,chat_completions,responses"
+	account.Extra["cc_gateway_egress_bucket_enabled"] = "true"
+	account.Extra["cc_gateway_egress_bucket"] = "bucket-a"
+	account.Extra["cc_gateway_account_ref"] = "hmac-sha256:" + strings.Repeat("c", 64)
+	formalPoolApplyCompleteSchedulingEvidenceForTest(account)
+	account.Extra[ccGatewayExtraCredentialRef] = "opaque:credential-ref:v1:cred-a"
+	account.Extra[ccGatewayExtraProxyIdentityRef] = "opaque:proxy-ref:v1:bucket-a"
+	account.Extra[ccGatewayExtraPersonaProfile] = ccGateway2197PersonaProfile
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+	account.Extra["cc_gateway_mcp_connector_enabled"] = "true"
+	account.Extra["cc_gateway_mcp_connector_policy_ref"] = "mcp-connector-policy:official-remote-https-v1"
+	account.Extra["cc_gateway_mcp_connector_allowed_hosts_bucket"] = "configured"
+	account.Extra["cc_gateway_mcp_connector_allowed_models_bucket"] = "configured"
+
+	req, _, err := (&GatewayService{
+		cfg:             ccGatewayTestConfig(PlatformAnthropic),
+		identityService: NewIdentityService(ccGatewayIdentityCache{}),
+	}).buildUpstreamRequest(context.Background(), ccGatewayTestContext("/v1/messages"), account, body, "oauth-token", "oauth", "claude-opus-4-8", true, false, false)
+	require.NoError(t, err)
+
+	ctx := decodeCCGatewayFormalPoolContextForTest(t, req)
+	require.Equal(t, "mcp-connector-policy:official-remote-https-v1", ctx["mcp_connector_policy_ref"])
+	observed := ctx["observed_client_profile"].(map[string]any)
+	require.Equal(t, "official_remote_url_connector", observed["mcp_shape_bucket"])
+}
+
+func TestGatewayService_CCGatewayFormalPoolAttestationMCPConnectorDefaultDisabled(t *testing.T) {
+	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
+	body := mcpConnectorBodyForTest(t, "claude-opus-4-8")
+	account := newAnthropicOAuthAccountForClaudeForwardTest()
+	account.Extra["cc_gateway_enabled"] = "true"
+	account.Extra["cc_gateway_canary_only"] = "false"
+	account.Extra["cc_gateway_policy_version"] = "2.1.197"
+	account.Extra["cc_gateway_routes"] = "native_messages,native_count_tokens,chat_completions,responses"
+	account.Extra["cc_gateway_egress_bucket_enabled"] = "true"
+	account.Extra["cc_gateway_egress_bucket"] = "bucket-a"
+	account.Extra["cc_gateway_account_ref"] = "hmac-sha256:" + strings.Repeat("c", 64)
+	formalPoolApplyCompleteSchedulingEvidenceForTest(account)
+	account.Extra[ccGatewayExtraCredentialRef] = "opaque:credential-ref:v1:cred-a"
+	account.Extra[ccGatewayExtraProxyIdentityRef] = "opaque:proxy-ref:v1:bucket-a"
+	account.Extra[ccGatewayExtraPersonaProfile] = ccGateway2197PersonaProfile
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageProduction
+
+	req, _, err := (&GatewayService{
+		cfg:             ccGatewayTestConfig(PlatformAnthropic),
+		identityService: NewIdentityService(ccGatewayIdentityCache{}),
+	}).buildUpstreamRequest(context.Background(), ccGatewayTestContext("/v1/messages"), account, body, "oauth-token", "oauth", "claude-opus-4-8", true, false, false)
+	require.NoError(t, err)
+
+	ctx := decodeCCGatewayFormalPoolContextForTest(t, req)
+	require.NotContains(t, ctx, "mcp_connector_policy_ref")
+}
+
+func TestGatewayService_CCGatewayMCPConnectorPolicyRefRequiresCompleteOfficialOptIn(t *testing.T) {
+	account := newAnthropicOAuthAccountForClaudeForwardTest()
+
+	require.Empty(t, ccGatewayMCPConnectorPolicyRef(account))
+
+	account.Extra[ccGatewayExtraMCPConnectorEnabled] = "true"
+	require.Empty(t, ccGatewayMCPConnectorPolicyRef(account))
+
+	account.Extra[ccGatewayExtraMCPConnectorPolicyRef] = "mcp-connector-policy:unexpected"
+	account.Extra[ccGatewayExtraMCPConnectorHosts] = "configured"
+	account.Extra[ccGatewayExtraMCPConnectorModels] = "configured"
+	require.Empty(t, ccGatewayMCPConnectorPolicyRef(account))
+
+	account.Extra[ccGatewayExtraMCPConnectorPolicyRef] = ccGatewayMCPConnectorPolicyRefOfficial
+	account.Extra[ccGatewayExtraMCPConnectorHosts] = "empty"
+	require.Empty(t, ccGatewayMCPConnectorPolicyRef(account))
+
+	account.Extra[ccGatewayExtraMCPConnectorHosts] = "configured"
+	account.Extra[ccGatewayExtraMCPConnectorModels] = "empty"
+	require.Empty(t, ccGatewayMCPConnectorPolicyRef(account))
+
+	account.Extra[ccGatewayExtraMCPConnectorModels] = "configured"
+	account.Extra[ccGatewayExtraPolicyVersion] = "2.1.185"
+	require.Empty(t, ccGatewayMCPConnectorPolicyRef(account))
+
+	account.Extra[ccGatewayExtraPolicyVersion] = "2.1.179"
+	require.Empty(t, ccGatewayMCPConnectorPolicyRef(account))
+
+	account.Extra[ccGatewayExtraPolicyVersion] = "2.1.197"
+	require.Equal(t, ccGatewayMCPConnectorPolicyRefOfficial, ccGatewayMCPConnectorPolicyRef(account))
+}
+
 func TestGatewayService_CCGatewayFormalPoolUnknownObservedVersionDoesNotPromoteProfile(t *testing.T) {
 	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
 	body := []byte(`{"model":"claude-sonnet-4-6","stream":true,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"client-session\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)

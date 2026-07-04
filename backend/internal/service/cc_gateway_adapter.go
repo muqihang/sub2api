@@ -61,6 +61,10 @@ const (
 	ccGatewayExtraEnvResidueProfileRef  = "cc_gateway_env_residue_profile_ref"
 	ccGatewayExtraLocaleProfileRef      = "cc_gateway_locale_profile_ref"
 	ccGatewayExtraBaseURLResidueProfile = "cc_gateway_base_url_residue_profile_ref"
+	ccGatewayExtraMCPConnectorEnabled   = "cc_gateway_mcp_connector_enabled"
+	ccGatewayExtraMCPConnectorPolicyRef = "cc_gateway_mcp_connector_policy_ref"
+	ccGatewayExtraMCPConnectorHosts     = "cc_gateway_mcp_connector_allowed_hosts_bucket"
+	ccGatewayExtraMCPConnectorModels    = "cc_gateway_mcp_connector_allowed_models_bucket"
 	openAIGatewayExtraEgressFallback    = "openai_gateway_egress_bucket"
 
 	ccGatewayExtraEnabled    = "cc_gateway_enabled"
@@ -82,6 +86,7 @@ const (
 	ccGatewayDefaultEnvResidueProfileRef     = "env-residue-profile:claude-code-2.1.179-us-pacific-official-anthropic-v1"
 	ccGatewayDefaultLocaleProfileRef         = "locale-profile:us-pacific-v1"
 	ccGatewayDefaultBaseURLResidueProfileRef = "base-url-residue-profile:official-anthropic-v1"
+	ccGatewayMCPConnectorPolicyRefOfficial   = "mcp-connector-policy:official-remote-https-v1"
 
 	// Final shared-pool policy is anchored to the verified Claude Code 2.1.179
 	// profile. Stale compatible account metadata is admission-only and final
@@ -586,6 +591,9 @@ func applyCCGatewayFormalPoolAttestationWithPersona(req *http.Request, cfg *conf
 	for k, v := range awsCtx {
 		ctx[k] = v
 	}
+	if ref := ccGatewayMCPConnectorPolicyRef(account); ref != "" {
+		ctx["mcp_connector_policy_ref"] = ref
+	}
 	raw, err := json.Marshal(ctx)
 	if err != nil {
 		return err
@@ -983,6 +991,29 @@ func ccGatewayCacheParityProfileRef(account *Account) string {
 	return ccGatewayCanonicalTupleForAccount(account).CacheParityProfileRef
 }
 
+func ccGatewayMCPConnectorPolicyRef(account *Account) string {
+	if account == nil {
+		return ""
+	}
+	enabled, ok := parseCCGatewayBool(account.GetExtraString(ccGatewayExtraMCPConnectorEnabled))
+	if !ok || !enabled {
+		return ""
+	}
+	if ccGatewayCanonicalTupleForAccount(account).PolicyVersion != ccGatewayPrimaryCanonicalPolicyVersion() {
+		return ""
+	}
+	if strings.TrimSpace(account.GetExtraString(ccGatewayExtraMCPConnectorPolicyRef)) != ccGatewayMCPConnectorPolicyRefOfficial {
+		return ""
+	}
+	if strings.TrimSpace(account.GetExtraString(ccGatewayExtraMCPConnectorHosts)) != "configured" {
+		return ""
+	}
+	if strings.TrimSpace(account.GetExtraString(ccGatewayExtraMCPConnectorModels)) != "configured" {
+		return ""
+	}
+	return ccGatewayMCPConnectorPolicyRefOfficial
+}
+
 func safeTLSProfileRef(raw string) string {
 	value := safeProfileRef(raw)
 	if value == "" || !strings.HasPrefix(value, "tls-profile:") {
@@ -1292,6 +1323,10 @@ func ccGatewayObservedClientProfileForBody(req *http.Request, routeClass string,
 		profile["thinking_present"] = gjson.GetBytes(body, "thinking").Exists()
 		profile["output_config_present"] = gjson.GetBytes(body, "output_config").Exists()
 		profile["context_management_present"] = gjson.GetBytes(body, "context_management").Exists()
+		profile["mcp_shape_bucket"] = ccGatewayObservedMCPShapeBucket(body)
+		profile["mcp_server_count_bucket"] = ccGatewayObservedMCPServerCountBucket(body)
+		profile["mcp_toolset_count_bucket"] = ccGatewayObservedMCPToolsetCountBucket(body)
+		profile["mcp_auth_bucket"] = ccGatewayObservedMCPAuthBucket(body)
 	}
 	profile["client_family_bucket"] = ccGatewayClientFamilyBucket(req, billingHeaders)
 	applyCCGatewayObservedEnvResidueBuckets(profile, req, body)
@@ -1299,6 +1334,129 @@ func ccGatewayObservedClientProfileForBody(req *http.Request, routeClass string,
 	profile["billing_shape"] = ccGatewayBillingShapeFromObservedHeaders(billingHeaders)
 	profile["cc_entrypoint_bucket"] = ccGatewayEntrypointBucketFromObservedHeaders(billingHeaders)
 	return profile
+}
+
+func ccGatewayObservedMCPShapeBucket(body []byte) string {
+	if len(body) == 0 {
+		return "absent"
+	}
+	parsed := gjson.ParseBytes(body)
+	if !parsed.IsObject() {
+		return "absent"
+	}
+	if parsed.Get("mcpServers").Exists() || parsed.Get("mcp").Exists() || parsed.Get("mcp_config").Exists() || parsed.Get("mcp_authority").Exists() || parsed.Get("mcp_tools").Exists() {
+		return "unsafe_or_unknown"
+	}
+	servers := parsed.Get("mcp_servers")
+	tools := parsed.Get("tools")
+	if !servers.Exists() {
+		if ccGatewayObservedMCPToolsetCount(body) > 0 {
+			return "unsafe_or_unknown"
+		}
+		return "absent"
+	}
+	if !servers.IsArray() || !tools.IsArray() {
+		return "unsafe_or_unknown"
+	}
+	localConfig := false
+	unsafe := false
+	servers.ForEach(func(_, server gjson.Result) bool {
+		if !server.IsObject() {
+			unsafe = true
+			return true
+		}
+		if strings.TrimSpace(server.Get("type").String()) != "url" {
+			localConfig = true
+		}
+		for _, key := range []string{"command", "args", "env", "cwd", "transport"} {
+			if server.Get(key).Exists() {
+				localConfig = true
+			}
+		}
+		if urlValue := strings.TrimSpace(server.Get("url").String()); urlValue != "" && !strings.HasPrefix(strings.ToLower(urlValue), "https://") {
+			unsafe = true
+		}
+		return true
+	})
+	if localConfig {
+		return "local_config_shape"
+	}
+	if unsafe || ccGatewayObservedMCPAuthBucket(body) == "present_redacted" {
+		return "unsafe_or_unknown"
+	}
+	return "official_remote_url_connector"
+}
+
+func ccGatewayObservedMCPServerCountBucket(body []byte) string {
+	return ccGatewayObservedCountBucket(int(gjson.GetBytes(body, "mcp_servers.#").Int()))
+}
+
+func ccGatewayObservedMCPToolsetCountBucket(body []byte) string {
+	return ccGatewayObservedCountBucket(ccGatewayObservedMCPToolsetCount(body))
+}
+
+func ccGatewayObservedMCPToolsetCount(body []byte) int {
+	count := 0
+	gjson.GetBytes(body, "tools").ForEach(func(_, tool gjson.Result) bool {
+		if strings.TrimSpace(tool.Get("type").String()) == "mcp_toolset" {
+			count++
+		}
+		return true
+	})
+	return count
+}
+
+func ccGatewayObservedCountBucket(count int) string {
+	switch {
+	case count <= 0:
+		return "0"
+	case count == 1:
+		return "1"
+	case count <= 5:
+		return "2_5"
+	default:
+		return "6_plus"
+	}
+}
+
+func ccGatewayObservedMCPAuthBucket(body []byte) string {
+	var raw any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return "absent"
+	}
+	root, ok := raw.(map[string]any)
+	if !ok {
+		return "absent"
+	}
+	for _, key := range []string{"mcp_servers", "tools"} {
+		if ccGatewayMCPValueHasCredentialKey(root[key]) {
+			return "present_redacted"
+		}
+	}
+	return "absent"
+}
+
+func ccGatewayMCPValueHasCredentialKey(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for k, v := range typed {
+			lower := strings.ToLower(strings.TrimSpace(k))
+			switch lower {
+			case "authorization_token", "authorization", "api_key", "token", "headers", "cookie", "env", "secret", "password":
+				return true
+			}
+			if ccGatewayMCPValueHasCredentialKey(v) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if ccGatewayMCPValueHasCredentialKey(item) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func cloneCCGatewayObservedClientProfile(in map[string]any) map[string]any {
@@ -1335,6 +1493,7 @@ func ccGatewayObservedSafeTopLevelBodyKey(raw string) string {
 		"messages",
 		"metadata",
 		"model",
+		"mcp_servers",
 		"output_config",
 		"service_tier",
 		"stream",

@@ -1429,19 +1429,23 @@ func (s *FormalPoolOnboardingService) PromoteProduction(ctx context.Context, id 
 
 func formalPoolDefaultExtra(rec *formalPoolOnboardingSessionRecord, accountRef string, runtimeIdentity map[string]any) map[string]any {
 	extra := map[string]any{
-		"cc_gateway_enabled":                "true",
-		"cc_gateway_canary_only":            "false",
-		"cc_gateway_policy_version":         ccGatewayPrimaryCanonicalTuple().PolicyVersion,
-		"cc_gateway_routes":                 string(ccGatewayRouteNativeMessages),
-		"cc_gateway_egress_bucket_enabled":  "true",
-		"cc_gateway_egress_bucket":          rec.EgressBucket,
-		"cc_gateway_account_ref":            accountRef,
-		"pool_profile":                      PoolProfileNormal,
-		FormalPoolExtraPoolProfileRequested: rec.PoolProfile,
-		FormalPoolExtraPoolProfileEffective: PoolProfileNormal,
-		FormalPoolExtraPoolWeightMode:       FormalPoolWeightLow,
-		"oauth_refresh_fail_closed":         "true",
-		"onboarding_state":                  FormalPoolOnboardingStatusPendingAcceptance,
+		"cc_gateway_enabled":                             "true",
+		"cc_gateway_canary_only":                         "false",
+		"cc_gateway_policy_version":                      ccGatewayPrimaryCanonicalTuple().PolicyVersion,
+		"cc_gateway_routes":                              string(ccGatewayRouteNativeMessages),
+		"cc_gateway_egress_bucket_enabled":               "true",
+		"cc_gateway_egress_bucket":                       rec.EgressBucket,
+		"cc_gateway_account_ref":                         accountRef,
+		"cc_gateway_mcp_connector_enabled":               "false",
+		"cc_gateway_mcp_connector_policy_ref":            "",
+		"cc_gateway_mcp_connector_allowed_hosts_bucket":  "empty",
+		"cc_gateway_mcp_connector_allowed_models_bucket": "empty",
+		"pool_profile":                                   PoolProfileNormal,
+		FormalPoolExtraPoolProfileRequested:              rec.PoolProfile,
+		FormalPoolExtraPoolProfileEffective:              PoolProfileNormal,
+		FormalPoolExtraPoolWeightMode:                    FormalPoolWeightLow,
+		"oauth_refresh_fail_closed":                      "true",
+		"onboarding_state":                               FormalPoolOnboardingStatusPendingAcceptance,
 	}
 	for k, v := range runtimeIdentity {
 		extra[k] = v

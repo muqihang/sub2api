@@ -8162,6 +8162,19 @@ func isCCGatewayRequestLevelBillingReject(code string, text string) bool {
 func isCCGatewayRequestLevelPlan76ShapeReject(code string, text string) bool {
 	requestLevelCodes := []string{
 		"formal_pool_mcp_shape_unapproved",
+		"formal_pool_mcp_connector_disabled",
+		"formal_pool_mcp_connector_account_disabled",
+		"formal_pool_mcp_schema_unapproved",
+		"formal_pool_mcp_legacy_shape_unapproved",
+		"formal_pool_mcp_local_stdio_unapproved",
+		"formal_pool_mcp_local_command_unapproved",
+		"formal_pool_mcp_raw_credential_unapproved",
+		"formal_pool_mcp_unsafe_url_unapproved",
+		"formal_pool_mcp_host_unapproved",
+		"formal_pool_mcp_model_unapproved",
+		"formal_pool_mcp_toolset_unapproved",
+		"formal_pool_mcp_tool_choice_unapproved",
+		"formal_pool_mcp_cache_control_unapproved",
 		"formal_pool_non_streaming_profile_unapproved",
 		"formal_pool_count_tokens_profile_unapproved",
 		"formal_pool_model_version_unsupported",
@@ -8186,7 +8199,6 @@ func ccGatewayControlPlaneTextHasHardRiskSignal(text string) bool {
 		"verifier",
 		"sign_strip",
 		"invalid_auth",
-		"forbidden",
 		"risk",
 	}
 	for _, signal := range hardRiskSignals {
