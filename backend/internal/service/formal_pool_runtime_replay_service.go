@@ -330,6 +330,7 @@ func (s *FormalPoolRuntimeRegistrationReplayService) runtimeReplayRegistrationIn
 	if !claudeCodeDeviceIDRe.MatchString(deviceID) {
 		return FormalPoolCCGatewayRuntimeRegistration{}, infraerrors.BadRequest("CC_GATEWAY_DEVICE_ID_REQUIRED", "cc gateway account-owned device id is required")
 	}
+	tuple := ccGatewayFormalPoolOperationsCanonicalTuple(account)
 	reg := FormalPoolCCGatewayRuntimeRegistration{
 		AccountRef:            accountRef,
 		CredentialRef:         credentialRef,
@@ -339,10 +340,11 @@ func (s *FormalPoolRuntimeRegistrationReplayService) runtimeReplayRegistrationIn
 		EgressBucket:          egressBucket,
 		ProxyURL:              normalized,
 		ProxyRef:              proxyIdentityRef,
-		PolicyVersion:         ccGatewayAnthropicPolicyVersion,
-		PersonaVariant:        fmt.Sprintf("claude-code-%s-macos-local", ccGatewayAnthropicPolicyVersion),
+		PolicyVersion:         tuple.PolicyVersion,
+		PersonaVariant:        tuple.PersonaProfile,
 		SessionPolicy:         "preserve_downstream_session_id",
 		DeviceID:              strings.ToLower(deviceID),
+		EgressTLSProfileRef:   tuple.EgressTLSProfileRef,
 	}
 	if err := applyClaudePlatformAWSRuntimeRegistrationFieldsWithCCGatewayConfig(account, &reg, s.claudePlatformAWSCCGatewayAuthorityConfig()); err != nil {
 		return FormalPoolCCGatewayRuntimeRegistration{}, err

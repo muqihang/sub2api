@@ -1509,6 +1509,7 @@ func (s *FormalPoolOperationsService) runtimeRegistrationInput(ctx context.Conte
 		PersonaVariant:        tuple.PersonaProfile,
 		SessionPolicy:         "preserve_downstream_session_id",
 		DeviceID:              strings.ToLower(deviceID),
+		EgressTLSProfileRef:   tuple.EgressTLSProfileRef,
 	}
 	if err := applyClaudePlatformAWSRuntimeRegistrationFieldsWithCCGatewayConfig(account, &reg, s.claudePlatformAWSCCGatewayAuthorityConfig()); err != nil {
 		return FormalPoolCCGatewayRuntimeRegistration{}, err

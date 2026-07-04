@@ -342,6 +342,9 @@ func (r *FormalPoolHTTPCCGatewayRuntimeRegistrar) RegisterCCGatewayRuntime(ctx c
 		"session_policy":          input.SessionPolicy,
 		"device_id":               input.DeviceID,
 	}
+	if ref := strings.TrimSpace(input.EgressTLSProfileRef); ref != "" {
+		payload["egress_tls_profile_ref"] = ref
+	}
 	if strings.TrimSpace(input.ProviderKind) == claudePlatformAWSProviderKind {
 		upstreamBaseURL := strings.TrimRight(strings.TrimSpace(input.UpstreamBaseURL), "/")
 		upstreamHost := ""

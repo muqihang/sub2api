@@ -236,6 +236,7 @@ type FormalPoolCCGatewayRuntimeRegistration struct {
 	PersonaVariant         string
 	SessionPolicy          string
 	DeviceID               string
+	EgressTLSProfileRef    string
 	ProviderKind           string
 	UpstreamAuthScheme     string
 	AWSRegion              string
@@ -1153,15 +1154,16 @@ func formalPoolRuntimeRegistration(rec *formalPoolOnboardingSessionRecord) Forma
 	}
 	credentialRef := ccGatewayGeneratedCredentialRef(rec.AccountRef, "1")
 	return FormalPoolCCGatewayRuntimeRegistration{
-		AccountRef:     rec.AccountRef,
-		CredentialRef:  credentialRef,
-		EgressBucket:   rec.EgressBucket,
-		ProxyURL:       rec.NormalizedProxyURL,
-		ProxyRef:       rec.ProxyRef,
-		PolicyVersion:  ccGatewayPrimaryCanonicalTuple().PolicyVersion,
-		PersonaVariant: ccGatewayPrimaryCanonicalTuple().PersonaProfile,
-		SessionPolicy:  "preserve_downstream_session_id",
-		DeviceID:       ccGatewayGeneratedDeviceID(rec.AccountRef),
+		AccountRef:          rec.AccountRef,
+		CredentialRef:       credentialRef,
+		EgressBucket:        rec.EgressBucket,
+		ProxyURL:            rec.NormalizedProxyURL,
+		ProxyRef:            rec.ProxyRef,
+		PolicyVersion:       ccGatewayPrimaryCanonicalTuple().PolicyVersion,
+		PersonaVariant:      ccGatewayPrimaryCanonicalTuple().PersonaProfile,
+		SessionPolicy:       "preserve_downstream_session_id",
+		DeviceID:            ccGatewayGeneratedDeviceID(rec.AccountRef),
+		EgressTLSProfileRef: ccGatewayPrimaryCanonicalTuple().EgressTLSProfileRef,
 	}
 }
 

@@ -1841,6 +1841,7 @@ func TestFormalPoolOperationsRuntimeRegisterPersistsCanonicalCCGatewayPolicyProf
 	require.True(t, runtime.called)
 	require.Equal(t, ccGatewayPrimaryCanonicalPolicyVersion(), runtime.input.PolicyVersion)
 	require.Equal(t, ccGatewayPrimaryCanonicalTuple().PersonaProfile, runtime.input.PersonaVariant)
+	require.Equal(t, ccGatewayPrimaryCanonicalTuple().EgressTLSProfileRef, runtime.input.EgressTLSProfileRef)
 	require.Equal(t, ccGatewayPrimaryCanonicalPolicyVersion(), account.GetExtraString(ccGatewayExtraPolicyVersion))
 	require.Equal(t, ccGatewayPrimaryCanonicalTuple().PersonaProfile, account.GetExtraString(ccGatewayExtraPersonaProfile))
 	require.Equal(t, ccGatewayPrimaryCanonicalTuple().ProfilePolicyVersion, account.GetExtraString(ccGatewayExtraProfilePolicyVersion))
@@ -1895,6 +1896,7 @@ func TestFormalPoolOperationsRuntimeRegisterPreservesExplicitRollbackTupleRole(t
 	require.True(t, runtime.called)
 	require.Equal(t, ccGatewayAnthropicPolicyVersion, runtime.input.PolicyVersion)
 	require.Equal(t, ccGatewayDefaultPersonaProfile, runtime.input.PersonaVariant)
+	require.Equal(t, ccGatewayDefaultEgressTLSProfileRef, runtime.input.EgressTLSProfileRef)
 	require.Equal(t, ccGatewayAnthropicPolicyVersion, account.GetExtraString(ccGatewayExtraPolicyVersion))
 	require.Equal(t, ccGatewayDefaultPersonaProfile, account.GetExtraString(ccGatewayExtraPersonaProfile))
 	require.Equal(t, ccGatewayDefault2179ProfilePolicyVersion, account.GetExtraString(ccGatewayExtraProfilePolicyVersion))
@@ -1947,6 +1949,7 @@ func TestFormalPoolOperationsRuntimeRegisterPreservesExplicitFallback2185TupleRo
 	require.True(t, runtime.called)
 	require.Equal(t, "2.1.185", runtime.input.PolicyVersion)
 	require.Equal(t, ccGateway2185PersonaProfile, runtime.input.PersonaVariant)
+	require.Equal(t, ccGatewayDefaultEgressTLSProfileRef, runtime.input.EgressTLSProfileRef)
 	require.Equal(t, "2.1.185", account.GetExtraString(ccGatewayExtraPolicyVersion))
 	require.Equal(t, ccGateway2185PersonaProfile, account.GetExtraString(ccGatewayExtraPersonaProfile))
 	require.Equal(t, ccGatewayDefault2179ProfilePolicyVersion, account.GetExtraString(ccGatewayExtraProfilePolicyVersion))
@@ -1990,6 +1993,7 @@ func TestFormalPoolOperationsRuntimeRegistrationInputCarriesClaudePlatformAWSAut
 	require.Equal(t, account.GetExtraString(ClaudePlatformAWSExtraRequestShapeProfileRef), reg.RequestShapeProfileRef)
 	require.Equal(t, account.GetExtraString(ClaudePlatformAWSExtraCacheParityProfileRef), reg.CacheParityProfileRef)
 	require.Equal(t, account.GetCredential("anthropic_workspace_id"), reg.AnthropicWorkspaceID)
+	require.Equal(t, ccGatewayPrimaryCanonicalTuple().EgressTLSProfileRef, reg.EgressTLSProfileRef)
 }
 
 func TestFormalPoolOperationsRuntimeRegisterPersistsExplicitClaudePlatformAWSAuthority(t *testing.T) {
@@ -2027,6 +2031,7 @@ func TestFormalPoolOperationsRuntimeRegisterPersistsExplicitClaudePlatformAWSAut
 	require.Equal(t, expected.WorkspaceBindingHMAC, runtime.input.WorkspaceBindingHMAC)
 	require.Equal(t, expected.CredentialRef, runtime.input.CredentialRef)
 	require.Equal(t, expected.CredentialBindingHMAC, runtime.input.CredentialBindingHMAC)
+	require.Equal(t, ccGatewayPrimaryCanonicalTuple().EgressTLSProfileRef, runtime.input.EgressTLSProfileRef)
 }
 
 func TestFormalPoolOperationsRuntimeRegisterFailsClosedWithoutClaudePlatformAWSAuthority(t *testing.T) {
@@ -2325,6 +2330,9 @@ func TestFormalPoolRuntimeRegistrationReplayService_RebuildsRegistrationAndUpdat
 	require.Equal(t, "socks5h://proxy.local:1080", runtime.input.ProxyURL)
 	require.Equal(t, "oauth", runtime.input.TokenType)
 	require.Equal(t, "Bearer access", runtime.input.CredentialProof)
+	require.Equal(t, ccGatewayPrimaryCanonicalPolicyVersion(), runtime.input.PolicyVersion)
+	require.Equal(t, ccGatewayPrimaryCanonicalTuple().PersonaProfile, runtime.input.PersonaVariant)
+	require.Equal(t, ccGatewayPrimaryCanonicalTuple().EgressTLSProfileRef, runtime.input.EgressTLSProfileRef)
 	require.False(t, account.Schedulable)
 	require.Equal(t, "true", account.GetExtraString(FormalPoolExtraRuntimeRegistered))
 	require.Equal(t, "2026-05-30T01:02:03Z", account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt))
@@ -2354,6 +2362,7 @@ func TestFormalPoolRuntimeRegistrationReplayService_ReplaysCompleteWarmingEviden
 	require.True(t, runtime.called)
 	require.Equal(t, account.GetExtraString("cc_gateway_account_ref"), runtime.input.AccountRef)
 	require.Equal(t, account.GetExtraString("cc_gateway_egress_bucket"), runtime.input.EgressBucket)
+	require.Equal(t, ccGatewayPrimaryCanonicalTuple().EgressTLSProfileRef, runtime.input.EgressTLSProfileRef)
 	require.True(t, account.Schedulable)
 	require.Equal(t, FormalPoolStageWarming, account.GetExtraString(FormalPoolExtraOnboardingStage))
 	require.Equal(t, "2026-06-15T04:01:02Z", account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt))
@@ -2390,6 +2399,7 @@ func TestFormalPoolRuntimeRegistrationStartupReplay_ReplaysRuntimeRegisteredStag
 	require.True(t, runtime.called)
 	require.Equal(t, account.GetExtraString("cc_gateway_account_ref"), runtime.input.AccountRef)
 	require.Equal(t, account.GetExtraString("cc_gateway_egress_bucket"), runtime.input.EgressBucket)
+	require.Equal(t, ccGatewayPrimaryCanonicalTuple().EgressTLSProfileRef, runtime.input.EgressTLSProfileRef)
 	require.False(t, account.Schedulable)
 	require.Equal(t, FormalPoolStageRuntimeRegistered, account.GetExtraString(FormalPoolExtraOnboardingStage))
 	require.Equal(t, "2026-06-15T05:06:07Z", account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt))
@@ -2469,6 +2479,7 @@ func TestFormalPoolRuntimeRegistrationStartupReplay_ReplaysMissingEgressBucketEv
 	require.True(t, runtime.called)
 	require.NotEmpty(t, runtime.input.EgressBucket)
 	require.Equal(t, runtime.input.EgressBucket, account.GetExtraString("cc_gateway_egress_bucket"))
+	require.Equal(t, ccGatewayPrimaryCanonicalTuple().EgressTLSProfileRef, runtime.input.EgressTLSProfileRef)
 	require.False(t, account.Schedulable, "replay repairs missing runtime mapping fail-closed until healthcheck/warming is rerun")
 }
 
@@ -2543,6 +2554,7 @@ func TestFormalPoolRuntimeRegistrationStartupReplay_RunsOnceAndRegistersCandidat
 	require.Equal(t, "socks5h://startup-proxy.local:1080", runtime.input.ProxyURL)
 	require.Equal(t, "oauth", runtime.input.TokenType)
 	require.Equal(t, "Bearer access", runtime.input.CredentialProof)
+	require.Equal(t, ccGatewayPrimaryCanonicalTuple().EgressTLSProfileRef, runtime.input.EgressTLSProfileRef)
 	require.False(t, account.Schedulable)
 	require.Equal(t, "true", account.GetExtraString(FormalPoolExtraRuntimeRegistered))
 	require.Equal(t, "2026-05-30T02:03:04Z", account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt))

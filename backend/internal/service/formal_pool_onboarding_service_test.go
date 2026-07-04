@@ -755,6 +755,7 @@ func TestFormalPoolHTTPCCGatewayRuntimeRegistrarPostsSafeRuntimeMapping(t *testi
 		PersonaVariant:        "claude-code-2.1.175-macos-local",
 		SessionPolicy:         "preserve_downstream_session_id",
 		DeviceID:              strings.Repeat("b", 64),
+		EgressTLSProfileRef:   ccGatewayPrimaryCanonicalTuple().EgressTLSProfileRef,
 	})
 	if err != nil {
 		t.Fatalf("RegisterCCGatewayRuntime() error = %v", err)
@@ -779,6 +780,7 @@ func TestFormalPoolHTTPCCGatewayRuntimeRegistrarPostsSafeRuntimeMapping(t *testi
 		got["proxy_identity_ref"] != "hmac-sha256:runtime-proxy-ref" ||
 		got["policy_version"] != ccGatewayAnthropicPolicyVersion ||
 		got["session_policy"] != "preserve_downstream_session_id" ||
+		got["egress_tls_profile_ref"] != ccGatewayPrimaryCanonicalTuple().EgressTLSProfileRef ||
 		got["device_id"] != strings.Repeat("b", 64) {
 		t.Fatalf("unexpected registration payload: %#v", got)
 	}
