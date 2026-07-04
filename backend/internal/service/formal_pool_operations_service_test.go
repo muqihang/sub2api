@@ -1709,6 +1709,51 @@ func completeHealthcheckEvidenceExtraForProxy(proxyID int64) map[string]any {
 	return extra
 }
 
+func TestFormalPoolOperationsRuntimeRegisterBackfillsImportedSetupTokenRuntimeEvidence(t *testing.T) {
+	proxyID := int64(5906)
+	account := &Account{
+		ID:          9106,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeSetupToken,
+		Status:      StatusActive,
+		Schedulable: false,
+		ProxyID:     &proxyID,
+		Credentials: map[string]any{"access_token": "access-token", "refresh_token": "refresh-token", "scope": "user:inference"},
+		Extra: map[string]any{
+			FormalPoolExtraOnboardingStage:      FormalPoolStageImported,
+			FormalPoolExtraHealthcheckStatus:    "pending",
+			FormalPoolExtraCredentialGeneration: "1",
+			ccGatewayExtraEnabled:               "true",
+			ccGatewayExtraCanaryOnly:            "false",
+			ccGatewayExtraPolicyVersion:         ccGatewayPrimaryCanonicalPolicyVersion(),
+		},
+	}
+	store := newFormalPoolOperationsMutableStore(account)
+	runtime := &formalPoolOperationsRuntimeFake{}
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{
+		Accounts:                          store,
+		Proxy:                             &formalPoolOperationsProxyFake{proxy: &Proxy{ID: proxyID, Protocol: "http", Host: "127.0.0.1", Port: 8080, Status: StatusActive}},
+		CCGatewayRuntime:                  runtime,
+		Now:                               func() time.Time { return time.Date(2026, 7, 4, 3, 0, 0, 0, time.UTC) },
+		CCGatewayContextAttestationSecret: "formal-pool-runtime-binding-local-test-secret",
+	})
+
+	_, err := svc.RuntimeRegister(context.Background(), account.ID)
+
+	require.NoError(t, err)
+	require.True(t, runtime.called)
+	require.True(t, runtimeEvidenceComplete(store.account), "runtime-register must persist complete local evidence before healthcheck")
+	require.Equal(t, "true", store.account.GetExtraString(FormalPoolExtraRuntimeRegistered))
+	require.NotEmpty(t, store.account.GetExtraString(FormalPoolExtraRuntimeRegisteredAt))
+	require.Equal(t, ccGatewayPrimaryCanonicalPolicyVersion(), store.account.GetExtraString(ccGatewayExtraPolicyVersion))
+	require.Equal(t, ccGatewayPrimaryCanonicalTuple().PersonaProfile, store.account.GetExtraString(ccGatewayExtraPersonaProfile))
+	require.Equal(t, ccGatewayPrimaryCanonicalTuple().EgressTLSProfileRef, store.account.GetExtraString(ccGatewayExtraEgressTLSProfileRef))
+	require.NotEmpty(t, store.account.GetExtraString(ccGatewayExtraCredentialRef))
+	require.NotEmpty(t, store.account.GetExtraString(ccGatewayExtraCredentialBindingHMAC))
+	require.NotEmpty(t, store.account.GetExtraString(ccGatewayExtraProxyIdentityRef))
+	require.NotEmpty(t, store.account.GetExtraString("claude_code_device_id"))
+}
+
 func TestFormalPoolOperationsRuntimeRegisterPersistsCanonicalCCGatewayPolicyProfiles(t *testing.T) {
 	proxyID := int64(5903)
 	account := &Account{

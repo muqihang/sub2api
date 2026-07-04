@@ -1362,7 +1362,10 @@ func (s *FormalPoolOperationsService) runtimeRegisterUnlogged(ctx context.Contex
 		return result, infraerrors.BadRequest("RUNTIME_REGISTRATION_FAILED", "runtime registration failed")
 	}
 	now := s.now()
-	extra := ccGatewayCanonicalRuntimeAuthorityExtra(account)
+	extra := cloneFormalPoolRuntimeEvidenceExtra(account)
+	for k, v := range ccGatewayCanonicalRuntimeAuthorityExtra(account) {
+		extra[k] = v
+	}
 	extra[FormalPoolExtraRuntimeRegistered] = "true"
 	extra[FormalPoolExtraRuntimeRegisteredAt] = formalPoolTimestamp(now)
 	extra[FormalPoolExtraLastFailureOrigin] = ""
@@ -1386,6 +1389,28 @@ func (s *FormalPoolOperationsService) runtimeRegisterUnlogged(ctx context.Contex
 		return nil, err
 	}
 	return s.accountResult(ctx, account.ID, updated)
+}
+
+func cloneFormalPoolRuntimeEvidenceExtra(account *Account) map[string]any {
+	extra := map[string]any{}
+	if account == nil {
+		return extra
+	}
+	for _, key := range []string{
+		ccGatewayExtraAccountRef,
+		ccGatewayExtraEgressBucketEnabled,
+		ccGatewayExtraEgressBucket,
+		ccGatewayExtraCredentialRef,
+		ccGatewayExtraCredentialBindingHMAC,
+		ccGatewayExtraProxyIdentityRef,
+		ccGatewayExtraPersonaProfile,
+		"claude_code_device_id",
+	} {
+		if value := strings.TrimSpace(account.GetExtraString(key)); value != "" {
+			extra[key] = value
+		}
+	}
+	return extra
 }
 
 func ccGatewayCanonicalRuntimeAuthorityExtra(account *Account) map[string]any {
@@ -1544,8 +1569,9 @@ func (s *FormalPoolOperationsService) ensureRuntimeIdentityEvidence(ctx context.
 		return account, nil
 	}
 	extra := map[string]any{
-		ccGatewayExtraAccountRef:   accountRef,
-		ccGatewayExtraEgressBucket: egressBucket,
+		ccGatewayExtraAccountRef:          accountRef,
+		ccGatewayExtraEgressBucketEnabled: "true",
+		ccGatewayExtraEgressBucket:        egressBucket,
 	}
 	for k, v := range authorityExtra {
 		extra[k] = v
