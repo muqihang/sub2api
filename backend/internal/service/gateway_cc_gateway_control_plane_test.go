@@ -180,6 +180,47 @@ func TestCCGatewayControlPlane_FormalPoolUntrustedModelDoesNotQuarantine(t *test
 	require.Equal(t, BudgetActionObserve, sink.risks[len(sink.risks)-1].ActionRecommendation)
 }
 
+func TestCCGatewayControlPlane_FormalPoolPlan76RequestShapeDoesNotQuarantine(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		code string
+	}{
+		{name: "mcp shape", code: "formal_pool_mcp_shape_unapproved"},
+		{name: "non streaming", code: "formal_pool_non_streaming_profile_unapproved"},
+		{name: "count tokens", code: "formal_pool_count_tokens_profile_unapproved"},
+		{name: "model version", code: "formal_pool_model_version_unsupported"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			useClaudeCodeSessionBoundaryLedgerFileForTest(t)
+			upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newCCGatewayControlPlaneResponse(http.StatusForbidden, tc.code)}
+			svc := newCCGatewayBoundaryService(upstream)
+			account := newCCGatewayBoundaryAccount()
+			formalPoolApplyCompleteSchedulingEvidenceForTest(account)
+			account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageWarming
+			account.Extra[FormalPoolExtraPoolProfileEffective] = PoolProfileNormal
+			repo := &formalRateLimitRepo{accountsByID: map[int64]*Account{account.ID: account}}
+			sink := &recordingBudgetLedgerSink{}
+			svc.accountRepo = repo
+			svc.sessionBudgetObserve = sink
+			c, ctx := newCCGatewayBoundaryContext("/v1/messages")
+			body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":true,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+
+			_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "cc gateway control-plane error")
+			require.Equal(t, FormalPoolStageWarming, repo.accountsByID[account.ID].Extra[FormalPoolExtraOnboardingStage])
+			require.True(t, repo.accountsByID[account.ID].Schedulable)
+			require.NotEqual(t, StatusError, repo.accountsByID[account.ID].Status)
+			require.Empty(t, repo.accountsByID[account.ID].Extra[FormalPoolExtraRiskEventRef])
+			require.NotEmpty(t, sink.risks)
+			require.NotEmpty(t, sink.risks[len(sink.risks)-1].Kind)
+			require.NotEmpty(t, sink.risks[len(sink.risks)-1].Severity)
+			require.NotEmpty(t, sink.risks[len(sink.risks)-1].ActionRecommendation)
+		})
+	}
+}
+
 func TestCCGatewayControlPlaneQuarantineClassifier(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -206,6 +247,11 @@ func TestCCGatewayControlPlaneQuarantineClassifier(t *testing.T) {
 		{name: "untrusted billing input is request-level block", code: "signing_untrusted_billing_input", status: http.StatusForbidden, want: false},
 		{name: "observed client profile unapproved is request-level block", code: "formal_pool_observed_client_profile_unapproved", message: "Formal-pool observed client version is below the approved minimum for this profile", status: http.StatusForbidden, want: false},
 		{name: "observed client profile unknown body keys is request-level block", code: "formal_pool_observed_client_profile_unapproved", message: "Formal-pool observed client profile contains unknown body keys", status: http.StatusForbidden, want: false},
+		{name: "mcp configured shape is request-level block", code: "formal_pool_mcp_shape_unapproved", message: "Formal-pool MCP configured shape is not approved", status: http.StatusForbidden, want: false},
+		{name: "non-streaming shape is request-level block", code: "formal_pool_non_streaming_profile_unapproved", message: "Formal-pool non-streaming profile is not approved", status: http.StatusForbidden, want: false},
+		{name: "count tokens shape is request-level block", code: "formal_pool_count_tokens_profile_unapproved", message: "Formal-pool count_tokens path is not approved", status: http.StatusForbidden, want: false},
+		{name: "model version unsupported is request-level block", code: "formal_pool_model_version_unsupported", message: "Formal-pool Sonnet 5 requires the server-selected 2.1.197 canonical tuple", status: http.StatusForbidden, want: false},
+		{name: "mcp shape with missing identity still quarantines", code: "formal_pool_mcp_shape_unapproved", message: "missing_account_identity", status: http.StatusForbidden, want: true},
 		{name: "missing account identity", code: "missing_account_identity", status: http.StatusForbidden, want: true},
 		{name: "missing identity", code: "missing_identity", status: http.StatusForbidden, want: true},
 		{name: "missing egress", code: "missing_egress", status: http.StatusForbidden, want: true},

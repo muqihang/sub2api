@@ -8116,6 +8116,9 @@ func shouldQuarantineCCGatewayControlPlane(code string, message string, statusCo
 	if isCCGatewayRequestLevelObservedClientProfileReject(code, text) {
 		return false
 	}
+	if isCCGatewayRequestLevelPlan76ShapeReject(code, text) {
+		return false
+	}
 
 	quarantineSignals := []string{
 		"missing_account_identity",
@@ -8154,6 +8157,44 @@ func shouldQuarantineCCGatewayControlPlaneForAccount(account *Account, code stri
 
 func isCCGatewayRequestLevelBillingReject(code string, text string) bool {
 	return code == "signing_untrusted_billing_input" || strings.Contains(text, "signing_untrusted_billing_input")
+}
+
+func isCCGatewayRequestLevelPlan76ShapeReject(code string, text string) bool {
+	requestLevelCodes := []string{
+		"formal_pool_mcp_shape_unapproved",
+		"formal_pool_non_streaming_profile_unapproved",
+		"formal_pool_count_tokens_profile_unapproved",
+		"formal_pool_model_version_unsupported",
+	}
+	for _, candidate := range requestLevelCodes {
+		if code == candidate || strings.Contains(text, candidate) {
+			return !ccGatewayControlPlaneTextHasHardRiskSignal(text)
+		}
+	}
+	return false
+}
+
+func ccGatewayControlPlaneTextHasHardRiskSignal(text string) bool {
+	hardRiskSignals := []string{
+		"missing_account_identity",
+		"missing_identity",
+		"missing_egress_bucket",
+		"missing_egress",
+		"egress_proxy_failure",
+		"proxy_mismatch",
+		"fallback",
+		"verifier",
+		"sign_strip",
+		"invalid_auth",
+		"forbidden",
+		"risk",
+	}
+	for _, signal := range hardRiskSignals {
+		if strings.Contains(text, signal) {
+			return true
+		}
+	}
+	return false
 }
 
 func isCCGatewayRequestLevelObservedClientProfileReject(code string, text string) bool {
