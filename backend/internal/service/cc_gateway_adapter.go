@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -995,11 +996,14 @@ func ccGatewayMCPConnectorPolicyRef(account *Account) string {
 	if account == nil {
 		return ""
 	}
-	enabled, ok := parseCCGatewayBool(account.GetExtraString(ccGatewayExtraMCPConnectorEnabled))
-	if !ok || !enabled {
+	if ccGatewayCanonicalTupleForAccount(account).PolicyVersion != ccGatewayPrimaryCanonicalPolicyVersion() {
 		return ""
 	}
-	if ccGatewayCanonicalTupleForAccount(account).PolicyVersion != ccGatewayPrimaryCanonicalPolicyVersion() {
+	if ccGatewayEnvBool("SUB2API_CC_GATEWAY_MCP_CONNECTOR_GLOBAL_ENABLED") {
+		return ccGatewayMCPConnectorPolicyRefOfficial
+	}
+	enabled, ok := parseCCGatewayBool(account.GetExtraString(ccGatewayExtraMCPConnectorEnabled))
+	if !ok || !enabled {
 		return ""
 	}
 	if strings.TrimSpace(account.GetExtraString(ccGatewayExtraMCPConnectorPolicyRef)) != ccGatewayMCPConnectorPolicyRefOfficial {
@@ -1012,6 +1016,15 @@ func ccGatewayMCPConnectorPolicyRef(account *Account) string {
 		return ""
 	}
 	return ccGatewayMCPConnectorPolicyRefOfficial
+}
+
+func ccGatewayEnvBool(name string) bool {
+	switch strings.TrimSpace(strings.ToLower(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func safeTLSProfileRef(raw string) string {

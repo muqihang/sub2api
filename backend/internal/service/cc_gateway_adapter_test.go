@@ -1424,6 +1424,20 @@ func TestGatewayService_CCGatewayMCPConnectorPolicyRefRequiresCompleteOfficialOp
 	require.Equal(t, ccGatewayMCPConnectorPolicyRefOfficial, ccGatewayMCPConnectorPolicyRef(account))
 }
 
+func TestGatewayService_CCGatewayMCPConnectorGlobalOptInRequiresPrimaryCanonical(t *testing.T) {
+	t.Setenv("SUB2API_CC_GATEWAY_MCP_CONNECTOR_GLOBAL_ENABLED", "true")
+	account := newAnthropicOAuthAccountForClaudeForwardTest()
+
+	account.Extra[ccGatewayExtraPolicyVersion] = "2.1.185"
+	require.Empty(t, ccGatewayMCPConnectorPolicyRef(account))
+
+	account.Extra[ccGatewayExtraPolicyVersion] = "2.1.179"
+	require.Empty(t, ccGatewayMCPConnectorPolicyRef(account))
+
+	account.Extra[ccGatewayExtraPolicyVersion] = "2.1.197"
+	require.Equal(t, ccGatewayMCPConnectorPolicyRefOfficial, ccGatewayMCPConnectorPolicyRef(account))
+}
+
 func TestGatewayService_CCGatewayFormalPoolUnknownObservedVersionDoesNotPromoteProfile(t *testing.T) {
 	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
 	body := []byte(`{"model":"claude-sonnet-4-6","stream":true,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"client-session\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
