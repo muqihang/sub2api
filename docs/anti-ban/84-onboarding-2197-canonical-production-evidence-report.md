@@ -205,3 +205,184 @@ The Sub2API worktree contains `.codegraph/`, but the local `codegraph` CLI was n
 The old onboarding wizard mismatch with the 2.1.197 production canonical logic is fixed. New/repair runtime-register now canonicalizes to 2.1.197, and the legacy 2.1.179 session-boundary ledger no longer blocks safe canonical promotion.
 
 The affected accounts are not schedulable because their official healthcheck is failing at upstream auth (`403/forbidden`), not because of Sub2API/CC Gateway tuple mismatch. They must be re-authenticated/replaced/repaired at the account credential/proxy/upstream-account layer before they can pass healthcheck and enter warming.
+
+---
+
+# 2026-07-04 Addendum: Account 87 Official Flow and Production Config Alignment
+
+Date: 2026-07-04 UTC
+
+## Addendum Final Decision
+
+**PASS_ACCOUNT_87_RUNTIME_REGISTER_HEALTHCHECK_WARMING_SCHEDULABLE**
+
+The newly imported account `id=87` was advanced only through the official production flow:
+
+1. runtime-register
+2. healthcheck
+3. start-warming
+
+No SQL hard-promotion to warming was used. The final safe DB state shows `onboarding_stage=warming`, `healthcheck_status=passed`, `cc_gateway_runtime_registered=true`, `schedulable=true`, and canonical tuple `2.1.197` with the 2.1.197 TLS profile ref.
+
+## Root Cause Chain Confirmed
+
+The earlier blockers were local production configuration/compatibility gaps, not Haiku 4.5 or a 1M-context healthcheck body:
+
+1. CC Gateway initially rejected `x-sub2api-healthcheck-persona=claude-code-2.1.197-macos-local` as `unsupported_healthcheck_persona`.
+2. Sub2API formal healthcheck initially used non-streaming shape; Plan76 production gateway requires streaming formal-pool `/v1/messages` shape.
+3. Runtime registration initially did not propagate the canonical `egress_tls_profile_ref`, creating a strict TLS registration gap.
+4. Production CC Gateway was restarted outside Docker `/app` without explicit persistent formal-pool session ledger env, causing `formal_pool_session_ledger_unavailable`.
+5. Production CC Gateway had production upstream enabled in config but lacked the explicit process env `ALLOW_REAL_ANTHROPIC_PRODUCTION=1`, causing `real_anthropic_production_not_allowed`.
+6. Production sidecar allowlists were still static Plan79 values and did not include account 87's runtime egress bucket / proxy identity refs, causing `egress_tls_sidecar_rejected`.
+7. Production CC Gateway had no safe raw-capture summary dir, causing `raw_capture_missing` at Sub2API's healthcheck evidence gate.
+
+After fixing the above, account 87 passed official healthcheck and start-warming.
+
+## Code Commits Deployed for 2.1.197 Flow
+
+### CC Gateway
+
+- `d64c866` — `gateway: accept 2197 healthcheck persona`
+- `599aaaf` — `gateway: propagate runtime tls profile refs`
+
+### Sub2API
+
+- `7ca178b71` — `fix: stream formal pool healthcheck`
+- `55a1f09d5` — `fix: surface cc gateway healthcheck error code`
+- `c4f11359d` — `fix: propagate canonical tls profile in runtime registration`
+
+## Production Artifact State
+
+Current release path:
+
+```text
+/opt/plan84/releases/20260704T073922Z-plan84-runtime-tls-ref/
+```
+
+Current production artifacts:
+
+```text
+Sub2API: /opt/plan84/releases/20260704T073922Z-plan84-runtime-tls-ref/backend/sub2api-server-c4f11359d6b5-embed-linux-amd64
+CC Gateway: /opt/plan84/releases/20260704T073922Z-plan84-runtime-tls-ref/cc-gateway/dist/index.js
+Sidecar: /opt/plan82/releases/20260703T081543Z/sidecar/egress-tls-sidecar
+```
+
+## Production Config Fixes Applied
+
+Only production-owned processes were restarted/config-adjusted:
+
+- CC Gateway `18443` restarted with:
+  - `CC_GATEWAY_RUNTIME_MAPPING_FILE=<set>`
+  - `CC_GATEWAY_FORMAL_POOL_SESSION_LEDGER_FILE=<set>`
+  - `ALLOW_REAL_ANTHROPIC_PRODUCTION=<set>`
+  - `CC_GATEWAY_RAW_CAPTURE_DIR=<set>`
+  - `CC_GATEWAY_RAW_CAPTURE_LAYOUT=per-request`
+- Go/uTLS sidecar `19484` restarted in production mode with expanded safe runtime allowlists:
+  - `EGRESS_TLS_SIDECAR_DIAL_MODE=production`
+  - no test dial override
+  - allowed egress bucket count: `25`
+  - allowed proxy ref count: `25`
+  - account 87 bucket present in allowlist: `true`
+
+No mock bridge was enabled. No loopback test dial override was enabled. No Node direct fallback was enabled.
+
+## Service / Port Safety
+
+Final safe listener and health state:
+
+| Endpoint | State |
+|---|---|
+| `18080` | Sub2API healthy; public `/` returns `200 text/html`; `/health` returns `200 application/json` |
+| `18443` | CC Gateway healthy on loopback |
+| `19484` | Go/uTLS sidecar healthy on loopback |
+| `18081` | old docker-proxy rollback service still running, untouched |
+| `3012` | untouched |
+| `3017` | untouched |
+
+The recurring public `/` 404 is fixed by deploying the embedded frontend production binary.
+
+## Account 87 Official Flow Result
+
+Account: `id=87` (user-visible label omitted from evidence to avoid leaking raw account identity in repo).
+
+### Runtime register
+
+Result: `http_200`, safe diagnostics:
+
+```text
+cc_gateway_runtime_registered=true
+runtime_evidence_complete=true
+onboarding_stage=runtime_registered
+schedulable=false
+```
+
+### Healthcheck
+
+Result: `http_200`, safe diagnostics:
+
+```text
+healthcheck_status=passed
+healthcheck_evidence_persisted=true
+runtime_evidence_complete=true
+cc_gateway_runtime_registered=true
+onboarding_stage=healthcheck_passed
+schedulable=false
+```
+
+### Start warming
+
+Result: `http_200`, safe diagnostics:
+
+```text
+onboarding_stage=warming
+healthcheck_status=passed
+healthcheck_evidence_persisted=true
+runtime_evidence_complete=true
+cc_gateway_runtime_registered=true
+schedulable=true
+```
+
+### Final safe DB bucket
+
+```text
+id=87
+status=active
+schedulable=true
+onboarding_stage=warming
+healthcheck_status=passed
+cc_gateway_runtime_registered=true
+healthcheck_last_status_code_bucket=status_2xx
+healthcheck_last_raw_ref=hmac-sha256:<present>
+cc_gateway_policy_version=2.1.197
+cc_gateway_persona_profile=claude-code-2.1.197-macos-local
+cc_gateway_egress_tls_profile_ref=tls-profile:claude-code-2.1.197-real-oracle-tcp-v1
+formal_pool_last_failure_code=<empty>
+formal_pool_last_failure_origin=<empty>
+```
+
+## Healthcheck Model / Context Finding
+
+The formal-pool healthcheck remains the low-cost Haiku 4.5 path:
+
+```text
+model bucket: claude-haiku-4-5-20251001
+max_tokens: 64
+stream: true
+1M context marker/header: not present
+```
+
+The failure was not caused by a 1M context request. It was caused by the local production config chain listed above.
+
+## Security / Leak Scan
+
+- No ST token, OAuth token, admin JWT, DB URL, Redis URL, proxy credential, account ID/email, raw prompt/body/response, raw TLS/pcap/HAR, or private key material was written to this report.
+- Server safe evidence used redacted buckets only.
+- Safe raw-capture dir stores safe summaries; full raw capture is not enabled.
+- Server scratch and runtime env files were not deleted because deletion requires explicit user approval.
+- `.codegraph/` and existing tmp files were not deleted.
+
+## Current Operator Conclusion
+
+For account `id=87`, the old onboarding/wizard compatibility path is now aligned with the production 2.1.197 canonical tuple and production sidecar path. The account is in warming and schedulable.
+
+Deferred scope remains: broader `0610*`, `0624*`, and last-10-day isolated accounts should be re-run through the same official flow after ensuring their credentials/proxies are valid; do not SQL-force them into warming when healthcheck returns upstream auth or risk failures.
