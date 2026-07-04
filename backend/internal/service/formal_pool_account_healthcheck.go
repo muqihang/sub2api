@@ -205,7 +205,7 @@ func formalPoolHealthcheckBody(account ...*Account) ([]byte, error) {
 		"model":      formalPoolHealthcheckModel,
 		"max_tokens": 64,
 		"metadata":   map[string]any{"user_id": fmt.Sprintf(`{"device_id":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","session_id":"%s"}`, sessionID)},
-		"stream":     false,
+		"stream":     true,
 		"system": []map[string]any{
 			{"type": "text", "text": "<env>\nPlatform: darwin\nShell: zsh\nOS Version: Darwin 24.4.0\nWorking directory: /tmp/formal-pool-healthcheck\n</env>"},
 			{"type": "text", "text": "You are Claude Code, Anthropic's official CLI for software engineering tasks. This is a formal-pool directed healthcheck using the lowest-cost Claude Code model. Keep the response minimal and do not inspect files or call tools."},

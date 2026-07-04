@@ -265,7 +265,7 @@ func TestFormalPoolGatewayHealthcheckRunnerUsesClaudeCodeLiteBodyWithoutOneMilli
 	require.Equal(t, formalPoolHealthcheckModel, body["model"])
 	require.Equal(t, "claude-haiku-4-5-20251001", body["model"])
 	require.EqualValues(t, 64, body["max_tokens"])
-	require.Equal(t, false, body["stream"])
+	require.Equal(t, true, body["stream"])
 	require.Contains(t, body, "metadata")
 	require.Contains(t, body, "system")
 	require.Contains(t, body, "tools")
