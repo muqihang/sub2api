@@ -1754,6 +1754,53 @@ func TestFormalPoolOperationsRuntimeRegisterBackfillsImportedSetupTokenRuntimeEv
 	require.NotEmpty(t, store.account.GetExtraString("claude_code_device_id"))
 }
 
+func TestFormalPoolOperationsRuntimeRegisterBackfillsMissingEgressBucketEnabled(t *testing.T) {
+	proxyID := int64(5907)
+	accountRef := formalPoolSafeRef("account", "9107")
+	proxyRef := formalPoolSafeRef("proxy", "5907")
+	credentials := map[string]any{"access_token": "access-token", "refresh_token": "refresh-token", "scope": "user:inference"}
+	account := &Account{
+		ID:          9107,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeSetupToken,
+		Status:      StatusActive,
+		Schedulable: false,
+		ProxyID:     &proxyID,
+		Credentials: credentials,
+		Extra: map[string]any{
+			FormalPoolExtraOnboardingStage:      FormalPoolStageRuntimeRegistered,
+			FormalPoolExtraHealthcheckStatus:    "pending",
+			FormalPoolExtraCredentialGeneration: "1",
+			ccGatewayExtraEnabled:               "true",
+			ccGatewayExtraCanaryOnly:            "false",
+			ccGatewayExtraPolicyVersion:         ccGatewayPrimaryCanonicalPolicyVersion(),
+			ccGatewayExtraAccountRef:            accountRef,
+			ccGatewayExtraEgressBucket:          formalPoolSafeBucket(proxyRef),
+		},
+	}
+	for k, v := range formalPoolRuntimeIdentityExtra(accountRef, proxyRef, credentials, "formal-pool-runtime-binding-local-test-secret", "1") {
+		account.Extra[k] = v
+	}
+	delete(account.Extra, ccGatewayExtraEgressBucketEnabled)
+
+	store := newFormalPoolOperationsMutableStore(account)
+	runtime := &formalPoolOperationsRuntimeFake{}
+	svc := NewFormalPoolOperationsService(FormalPoolOperationsDeps{
+		Accounts:                          store,
+		Proxy:                             &formalPoolOperationsProxyFake{proxy: &Proxy{ID: proxyID, Protocol: "http", Host: "127.0.0.1", Port: 8080, Status: StatusActive}},
+		CCGatewayRuntime:                  runtime,
+		Now:                               func() time.Time { return time.Date(2026, 7, 4, 4, 0, 0, 0, time.UTC) },
+		CCGatewayContextAttestationSecret: "formal-pool-runtime-binding-local-test-secret",
+	})
+
+	_, err := svc.RuntimeRegister(context.Background(), account.ID)
+
+	require.NoError(t, err)
+	require.True(t, runtime.called)
+	require.Equal(t, "true", store.account.GetExtraString(ccGatewayExtraEgressBucketEnabled))
+	require.True(t, runtimeEvidenceComplete(store.account), "runtime-register must repair missing egress bucket enabled evidence before healthcheck")
+}
+
 func TestFormalPoolOperationsRuntimeRegisterPersistsCanonicalCCGatewayPolicyProfiles(t *testing.T) {
 	proxyID := int64(5903)
 	account := &Account{

@@ -1558,8 +1558,10 @@ func (s *FormalPoolOperationsService) ensureRuntimeIdentityEvidence(ctx context.
 	identityAccount := cloneClaudePlatformAWSAccountWithExtraOverlay(account, authorityExtra)
 	identity := formalPoolRuntimeIdentityExtraForAccount(identityAccount, accountRef, proxyIdentityRef, s.ccGatewayRuntimeBindingSecret(), generation)
 	identity[ccGatewayExtraPersonaProfile] = ccGatewayFormalPoolOperationsCanonicalTuple(account).PersonaProfile
+	egressBucketEnabled, egressBucketEnabledOK := parseCCGatewayBool(account.GetExtraString(ccGatewayExtraEgressBucketEnabled))
 	if len(authorityExtra) == 0 &&
 		account.GetExtraString(ccGatewayExtraAccountRef) == accountRef &&
+		egressBucketEnabledOK && egressBucketEnabled &&
 		strings.TrimSpace(resolveCCGatewayEgressBucket(account)) == egressBucket &&
 		strings.TrimSpace(account.GetExtraString(ccGatewayExtraCredentialRef)) == stringFromMap(identity, ccGatewayExtraCredentialRef) &&
 		strings.TrimSpace(account.GetExtraString(ccGatewayExtraCredentialBindingHMAC)) == stringFromMap(identity, ccGatewayExtraCredentialBindingHMAC) &&
