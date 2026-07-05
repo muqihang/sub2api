@@ -231,6 +231,24 @@ func TestFormalPoolProxyTestAndAttestationGatesOAuth(t *testing.T) {
 	assertNoFormalPoolSensitive(t, got)
 }
 
+func TestFormalPoolOnboardingSameProxySessionsUseDistinctRuntimeBuckets(t *testing.T) {
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}})
+	first, err := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "same-account"})
+	if err != nil {
+		t.Fatalf("start first session: %v", err)
+	}
+	second, err := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "same-account"})
+	if err != nil {
+		t.Fatalf("start second session: %v", err)
+	}
+	if first.ProxyRef != second.ProxyRef {
+		t.Fatalf("test setup expected same proxy ref, got %q vs %q", first.ProxyRef, second.ProxyRef)
+	}
+	if first.EgressBucket == "" || second.EgressBucket == "" || first.EgressBucket == second.EgressBucket {
+		t.Fatalf("same-proxy onboarding sessions need account-scoped runtime buckets, got %q and %q", first.EgressBucket, second.EgressBucket)
+	}
+}
+
 func TestFormalPoolProxyFailClosed(t *testing.T) {
 	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{testErr: errors.New("dial failed")}})
 	sess, err := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})

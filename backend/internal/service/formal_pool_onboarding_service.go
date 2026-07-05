@@ -362,13 +362,15 @@ func (s *FormalPoolOnboardingService) StartSession(ctx context.Context, req Form
 		normalizedProxyURL = resolved.NormalizedProxyURL
 	}
 	now := s.store.now()
+	sessionID := formalPoolRandomID("fpo_")
+	accountName := strings.TrimSpace(req.AccountName)
 	rec := &formalPoolOnboardingSessionRecord{
-		ID: formalPoolRandomID("fpo_"), Status: FormalPoolOnboardingStatusDraft,
+		ID: sessionID, Status: FormalPoolOnboardingStatusDraft,
 		ProxyMode: strings.ToLower(strings.TrimSpace(req.ProxyMode)), ProxyID: proxyID, ProxyRef: proxyRef,
 		NormalizedProxyURL: normalizedProxyURL,
-		GroupID:            req.GroupID, AccountName: strings.TrimSpace(req.AccountName), Notes: strings.TrimSpace(req.Notes),
+		GroupID:            req.GroupID, AccountName: accountName, Notes: strings.TrimSpace(req.Notes),
 		PoolProfile: profile, Concurrency: concurrency,
-		EgressBucket: formalPoolSafeBucket(proxyRef),
+		EgressBucket: formalPoolSafeBucket(sessionID + ":" + proxyRef + ":" + accountName),
 		CreatedAt:    now, UpdatedAt: now,
 	}
 	if req.Proxy != nil {
