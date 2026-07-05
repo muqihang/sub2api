@@ -741,6 +741,7 @@ func (s *FormalPoolOnboardingService) ExchangeCodeAndCreate(ctx context.Context,
 			return nil, infraerrors.BadRequest("CC_GATEWAY_RUNTIME_PROXY_URL_MISSING", "cc gateway runtime registration requires a normalized proxy url")
 		}
 		tokenType, credentialProof := ccGatewayCredentialBindingMaterialFromCredentials(AccountTypeOAuth, credentials)
+		tuple := ccGatewayPrimaryCanonicalTuple()
 		if err := s.ccGatewayRuntime.RegisterCCGatewayRuntime(ctx, FormalPoolCCGatewayRuntimeRegistration{
 			AccountRef:            accountRef,
 			CredentialRef:         stringFromMap(runtimeIdentity, ccGatewayExtraCredentialRef),
@@ -750,10 +751,11 @@ func (s *FormalPoolOnboardingService) ExchangeCodeAndCreate(ctx context.Context,
 			EgressBucket:          rec.EgressBucket,
 			ProxyURL:              rec.NormalizedProxyURL,
 			ProxyRef:              rec.ProxyRef,
-			PolicyVersion:         ccGatewayPrimaryCanonicalTuple().PolicyVersion,
-			PersonaVariant:        ccGatewayPrimaryCanonicalTuple().PersonaProfile,
+			PolicyVersion:         tuple.PolicyVersion,
+			PersonaVariant:        tuple.PersonaProfile,
 			SessionPolicy:         "preserve_downstream_session_id",
 			DeviceID:              stringFromMap(runtimeIdentity, "claude_code_device_id"),
+			EgressTLSProfileRef:   tuple.EgressTLSProfileRef,
 		}); err != nil {
 			return nil, err
 		}
@@ -827,6 +829,7 @@ func (s *FormalPoolOnboardingService) SetupTokenCookieAuthAndCreate(ctx context.
 			return nil, infraerrors.BadRequest("CC_GATEWAY_RUNTIME_PROXY_URL_MISSING", "cc gateway runtime registration requires a normalized proxy url")
 		}
 		tokenType, credentialProof := ccGatewayCredentialBindingMaterialFromCredentials(AccountTypeSetupToken, credentials)
+		tuple := ccGatewayPrimaryCanonicalTuple()
 		if err := s.ccGatewayRuntime.RegisterCCGatewayRuntime(ctx, FormalPoolCCGatewayRuntimeRegistration{
 			AccountRef:            accountRef,
 			CredentialRef:         stringFromMap(runtimeIdentity, ccGatewayExtraCredentialRef),
@@ -836,10 +839,11 @@ func (s *FormalPoolOnboardingService) SetupTokenCookieAuthAndCreate(ctx context.
 			EgressBucket:          rec.EgressBucket,
 			ProxyURL:              rec.NormalizedProxyURL,
 			ProxyRef:              rec.ProxyRef,
-			PolicyVersion:         ccGatewayPrimaryCanonicalTuple().PolicyVersion,
-			PersonaVariant:        ccGatewayPrimaryCanonicalTuple().PersonaProfile,
+			PolicyVersion:         tuple.PolicyVersion,
+			PersonaVariant:        tuple.PersonaProfile,
 			SessionPolicy:         "preserve_downstream_session_id",
 			DeviceID:              stringFromMap(runtimeIdentity, "claude_code_device_id"),
+			EgressTLSProfileRef:   tuple.EgressTLSProfileRef,
 		}); err != nil {
 			return nil, err
 		}
@@ -1432,6 +1436,11 @@ func formalPoolDefaultExtra(rec *formalPoolOnboardingSessionRecord, accountRef s
 		"cc_gateway_enabled":                             "true",
 		"cc_gateway_canary_only":                         "false",
 		"cc_gateway_policy_version":                      ccGatewayPrimaryCanonicalTuple().PolicyVersion,
+		ccGatewayExtraPersonaProfile:                     ccGatewayPrimaryCanonicalTuple().PersonaProfile,
+		ccGatewayExtraEgressTLSProfileRef:                ccGatewayPrimaryCanonicalTuple().EgressTLSProfileRef,
+		ccGatewayExtraProfilePolicyVersion:               ccGatewayPrimaryCanonicalTuple().ProfilePolicyVersion,
+		ccGatewayExtraRequestShapeProfile:                ccGatewayPrimaryCanonicalTuple().RequestShapeProfileRef,
+		ccGatewayExtraCacheParityProfile:                 ccGatewayPrimaryCanonicalTuple().CacheParityProfileRef,
 		"cc_gateway_routes":                              string(ccGatewayRouteNativeMessages),
 		"cc_gateway_egress_bucket_enabled":               "true",
 		"cc_gateway_egress_bucket":                       rec.EgressBucket,

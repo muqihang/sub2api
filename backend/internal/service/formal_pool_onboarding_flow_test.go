@@ -247,7 +247,8 @@ func TestFormalPoolProxyFailClosed(t *testing.T) {
 
 func TestFormalPoolExchangeCodeAndCreateWritesSafeDefaults(t *testing.T) {
 	acct := &formalAccountFake{}
-	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{EmailPresent: true, AccountUUIDPresent: true, OrganizationUUIDPresent: true, ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct})
+	runtime := &formalRuntimeFake{}
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{EmailPresent: true, AccountUUIDPresent: true, OrganizationUUIDPresent: true, ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGatewayRuntime: runtime})
 	sess, _ := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct", PoolProfile: "aggressive"})
 	_, _ = svc.TestProxy(context.Background(), sess.ID)
 	_, _ = svc.AttestBrowserEgress(context.Background(), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
@@ -264,6 +265,12 @@ func TestFormalPoolExchangeCodeAndCreateWritesSafeDefaults(t *testing.T) {
 	}
 	if acct.created.Extra["cc_gateway_account_ref"] == "123" || acct.created.Extra["cc_gateway_account_ref"] == "" {
 		t.Fatalf("unsafe account ref: %#v", acct.created.Extra["cc_gateway_account_ref"])
+	}
+	if acct.created.Extra[ccGatewayExtraEgressTLSProfileRef] != ccGatewayPrimaryCanonicalTuple().EgressTLSProfileRef {
+		t.Fatalf("created account missing canonical TLS profile ref: %#v", acct.created.Extra[ccGatewayExtraEgressTLSProfileRef])
+	}
+	if !runtime.called || runtime.input.EgressTLSProfileRef != ccGatewayPrimaryCanonicalTuple().EgressTLSProfileRef {
+		t.Fatalf("runtime registration missing canonical TLS profile ref: called=%v ref=%q", runtime.called, runtime.input.EgressTLSProfileRef)
 	}
 	for _, k := range []string{"enable_tls_fingerprint", "session_id_masking_enabled", "cache_ttl_override_enabled", "custom_base_url", "max_sessions", "base_rpm", "window_cost_limit"} {
 		if _, ok := acct.created.Extra[k]; ok {
@@ -380,7 +387,7 @@ func TestFormalPoolSetupTokenCookieCreateRegistersRuntimeAndKeepsAccountUnschedu
 	if acct.created.Extra["cc_gateway_account_ref"] != got.AccountRef || acct.created.Extra["cc_gateway_enabled"] != "true" || acct.created.Extra["cc_gateway_canary_only"] != "false" {
 		t.Fatalf("bad setup-token formal extra: %#v got=%#v", acct.created.Extra, got)
 	}
-	if acct.created.Extra[ccGatewayExtraPolicyVersion] != "2.1.197" || acct.created.Extra[ccGatewayExtraPersonaProfile] != ccGateway2197PersonaProfile {
+	if acct.created.Extra[ccGatewayExtraPolicyVersion] != "2.1.197" || acct.created.Extra[ccGatewayExtraPersonaProfile] != ccGateway2197PersonaProfile || acct.created.Extra[ccGatewayExtraEgressTLSProfileRef] != ccGatewayPrimaryCanonicalTuple().EgressTLSProfileRef {
 		t.Fatalf("setup-token account must default to primary canonical tuple: %#v", acct.created.Extra)
 	}
 	if !runtime.called || runtime.input.AccountRef != got.AccountRef || runtime.input.EgressBucket != got.EgressBucket || runtime.input.ProxyURL != "http://proxy.local:443" {
@@ -389,7 +396,7 @@ func TestFormalPoolSetupTokenCookieCreateRegistersRuntimeAndKeepsAccountUnschedu
 	if runtime.input.TokenType != "oauth" || runtime.input.CredentialProof != "Bearer setup-access" {
 		t.Fatalf("setup-token runtime registration proof must come from server-side setup-token credentials: %#v", runtime.input)
 	}
-	if runtime.input.PolicyVersion != "2.1.197" || runtime.input.PersonaVariant != ccGateway2197PersonaProfile {
+	if runtime.input.PolicyVersion != "2.1.197" || runtime.input.PersonaVariant != ccGateway2197PersonaProfile || runtime.input.EgressTLSProfileRef != ccGatewayPrimaryCanonicalTuple().EgressTLSProfileRef {
 		t.Fatalf("setup-token runtime registration must use primary canonical tuple: %#v", runtime.input)
 	}
 	if !got.CCGatewayRuntimeRegistered || got.OAuthSummary == nil || !got.OAuthSummary.ScopeContainsUserInference || got.OAuthSummary.ScopeContainsClaudeCode {
