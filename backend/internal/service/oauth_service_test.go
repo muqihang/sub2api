@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 )
@@ -236,8 +237,11 @@ func TestOAuthService_ExchangeCode_SessionNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("ExchangeCode 应返回错误（session 不存在）")
 	}
-	if err.Error() != "session not found or expired" {
-		t.Fatalf("错误信息不匹配: got=%q", err.Error())
+	if got := infraerrors.Code(err); got != 400 {
+		t.Fatalf("错误状态不匹配: got=%d want=400 err=%v", got, err)
+	}
+	if got := infraerrors.Reason(err); got != "CLAUDE_OAUTH_SESSION_NOT_FOUND" {
+		t.Fatalf("错误 reason 不匹配: got=%q", got)
 	}
 }
 
@@ -377,8 +381,14 @@ func TestOAuthService_ExchangeCode_ClientError(t *testing.T) {
 	if err == nil {
 		t.Fatal("ExchangeCode 应返回错误")
 	}
-	if err.Error() != "upstream error: invalid code" {
-		t.Fatalf("错误信息不匹配: got=%q", err.Error())
+	if got := infraerrors.Code(err); got != 400 {
+		t.Fatalf("错误状态不匹配: got=%d want=400 err=%v", got, err)
+	}
+	if got := infraerrors.Reason(err); got != "CLAUDE_OAUTH_CODE_EXCHANGE_FAILED" {
+		t.Fatalf("错误 reason 不匹配: got=%q", got)
+	}
+	if got := infraerrors.Message(err); got != "Claude OAuth authorization code exchange failed; generate a fresh authorization link and try again" {
+		t.Fatalf("错误 message 不匹配: got=%q", got)
 	}
 }
 

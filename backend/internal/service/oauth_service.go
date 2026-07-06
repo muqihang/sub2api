@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"time"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
@@ -132,7 +134,7 @@ func (s *OAuthService) ExchangeCode(ctx context.Context, input *ExchangeCodeInpu
 	// Get session
 	session, ok := s.sessionStore.Get(input.SessionID)
 	if !ok {
-		return nil, fmt.Errorf("session not found or expired")
+		return nil, infraerrors.New(http.StatusBadRequest, "CLAUDE_OAUTH_SESSION_NOT_FOUND", "Claude OAuth session not found or expired; generate a fresh authorization link and try again")
 	}
 
 	// Get proxy URL
@@ -151,7 +153,7 @@ func (s *OAuthService) ExchangeCode(ctx context.Context, input *ExchangeCodeInpu
 	// Exchange code for token
 	tokenInfo, err := s.exchangeCodeForToken(ctx, input.Code, session.CodeVerifier, session.State, proxyURL, isSetupToken)
 	if err != nil {
-		return nil, err
+		return nil, infraerrors.New(http.StatusBadRequest, "CLAUDE_OAUTH_CODE_EXCHANGE_FAILED", "Claude OAuth authorization code exchange failed; generate a fresh authorization link and try again").WithCause(err)
 	}
 
 	// Delete session after successful exchange
