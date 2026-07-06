@@ -241,6 +241,7 @@ func TestOpenAIOAuthHandler_CreateAccountFromOAuthPersistsEgressBucket(t *testin
 	require.Equal(t, service.PlatformOpenAI, adminSvc.createdAccounts[0].Platform)
 	require.Equal(t, service.AccountTypeOAuth, adminSvc.createdAccounts[0].Type)
 	require.Equal(t, "bucket-a", adminSvc.createdAccounts[0].Extra["openai_gateway_egress_bucket"])
+	require.Equal(t, "disabled", adminSvc.createdAccounts[0].Extra["openai_runtime_guard_content_safety_mode"])
 }
 
 func TestOpenAIOAuthHandler_RefreshTokenReturnsEgressBucket(t *testing.T) {

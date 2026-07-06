@@ -256,12 +256,13 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		return
 	}
 	extra := map[string]any{
-		"openai_pool_role":               service.OpenAIPoolRoleMain,
-		"openai_auth_state":              service.OpenAIAuthStateHealthy,
-		"openai_token_source":            service.OpenAITokenSourceRTManaged,
-		"openai_validation_outcome":      service.OpenAIValidationOutcomeRTValidated,
-		"openai_last_refresh_error_code": "",
-		"openai_last_validated_at":       time.Now().UTC().Format(time.RFC3339),
+		"openai_pool_role":                         service.OpenAIPoolRoleMain,
+		"openai_auth_state":                        service.OpenAIAuthStateHealthy,
+		"openai_token_source":                      service.OpenAITokenSourceRTManaged,
+		"openai_validation_outcome":                service.OpenAIValidationOutcomeRTValidated,
+		"openai_last_refresh_error_code":           "",
+		"openai_last_validated_at":                 time.Now().UTC().Format(time.RFC3339),
+		"openai_runtime_guard_content_safety_mode": "disabled",
 	}
 	if bucket := strings.TrimSpace(tokenInfo.EgressBucket); bucket != "" {
 		extra["openai_gateway_egress_bucket"] = bucket
