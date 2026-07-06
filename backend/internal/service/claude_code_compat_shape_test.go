@@ -33,10 +33,12 @@ func TestNormalizeAnthropicCompatMessagesBodyFillsAuditableShapeWithoutDroppingC
 
 	system := gjson.GetBytes(normalized, "system")
 	require.True(t, system.IsArray())
-	require.Contains(t, system.Get("0.text").String(), "server-normalized Anthropic /v1/messages")
-	require.Contains(t, system.Get("0.text").String(), "no native Claude Code attestation")
-	require.Contains(t, system.Get("1.text").String(), "Working directory:")
-	require.Equal(t, "user system", system.Get("2.text").String())
+	require.True(t, hasClaudeCodePrefix(system.Get("0.text").String()))
+	require.Equal(t, "ephemeral", system.Get("0.cache_control.type").String())
+	require.Contains(t, system.Get("1.text").String(), "server-normalized Anthropic /v1/messages")
+	require.Contains(t, system.Get("1.text").String(), "no native Claude Code attestation")
+	require.Contains(t, system.Get("2.text").String(), "Working directory:")
+	require.Equal(t, "user system", system.Get("3.text").String())
 
 	uidRaw := gjson.GetBytes(normalized, "metadata.user_id").String()
 	require.NotEmpty(t, uidRaw)
@@ -129,12 +131,13 @@ func TestNormalizeAnthropicCompatMessagesBodyMovesSystemRoleMessagesToTopLevelSy
 
 	system := gjson.GetBytes(normalized, "system")
 	require.True(t, system.IsArray())
-	require.Contains(t, system.Get("0.text").String(), "server-normalized Anthropic /v1/messages")
-	require.Contains(t, system.Get("1.text").String(), "Working directory:")
-	require.Equal(t, "existing top-level system", system.Get("2.text").String())
-	require.Equal(t, "ephemeral", system.Get("2.cache_control.type").String())
-	require.Equal(t, "private system string sentinel", system.Get("3.text").String())
-	require.Equal(t, "private system block sentinel", system.Get("4.text").String())
+	require.True(t, hasClaudeCodePrefix(system.Get("0.text").String()))
+	require.Contains(t, system.Get("1.text").String(), "server-normalized Anthropic /v1/messages")
+	require.Contains(t, system.Get("2.text").String(), "Working directory:")
+	require.Equal(t, "existing top-level system", system.Get("3.text").String())
+	require.Equal(t, "ephemeral", system.Get("3.cache_control.type").String())
+	require.Equal(t, "private system string sentinel", system.Get("4.text").String())
+	require.Equal(t, "private system block sentinel", system.Get("5.text").String())
 	require.NotContains(t, string(normalized), "IMAGE_PROMPT_SENTINEL")
 
 	decision := AnthropicCompatIngressDecision{InboundRoute: AnthropicCompatInboundMessages, CCGatewayRoute: AnthropicCompatCCGatewayMessages, ClientType: AnthropicCompatClientType}
@@ -143,4 +146,29 @@ func TestNormalizeAnthropicCompatMessagesBodyMovesSystemRoleMessagesToTopLevelSy
 	for _, forbidden := range []string{"private system string sentinel", "private system block sentinel", "first user", "assistant reply", "second user", "IMAGE_PROMPT_SENTINEL"} {
 		require.NotContains(t, string(safe), forbidden)
 	}
+}
+
+func TestNormalizeAnthropicCompatMessagesBodyKeepsClaudeCodeIdentityFirst(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-4-8","system":[{"type":"text","text":"custom preface"},{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude.","cache_control":{"type":"ephemeral"}},{"type":"text","text":"custom suffix"},{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."}],"messages":[{"role":"user","content":"hello"}]}`)
+
+	normalized, shape, err := NormalizeAnthropicCompatMessagesBody(body)
+	require.NoError(t, err)
+	require.Contains(t, shape.ServerFilledFields, "system")
+
+	system := gjson.GetBytes(normalized, "system")
+	require.True(t, system.IsArray())
+	require.True(t, hasClaudeCodePrefix(system.Get("0.text").String()))
+	require.Equal(t, "ephemeral", system.Get("0.cache_control.type").String())
+	require.Contains(t, system.Get("1.text").String(), "server-normalized Anthropic /v1/messages")
+	require.Contains(t, system.Get("2.text").String(), "Working directory:")
+	require.Equal(t, "custom preface", system.Get("3.text").String())
+	require.Equal(t, "custom suffix", system.Get("4.text").String())
+	require.Len(t, system.Array(), 5)
+	identityCount := 0
+	for _, block := range system.Array() {
+		if hasClaudeCodePrefix(block.Get("text").String()) {
+			identityCount++
+		}
+	}
+	require.Equal(t, 1, identityCount)
 }

@@ -191,7 +191,43 @@ func compatMetadataUserID() string {
 }
 
 func compatSystemBlocks(original any) []map[string]any {
-	blocks := []map[string]any{
+	originalBlocks := normalizeSystemToTextBlocks(original)
+	blocks := make([]map[string]any, 0, len(originalBlocks)+3)
+
+	// Upstream Claude Code routing is order-sensitive: the Claude Code identity
+	// block must remain the first system block. Keep L2 audit blocks, but never
+	// prepend them ahead of the identity block.
+	identityIndex := -1
+	filteredOriginal := make([]map[string]any, 0, len(originalBlocks))
+	for i, block := range originalBlocks {
+		text, _ := block["text"].(string)
+		if hasClaudeCodePrefix(text) {
+			if identityIndex < 0 {
+				identityIndex = i
+			}
+			continue
+		}
+		filteredOriginal = append(filteredOriginal, block)
+	}
+	if identityIndex >= 0 {
+		blocks = append(blocks, originalBlocks[identityIndex])
+	} else {
+		blocks = append(blocks, map[string]any{
+			"type": "text",
+			"text": claudeCodeSystemPrompt,
+			"cache_control": map[string]string{
+				"type": "ephemeral",
+			},
+		})
+	}
+
+	blocks = append(blocks, compatAuditSystemBlocks()...)
+	blocks = append(blocks, filteredOriginal...)
+	return blocks
+}
+
+func compatAuditSystemBlocks() []map[string]any {
+	return []map[string]any{
 		{
 			"type": "text",
 			"text": "<system-reminder>\nThis request was server-normalized Anthropic /v1/messages for Claude-Code-compatible routing. It has no native Claude Code attestation; use only capabilities present in this request.\n</system-reminder>",
@@ -201,10 +237,6 @@ func compatSystemBlocks(original any) []map[string]any {
 			"text": "<env>\nPlatform: server-selected\nShell: server-selected\nOS Version: server-selected\nWorking directory: server-selected\nHome directory: server-selected\n</env>",
 		},
 	}
-	for _, block := range normalizeSystemToTextBlocks(original) {
-		blocks = append(blocks, block)
-	}
-	return blocks
 }
 
 func normalizeSystemToTextBlocks(system any) []map[string]any {
