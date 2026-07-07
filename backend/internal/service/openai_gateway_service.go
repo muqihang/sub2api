@@ -43,6 +43,7 @@ const (
 	chatgptCodexURL = "https://chatgpt.com/backend-api/codex/responses"
 	// OpenAI Platform API for API Key accounts (fallback)
 	openaiPlatformAPIURL                 = "https://api.openai.com/v1/responses"
+	openaiPlatformAPIInputTokensURL      = "https://api.openai.com/v1/responses/input_tokens"
 	openaiStickySessionTTL               = time.Hour // 粘性会话TTL
 	openaiPreviousResponseUnsupportedTTL = 6 * time.Hour
 	openaiResponseFieldUnsupportedTTL    = 6 * time.Hour

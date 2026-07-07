@@ -210,7 +210,7 @@ func TestClaudeCodeNativeRouteMatrix_BypassesOpenAIGroupAutoRoute(t *testing.T) 
 	require.True(t, shouldRejectOpenAIGroupCountTokens(bridgeHeaders))
 
 	require.True(t, shouldAutoRouteOpenAIGroupToOpenAI(http.Header{}))
-	require.True(t, shouldRejectOpenAIGroupCountTokens(http.Header{}))
+	require.False(t, shouldRejectOpenAIGroupCountTokens(http.Header{}), "ordinary OpenAI groups should use the input_tokens bridge")
 }
 
 func TestClaudeCodeNativeMessagesAuthUsesDedicatedAPIKeyWhenBearerIsNotManagedJWT(t *testing.T) {

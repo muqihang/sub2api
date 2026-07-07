@@ -151,6 +151,7 @@ func (w *failingGinWriter) Write(p []byte) (int, error) {
 }
 
 type captureHTTPUpstream struct {
+	lastReq   *http.Request
 	lastBody  []byte
 	allBodies [][]byte
 	lastProxy string
@@ -242,6 +243,7 @@ func (s *captureOpenAIWSStateStore) DeleteSessionConn(groupID int64, sessionHash
 
 func (s *captureHTTPUpstream) Do(req *http.Request, proxyURL string, _ int64, _ int) (*http.Response, error) {
 	s.calls++
+	s.lastReq = req
 	s.lastProxy = proxyURL
 	s.proxies = append(s.proxies, proxyURL)
 	if req != nil && req.Body != nil {

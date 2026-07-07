@@ -163,7 +163,8 @@ func registerGatewayRoutes(
 			}
 			h.Gateway.Messages(c)
 		})
-		// /v1/messages/count_tokens: OpenAI groups get 404
+		// /v1/messages/count_tokens: ordinary OpenAI groups use Responses
+		// input_tokens; Claude native/bridge markers keep the local guarded path.
 		gateway.POST("/messages/count_tokens", func(c *gin.Context) {
 			if getGroupPlatform(c) == service.PlatformOpenAI && shouldRejectOpenAIGroupCountTokens(c.Request.Header) {
 				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
@@ -174,6 +175,10 @@ func registerGatewayRoutes(
 						"message": "Token counting is not supported for this platform",
 					},
 				})
+				return
+			}
+			if getGroupPlatform(c) == service.PlatformOpenAI && shouldRouteOpenAIGroupCountTokensToOpenAI(c.Request.Header) {
+				h.OpenAIGateway.CountTokens(c)
 				return
 			}
 			h.Gateway.CountTokens(c)
@@ -444,7 +449,11 @@ func shouldAutoRouteOpenAIGroupToOpenAI(headers http.Header) bool {
 }
 
 func shouldRejectOpenAIGroupCountTokens(headers http.Header) bool {
-	return !service.IsClaudeCodeNativeMarkerPresent(headers)
+	return service.IsClaudeCodeBridgeMarkerPresent(headers)
+}
+
+func shouldRouteOpenAIGroupCountTokensToOpenAI(headers http.Header) bool {
+	return !service.IsClaudeCodeNativeMarkerPresent(headers) && !service.IsClaudeCodeBridgeMarkerPresent(headers)
 }
 
 // getGroupPlatform extracts the group platform from the API Key stored in context.
