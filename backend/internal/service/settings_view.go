@@ -494,8 +494,32 @@ func DefaultBetaPolicySettings() *BetaPolicySettings {
 			},
 			{
 				BetaToken: "context-1m-2025-08-07",
-				Action:    BetaPolicyActionFilter,
+				Action:    BetaPolicyActionPass,
 				Scope:     BetaPolicyScopeAll,
+				ModelWhitelist: []string{
+					// Keep this as request-path compatibility only; do not expose
+					// new default model catalog entries from this policy.
+					"claude-sonnet-5",
+					"claude-sonnet-5-*",
+					"claude-sonnet-5@*",
+					"us.anthropic.claude-sonnet-5-v1",
+					"us.anthropic.claude-sonnet-5-*",
+					"eu.anthropic.claude-sonnet-5-v1",
+					"eu.anthropic.claude-sonnet-5-*",
+					"apac.anthropic.claude-sonnet-5-v1",
+					"apac.anthropic.claude-sonnet-5-*",
+					"jp.anthropic.claude-sonnet-5-v1",
+					"jp.anthropic.claude-sonnet-5-*",
+					"au.anthropic.claude-sonnet-5-v1",
+					"au.anthropic.claude-sonnet-5-*",
+					"us-gov.anthropic.claude-sonnet-5-v1",
+					"us-gov.anthropic.claude-sonnet-5-*",
+					"global.anthropic.claude-sonnet-5-v1",
+					"global.anthropic.claude-sonnet-5-*",
+					"anthropic.claude-sonnet-5-v1",
+					"anthropic.claude-sonnet-5-*",
+				},
+				FallbackAction: BetaPolicyActionFilter,
 			},
 		},
 	}

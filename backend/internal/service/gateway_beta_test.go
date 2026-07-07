@@ -196,6 +196,54 @@ func TestStripBetaTokensWithSet_EmptyDropSet(t *testing.T) {
 	require.Equal(t, header, got)
 }
 
+func TestDefaultBetaPolicy_Context1MScopedToSonnet5CompatibleModels(t *testing.T) {
+	settings := DefaultBetaPolicySettings()
+
+	var rule *BetaPolicyRule
+	for i := range settings.Rules {
+		if settings.Rules[i].BetaToken == claude.BetaContext1M {
+			rule = &settings.Rules[i]
+			break
+		}
+	}
+	require.NotNil(t, rule, "default policy must include context-1m")
+	require.Equal(t, BetaPolicyActionPass, rule.Action)
+	require.Equal(t, BetaPolicyActionFilter, rule.FallbackAction)
+	require.NotEmpty(t, rule.ModelWhitelist)
+
+	tests := []struct {
+		model string
+		want  string
+	}{
+		{"claude-sonnet-5", BetaPolicyActionPass},
+		{"claude-sonnet-5-20260701", BetaPolicyActionPass},
+		{"claude-sonnet-5-thinking", BetaPolicyActionPass},
+		{"claude-sonnet-5@20260701", BetaPolicyActionPass},
+		{"us.anthropic.claude-sonnet-5-v1", BetaPolicyActionPass},
+		{"eu.anthropic.claude-sonnet-5-20260701-v1:0", BetaPolicyActionPass},
+		{"apac.anthropic.claude-sonnet-5-v1", BetaPolicyActionPass},
+		{"jp.anthropic.claude-sonnet-5-v1", BetaPolicyActionPass},
+		{"au.anthropic.claude-sonnet-5-v1", BetaPolicyActionPass},
+		{"us-gov.anthropic.claude-sonnet-5-v1", BetaPolicyActionPass},
+		{"global.anthropic.claude-sonnet-5-v1", BetaPolicyActionPass},
+		{"anthropic.claude-sonnet-5-v1", BetaPolicyActionPass},
+		{"claude-sonnet-4-6", BetaPolicyActionFilter},
+		{"claude-sonnet-4-5-20250929", BetaPolicyActionFilter},
+		{"claude-opus-4-8", BetaPolicyActionFilter},
+		{"claude-haiku-4-5", BetaPolicyActionFilter},
+		{"claude-3-5-sonnet-20241022", BetaPolicyActionFilter},
+		{"claude-sonnet-50", BetaPolicyActionFilter},
+		{"us.anthropic.claude-sonnet-50-v1", BetaPolicyActionFilter},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			got, _ := resolveRuleAction(*rule, tt.model)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestIsCountTokensUnsupported404(t *testing.T) {
 	tests := []struct {
 		name       string

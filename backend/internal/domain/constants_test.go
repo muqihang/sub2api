@@ -114,3 +114,15 @@ func TestDefaultBedrockModelMapping_ContainsFable5(t *testing.T) {
 		t.Fatalf("unexpected Bedrock claude-fable-5 mapping: got %q", got)
 	}
 }
+
+func TestDefaultBedrockModelMapping_ContainsSonnet5RequestMapping(t *testing.T) {
+	t.Parallel()
+
+	got, ok := DefaultBedrockModelMapping["claude-sonnet-5"]
+	if !ok {
+		t.Fatal("expected Bedrock mapping for claude-sonnet-5 to exist")
+	}
+	if got != "us.anthropic.claude-sonnet-5-v1" {
+		t.Fatalf("unexpected Bedrock claude-sonnet-5 mapping: got %q", got)
+	}
+}
