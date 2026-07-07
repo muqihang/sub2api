@@ -8116,6 +8116,12 @@ func shouldQuarantineCCGatewayControlPlane(code string, message string, statusCo
 	if isCCGatewayRequestLevelObservedClientProfileReject(code, text) {
 		return false
 	}
+	if isCCGatewayRequestLevelEnvResidueVerifierReject(code, text) {
+		return false
+	}
+	if isCCGatewayRequestLevelStripVerifierReject(code, text) {
+		return false
+	}
 	if isCCGatewayRequestLevelPlan76ShapeReject(code, text) {
 		return false
 	}
@@ -8157,6 +8163,30 @@ func shouldQuarantineCCGatewayControlPlaneForAccount(account *Account, code stri
 
 func isCCGatewayRequestLevelBillingReject(code string, text string) bool {
 	return code == "signing_untrusted_billing_input" || strings.Contains(text, "signing_untrusted_billing_input")
+}
+
+func isCCGatewayRequestLevelStripVerifierReject(code string, text string) bool {
+	if code != "strip_verifier_failed" && !strings.Contains(text, "strip_verifier_failed") {
+		return false
+	}
+	hardRiskSignals := []string{
+		"missing_account_identity",
+		"missing_identity",
+		"missing_egress_bucket",
+		"missing_egress",
+		"egress_proxy_failure",
+		"proxy_mismatch",
+		"fallback",
+		"sign_strip",
+		"invalid_auth",
+		"risk",
+	}
+	for _, signal := range hardRiskSignals {
+		if strings.Contains(text, signal) {
+			return false
+		}
+	}
+	return true
 }
 
 func isCCGatewayRequestLevelPlan76ShapeReject(code string, text string) bool {
@@ -8207,6 +8237,44 @@ func ccGatewayControlPlaneTextHasHardRiskSignal(text string) bool {
 		}
 	}
 	return false
+}
+
+func isCCGatewayRequestLevelEnvResidueVerifierReject(code string, text string) bool {
+	requestLevelCodes := []string{
+		"formal_pool_env_residue_verifier_failed",
+		"formal_pool_env_residue_sanitizer_failed",
+		"formal_pool_env_residue_sanitize_failed",
+		"formal_pool_env_residue_profile_unapproved",
+		"formal_pool_base_url_residue_profile_unapproved",
+		"formal_pool_locale_profile_unapproved",
+	}
+	matched := false
+	for _, candidate := range requestLevelCodes {
+		if code == candidate || strings.Contains(text, candidate) {
+			matched = true
+			break
+		}
+	}
+	if !matched && !(strings.Contains(text, "env residue") || strings.Contains(text, "env_residue") || strings.Contains(text, "base_url_residue") || strings.Contains(text, "safe-cleaning") || strings.Contains(text, "sanitizer") || strings.Contains(text, "sanitize")) {
+		return false
+	}
+	hardRiskSignals := []string{
+		"missing_account_identity",
+		"missing_identity",
+		"missing_egress",
+		"egress_proxy_failure",
+		"proxy_mismatch",
+		"fallback",
+		"sign_strip",
+		"invalid_auth",
+		"risk",
+	}
+	for _, signal := range hardRiskSignals {
+		if strings.Contains(text, signal) {
+			return false
+		}
+	}
+	return true
 }
 
 func isCCGatewayRequestLevelObservedClientProfileReject(code string, text string) bool {

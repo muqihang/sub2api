@@ -98,7 +98,7 @@ func TestFormalPoolShouldQuarantineHTTPStatusHardSignalsAcrossStatuses(t *testin
 		{name: "403 hold", status: http.StatusForbidden, body: `{"error":{"message":"account on hold"}}`},
 		{name: "422 proxy mismatch", status: http.StatusUnprocessableEntity, body: `{"error":{"message":"proxy_mismatch"}}`},
 		{name: "422 fallback", status: http.StatusUnprocessableEntity, body: `{"error":{"message":"fallback detected"}}`},
-		{name: "422 verifier", status: http.StatusUnprocessableEntity, body: `{"error":{"message":"verifier failed"}}`},
+		{name: "422 verifier with proxy mismatch", status: http.StatusUnprocessableEntity, body: `{"error":{"message":"verifier failed with proxy_mismatch"}}`},
 		{name: "502 egress proxy", status: http.StatusBadGateway, body: `{"error":{"message":"egress_proxy_failure"}}`},
 		{name: "500 kyc", status: http.StatusInternalServerError, body: `{"error":{"message":"KYC verification required"}}`},
 		{name: "500 risk", status: http.StatusInternalServerError, body: `{"error":{"message":"risk text detected"}}`},
@@ -109,6 +109,8 @@ func TestFormalPoolShouldQuarantineHTTPStatusHardSignalsAcrossStatuses(t *testin
 		})
 	}
 	require.False(t, FormalPoolShouldQuarantineHTTPStatus(http.StatusBadGateway, []byte(`{"error":{"message":"temporary upstream unavailable"}}`)))
+	require.False(t, FormalPoolShouldQuarantineHTTPStatus(http.StatusBadRequest, []byte(`{"error":{"message":"verifier failed"}}`)))
+	require.False(t, FormalPoolShouldQuarantineHTTPStatus(http.StatusForbidden, []byte(`{"error":{"message":"strip verifier failed"}}`)))
 }
 
 type formalPoolQuarantineRepo struct {

@@ -458,6 +458,11 @@ func claudeCodeSessionBoundaryMatchesLegacyCanonicalSource(binding claudeCodeSes
 			binding.ProfilePolicyVersion == sanitizeReasonCode(ccGatewayDefault2179ProfilePolicyVersion) &&
 			binding.RequestShapeProfileRef == sanitizeReasonCode(ccGatewayDefault2179RequestShapeProfile) &&
 			binding.CacheParityProfileRef == sanitizeReasonCode(ccGatewayDefault2179CacheParityProfile)
+	case sanitizeReasonCode(ccGatewayPrimaryCanonicalPolicyVersion()):
+		return binding.PersonaProfile == sanitizeReasonCode(ccGateway2197PersonaProfile) &&
+			binding.ProfilePolicyVersion == sanitizeReasonCode("claude_code_2_1_197_plan76_sonnet5_policy_v1") &&
+			binding.RequestShapeProfileRef == sanitizeReasonCode("claude_code_2_1_197_messages_streaming_tooldefs_sonnet5_v1") &&
+			binding.CacheParityProfileRef == sanitizeReasonCode("claude_code_2_1_197_cache_parity_sonnet5_v1")
 	default:
 		return false
 	}

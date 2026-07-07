@@ -262,6 +262,9 @@ func buildBudgetRiskEvents(account *Account, session SessionBudgetLedgerEntry, a
 	if status != http.StatusForbidden && status != http.StatusUnauthorized {
 		return nil
 	}
+	if events, ok := buildRequestLevelCCGatewayControlPlaneBudgetRisk(account, session, accountEntry, status, body); ok {
+		return events
+	}
 	msg := strings.ToLower(extractUpstreamErrorMessage(body) + " " + string(body))
 	kind := RiskEventKindRiskText
 	action := BudgetActionQuarantine
@@ -283,4 +286,39 @@ func buildBudgetRiskEvents(account *Account, session SessionBudgetLedgerEntry, a
 		return nil
 	}
 	return []RiskEventLedgerEntry{ev}
+}
+
+func buildRequestLevelCCGatewayControlPlaneBudgetRisk(account *Account, session SessionBudgetLedgerEntry, accountEntry AccountBudgetLedgerEntry, status int, body []byte) ([]RiskEventLedgerEntry, bool) {
+	var parsed struct {
+		Error struct {
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if len(body) == 0 || json.Unmarshal(body, &parsed) != nil || !strings.EqualFold(strings.TrimSpace(parsed.Error.Type), "cc_gateway_control_plane") {
+		return nil, false
+	}
+	code := safeCCGatewayControlPlaneCode(parsed.Error.Code)
+	if code == "" {
+		code = "unknown_control_plane"
+	}
+	message := ccGatewayControlPlaneMessage(body)
+	if shouldQuarantineCCGatewayControlPlaneForAccount(account, code, message, status) {
+		return nil, false
+	}
+	ev := RiskEventLedgerEntry{
+		Kind:                 RiskEventKindControlPlaneModelPolicy,
+		Severity:             RiskSeverityP2,
+		SessionRef:           session.SessionRef,
+		UserRef:              session.UserRef,
+		AccountRef:           accountEntry.AccountRef,
+		SafeReason:           reasonBucket(code),
+		Timestamp:            time.Now().UTC().Format(time.RFC3339),
+		ActionRecommendation: BudgetActionObserve,
+	}
+	if ValidateNoRawSensitiveLedger(ev) != nil {
+		return nil, true
+	}
+	return []RiskEventLedgerEntry{ev}, true
 }

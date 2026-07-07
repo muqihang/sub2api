@@ -125,7 +125,7 @@ func TestCCGatewayObservedEnvResidueExternalIssueAnchorBuckets(t *testing.T) {
 		url  string
 		want string
 	}{
-		{name: "synthetic China TLD residue", url: "https://fixture.example.cn", want: "china_tld"},
+		{name: "synthetic China TLD residue", url: "https://fixture.example.cn", want: "cn_tld"},
 		{name: "synthetic AI keyword residue", url: "https://model-lab.invalid", want: "ai_lab_keyword"},
 		{name: "synthetic proxy resale residue", url: "https://fixture-proxy.invalid", want: "claude_proxy_resale_like"},
 	}
@@ -138,6 +138,42 @@ func TestCCGatewayObservedEnvResidueExternalIssueAnchorBuckets(t *testing.T) {
 			require.Equal(t, tc.want, bucket)
 		})
 	}
+}
+
+func TestCCGatewayBaseURLCategoryBucketUsesVerifiedEnvResidueTaxonomy(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "exact domain", raw: "https://sankuai.com/anthropic", want: "exact_domain_list"},
+		{name: "subdomain exact suffix", raw: "https://api.sankuai.com/v1/messages", want: "exact_domain_list"},
+		{name: "cn tld", raw: "https://fixture.example.cn", want: "cn_tld"},
+		{name: "bare cn", raw: "https://cn", want: "cn_tld"},
+		{name: "keyword", raw: "https://neutral-deepseek.example.com", want: "keyword"},
+		{name: "exact domain and keyword", raw: "https://xaminim.com/anthropic", want: "exact_domain_and_keyword"},
+		{name: "official Anthropic", raw: "https://api.anthropic.com/v1/messages", want: "official_anthropic"},
+		{name: "neutral gateway", raw: "https://neutral-gateway.test.invalid", want: "neutral_gateway"},
+		{name: "neutral unspecified IPv4", raw: "http://0.0.0.0:19484", want: "neutral_gateway"},
+		{name: "neutral test invalid wins over keyword", raw: "https://deepseek.test.invalid", want: "neutral_gateway"},
+		{name: "plain shared is not proxy resale", raw: "https://shared.example.invalid", want: "unknown"},
+		{name: "plain pool is not proxy resale", raw: "https://pool.example.invalid", want: "unknown"},
+		{name: "plain relay is not proxy resale", raw: "https://relay.example.invalid", want: "unknown"},
+		{name: "unknown plain ai substring is not ai lab", raw: "https://plain.example.com", want: "unknown"},
+		{name: "unknown", raw: "https://example.invalid", want: "unknown"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, ccGatewayBaseURLCategoryBucket(tc.raw))
+		})
+	}
+}
+
+func TestCCGatewayVerifiedEnvResidueTaxonomyCardinality(t *testing.T) {
+	require.Len(t, ccGatewayVerifiedEnvResidueExactDomains, 146)
+	require.Len(t, ccGatewayVerifiedEnvResidueKeywords, 11)
+	require.Contains(t, ccGatewayVerifiedEnvResidueExactDomains, "sankuai.com")
+	require.Contains(t, ccGatewayVerifiedEnvResidueKeywords, "deepseek")
 }
 
 func TestCCGatewayFormalPoolEnvResidueClientFamilyObservedOnly(t *testing.T) {

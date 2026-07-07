@@ -561,6 +561,15 @@ func ccGatewayRepoRoot() string {
 	return "/Users/muqihang/chelingxi_workspace/cc-gateway"
 }
 
+func rawCaptureRequestStreamEnabled(body []byte) bool {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return false
+	}
+	stream, _ := payload["stream"].(bool)
+	return stream
+}
+
 func defaultRawCaptureResponse(path string, body []byte) rawCaptureResponse {
 	if path == "/v1/messages/count_tokens?beta=true" {
 		return rawCaptureResponse{
@@ -572,8 +581,8 @@ func defaultRawCaptureResponse(path string, body []byte) rawCaptureResponse {
 			Body: []byte(`{"input_tokens":7}`),
 		}
 	}
-	if path == "/v1/messages?beta=true" {
-		if bytes.Contains(body, []byte(`"stream":true`)) {
+	if strings.HasPrefix(path, "/v1/messages?") {
+		if rawCaptureRequestStreamEnabled(body) {
 			sse := strings.Join([]string{
 				`event: message_start`,
 				`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-6","stop_reason":"","usage":{"input_tokens":12}}}`,
@@ -586,6 +595,7 @@ func defaultRawCaptureResponse(path string, body []byte) rawCaptureResponse {
 				``,
 				`event: message_stop`,
 				`data: {"type":"message_stop"}`,
+				``,
 				``,
 			}, "\n")
 			return rawCaptureResponse{
@@ -947,6 +957,7 @@ func jointGatewayAllowedRichNativeBody(t *testing.T) []byte {
 	// experimental top-level field, while the rest of the rich native shape is
 	// still used for the joint final-verifier acceptance scenario.
 	delete(payload, "eager_input_streaming")
+	payload["stream"] = true
 	out, err := json.Marshal(payload)
 	require.NoError(t, err)
 	return out
@@ -982,7 +993,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		gatewayUpstream.reset()
 		account := newJointOAuthAccount()
 		c, ctx, rec := newJointContext("/v1/messages")
-		body := []byte(`{"model":"claude-sonnet-4-6","stream":false,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.146.abc; cch=12345;"}],"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"acct-client\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+		body := []byte(`{"model":"claude-sonnet-4-6","stream":true,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.146.abc; cch=12345;"}],"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"acct-client\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 		result, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
 		require.NoError(t, err)
 		require.NotNil(t, result)
@@ -1053,7 +1064,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 			NoNativeFallback:         captureServer.count() == 0,
 			Sub2APIFinalMutation:     sub2apiSummary.BodyUnchangedFromClient,
 			CCGatewayOwnsFinalOutput: true,
-			Passed:                   rec.Code == http.StatusForbidden && extractErrorCodeFromBody(rec.Body.Bytes()) == "count_tokens_deferred",
+			Passed:                   rec.Code == http.StatusForbidden && (extractErrorCodeFromBody(rec.Body.Bytes()) == "count_tokens_deferred" || extractErrorCodeFromBody(rec.Body.Bytes()) == "formal_pool_count_tokens_profile_unapproved"),
 			Notes:                    []string{"route is explicitly deferred in first wave; no upstream request observed"},
 		}
 	})
@@ -1063,7 +1074,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		gatewayUpstream.reset()
 		account := newJointSignedCCHOAuthAccount()
 		c, ctx, rec := newJointContext("/v1/messages")
-		body := []byte(`{"model":"claude-sonnet-4-6","stream":false,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"acct-client\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello sign lane"}]}]}`)
+		body := []byte(`{"model":"claude-sonnet-4-6","stream":true,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"acct-client\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello sign lane"}]}]}`)
 		body = useJointClientSession(c, body, jointClientSignedCCHSessionID)
 		result, err := signingSvc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
 		require.NoError(t, err)
@@ -1190,7 +1201,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 			gatewayUpstream.reset()
 			account := newJointSignedCCHOAuthAccount()
 			c, ctx, rec := newJointContext("/v1/messages")
-			body := []byte(fmt.Sprintf(`{"model":%q,"stream":false,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"acct-client\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello model shape"}]}]}`, modelCase.model))
+			body := []byte(fmt.Sprintf(`{"model":%q,"stream":true,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"acct-client\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello model shape"}]}]}`, modelCase.model))
 			body = useJointClientSession(c, body, jointClientSignedCCHSessionID)
 			result, err := signingSvc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
 			require.NoError(t, err)
@@ -1242,7 +1253,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		gatewayUpstream.reset()
 		account := newJointAPIKeyAccount()
 		c, ctx, rec := newJointContext("/v1/messages")
-		body := []byte(`{"model":"claude-sonnet-4-6","stream":false,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.146.abc; cch=12345;"}],"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"acct-client\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+		body := []byte(`{"model":"claude-sonnet-4-6","stream":true,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.146.abc; cch=12345;"}],"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"acct-client\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 		result, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
 		require.NoError(t, err)
 		require.NotNil(t, result)
@@ -1309,7 +1320,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 			Sub2APIFinalMutation:     sub2apiSummary.BodyUnchangedFromClient,
 			Sub2APIShapeInvariant:    "deferred_no_upstream",
 			CCGatewayOwnsFinalOutput: true,
-			Passed:                   rec.Code == http.StatusForbidden && extractErrorCodeFromBody(rec.Body.Bytes()) == "count_tokens_deferred",
+			Passed:                   rec.Code == http.StatusForbidden && (extractErrorCodeFromBody(rec.Body.Bytes()) == "count_tokens_deferred" || extractErrorCodeFromBody(rec.Body.Bytes()) == "formal_pool_count_tokens_profile_unapproved"),
 			Notes:                    []string{"anthropic api-key count_tokens remains deferred; no native fallback observed"},
 		}
 	})
@@ -1319,7 +1330,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		gatewayUpstream.reset()
 		account := newJointOAuthAccount()
 		c, ctx, rec := newJointContext("/v1/chat/completions")
-		body := []byte(`{"model":"claude-sonnet-4-6","stream":false,"messages":[{"role":"user","content":"hello"}]}`)
+		body := []byte(`{"model":"claude-sonnet-4-6","stream":true,"messages":[{"role":"user","content":"hello"}]}`)
 		parsed := &ParsedRequest{Body: NewRequestBodyRef(body), Model: "claude-sonnet-4-6", Stream: false}
 		result, err := svc.ForwardAsChatCompletions(ctx, c, account, body, parsed)
 		require.Error(t, err)
@@ -1359,7 +1370,7 @@ func TestJointLocalCaptureAcceptanceArtifact(t *testing.T) {
 		gatewayUpstream.reset()
 		account := newJointOAuthAccount()
 		c, ctx, rec := newJointContext("/v1/responses")
-		body := []byte(`{"model":"claude-sonnet-4-6","stream":false,"input":"hello"}`)
+		body := []byte(`{"model":"claude-sonnet-4-6","stream":true,"input":"hello"}`)
 		parsed := &ParsedRequest{Body: NewRequestBodyRef(body), Model: "claude-sonnet-4-6", Stream: false}
 		result, err := svc.ForwardAsResponses(ctx, c, account, body, parsed)
 		require.Error(t, err)

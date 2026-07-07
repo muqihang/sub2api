@@ -205,6 +205,9 @@ func (s *GatewayService) buildUpstreamRequestClaudePlatformAWSCCGateway(
 	}
 	if mappedBody := claudeCodeReadRequestBody(req); len(mappedBody) > 0 {
 		body = mappedBody
+		if shouldStripCCGatewayDownstreamBillingMaterial(account) {
+			body = stripCCGatewayDownstreamBillingMaterial(mappedBody)
+		}
 		claudeCodeReplaceRequestBody(req, body)
 	}
 	if err := applyCCGatewayFormalPoolAttestation(req, s.cfg, account); err != nil {

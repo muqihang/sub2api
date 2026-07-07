@@ -86,10 +86,13 @@ func (s *AccountQuarantineService) Quarantine(ctx context.Context, input Account
 }
 
 func FormalPoolShouldQuarantineHTTPStatus(status int, body []byte) bool {
+	msg := strings.ToLower(extractUpstreamErrorMessage(body) + " " + string(body))
+	if formalPoolVerifierOnlyRequestLevelFailure(msg) {
+		return false
+	}
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
 		return true
 	}
-	msg := strings.ToLower(extractUpstreamErrorMessage(body) + " " + string(body))
 	if status == http.StatusBadGateway || status == http.StatusUnprocessableEntity {
 		return strings.Contains(msg, "missing_account_identity") ||
 			strings.Contains(msg, "missing_identity") ||
@@ -97,7 +100,6 @@ func FormalPoolShouldQuarantineHTTPStatus(status int, body []byte) bool {
 			strings.Contains(msg, "proxy_mismatch") ||
 			strings.Contains(msg, "proxy mismatch") ||
 			strings.Contains(msg, "fallback") ||
-			strings.Contains(msg, "verifier") ||
 			strings.Contains(msg, "risk")
 	}
 	if status == http.StatusTooManyRequests {
@@ -112,6 +114,37 @@ func FormalPoolShouldQuarantineHTTPStatus(status int, body []byte) bool {
 		strings.Contains(msg, "risk") ||
 		strings.Contains(msg, "proxy_mismatch") ||
 		strings.Contains(msg, "proxy mismatch") ||
-		strings.Contains(msg, "fallback") ||
-		strings.Contains(msg, "verifier")
+		strings.Contains(msg, "fallback")
+}
+
+func formalPoolVerifierOnlyRequestLevelFailure(msg string) bool {
+	msg = strings.ToLower(strings.TrimSpace(msg))
+	if !strings.Contains(msg, "verifier") {
+		return false
+	}
+	hardRiskSignals := []string{
+		"missing_account_identity",
+		"missing_identity",
+		"missing_egress_bucket",
+		"missing_egress",
+		"egress_proxy_failure",
+		"proxy_mismatch",
+		"proxy mismatch",
+		"fallback",
+		"sign_strip",
+		"invalid_auth",
+		"invalid_grant",
+		"refresh_token_invalid",
+		"unusual activity",
+		"account is on hold",
+		"account on hold",
+		"kyc",
+		"risk",
+	}
+	for _, signal := range hardRiskSignals {
+		if strings.Contains(msg, signal) {
+			return false
+		}
+	}
+	return true
 }

@@ -186,10 +186,10 @@ func TestClaudeCodeSessionMapperAllowsSafeFormalPoolCanonicalPromotionTo2197(t *
 	promoted.PolicyVersion = "2.1.197"
 	promoted.PersonaProfile = "claude-code-2.1.197-macos-local"
 	promoted.EgressProfileRef = "strip_attribution"
-	promoted.ProfilePolicyVersion = "claude_code_2_1_197_plan76_sonnet5_policy_v1"
+	promoted.ProfilePolicyVersion = "claude_code_2_1_197_plan76_native_policy_v1"
 	promoted.BillingShapePolicy = "strip"
-	promoted.RequestShapeProfileRef = "claude_code_2_1_197_messages_streaming_tooldefs_sonnet5_v1"
-	promoted.CacheParityProfileRef = "claude_code_2_1_197_cache_parity_sonnet5_v1"
+	promoted.RequestShapeProfileRef = "claude_code_2_1_197_messages_streaming_tooldefs_native_v1"
+	promoted.CacheParityProfileRef = "claude_code_2_1_197_cache_parity_native_v1"
 	second, err := mapper.Map(promoted)
 	require.NoError(t, err)
 	require.NotEmpty(t, second.SessionID)
@@ -206,6 +206,58 @@ func TestClaudeCodeSessionMapperAllowsSafeFormalPoolCanonicalPromotionTo2197(t *
 	require.Contains(t, text, `"persona_profile": "claude-code-2_1_197-macos-local"`)
 	require.NotContains(t, text, base.RawSessionID)
 	require.NotContains(t, text, base.DeviceID)
+}
+
+func TestClaudeCodeSessionMapperAllows2197Sonnet5AliasToNativeCanonical(t *testing.T) {
+	t.Setenv("SUB2API_SESSION_BUDGET_HMAC_KEY", "sub2api-session-budget-test-key")
+	ledgerPath := useClaudeCodeSessionBoundaryLedgerFileForTest(t)
+
+	mapper := NewClaudeCodeSessionMapperFromEnv()
+	legacyAlias := ClaudeCodeSessionMapInput{
+		UserScope:              "user:cp39-2197-alias",
+		BoundaryScope:          "user:cp39-2197-alias",
+		EnforceBoundary:        true,
+		FormalPoolProduction:   true,
+		AccountRef:             "opaque:acct:formal-a",
+		CredentialRef:          "opaque:credential-ref:v1:cred-a",
+		DeviceID:               "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		AccountUUID:            "opaque:acct:formal-a",
+		EgressBucket:           "bucket-a",
+		ProxyIdentityRef:       "opaque:proxy-ref:v1:bucket-a",
+		PolicyVersion:          "2.1.197",
+		PersonaProfile:         "claude-code-2.1.197-macos-local",
+		EgressProfileRef:       "strip_attribution",
+		ProfilePolicyVersion:   "claude_code_2_1_197_plan76_sonnet5_policy_v1",
+		BillingShapePolicy:     "strip",
+		RequestShapeProfileRef: "claude_code_2_1_197_messages_streaming_tooldefs_sonnet5_v1",
+		CacheParityProfileRef:  "claude_code_2_1_197_cache_parity_sonnet5_v1",
+		ProviderFamily:         "anthropic_formal_pool",
+		RawSessionID:           "11111111-2222-4333-8444-555555555555",
+	}
+	first, err := mapper.Map(legacyAlias)
+	require.NoError(t, err)
+	require.NotEmpty(t, first.SessionID)
+
+	native := legacyAlias
+	native.ProfilePolicyVersion = "claude_code_2_1_197_plan76_native_policy_v1"
+	native.RequestShapeProfileRef = "claude_code_2_1_197_messages_streaming_tooldefs_native_v1"
+	native.CacheParityProfileRef = "claude_code_2_1_197_cache_parity_native_v1"
+	second, err := mapper.Map(native)
+	require.NoError(t, err)
+	require.NotEmpty(t, second.SessionID)
+
+	resetClaudeCodeSessionBoundaryLedgerForTest()
+	third, err := mapper.Map(native)
+	require.NoError(t, err)
+	require.Equal(t, second.SessionID, third.SessionID)
+
+	raw, err := os.ReadFile(ledgerPath)
+	require.NoError(t, err)
+	text := string(raw)
+	require.Contains(t, text, `"profile_policy_version": "claude_code_2_1_197_plan76_native_policy_v1"`)
+	require.NotContains(t, text, "sonnet5")
+	require.NotContains(t, text, legacyAlias.RawSessionID)
+	require.NotContains(t, text, legacyAlias.DeviceID)
 }
 
 func TestClaudeCodeSessionMapperRejectsFormalPoolAuthorityFieldSwitches(t *testing.T) {

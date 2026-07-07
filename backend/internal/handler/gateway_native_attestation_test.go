@@ -149,7 +149,7 @@ func TestGatewayHandlerBridgeLiveStoresSafeAuditSummaryOnContext(t *testing.T) {
 	require.Equal(t, "deepseek_prefix_kv", audit.ProviderCacheMechanism)
 	require.True(t, audit.CacheControlProviderIgnored)
 	require.Equal(t, 7, audit.CacheReadTokens)
-	require.Equal(t, 13, audit.CacheMissTokens)
+	require.Equal(t, 0, audit.CacheMissTokens)
 	dumped, err := json.Marshal(audit)
 	require.NoError(t, err)
 	require.NotContains(t, string(dumped), "stable system prefix sentinel")

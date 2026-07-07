@@ -80,9 +80,9 @@ const (
 	ccGatewayDefault2179CacheParityProfile   = "claude_code_2_1_179_cache_parity_degraded_v1"
 	ccGateway2185PersonaProfile              = "claude-code-2.1.185-macos-local"
 	ccGateway2197PersonaProfile              = "claude-code-2.1.197-macos-local"
-	ccGateway2197ProfilePolicyVersion        = "claude_code_2_1_197_plan76_sonnet5_policy_v1"
-	ccGateway2197RequestShapeProfile         = "claude_code_2_1_197_messages_streaming_tooldefs_sonnet5_v1"
-	ccGateway2197CacheParityProfile          = "claude_code_2_1_197_cache_parity_sonnet5_v1"
+	ccGateway2197ProfilePolicyVersion        = "claude_code_2_1_197_plan76_native_policy_v1"
+	ccGateway2197RequestShapeProfile         = "claude_code_2_1_197_messages_streaming_tooldefs_native_v1"
+	ccGateway2197CacheParityProfile          = "claude_code_2_1_197_cache_parity_native_v1"
 	ccGateway2197EgressTLSProfileRef         = "tls-profile:claude-code-2.1.197-real-oracle-tcp-v1"
 	ccGatewayDefaultEnvResidueProfileRef     = "env-residue-profile:claude-code-2.1.179-us-pacific-official-anthropic-v1"
 	ccGatewayDefaultLocaleProfileRef         = "locale-profile:us-pacific-v1"
@@ -1727,32 +1727,7 @@ func isCCGatewayBaseURLLiteralKey(key string) bool {
 }
 
 func ccGatewayBaseURLCategoryBucket(raw string) string {
-	value := strings.ToLower(strings.TrimSpace(raw))
-	if value == "" {
-		return ""
-	}
-	if strings.Contains(value, "api.anthropic.com") || strings.Contains(value, "anthropic.com") {
-		return "official_anthropic"
-	}
-	if strings.Contains(value, ".cn") {
-		return "china_tld"
-	}
-	if strings.Contains(value, "gateway") || strings.Contains(value, "localhost") || strings.Contains(value, "127.0.0.1") || strings.Contains(value, "test.invalid") {
-		return "neutral_gateway"
-	}
-	if strings.Contains(value, ".org") {
-		return "china_org_domain"
-	}
-	if strings.Contains(value, "cloud") {
-		return "china_cloud_domain"
-	}
-	if strings.Contains(value, "ai") || strings.Contains(value, "lab") {
-		return "ai_lab_keyword"
-	}
-	if strings.Contains(value, "proxy") || strings.Contains(value, "resale") {
-		return "claude_proxy_resale_like"
-	}
-	return "unknown"
+	return ccGatewayClassifyVerifiedEnvResidueBaseURL(raw)
 }
 
 func ccGatewayObservedProxyEnvBucket(req *http.Request, body []byte) (string, bool) {

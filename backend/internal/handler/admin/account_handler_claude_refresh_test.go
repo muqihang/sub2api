@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
@@ -67,6 +68,18 @@ func (s accountRefreshProxyRepoStub) CountAccountsByProxyID(context.Context, int
 }
 func (s accountRefreshProxyRepoStub) ListAccountSummariesByProxyID(context.Context, int64) ([]service.ProxyAccountSummary, error) {
 	return nil, nil
+}
+func (s accountRefreshProxyRepoStub) SweepExpiredProxies(context.Context, time.Time) (int64, error) {
+	return 0, nil
+}
+func (s accountRefreshProxyRepoStub) ListAllForFallback(context.Context) ([]service.Proxy, error) {
+	return nil, nil
+}
+func (s accountRefreshProxyRepoStub) CountExpired(context.Context) (int64, error) {
+	return 0, nil
+}
+func (s accountRefreshProxyRepoStub) CountExpiringSoon(context.Context, time.Time) (int64, error) {
+	return 0, nil
 }
 
 func TestAccountHandlerRefreshSingleAccount_ClaudeSetupTokenInvalidGrantReturnsSafeBadRequest(t *testing.T) {

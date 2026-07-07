@@ -97,19 +97,19 @@
       "policy_version": "2.1.185",
       "profile_policy_version": "claude_code_2_1_179_cp1_degraded_v1",
       "request_shape_profile_ref": "claude_code_2_1_179_messages_streaming_tooldefs_degraded_v1",
-      "sonnet5_policy": "fail_closed_in_cc_gateway",
+      "candidate_model_policy": "fail_closed_in_cc_gateway",
       "trusted_egress_profile_ref": "strip_attribution"
     },
     "primary_2197": {
       "billing_shape_policy": "strip",
-      "cache_parity_profile_ref": "claude_code_2_1_197_cache_parity_sonnet5_v1",
+      "cache_parity_profile_ref": "claude_code_2_1_197_cache_parity_native_v1",
       "canonical_tuple_source": "server_selected_policy_version",
       "egress_tls_profile_ref": "tls-profile:claude-code-2.1.197-real-oracle-tcp-v1",
       "persona_profile": "claude-code-2.1.197-macos-local",
       "policy_version": "2.1.197",
-      "profile_policy_version": "claude_code_2_1_197_plan76_sonnet5_policy_v1",
-      "request_shape_profile_ref": "claude_code_2_1_197_messages_streaming_tooldefs_sonnet5_v1",
-      "sonnet5_policy": "allowed_only_with_plan76_canonical_tuple",
+      "profile_policy_version": "claude_code_2_1_197_plan76_native_policy_v1",
+      "request_shape_profile_ref": "claude_code_2_1_197_messages_streaming_tooldefs_native_v1",
+      "candidate_model_policy": "allowed_only_with_plan76_canonical_tuple",
       "trusted_egress_profile_ref": "strip_attribution"
     },
     "rollback_2179": {

@@ -200,6 +200,37 @@ func TestCCGatewayBoundary_StripsDownstreamBillingBeforeSignPrimary(t *testing.T
 	require.NotEqual(t, "99999999-8888-4777-8666-555555555555", parsedUID.SessionID)
 }
 
+func TestCCGatewayBoundary_StripsDownstreamBillingCaseInsensitive(t *testing.T) {
+	body := []byte(`{"system":[{"type":"text","text":"X-Anthropic-Billing-Header: cc_version=2.1.197.abc; cc_entrypoint=sdk-cli; cch=12345;"},{"type":"text","text":"You are Claude Code."}]}`)
+	stripped := stripCCGatewayDownstreamBillingMaterial(body)
+	lower := strings.ToLower(string(stripped))
+	require.NotContains(t, lower, "x-anthropic-billing-header")
+	require.NotContains(t, lower, "cch=12345")
+	require.Contains(t, string(stripped), "You are Claude Code.")
+}
+
+func TestCCGatewayBoundary_StripsDownstreamBillingLineInsideSystemText(t *testing.T) {
+	body := []byte(`{"system":[{"type":"text","text":"You are Claude Code.\nX-Anthropic-Billing-Header: cc_version=2.1.197.abc; cc_entrypoint=sdk-cli; cch=12345;\nKeep this system line."}],"messages":[{"role":"user","content":[{"type":"text","text":"literal x-anthropic-billing-header: cch=67890 stays user content"}]}]}`)
+	stripped := stripCCGatewayDownstreamBillingMaterial(body)
+	lower := strings.ToLower(string(stripped))
+	require.NotContains(t, lower, "cch=12345")
+	require.NotContains(t, lower, "cc_version=2.1.197.abc")
+	require.Contains(t, string(stripped), "You are Claude Code.")
+	require.Contains(t, string(stripped), "Keep this system line.")
+	require.Contains(t, string(stripped), "literal x-anthropic-billing-header: cch=67890 stays user content")
+}
+
+func TestCCGatewayBoundary_StripsDownstreamBillingInlineSystemResidue(t *testing.T) {
+	body := []byte(`{"system":[{"type":"text","text":"Keep first line.\nClient residue X-Anthropic-Billing-Header: cc_version=2.1.197.abc; cc_entrypoint=claude-vscode; cch=12345;\nKeep last line."}],"messages":[{"role":"user","content":"customer text mentioning cch=67890 must remain untouched"}]}`)
+	stripped := stripCCGatewayDownstreamBillingMaterial(body)
+	lower := strings.ToLower(string(stripped))
+	require.NotContains(t, lower, "x-anthropic-billing-header")
+	require.NotContains(t, lower, "cch=12345")
+	require.Contains(t, string(stripped), "Keep first line.")
+	require.Contains(t, string(stripped), "Keep last line.")
+	require.Contains(t, string(stripped), "customer text mentioning cch=67890 must remain untouched")
+}
+
 func TestCCGatewayBoundary_ForwardCountTokensSkipsMimicryAndProxy(t *testing.T) {
 	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newAnthropicCountTokensSuccessResponse()}
 	svc := newCCGatewayBoundaryService(upstream)

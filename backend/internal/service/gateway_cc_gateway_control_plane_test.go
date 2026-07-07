@@ -254,6 +254,43 @@ func TestCCGatewayControlPlane_MCPConnectorRequestLevelRejectDoesNotQuarantine(t
 	require.True(t, observed, "request-level MCP connector reject should emit an observe action")
 }
 
+func TestCCGatewayControlPlane_FormalPoolStripVerifierDoesNotQuarantine(t *testing.T) {
+	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
+	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newCCGatewayControlPlaneResponse(http.StatusForbidden, "strip_verifier_failed")}
+	svc := newCCGatewayBoundaryService(upstream)
+	account := newCCGatewayBoundaryAccount()
+	formalPoolApplyCompleteSchedulingEvidenceForTest(account)
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageWarming
+	account.Extra[FormalPoolExtraPoolProfileEffective] = PoolProfileNormal
+	repo := &formalRateLimitRepo{accountsByID: map[int64]*Account{account.ID: account}}
+	sink := &recordingBudgetLedgerSink{}
+	svc.accountRepo = repo
+	svc.sessionBudgetObserve = sink
+	c, ctx := newCCGatewayBoundaryContext("/v1/messages")
+	body := []byte(`{"model":"claude-opus-4-8","stream":true,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+
+	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cc gateway control-plane error")
+	require.Equal(t, FormalPoolStageWarming, repo.accountsByID[account.ID].Extra[FormalPoolExtraOnboardingStage])
+	require.True(t, repo.accountsByID[account.ID].Schedulable)
+	require.NotEqual(t, StatusError, repo.accountsByID[account.ID].Status)
+	require.Empty(t, repo.accountsByID[account.ID].Extra[FormalPoolExtraRiskEventRef])
+	require.NotEmpty(t, sink.risks)
+	observed := false
+	for _, risk := range sink.risks {
+		require.NotEqual(t, RiskSeverityP0, risk.Severity)
+		require.NotEqual(t, BudgetActionP0Block, risk.ActionRecommendation)
+		if risk.ActionRecommendation == BudgetActionObserve {
+			observed = true
+		}
+	}
+	require.True(t, observed, "request-level strip verifier reject should emit an observe action")
+	require.NotEmpty(t, sink.decisions)
+	require.Equal(t, BudgetActionObserve, sink.decisions[len(sink.decisions)-1].Action)
+}
+
 func TestCCGatewayControlPlaneQuarantineClassifier(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -280,6 +317,10 @@ func TestCCGatewayControlPlaneQuarantineClassifier(t *testing.T) {
 		{name: "untrusted billing input is request-level block", code: "signing_untrusted_billing_input", status: http.StatusForbidden, want: false},
 		{name: "observed client profile unapproved is request-level block", code: "formal_pool_observed_client_profile_unapproved", message: "Formal-pool observed client version is below the approved minimum for this profile", status: http.StatusForbidden, want: false},
 		{name: "observed client profile unknown body keys is request-level block", code: "formal_pool_observed_client_profile_unapproved", message: "Formal-pool observed client profile contains unknown body keys", status: http.StatusForbidden, want: false},
+		{name: "env residue verifier safe cleaning is request-level block", code: "formal_pool_env_residue_verifier_failed", message: "Safe-cleaning env residue verifier rejected client-controlled ANTHROPIC_BASE_URL", status: http.StatusForbidden, want: false},
+		{name: "env residue sanitizer safe cleaning is request-level block", code: "formal_pool_env_residue_sanitizer_failed", message: "Safe-cleaning env residue sanitizer rejected structural metadata field", status: http.StatusForbidden, want: false},
+		{name: "strip verifier failed is request-level block", code: "strip_verifier_failed", message: "CC Gateway strip verifier failed", status: http.StatusForbidden, want: false},
+		{name: "strip verifier with proxy mismatch still quarantines", code: "strip_verifier_failed", message: "proxy_mismatch", status: http.StatusForbidden, want: true},
 		{name: "mcp configured shape is request-level block", code: "formal_pool_mcp_shape_unapproved", message: "Formal-pool MCP configured shape is not approved", status: http.StatusForbidden, want: false},
 		{name: "mcp connector disabled is request-level block", code: "formal_pool_mcp_connector_disabled", message: "Formal-pool MCP connector is disabled", status: http.StatusForbidden, want: false},
 		{name: "mcp connector disabled generic forbidden text is request-level block", code: "formal_pool_mcp_connector_disabled", message: "Forbidden", status: http.StatusForbidden, want: false},

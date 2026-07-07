@@ -561,6 +561,32 @@ func TestGatewayService_ForwardClaudePlatformAWSFormalPoolUsesCCGatewayWithoutAc
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "anthropic-beta"), "AWS Platform provider-scoped beta policy strips downstream beta before CC Gateway")
 }
 
+func TestGatewayService_ForwardClaudePlatformAWSFormalPoolStripsDownstreamBillingBeforeCCGateway(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)
+	markClaudePlatformAWSFormalPoolForRequestTest(t, account)
+	cfg := ccGatewayTestConfig(PlatformAnthropic)
+	refreshClaudePlatformAWSFormalPoolAuthorityForRequestTest(t, account, cfg)
+	upstream := &claudePlatformAWSAccountTestUpstream{resp: newAnthropicSuccessResponse()}
+	svc := &GatewayService{
+		cfg:                 cfg,
+		httpUpstream:        upstream,
+		tlsFPProfileService: &TLSFingerprintProfileService{},
+	}
+	c := claudePlatformAWSRequestTestContext()
+	body := []byte(`{"model":"claude-opus-4-8","stream":false,"system":[{"type":"text","text":"You are Claude Code.\nX-Anthropic-Billing-Header: cc_version=2.1.197.abc; cc_entrypoint=claude-vscode; cch=12345;\nKeep this system line."}],"metadata":{"user_id":"{\"device_id\":\"client-device\",\"account_uuid\":\"client-account\",\"session_id\":\"99999999-8888-4777-8666-555555555555\"}"},"messages":[{"role":"user","content":"fixture"}]}`)
+
+	result, err := svc.Forward(context.Background(), c, account, parseAnthropicRequestForTest(t, body))
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, upstream.lastReq)
+	lower := strings.ToLower(string(upstream.lastBody))
+	require.NotContains(t, lower, "x-anthropic-billing-header")
+	require.NotContains(t, lower, "cch=12345")
+	require.Contains(t, string(upstream.lastBody), "Keep this system line.")
+}
+
 func TestGatewayService_ClaudePlatformAWSFormalPoolObservedVersionUsesRawClientHeadersBeforeSanitize(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	account := claudePlatformAWSRequestTestAccount(t, ClaudePlatformAWSAuthProfileXAPIKey, true)

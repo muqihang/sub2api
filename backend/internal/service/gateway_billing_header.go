@@ -79,12 +79,36 @@ func stripCCGatewayDownstreamBillingMaterial(body []byte) []byte {
 		changed := false
 		systemResult.ForEach(func(_, item gjson.Result) bool {
 			text := ""
+			textPath := ""
 			if item.Type == gjson.String {
 				text = item.String()
+				textPath = "."
 			} else if t := item.Get("text"); t.Type == gjson.String {
 				text = t.String()
+				textPath = "text"
 			}
-			if strings.HasPrefix(strings.TrimLeft(text, " \t\r\n"), "x-anthropic-billing-header:") {
+			if textPath != "" {
+				cleaned, textChanged := stripCCGatewayDownstreamBillingLines(text)
+				if textChanged {
+					changed = true
+					if strings.TrimSpace(cleaned) == "" {
+						return true
+					}
+					if item.Type == gjson.String {
+						kept = append(kept, cleaned)
+						return true
+					}
+					var decoded any
+					if err := json.Unmarshal([]byte(item.Raw), &decoded); err == nil {
+						if obj, ok := decoded.(map[string]any); ok {
+							obj["text"] = cleaned
+							kept = append(kept, obj)
+						}
+					}
+					return true
+				}
+			}
+			if isCCGatewayDownstreamBillingHeaderText(text) {
 				changed = true
 				return true
 			}
@@ -104,23 +128,38 @@ func stripCCGatewayDownstreamBillingMaterial(body []byte) []byte {
 	}
 
 	if systemResult.Type == gjson.String {
-		lines := strings.Split(systemResult.String(), "\n")
-		kept := lines[:0]
-		changed := false
-		for _, line := range lines {
-			if strings.HasPrefix(strings.TrimLeft(line, " \t\r"), "x-anthropic-billing-header:") {
-				changed = true
-				continue
-			}
-			kept = append(kept, line)
-		}
+		cleaned, changed := stripCCGatewayDownstreamBillingLines(systemResult.String())
 		if changed {
-			if updated, err := sjson.SetBytes(body, "system", strings.Join(kept, "\n")); err == nil {
+			if updated, err := sjson.SetBytes(body, "system", cleaned); err == nil {
 				return updated
 			}
 		}
 	}
 	return body
+}
+
+func stripCCGatewayDownstreamBillingLines(text string) (string, bool) {
+	lines := strings.Split(text, "\n")
+	kept := lines[:0]
+	changed := false
+	for _, line := range lines {
+		if isCCGatewayDownstreamBillingResidueLine(line) {
+			changed = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n"), changed
+}
+
+func isCCGatewayDownstreamBillingResidueLine(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "x-anthropic-billing-header:") || strings.Contains(lower, "cch=")
+}
+
+func isCCGatewayDownstreamBillingHeaderText(text string) bool {
+	trimmed := strings.TrimLeft(text, " \t\r\n")
+	return strings.HasPrefix(strings.ToLower(trimmed), "x-anthropic-billing-header:")
 }
 
 func shouldStripCCGatewayDownstreamBillingMaterial(account *Account) bool {

@@ -212,6 +212,13 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		if authRefreshAttempted && account.Extra != nil {
 			delete(account.Extra, "formal_pool_auth_refresh_attempted")
 		}
+		if !FormalPoolShouldQuarantineHTTPStatus(statusCode, responseBody) {
+			slog.Warn("formal_pool_request_level_auth_reject_observed",
+				"status_code", statusCode,
+				"status_bucket", statusBucketFromHTTP(statusCode),
+				"safe_error_bucket", "request_level_verifier")
+			return false
+		}
 		s.quarantineFormalPoolAccount(ctx, account, RiskEventKindIdentityBoundaryFail, "rate_limit_service", statusCode, reason)
 		return true
 	}

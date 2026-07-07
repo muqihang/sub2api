@@ -489,7 +489,6 @@ func TestRateLimitService_FormalPoolHardQuarantineReasonBuckets(t *testing.T) {
 		{name: "risk", status: http.StatusForbidden, body: `{"error":{"message":"risk text detected"}}`, wantBucket: "reason_risk_text"},
 		{name: "proxy mismatch", status: http.StatusForbidden, body: `{"error":{"message":"proxy_mismatch"}}`, wantBucket: "reason_proxy"},
 		{name: "fallback", status: http.StatusForbidden, body: `{"error":{"message":"fallback detected"}}`, wantBucket: "reason_fallback"},
-		{name: "verifier", status: http.StatusForbidden, body: `{"error":{"message":"verifier failed"}}`, wantBucket: "reason_verifier"},
 	}
 
 	for _, tc := range cases {
@@ -515,4 +514,26 @@ func TestRateLimitService_FormalPoolHardQuarantineReasonBuckets(t *testing.T) {
 			require.Equal(t, tc.wantBucket, repo.accountsByID[90].Extra[FormalPoolExtraQuarantineReason])
 		})
 	}
+}
+
+func TestRateLimitService_FormalPoolVerifierOnlyRejectDoesNotQuarantine(t *testing.T) {
+	repo := &formalRateLimitRepo{accountsByID: map[int64]*Account{91: {
+		ID:          91,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{"refresh_token": "refresh-token"},
+		Extra:       map[string]any{FormalPoolExtraOnboardingStage: FormalPoolStageProduction},
+	}}}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	account := repo.accountsByID[91]
+
+	shouldDisable := service.HandleUpstreamError(context.Background(), account, http.StatusForbidden, http.Header{}, []byte(`{"error":{"message":"verifier failed"}}`))
+
+	require.False(t, shouldDisable)
+	require.Equal(t, 0, repo.tempCalls)
+	require.Equal(t, FormalPoolStageProduction, repo.accountsByID[91].Extra[FormalPoolExtraOnboardingStage])
+	require.True(t, repo.accountsByID[91].Schedulable)
+	require.Equal(t, StatusActive, repo.accountsByID[91].Status)
 }

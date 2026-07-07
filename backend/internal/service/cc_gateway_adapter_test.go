@@ -986,9 +986,12 @@ func requirePlan76CanonicalTupleForTest(t *testing.T, ctx map[string]any, versio
 	switch version {
 	case "2.1.197":
 		require.Equal(t, "claude-code-2.1.197-macos-local", ctx["persona_profile"])
-		require.Equal(t, "claude_code_2_1_197_plan76_sonnet5_policy_v1", ctx["profile_policy_version"])
-		require.Equal(t, "claude_code_2_1_197_messages_streaming_tooldefs_sonnet5_v1", ctx["request_shape_profile_ref"])
-		require.Equal(t, "claude_code_2_1_197_cache_parity_sonnet5_v1", ctx["cache_parity_profile_ref"])
+		require.Equal(t, "claude_code_2_1_197_plan76_native_policy_v1", ctx["profile_policy_version"])
+		require.Equal(t, "claude_code_2_1_197_messages_streaming_tooldefs_native_v1", ctx["request_shape_profile_ref"])
+		require.Equal(t, "claude_code_2_1_197_cache_parity_native_v1", ctx["cache_parity_profile_ref"])
+		for _, key := range []string{"profile_policy_version", "request_shape_profile_ref", "cache_parity_profile_ref"} {
+			require.NotContains(t, ctx[key], "sonnet5")
+		}
 		require.Equal(t, "tls-profile:claude-code-2.1.197-real-oracle-tcp-v1", ctx["egress_tls_profile_ref"])
 	case "2.1.185":
 		require.Equal(t, "claude-code-2.1.185-macos-local", ctx["persona_profile"])
