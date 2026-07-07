@@ -54,3 +54,36 @@ func TestOpenAIUpstreamEndpoint_ViaGetUpstreamEndpoint(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveOpenAIUpstreamEndpoint_RawChatOnlyAPIKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	account := &service.Account{
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Extra: map[string]any{
+			"openai_responses_supported": false,
+		},
+	}
+
+	require.Equal(t, "/v1/chat/completions", resolveOpenAIUpstreamEndpoint(c, account))
+}
+
+func TestResolveOpenAIUpstreamEndpoint_DefaultOpenAIResponses(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	account := &service.Account{
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeOAuth,
+	}
+
+	require.Equal(t, EndpointResponses, resolveOpenAIUpstreamEndpoint(c, account))
+}
