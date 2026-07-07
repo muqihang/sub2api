@@ -223,6 +223,12 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		return true
 	}
 
+	if statusCode == http.StatusTooManyRequests && account.Platform == PlatformAnthropic {
+		if s.persistAnthropicExhaustedWindowLimit(ctx, account, headers) {
+			return false
+		}
+	}
+
 	// Non-formal accounts may still use temporary unschedulable rules. Formal-pool
 	// 401/403 are handled above as hard quarantine to avoid refresh/proxy loops.
 	if statusCode != 401 {
@@ -1245,6 +1251,94 @@ type anthropic429Result struct {
 	fiveHourReset *time.Time // 5h window reset timestamp (for session window calculation), nil if not available
 	window        string
 	resetBucket   string
+}
+
+type anthropicWindowLimit struct {
+	window        string
+	resetAt       time.Time
+	fiveHourReset *time.Time
+	resetBucket   string
+}
+
+func selectAnthropicExhaustedWindow(headers http.Header, now time.Time) *anthropicWindowLimit {
+	reset5hRaw := headers.Get("anthropic-ratelimit-unified-5h-reset")
+	reset7dRaw := headers.Get("anthropic-ratelimit-unified-7d-reset")
+	reset5h, ok5h := parseAnthropicWindowReset(reset5hRaw, "5h", now)
+	reset7d, ok7d := parseAnthropicWindowReset(reset7dRaw, "7d", now)
+
+	exceeded5h := isAnthropic5hRejected(headers) || isAnthropicWindowExceeded(headers, "5h")
+	exceeded7d := isAnthropicWindowExceeded(headers, "7d")
+	if exceeded7d && ok7d {
+		limit := &anthropicWindowLimit{window: "7d", resetAt: reset7d, resetBucket: resetBucket(reset7dRaw)}
+		if ok5h {
+			limit.fiveHourReset = &reset5h
+		}
+		return limit
+	}
+	if exceeded5h && ok5h {
+		return &anthropicWindowLimit{window: "5h", resetAt: reset5h, fiveHourReset: &reset5h, resetBucket: resetBucket(reset5hRaw)}
+	}
+	return nil
+}
+
+func isAnthropic5hRejected(headers http.Header) bool {
+	return strings.EqualFold(strings.TrimSpace(headers.Get("anthropic-ratelimit-unified-5h-status")), "rejected")
+}
+
+func parseAnthropicWindowReset(raw, window string, now time.Time) (time.Time, bool) {
+	resetAt, ok := parseAnthropicUnifiedReset(raw)
+	if !ok || !resetAt.After(now) {
+		return time.Time{}, false
+	}
+	maxAge := 8 * 24 * time.Hour
+	if window == "5h" {
+		maxAge = 6 * time.Hour
+	}
+	if resetAt.After(now.Add(maxAge)) {
+		return time.Time{}, false
+	}
+	return resetAt, true
+}
+
+func shouldPersistAnthropicWindowLimit(account *Account, limit *anthropicWindowLimit, now time.Time) bool {
+	if account == nil || limit == nil || !limit.resetAt.After(now) {
+		return false
+	}
+	if account.RateLimitResetAt == nil || !account.RateLimitResetAt.After(now) {
+		return true
+	}
+	return limit.resetAt.After(*account.RateLimitResetAt)
+}
+
+func (s *RateLimitService) persistAnthropicExhaustedWindowLimit(ctx context.Context, account *Account, headers http.Header) bool {
+	if s == nil || s.accountRepo == nil || account == nil {
+		return false
+	}
+	now := time.Now()
+	limit := selectAnthropicExhaustedWindow(headers, now)
+	if limit == nil {
+		return false
+	}
+	if !shouldPersistAnthropicWindowLimit(account, limit, now) {
+		return true
+	}
+
+	s.persistFormalPoolAnthropic429Extra(ctx, account, "rate_limited", limit.window, "rate_limited", limit.resetBucket)
+	s.notifyAccountSchedulingBlocked(account, limit.resetAt, "429")
+	if err := s.accountRepo.SetRateLimited(ctx, account.ID, limit.resetAt); err != nil {
+		slog.Warn("anthropic_window_rate_limit_set_failed", "window", limit.window, "error", err)
+		return true
+	}
+
+	windowEnd := limit.resetAt
+	if limit.fiveHourReset != nil {
+		windowEnd = *limit.fiveHourReset
+	}
+	windowStart := windowEnd.Add(-5 * time.Hour)
+	if err := s.accountRepo.UpdateSessionWindow(ctx, account.ID, &windowStart, &windowEnd, "rejected"); err != nil {
+		slog.Warn("anthropic_window_session_update_failed", "window", limit.window, "error", err)
+	}
+	return true
 }
 
 // calculateAnthropic429ResetTime parses Anthropic's per-window rate-limit headers

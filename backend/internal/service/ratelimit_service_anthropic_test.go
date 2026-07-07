@@ -125,6 +125,88 @@ func (r *anthropic429FallbackRepo) SetRateLimited(_ context.Context, _ int64, re
 	return nil
 }
 
+func TestHandleUpstreamError_AnthropicWindowLimitPreemptsTempUnschedRule(t *testing.T) {
+	resetAt := time.Now().Add(3 * time.Hour).UTC().Truncate(time.Second)
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-utilization", "1.02")
+	headers.Set("anthropic-ratelimit-unified-5h-reset", strconv.FormatInt(resetAt.Unix(), 10))
+
+	repo := &anthropic429FallbackRepo{}
+	svc := newRateLimitServiceForTest(repo)
+	account := &Account{
+		ID:       71,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"temp_unschedulable_enabled": true,
+			"temp_unschedulable_rules": []any{
+				map[string]any{
+					"error_code":       http.StatusTooManyRequests,
+					"keywords":         []any{"rate limit"},
+					"duration_minutes": 10,
+				},
+			},
+		},
+	}
+
+	svc.HandleUpstreamError(
+		context.Background(),
+		account,
+		http.StatusTooManyRequests,
+		headers,
+		[]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"rate limit exceeded"}}`),
+	)
+
+	if repo.rateLimitedAt == nil || !repo.rateLimitedAt.Equal(resetAt) {
+		t.Fatalf("expected official Anthropic window cooldown %v, got %v", resetAt, repo.rateLimitedAt)
+	}
+	if len(repo.sessionWindowCalls) != 1 || repo.sessionWindowCalls[0].Status != "rejected" {
+		t.Fatalf("expected rejected session window update, got %+v", repo.sessionWindowCalls)
+	}
+}
+
+func TestHandleUpstreamError_AnthropicWindowLimitKeepsLongerExistingCooldown(t *testing.T) {
+	existingReset := time.Now().Add(5 * time.Hour).UTC().Truncate(time.Second)
+	shorterReset := time.Now().Add(3 * time.Hour).UTC().Truncate(time.Second)
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-status", "rejected")
+	headers.Set("anthropic-ratelimit-unified-5h-reset", strconv.FormatInt(shorterReset.Unix(), 10))
+
+	repo := &anthropic429FallbackRepo{}
+	svc := newRateLimitServiceForTest(repo)
+	account := &Account{
+		ID:               72,
+		Platform:         PlatformAnthropic,
+		Type:             AccountTypeOAuth,
+		RateLimitResetAt: &existingReset,
+		Credentials: map[string]any{
+			"temp_unschedulable_enabled": true,
+			"temp_unschedulable_rules": []any{
+				map[string]any{
+					"error_code":       http.StatusTooManyRequests,
+					"keywords":         []any{"rate limit"},
+					"duration_minutes": 10,
+				},
+			},
+		},
+	}
+
+	svc.HandleUpstreamError(
+		context.Background(),
+		account,
+		http.StatusTooManyRequests,
+		headers,
+		[]byte(`{"error":{"message":"rate limit exceeded"}}`),
+	)
+
+	if repo.rateLimitedAt != nil {
+		t.Fatalf("expected existing longer cooldown to be kept, got new reset %v", repo.rateLimitedAt)
+	}
+	if len(repo.sessionWindowCalls) != 0 {
+		t.Fatalf("expected no session window update when keeping longer cooldown, got %+v", repo.sessionWindowCalls)
+	}
+}
+
 func TestHandle429_AnthropicAggregateResetParsesRFC3339AndMillis(t *testing.T) {
 	cases := []struct {
 		name string
