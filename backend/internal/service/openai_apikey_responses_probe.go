@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -15,15 +16,13 @@ import (
 )
 
 // openaiResponsesProbeTimeout 是探测请求的超时时长。
-// 探测必须快速失败——超时不应阻塞账号创建/更新流程。
-const openaiResponsesProbeTimeout = 8 * time.Second
+// 探测在后台异步执行；留出余量给推理型模型先推理再产出工具调用。
+const openaiResponsesProbeTimeout = 15 * time.Second
+
+const responsesProbeMaxBodyBytes = 256 * 1024
 
 // openaiResponsesProbePayload 是探测使用的最小 Responses 请求体。
-// 仅作能力探测，不期望响应内容质量；Stream=false 减少 SSE 解析开销。
-//
-// 注意：探测的目标是区分"端点存在"与"端点不存在"——只要上游返回非 404 的
-// 4xx/5xx（如 400 invalid_request_error / 401 unauthorized / 422 等），
-// 都视为"端点存在 → 支持 Responses"。仅 404 / 405 视为"端点不存在"。
+// 探测强制一次函数调用，只有真正产出 function_call 的 2xx 响应才判定支持。
 func openaiResponsesProbePayload(modelID string) []byte {
 	if strings.TrimSpace(modelID) == "" {
 		modelID = openai.DefaultTestModel
@@ -34,14 +33,49 @@ func openaiResponsesProbePayload(modelID string) []byte {
 			{
 				"role": "user",
 				"content": []map[string]any{
-					{"type": "input_text", "text": "hi"},
+					{"type": "input_text", "text": "Call the probe_ping function with ok=true."},
 				},
 			},
 		},
-		"instructions": openai.DefaultInstructions,
-		"stream":       false,
+		"tools": []map[string]any{
+			{
+				"type":        "function",
+				"name":        "probe_ping",
+				"description": "Capability probe. Call to acknowledge.",
+				"parameters": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"ok": map[string]any{"type": "boolean"},
+					},
+					"required": []string{"ok"},
+				},
+			},
+		},
+		"tool_choice":       "required",
+		"max_output_tokens": 512,
+		"stream":            false,
 	})
 	return body
+}
+
+func selectResponsesProbeModel(account *Account) string {
+	if account == nil {
+		return openai.DefaultTestModel
+	}
+	mapping := account.GetModelMapping()
+	candidates := make([]string, 0, len(mapping))
+	for _, upstream := range mapping {
+		upstream = strings.TrimSpace(upstream)
+		if upstream == "" || strings.Contains(upstream, "*") {
+			continue
+		}
+		candidates = append(candidates, upstream)
+	}
+	if len(candidates) == 0 {
+		return openai.DefaultTestModel
+	}
+	sort.Strings(candidates)
+	return candidates[0]
 }
 
 // ProbeOpenAIAPIKeyResponsesSupport 探测 OpenAI APIKey 账号上游是否支持
@@ -86,11 +120,12 @@ func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 	}
 
 	probeURL := buildOpenAIResponsesURL(normalizedBaseURL)
+	probeModel := selectResponsesProbeModel(account)
 
 	probeCtx, cancel := context.WithTimeout(ctx, openaiResponsesProbeTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(probeCtx, http.MethodPost, probeURL, bytes.NewReader(openaiResponsesProbePayload("")))
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodPost, probeURL, bytes.NewReader(openaiResponsesProbePayload(probeModel)))
 	if err != nil {
 		logger.LegacyPrintf("service.openai_probe", "probe_build_request_failed: account_id=%d err=%v", accountID, err)
 		return
@@ -106,12 +141,14 @@ func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 		logger.LegacyPrintf("service.openai_probe", "probe_request_failed: account_id=%d url=%s err=%v", accountID, probeURL, err)
 		return
 	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-		_ = resp.Body.Close()
-	}()
+	defer func() { _ = resp.Body.Close() }()
+	bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, responsesProbeMaxBodyBytes))
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, responsesProbeMaxBodyBytes))
+	if readErr != nil {
+		return
+	}
 
-	supported := isResponsesEndpointSupportedByStatus(resp.StatusCode)
+	supported := decideResponsesProbeSupport(resp.StatusCode, bodyBytes)
 
 	if err := s.accountRepo.UpdateExtra(ctx, accountID, map[string]any{
 		openai_compat.ExtraKeyResponsesSupported: supported,
@@ -155,4 +192,31 @@ func (s *AccountTestService) sendOpenAIProbeHTTPRequest(ctx context.Context, req
 		return nil, err
 	}
 	return resp, nil
+}
+
+func decideResponsesProbeSupport(status int, body []byte) bool {
+	if status == http.StatusNotFound || status == http.StatusMethodNotAllowed {
+		return false
+	}
+	if status < 200 || status >= 300 {
+		return true
+	}
+	return responsesProbeBodyHasFunctionCall(body)
+}
+
+func responsesProbeBodyHasFunctionCall(body []byte) bool {
+	var parsed struct {
+		Output []struct {
+			Type string `json:"type"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return false
+	}
+	for _, item := range parsed.Output {
+		if strings.TrimSpace(item.Type) == "function_call" {
+			return true
+		}
+	}
+	return false
 }
