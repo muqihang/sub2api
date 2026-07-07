@@ -265,7 +265,6 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 					h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 					if c.Writer.Size() != writerSizeBeforeForward {
 						reqLog.Warn("openai.images.upstream_failover_skipped_after_flush",
-							zap.Int64("account_id", account.ID),
 							zap.Int("upstream_status", failoverErr.StatusCode),
 						)
 						h.handleFailoverExhausted(c, failoverErr, true)
