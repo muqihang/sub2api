@@ -55,13 +55,14 @@ func (s *OpenAIGatewayService) ForwardCountTokensAsAnthropic(
 		writeAnthropicCountTokensError(c, http.StatusBadRequest, "invalid_request_error", "Failed to convert request body")
 		return fmt.Errorf("convert count_tokens request: %w", err)
 	}
-	upstreamBody, err := marshalOpenAIUpstreamJSON(openAIInputTokensCountRequest{
+	countReq := openAIInputTokensCountRequest{
 		Model:        upstreamModel,
 		Instructions: responsesReq.Instructions,
 		Input:        responsesReq.Input,
 		Tools:        responsesReq.Tools,
 		ToolChoice:   responsesReq.ToolChoice,
-	})
+	}
+	upstreamBody, err := marshalOpenAIUpstreamJSON(countReq)
 	if err != nil {
 		writeAnthropicCountTokensError(c, http.StatusInternalServerError, "api_error", "Failed to build request")
 		return fmt.Errorf("marshal input_tokens request: %w", err)
@@ -90,15 +91,16 @@ func (s *OpenAIGatewayService) ForwardCountTokensAsAnthropic(
 
 	if resp.StatusCode >= 400 {
 		respBody := s.readUpstreamErrorBody(resp)
+		if account.Type == AccountTypeOAuth && isOpenAIOAuthInputTokensUnsupported(resp.StatusCode, respBody) {
+			setOpsUpstreamError(c, resp.StatusCode, "input_tokens_oauth_scope_fallback", "")
+			c.JSON(http.StatusOK, gin.H{"input_tokens": estimateOpenAIInputTokensCountRequest(countReq)})
+			return nil
+		}
 		if s.rateLimitService != nil {
 			s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 		}
 		safeSummary := safeOpenAIInputTokensUpstreamErrorSummary(resp.StatusCode, respBody)
 		setOpsUpstreamError(c, resp.StatusCode, safeSummary, "")
-		if account.Type == AccountTypeOAuth && isOpenAIOAuthInputTokensUnsupported(resp.StatusCode) {
-			writeAnthropicCountTokensError(c, http.StatusNotFound, "not_found_error", "Token counting is not supported for this OpenAI account type")
-			return nil
-		}
 		if isOpenAIInputTokensUnsupported(resp.StatusCode, respBody) {
 			writeAnthropicCountTokensError(c, http.StatusNotFound, "not_found_error", "Token counting is not supported by upstream")
 			return nil
@@ -217,11 +219,36 @@ func safeOpenAIInputTokensUpstreamErrorSummary(statusCode int, body []byte) stri
 	}
 }
 
-func isOpenAIOAuthInputTokensUnsupported(statusCode int) bool {
+func isOpenAIOAuthInputTokensUnsupported(statusCode int, body []byte) bool {
 	switch statusCode {
 	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
-		return true
 	default:
 		return false
 	}
+
+	bodyLower := strings.ToLower(string(body))
+	msg := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(body)))
+	code := strings.ToLower(strings.TrimSpace(extractUpstreamErrorCode(body)))
+
+	if code == "missing_scope" ||
+		strings.Contains(bodyLower, "api.responses.write") ||
+		strings.Contains(bodyLower, "missing scopes") ||
+		strings.Contains(bodyLower, "insufficient_scope") {
+		return true
+	}
+	if statusCode == http.StatusNotFound && isOpenAIInputTokensUnsupported(statusCode, body) {
+		return true
+	}
+	return strings.Contains(msg, "input_tokens") &&
+		(strings.Contains(msg, "not found") ||
+			strings.Contains(msg, "not supported") ||
+			strings.Contains(msg, "unsupported"))
+}
+
+func estimateOpenAIInputTokensCountRequest(req openAIInputTokensCountRequest) int {
+	estimated := estimateOpenAIInputTokens(req)
+	if estimated < 1 {
+		return 1
+	}
+	return estimated
 }

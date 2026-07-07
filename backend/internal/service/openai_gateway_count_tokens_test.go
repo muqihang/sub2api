@@ -8,12 +8,29 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+type countTokensRuntimeStateRepo struct {
+	AccountRepository
+	tempUnschedCalls int
+	setErrorCalls    int
+}
+
+func (r *countTokensRuntimeStateRepo) SetTempUnschedulable(context.Context, int64, time.Time, string) error {
+	r.tempUnschedCalls++
+	return nil
+}
+
+func (r *countTokensRuntimeStateRepo) SetError(context.Context, int64, string) error {
+	r.setErrorCalls++
+	return nil
+}
 
 func TestOpenAIGatewayService_ForwardCountTokensAsAnthropic_APIKeyUsesResponsesInputTokens(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -106,4 +123,98 @@ func TestOpenAIGatewayService_ForwardCountTokensAsAnthropic_DoesNotEchoRawUpstre
 	if msg, ok := c.Get(OpsUpstreamErrorMessageKey); ok {
 		require.NotContains(t, msg, "raw-secret-body")
 	}
+}
+
+func TestOpenAIGatewayService_ForwardCountTokensAsAnthropic_OAuthScopeErrorFallsBackWithoutMutatingAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"claude-opus-4-1","system":"You are concise.","messages":[{"role":"user","content":"hello from count tokens"}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := `{"error":{"type":"invalid_request_error","code":"missing_scope","message":"Missing scopes: api.responses.write raw-scope-marker"}}`
+	upstream := &captureHTTPUpstream{resp: &http.Response{
+		StatusCode: http.StatusForbidden,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+	repo := &countTokensRuntimeStateRepo{}
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{
+			Enabled:           false,
+			AllowInsecureHTTP: true,
+		}}},
+		httpUpstream:     upstream,
+		rateLimitService: &RateLimitService{accountRepo: repo, cfg: &config.Config{}},
+	}
+	account := &Account{
+		ID:          303,
+		Name:        "openai-oauth",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token":  "oauth-access-token",
+			"refresh_token": "oauth-refresh-token",
+		},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	err := svc.ForwardCountTokensAsAnthropic(context.Background(), c, account, body, "gpt-5.4")
+
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Greater(t, int(gjson.Get(rec.Body.String(), "input_tokens").Int()), 0)
+	require.NotContains(t, rec.Body.String(), "api.responses.write")
+	require.NotContains(t, rec.Body.String(), "raw-scope-marker")
+	require.Zero(t, repo.tempUnschedCalls, "count_tokens OAuth scope fallback must not temp-unschedule the account")
+	require.Zero(t, repo.setErrorCalls, "count_tokens OAuth scope fallback must not mark the account error")
+	require.NotNil(t, upstream.lastReq)
+	require.Equal(t, "https://api.openai.com/v1/responses/input_tokens", upstream.lastReq.URL.String())
+	require.Equal(t, "Bearer oauth-access-token", upstream.lastReq.Header.Get("Authorization"))
+}
+
+func TestOpenAIGatewayService_ForwardCountTokensAsAnthropic_APIKeyInputTokensUnsupportedKeepsNotFound(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"claude-opus-4-1","messages":[{"role":"user","content":"hello"}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &captureHTTPUpstream{resp: &http.Response{
+		StatusCode: http.StatusNotFound,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"The /v1/responses/input_tokens endpoint was not found"}}`)),
+	}}
+	svc := &OpenAIGatewayService{
+		cfg: &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{
+			Enabled:           false,
+			AllowInsecureHTTP: true,
+		}}},
+		httpUpstream: upstream,
+	}
+	account := &Account{
+		ID:          404,
+		Name:        "openai-apikey",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "http://upstream.example",
+		},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	err := svc.ForwardCountTokensAsAnthropic(context.Background(), c, account, body, "gpt-5.4")
+
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNotFound, rec.Code)
+	require.Contains(t, rec.Body.String(), "Token counting is not supported by upstream")
 }
