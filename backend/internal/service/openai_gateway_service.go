@@ -3189,7 +3189,32 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		imageGenerationAllowed = GroupAllowsImageGeneration(apiKey.Group)
 	}
 	codexImageGenerationBridgeEnabled := isCodexCLI && imageGenerationAllowed && s.isCodexImageGenerationBridgeEnabled(ctx, account, apiKey)
+	isCompactRequest := isOpenAIResponsesCompactPath(c)
 	imageIntent := IsImageGenerationIntent(openAIResponsesEndpoint, reqModel, body)
+	sparkToolStripModel := reqModel
+	if account != nil {
+		if mappedModel := strings.TrimSpace(account.GetMappedModel(sparkToolStripModel)); mappedModel != "" {
+			sparkToolStripModel = mappedModel
+		}
+		if isCompactRequest {
+			if compactModel := strings.TrimSpace(resolveOpenAICompactForwardModel(account, sparkToolStripModel)); compactModel != "" {
+				sparkToolStripModel = compactModel
+			}
+		}
+		if upstreamModel := strings.TrimSpace(normalizeOpenAIModelForUpstream(account, sparkToolStripModel)); upstreamModel != "" {
+			sparkToolStripModel = upstreamModel
+		}
+	}
+	if isCodexSparkModel(sparkToolStripModel) && openAIRequestBodyHasImageGenerationTool(body) {
+		decoded, decodeErr := ensureReqBody()
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		if stripCodexSparkImageGenerationTools(decoded) {
+			markDecodedModified()
+			imageIntent = IsImageGenerationIntentMap(openAIResponsesEndpoint, reqModel, decoded)
+		}
+	}
 	if imageIntent && !imageGenerationAllowed {
 		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalFeatureGate)
 		c.JSON(http.StatusForbidden, gin.H{"error": gin.H{"type": "permission_error", "message": ImageGenerationPermissionMessage()}})
@@ -3209,7 +3234,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 
-	isCompactRequest := isOpenAIResponsesCompactPath(c)
 	if !isCompactRequest && isCodexCLI && imageGenerationAllowed && ensureOpenAIResponsesImageGenerationTool(reqBody) {
 		bodyModified = true
 		disablePatch()
@@ -4008,6 +4032,11 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	passthroughModelForCapability := strings.TrimSpace(gjson.GetBytes(body, "model").String())
 	if passthroughModelForCapability == "" {
 		passthroughModelForCapability = reqModel
+	}
+	if strippedBody, stripped, stripErr := stripCodexSparkImageGenerationToolFromRawPayload(body, passthroughModelForCapability); stripErr != nil {
+		return nil, fmt.Errorf("strip codex spark image_generation tool: %w", stripErr)
+	} else if stripped {
+		body = strippedBody
 	}
 	if account.Platform == PlatformOpenAI &&
 		account.Type == AccountTypeAPIKey &&
