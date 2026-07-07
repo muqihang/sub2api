@@ -15,9 +15,18 @@
       <div>
         <p class="text-xs font-medium text-gray-500">{{ t('usage.totalTokens') }}</p>
         <p class="text-xl font-bold">{{ formatTokens(stats?.total_tokens || 0) }}</p>
-        <p class="text-xs text-gray-500">
-          {{ t('usage.in') }}: {{ formatTokens(stats?.total_input_tokens || 0) }} /
-          {{ t('usage.out') }}: {{ formatTokens(stats?.total_output_tokens || 0) }}
+        <p class="flex flex-wrap items-center gap-x-1 text-xs text-gray-500">
+          <span>{{ t('usage.in') }}: {{ formatTokens(stats?.total_input_tokens || 0) }}</span>
+          <span>/</span>
+          <span>{{ t('usage.out') }}: {{ formatTokens(stats?.total_output_tokens || 0) }}</span>
+          <span>/</span>
+          <span>{{ t('usage.cacheTotal') }}: {{ formatTokens(stats?.total_cache_tokens || 0) }}</span>
+        </p>
+        <p class="text-xs text-gray-400">
+          <span>{{ t('usage.cacheBreakdown') }}: </span>
+          <span>{{ t('usage.cacheCreationTokensLabel') }} {{ formatTokens(stats?.total_cache_creation_tokens || 0) }}</span>
+          <span> / </span>
+          <span>{{ t('usage.cacheReadTokensLabel') }} {{ formatTokens(stats?.total_cache_read_tokens || 0) }}</span>
         </p>
       </div>
     </div>
