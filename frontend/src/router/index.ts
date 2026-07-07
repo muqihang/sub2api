@@ -32,10 +32,27 @@ export const routes: RouteRecordRaw[] = [
   {
     path: '/home',
     name: 'Home',
-    component: () => import('@/views/HomeView.vue'),
+    component: () => import('@/views/public/StaticMockupView.vue'),
+    props: {
+      src: '/brand/mockups/homepage-codex-premium-v6.html',
+      title: '逐梦 Agent 首页'
+    },
     meta: {
       requiresAuth: false,
       title: 'Home'
+    }
+  },
+  {
+    path: '/codex-gateway',
+    name: 'CodexGateway',
+    component: () => import('@/views/public/StaticMockupView.vue'),
+    props: {
+      src: '/brand/mockups/codex-gateway.html',
+      title: 'Codex Gateway'
+    },
+    meta: {
+      requiresAuth: false,
+      title: 'Codex Gateway'
     }
   },
   {
@@ -772,6 +789,8 @@ const navigationLoading = useNavigationLoadingState()
 // 延迟初始化预加载，传入 router 实例
 let routePrefetch: ReturnType<typeof useRoutePrefetch> | null = null
 export const BACKEND_MODE_ALLOWED_PATHS = [
+  '/home',
+  '/codex-gateway',
   '/login',
   '/key-usage',
   '/setup',

@@ -57,7 +57,7 @@ interface MockAuthState {
   setupNeedsSetup?: boolean
 }
 
-const backendModeAllowedPaths = ['/login', '/key-usage', '/setup', '/payment/result', '/plugin/augment/quick-login']
+const backendModeAllowedPaths = ['/home', '/codex-gateway', '/login', '/key-usage', '/setup', '/payment/result', '/plugin/augment/quick-login']
 const backendModeCallbackPaths = [
   '/auth/callback',
   '/auth/linuxdo/callback',
@@ -328,7 +328,7 @@ describe('路由守卫逻辑', () => {
   })
 
   describe('Backend Mode', () => {
-    it('unauthenticated: /home redirects to /login', () => {
+    it('unauthenticated: /home is allowed', () => {
       const authState: MockAuthState = {
         isAuthenticated: false,
         isAdmin: false,
@@ -337,7 +337,7 @@ describe('路由守卫逻辑', () => {
         hasPendingAuthSession: false,
       }
       const redirect = simulateGuard('/home', { requiresAuth: false }, authState)
-      expect(redirect).toBe('/login')
+      expect(redirect).toBeNull()
     })
 
     it('unauthenticated: /login is allowed', () => {
