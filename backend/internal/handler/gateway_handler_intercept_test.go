@@ -21,6 +21,14 @@ func TestDetectInterceptType_MaxTokensOneHaikuRequiresClaudeCodeClient(t *testin
 	require.Equal(t, InterceptTypeMaxTokensOneHaiku, isClaudeCode)
 }
 
+func TestDetectInterceptType_MaxTokensOneHaikuAllowsStreaming(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+
+	got := detectInterceptType(body, "claude-haiku-4-5", 1, true, true)
+
+	require.Equal(t, InterceptTypeMaxTokensOneHaiku, got)
+}
+
 func TestDetectInterceptType_SuggestionModeUnaffected(t *testing.T) {
 	body := []byte(`{
 		"messages":[{
@@ -63,7 +71,6 @@ func TestSendMockInterceptResponse_MaxTokensOneHaiku(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, float64(1), usage["output_tokens"])
 }
-
 
 func TestEstimateNativeCountTokensResponseDoesNotEchoPrompt(t *testing.T) {
 	body := []byte(`{"model":"claude-sonnet-4-6","system":[{"type":"text","text":"system secret must not echo"}],"messages":[{"role":"user","content":[{"type":"text","text":"count-token-prompt-must-not-leak"}]}]}`)

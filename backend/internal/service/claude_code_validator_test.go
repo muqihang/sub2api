@@ -295,7 +295,39 @@ func TestClaudeCodeValidator_BillingBlockRecognizedWithoutIdentityPrompt(t *test
 	require.True(t, ok)
 }
 
-func TestClaudeCodeValidator_BillingBlockNonCLIEntrypointFallsThrough(t *testing.T) {
+func TestClaudeCodeValidator_BillingBlockVSCodeEntrypointRecognized(t *testing.T) {
+	monitorPrompt, err := os.ReadFile("testdata/security_monitor_system_prompt.txt")
+	require.NoError(t, err)
+
+	validator := NewClaudeCodeValidator()
+	require.Less(t, validator.bestSimilarityScore(string(monitorPrompt)), systemPromptThreshold)
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/v1/messages", nil)
+	req.Header.Set("User-Agent", "claude-cli/2.1.181 (external, claude-vscode, agent-sdk/0.3.181)")
+	req.Header.Set("X-App", "cli")
+	req.Header.Set("anthropic-beta", "claude-code-20250219")
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	ok := validator.Validate(req, map[string]any{
+		"model": "claude-opus-4-8",
+		"system": []any{
+			map[string]any{
+				"type": "text",
+				"text": "x-anthropic-billing-header: cc_version=2.1.181.f17; cc_entrypoint=claude-vscode;",
+			},
+			map[string]any{
+				"type": "text",
+				"text": string(monitorPrompt),
+			},
+		},
+		"metadata": map[string]any{
+			"user_id": claudeCodeMetadataUserIDJSON,
+		},
+	})
+	require.True(t, ok)
+}
+
+func TestClaudeCodeValidator_BillingBlockWithoutEntrypointFallsThrough(t *testing.T) {
 	validator := NewClaudeCodeValidator()
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/v1/messages", nil)
 	req.Header.Set("User-Agent", "claude-cli/2.1.162 (external, cli)")
@@ -303,14 +335,14 @@ func TestClaudeCodeValidator_BillingBlockNonCLIEntrypointFallsThrough(t *testing
 	req.Header.Set("anthropic-beta", "claude-code-20250219")
 	req.Header.Set("anthropic-version", "2023-06-01")
 
-	// 计费块存在但 entrypoint 不是 cli（如 sdk），且无身份 prose：
-	// 不应凭前缀放行，应落回 Dice 检查并失败。验证 cc_entrypoint=cli 这一条件是必要的。
+	// 计费块前缀命中但完全没有 cc_entrypoint= 字段，且无身份 prose：
+	// 不应凭前缀放行，应落回 Dice 检查并失败。验证 cc_entrypoint= 字段存在仍是必要条件。
 	ok := validator.Validate(req, map[string]any{
 		"model": "claude-3-5-haiku-20241022",
 		"system": []any{
 			map[string]any{
 				"type": "text",
-				"text": "x-anthropic-billing-header: cc_version=2.1.162.884; cc_entrypoint=sdk; cch=d8726;",
+				"text": "x-anthropic-billing-header: cc_version=2.1.162.884; cch=d8726;",
 			},
 			map[string]any{
 				"type": "text",
