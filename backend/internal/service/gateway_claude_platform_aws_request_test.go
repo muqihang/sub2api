@@ -534,7 +534,7 @@ func TestGatewayService_ForwardClaudePlatformAWSFormalPoolUsesCCGatewayWithoutAc
 	}
 	cfg := ccGatewayTestConfig(PlatformAnthropic)
 	refreshClaudePlatformAWSFormalPoolAuthorityForRequestTest(t, account, cfg)
-	upstream := &claudePlatformAWSAccountTestUpstream{resp: newAnthropicSuccessResponse()}
+	upstream := &claudePlatformAWSAccountTestUpstream{resp: newCCGatewayFormalPoolSyncBridgeSSE()}
 	svc := &GatewayService{
 		cfg:                 cfg,
 		httpUpstream:        upstream,
@@ -567,7 +567,7 @@ func TestGatewayService_ForwardClaudePlatformAWSFormalPoolStripsDownstreamBillin
 	markClaudePlatformAWSFormalPoolForRequestTest(t, account)
 	cfg := ccGatewayTestConfig(PlatformAnthropic)
 	refreshClaudePlatformAWSFormalPoolAuthorityForRequestTest(t, account, cfg)
-	upstream := &claudePlatformAWSAccountTestUpstream{resp: newAnthropicSuccessResponse()}
+	upstream := &claudePlatformAWSAccountTestUpstream{resp: newCCGatewayFormalPoolSyncBridgeSSE()}
 	svc := &GatewayService{
 		cfg:                 cfg,
 		httpUpstream:        upstream,
@@ -593,7 +593,7 @@ func TestGatewayService_ClaudePlatformAWSFormalPoolObservedVersionUsesRawClientH
 	markClaudePlatformAWSFormalPoolForRequestTest(t, account)
 	cfg := ccGatewayTestConfig(PlatformAnthropic)
 	refreshClaudePlatformAWSFormalPoolAuthorityForRequestTest(t, account, cfg)
-	upstream := &claudePlatformAWSAccountTestUpstream{resp: newAnthropicSuccessResponse()}
+	upstream := &claudePlatformAWSAccountTestUpstream{resp: newCCGatewayFormalPoolSyncBridgeSSE()}
 	svc := &GatewayService{
 		cfg:                 cfg,
 		httpUpstream:        upstream,

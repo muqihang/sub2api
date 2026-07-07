@@ -214,6 +214,18 @@ func anthropicStreamEventIsTerminal(eventName, data string) bool {
 	return gjson.Get(trimmed, "type").String() == "message_stop"
 }
 
+func shouldBridgeCCGatewayFormalPoolNonStreamingClient(useCCGateway bool, account *Account, clientStream bool) bool {
+	return useCCGateway && requiresCCGatewayFormalPoolAttestation(account) && !clientStream
+}
+
+func forceAnthropicMessagesStream(body []byte) ([]byte, error) {
+	next, err := sjson.SetBytes(body, "stream", true)
+	if err != nil {
+		return nil, fmt.Errorf("rewrite request body stream mode: %w", err)
+	}
+	return next, nil
+}
+
 func cloneStringSlice(src []string) []string {
 	if len(src) == 0 {
 		return nil
@@ -4772,7 +4784,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		return nil
 	}
 	reqModel := parsed.Model
-	reqStream := parsed.Stream
+	clientStream := parsed.Stream
+	reqStream := clientStream
 	originalModel := reqModel
 	var useCCGateway bool
 	var ccGatewayErr error
@@ -4797,7 +4810,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			"account":      fmt.Sprintf("%d(%s)", account.ID, account.Name),
 			"account_type": string(account.Type),
 			"model":        reqModel,
-			"stream":       strconv.FormatBool(reqStream),
+			"stream":       strconv.FormatBool(clientStream),
 		})
 	}
 
@@ -4921,6 +4934,18 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		if err := replaceBody(StripEmptyTextBlocks(body)); err != nil {
 			return nil, err
 		}
+	}
+
+	bridgeNonStreamingViaCCGateway := shouldBridgeCCGatewayFormalPoolNonStreamingClient(useCCGateway, account, clientStream)
+	if bridgeNonStreamingViaCCGateway {
+		streamingBody, err := forceAnthropicMessagesStream(body)
+		if err != nil {
+			return nil, err
+		}
+		if err := replaceBody(streamingBody); err != nil {
+			return nil, err
+		}
+		reqStream = true
 	}
 
 	// 重试间复用同一请求体，避免每次 string(body) 产生额外分配。
@@ -5470,7 +5495,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	var usage *ClaudeUsage
 	var firstTokenMs *int
 	var clientDisconnect bool
-	if reqStream {
+	if clientStream {
 		streamResult, err := s.handleStreamingResponse(ctx, resp, c, account, startTime, originalModel, reqModel, shouldMimicClaudeCode)
 		if err != nil {
 			if err.Error() == "have error in stream" {
@@ -5483,6 +5508,14 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		usage = streamResult.usage
 		firstTokenMs = streamResult.firstTokenMs
 		clientDisconnect = streamResult.clientDisconnect
+	} else if bridgeNonStreamingViaCCGateway {
+		usage, err = s.handleStreamingResponseAsNonStreamingJSON(ctx, resp, c, account, originalModel, reqModel)
+		if err != nil {
+			if err.Error() == "have error in stream" {
+				return nil, &UpstreamFailoverError{StatusCode: 403}
+			}
+			return nil, err
+		}
 	} else {
 		usage, err = s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, reqModel)
 		if err != nil {
@@ -5497,7 +5530,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		Usage:            *usage,
 		Model:            originalModel, // 使用原始模型用于计费和日志
 		UpstreamModel:    reqModel,
-		Stream:           reqStream,
+		Stream:           clientStream,
 		Duration:         time.Since(startTime),
 		FirstTokenMs:     firstTokenMs,
 		ClientDisconnect: clientDisconnect,
@@ -9474,6 +9507,277 @@ func (s *GatewayService) resolveCacheTTLUsageOverrideTarget(ctx context.Context,
 		return cacheTTLTarget5m, true
 	}
 	return "", false
+}
+
+func (s *GatewayService) handleStreamingResponseAsNonStreamingJSON(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*ClaudeUsage, error) {
+	if s.rateLimitService != nil {
+		s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
+	}
+	if s.responseHeaderFilter != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	}
+	if v := resp.Header.Get("x-request-id"); v != "" {
+		c.Header("x-request-id", v)
+	}
+
+	usage := &ClaudeUsage{}
+	message := map[string]any{
+		"id":      "",
+		"type":    "message",
+		"role":    "assistant",
+		"model":   originalModel,
+		"content": []any{},
+	}
+	content := make([]map[string]any, 0)
+	partialToolInputs := map[int]*strings.Builder{}
+	sawTerminalEvent := false
+
+	maxLineSize := defaultMaxLineSize
+	if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
+		maxLineSize = s.cfg.Gateway.MaxLineSize
+	}
+	scanner := bufio.NewScanner(resp.Body)
+	scanBuf := getSSEScannerBuf64K()
+	defer putSSEScannerBuf64K(scanBuf)
+	scanner.Buffer(scanBuf[:0], maxLineSize)
+
+	ensureBlock := func(index int) map[string]any {
+		for len(content) <= index {
+			content = append(content, map[string]any{"type": "text", "text": ""})
+		}
+		if content[index] == nil {
+			content[index] = map[string]any{"type": "text", "text": ""}
+		}
+		return content[index]
+	}
+	eventIndex := func(event map[string]any) (int, bool) {
+		v, ok := parseSSEUsageInt(event["index"])
+		if !ok || v < 0 {
+			return 0, false
+		}
+		return v, true
+	}
+	finalizeToolInput := func(index int) {
+		builder := partialToolInputs[index]
+		if builder == nil {
+			return
+		}
+		block := ensureBlock(index)
+		var input any
+		if err := json.Unmarshal([]byte(builder.String()), &input); err == nil {
+			block["input"] = input
+		} else if _, exists := block["input"]; !exists {
+			// Never echo an unparsable partial_json fragment into the response.
+			block["input"] = map[string]any{}
+		}
+		delete(partialToolInputs, index)
+	}
+	applyUsagePatch := func(event map[string]any) {
+		if eventType, _ := event["type"].(string); eventType == "message_start" {
+			if msg, ok := event["message"].(map[string]any); ok {
+				if u, ok := msg["usage"].(map[string]any); ok {
+					reconcileCachedTokens(u)
+					if overrideTarget, ok := s.resolveCacheTTLUsageOverrideTarget(ctx, account); ok {
+						rewriteCacheCreationJSON(u, overrideTarget)
+					}
+				}
+			}
+		}
+		if eventType, _ := event["type"].(string); eventType == "message_delta" {
+			if u, ok := event["usage"].(map[string]any); ok {
+				reconcileCachedTokens(u)
+				if overrideTarget, ok := s.resolveCacheTTLUsageOverrideTarget(ctx, account); ok {
+					rewriteCacheCreationJSON(u, overrideTarget)
+				}
+			}
+		}
+		if patch := s.extractSSEUsagePatch(event); patch != nil {
+			mergeSSEUsagePatch(usage, patch)
+		}
+	}
+
+	pendingEventLines := make([]string, 0, 4)
+	processSSEEvent := func(lines []string) error {
+		if len(lines) == 0 {
+			return nil
+		}
+		eventName := ""
+		dataLine := ""
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "event:") {
+				eventName = strings.TrimSpace(strings.TrimPrefix(trimmed, "event:"))
+				continue
+			}
+			if dataLine == "" && sseDataRe.MatchString(trimmed) {
+				dataLine = sseDataRe.ReplaceAllString(trimmed, "")
+			}
+		}
+		if eventName == "error" {
+			return errors.New("have error in stream")
+		}
+		if dataLine == "" {
+			return nil
+		}
+		if anthropicStreamEventIsTerminal(eventName, dataLine) {
+			sawTerminalEvent = true
+			if strings.TrimSpace(dataLine) == "[DONE]" {
+				return nil
+			}
+		}
+		var event map[string]any
+		if err := json.Unmarshal([]byte(dataLine), &event); err != nil {
+			return nil
+		}
+		eventType, _ := event["type"].(string)
+		if eventName == "" {
+			eventName = eventType
+		}
+		applyUsagePatch(event)
+		switch eventType {
+		case "message_start":
+			if msg, ok := event["message"].(map[string]any); ok {
+				message = msg
+				if model, ok := message["model"].(string); ok && originalModel != mappedModel && model == mappedModel {
+					message["model"] = originalModel
+				}
+				message["content"] = []any{}
+			}
+		case "content_block_start":
+			index, ok := eventIndex(event)
+			if !ok {
+				return nil
+			}
+			block, _ := event["content_block"].(map[string]any)
+			if block == nil {
+				block = map[string]any{"type": "text", "text": ""}
+			}
+			ensureBlock(index)
+			content[index] = block
+		case "content_block_delta":
+			index, ok := eventIndex(event)
+			if !ok {
+				return nil
+			}
+			delta, _ := event["delta"].(map[string]any)
+			if delta == nil {
+				return nil
+			}
+			block := ensureBlock(index)
+			switch deltaType, _ := delta["type"].(string); deltaType {
+			case "text_delta":
+				if text, _ := delta["text"].(string); text != "" {
+					current, _ := block["text"].(string)
+					block["text"] = current + text
+				}
+			case "input_json_delta":
+				if partial, _ := delta["partial_json"].(string); partial != "" {
+					builder := partialToolInputs[index]
+					if builder == nil {
+						builder = &strings.Builder{}
+						partialToolInputs[index] = builder
+					}
+					_, _ = builder.WriteString(partial)
+				}
+			case "thinking_delta":
+				if text, _ := delta["thinking"].(string); text != "" {
+					current, _ := block["thinking"].(string)
+					block["thinking"] = current + text
+				}
+			case "signature_delta":
+				if signature, _ := delta["signature"].(string); signature != "" {
+					current, _ := block["signature"].(string)
+					block["signature"] = current + signature
+				}
+			case "citations_delta":
+				if citation, ok := delta["citation"]; ok {
+					citations, _ := block["citations"].([]any)
+					block["citations"] = append(citations, citation)
+				}
+			}
+		case "content_block_stop":
+			if index, ok := eventIndex(event); ok {
+				finalizeToolInput(index)
+			}
+		case "message_delta":
+			if delta, ok := event["delta"].(map[string]any); ok {
+				if stopReason, exists := delta["stop_reason"]; exists {
+					message["stop_reason"] = stopReason
+				}
+				if stopSequence, exists := delta["stop_sequence"]; exists {
+					message["stop_sequence"] = stopSequence
+				}
+			}
+		case "message_stop":
+			sawTerminalEvent = true
+		}
+		return nil
+	}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.TrimSpace(line) == "" {
+			if err := processSSEEvent(pendingEventLines); err != nil {
+				return nil, err
+			}
+			pendingEventLines = pendingEventLines[:0]
+			continue
+		}
+		pendingEventLines = append(pendingEventLines, line)
+	}
+	if len(pendingEventLines) > 0 {
+		if err := processSSEEvent(pendingEventLines); err != nil {
+			return nil, err
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if !sawTerminalEvent {
+		return nil, fmt.Errorf("stream usage incomplete: missing terminal event")
+	}
+	for index := range partialToolInputs {
+		finalizeToolInput(index)
+	}
+	contentAny := make([]any, 0, len(content))
+	for _, block := range content {
+		contentAny = append(contentAny, block)
+	}
+	message["content"] = contentAny
+	message["usage"] = anthropicUsageObjectFromClaudeUsage(*usage)
+	if _, ok := message["type"].(string); !ok {
+		message["type"] = "message"
+	}
+	if _, ok := message["role"].(string); !ok {
+		message["role"] = "assistant"
+	}
+	if model, _ := message["model"].(string); model == "" {
+		message["model"] = originalModel
+	}
+
+	body, err := json.Marshal(message)
+	if err != nil {
+		return nil, fmt.Errorf("serialize aggregated stream response: %w", err)
+	}
+	body = reverseToolNamesIfPresent(c, body)
+	c.Data(resp.StatusCode, "application/json", body)
+	return usage, nil
+}
+
+func anthropicUsageObjectFromClaudeUsage(usage ClaudeUsage) map[string]any {
+	out := map[string]any{
+		"input_tokens":                usage.InputTokens,
+		"output_tokens":               usage.OutputTokens,
+		"cache_creation_input_tokens": usage.CacheCreationInputTokens,
+		"cache_read_input_tokens":     usage.CacheReadInputTokens,
+	}
+	if usage.CacheCreation5mTokens != 0 || usage.CacheCreation1hTokens != 0 {
+		out["cache_creation"] = map[string]any{
+			"ephemeral_5m_input_tokens": usage.CacheCreation5mTokens,
+			"ephemeral_1h_input_tokens": usage.CacheCreation1hTokens,
+		}
+	}
+	return out
 }
 
 func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, originalModel, mappedModel string) (*ClaudeUsage, error) {
