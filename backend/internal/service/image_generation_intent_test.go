@@ -227,3 +227,35 @@ func TestCollectOpenAIImageOutputSizesFromSSEBody(t *testing.T) {
 	require.Equal(t, 2, countOpenAIImageOutputsFromSSEBody(body))
 	require.Equal(t, []string{"3840x2160", "1024x1024"}, collectOpenAIImageOutputSizesFromSSEBody(body))
 }
+
+func TestOpenAIImageOutputCounterIgnoresNonImageDataArrayItems(t *testing.T) {
+	body := []byte(`{
+		"data": [
+			{"id":"msg_1","type":"message","status":"completed","content":[{"type":"output_text","text":"hello"}]},
+			{"id":"usage_1","object":"usage","total_tokens":12}
+		]
+	}`)
+
+	require.Equal(t, 0, countOpenAIResponseImageOutputsFromJSONBytes(body))
+	require.Nil(t, collectOpenAIResponseImageOutputSizesFromJSONBytes(body))
+}
+
+func TestOpenAIImageOutputCounterCountsOnlyRealImageDataArrayItems(t *testing.T) {
+	body := []byte(`{
+		"data": [
+			{"id":"msg_1","type":"message","content":[{"type":"output_text","text":"hello"}],"size":"2048x1152"},
+			{"b64_json":"final-a","size":"1024x1024"},
+			{"url":"https://example.test/final-b.png","size":"3840x2160"}
+		]
+	}`)
+
+	require.Equal(t, 2, countOpenAIResponseImageOutputsFromJSONBytes(body))
+	require.Equal(t, []string{"1024x1024", "3840x2160"}, collectOpenAIResponseImageOutputSizesFromJSONBytes(body))
+}
+
+func TestOpenAIImageOutputCounterIgnoresEmptyImageGenerationCompleted(t *testing.T) {
+	counter := newOpenAIImageOutputCounter()
+	counter.AddSSEData([]byte(`{"type":"image_generation.completed","id":"ig_empty"}`))
+
+	require.Equal(t, 0, counter.Count())
+}
