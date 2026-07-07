@@ -470,6 +470,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, "", int64(0)) // Gemini 不使用会话限制
 			if err != nil {
 				if len(fs.FailedAccountIDs) == 0 {
+					cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, platform)
+					if cls.ModelNotFound {
+						h.handleStreamingAwareError(c, cls.Status, cls.ErrType, cls.Message, streamStarted)
+						return
+					}
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 					reqLog.Warn("gateway.select_account_no_available",
 						zap.String("model", reqModel),
@@ -738,6 +743,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), currentAPIKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, parsedReq.MetadataUserID, subject.UserID)
 			if err != nil {
 				if len(fs.FailedAccountIDs) == 0 {
+					cls := classifyNoAccountErrorFromGin(c, h.gatewayService, currentAPIKey, reqModel, reqModel, platform)
+					if cls.ModelNotFound {
+						h.handleStreamingAwareError(c, cls.Status, cls.ErrType, cls.Message, streamStarted)
+						return
+					}
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 					reqLog.Warn("gateway.select_account_no_available",
 						zap.String("model", reqModel),
@@ -2349,8 +2359,11 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 	account, err := h.gatewayService.SelectAccountForModel(c.Request.Context(), apiKey.GroupID, sessionHash, parsedReq.Model)
 	if err != nil {
 		reqLog.Warn("gateway.count_tokens_select_account_failed", zap.Error(err))
-		markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
-		h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable")
+		cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, parsedReq.Model, parsedReq.Model, service.PlatformAnthropic)
+		if !cls.ModelNotFound {
+			markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
+		}
+		h.errorResponse(c, cls.Status, cls.ErrType, cls.Message)
 		return
 	}
 	setOpsSelectedAccount(c, account.ID, account.Platform)
