@@ -844,6 +844,163 @@ func TestOpenAIGatewayServiceForwardImages_OAuthNonStreamServerErrorReturnsFailo
 	}
 }
 
+func TestOpenAIImagesOAuthNonStreamIncompleteMaxOutputTokensFailsOver(t *testing.T) {
+	payload := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_incomplete\",\"created_at\":1710000030}}\n\n" +
+		"data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_incomplete\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[]}}\n\n"
+
+	result, err, c, rec := forwardOpenAIImagesOAuthNonStreamPayload(t, payload)
+
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+	require.Contains(t, string(failoverErr.ResponseBody), "response_incomplete")
+	require.False(t, c.Writer.Written())
+	require.Empty(t, rec.Body.String())
+
+	events := requireOpenAIImagesOpsEvents(t, c)
+	require.Len(t, events, 1)
+	require.Equal(t, "failover", events[0].Kind)
+	require.Equal(t, http.StatusBadGateway, events[0].UpstreamStatusCode)
+	requireSafeOpenAIImagesNoOutputDetail(t, events[0].Detail, "response.incomplete", "incomplete", "max_output_tokens", false)
+}
+
+func TestOpenAIImagesOAuthNonStreamIncompleteContentFilterReturnsClientError(t *testing.T) {
+	payload := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_filter\",\"created_at\":1710000031}}\n\n" +
+		"data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp_filter\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"content_filter\"},\"output\":[]}}\n\n"
+
+	result, err, c, rec := forwardOpenAIImagesOAuthNonStreamPayload(t, payload)
+
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.False(t, errors.As(err, &failoverErr))
+	var upstreamErr *OpenAIImagesUpstreamError
+	require.ErrorAs(t, err, &upstreamErr)
+	require.Equal(t, http.StatusBadRequest, upstreamErr.StatusCode)
+	require.Equal(t, "response_incomplete", upstreamErr.Code)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "image_generation_user_error", gjson.Get(rec.Body.String(), "error.type").String())
+
+	events := requireOpenAIImagesOpsEvents(t, c)
+	require.Len(t, events, 1)
+	require.Equal(t, "http_error", events[0].Kind)
+	require.Equal(t, http.StatusBadRequest, events[0].UpstreamStatusCode)
+	requireSafeOpenAIImagesNoOutputDetail(t, events[0].Detail, "response.incomplete", "incomplete", "content_filter", false)
+}
+
+func TestOpenAIImagesOAuthNonStreamCompletedRefusalReturnsClientError(t *testing.T) {
+	refusalText := "I cannot generate that image because it violates the safety policy."
+	payload := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_refusal\",\"created_at\":1710000032}}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"delta\":\"" + refusalText + "\"}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_refusal\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"" + refusalText + "\"}]}]}}\n\n"
+
+	result, err, c, rec := forwardOpenAIImagesOAuthNonStreamPayload(t, payload)
+
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.False(t, errors.As(err, &failoverErr))
+	var upstreamErr *OpenAIImagesUpstreamError
+	require.ErrorAs(t, err, &upstreamErr)
+	require.Equal(t, http.StatusBadRequest, upstreamErr.StatusCode)
+	require.Equal(t, "content_policy_violation", upstreamErr.Code)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "image_generation_user_error", gjson.Get(rec.Body.String(), "error.type").String())
+
+	events := requireOpenAIImagesOpsEvents(t, c)
+	require.Len(t, events, 1)
+	require.Equal(t, "http_error", events[0].Kind)
+	require.Equal(t, http.StatusBadRequest, events[0].UpstreamStatusCode)
+	requireSafeOpenAIImagesNoOutputDetail(t, events[0].Detail, "response.completed", "completed", "", true)
+	require.NotContains(t, events[0].Detail, refusalText)
+	require.NotContains(t, events[0].Message, refusalText)
+}
+
+func TestOpenAIImagesOAuthNonStreamCompletedEmptyOutputFailsOver(t *testing.T) {
+	payload := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_empty\",\"created_at\":1710000033}}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_empty\",\"status\":\"completed\",\"output\":[]}}\n\n"
+
+	result, err, c, rec := forwardOpenAIImagesOAuthNonStreamPayload(t, payload)
+
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+	require.Contains(t, string(failoverErr.ResponseBody), "no_image_output")
+	require.False(t, c.Writer.Written())
+	require.Empty(t, rec.Body.String())
+
+	events := requireOpenAIImagesOpsEvents(t, c)
+	require.Len(t, events, 1)
+	require.Equal(t, "failover", events[0].Kind)
+	require.Equal(t, http.StatusBadGateway, events[0].UpstreamStatusCode)
+	requireSafeOpenAIImagesNoOutputDetail(t, events[0].Detail, "response.completed", "completed", "", false)
+}
+
+func forwardOpenAIImagesOAuthNonStreamPayload(t *testing.T, payload string) (*OpenAIForwardResult, error, *gin.Context, *httptest.ResponseRecorder) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","response_format":"b64_json"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+	c.Set("api_key", &APIKey{ID: 42})
+
+	svc := &OpenAIGatewayService{
+		httpUpstream: &httpUpstreamRecorder{
+			resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header: http.Header{
+					"Content-Type": []string{"text/event-stream"},
+					"X-Request-Id": []string{"req_img_no_output"},
+				},
+				Body: io.NopCloser(strings.NewReader(payload)),
+			},
+		},
+	}
+	parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+	require.NoError(t, err)
+	account := &Account{
+		ID:       31,
+		Name:     "openai-oauth-no-output",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": "token-123",
+		},
+	}
+
+	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
+	return result, err, c, rec
+}
+
+func requireOpenAIImagesOpsEvents(t *testing.T, c *gin.Context) []*OpsUpstreamErrorEvent {
+	t.Helper()
+	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, ok)
+	events, ok := rawEvents.([]*OpsUpstreamErrorEvent)
+	require.True(t, ok)
+	return events
+}
+
+func requireSafeOpenAIImagesNoOutputDetail(t *testing.T, detail, lastEvent, responseStatus, incompleteReason string, refusalPresent bool) {
+	t.Helper()
+	require.NotEmpty(t, detail)
+	require.True(t, gjson.Valid(detail), detail)
+	require.Equal(t, lastEvent, gjson.Get(detail, "last_event").String())
+	require.Equal(t, responseStatus, gjson.Get(detail, "response_status").String())
+	require.Equal(t, incompleteReason, gjson.Get(detail, "incomplete_reason").String())
+	require.Equal(t, refusalPresent, gjson.Get(detail, "refusal_present").Bool())
+	require.False(t, gjson.Get(detail, "raw_body").Exists())
+	require.False(t, gjson.Get(detail, "raw_response").Exists())
+	require.False(t, gjson.Get(detail, "raw_refusal").Exists())
+	require.NotContains(t, detail, "data:")
+	require.NotContains(t, detail, "output_text")
+	require.NotContains(t, detail, "prompt")
+	require.NotContains(t, detail, "token-123")
+}
+
 func TestOpenAIGatewayServiceForwardImages_APIKeyGenerationUsesConfiguredV1BaseURL(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","response_format":"b64_json"}`)
