@@ -417,6 +417,7 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
 
         self.assertEqual(
             {
+                "claude-fable-5",
                 "claude-opus-4-8",
                 "claude-sonnet-4-6",
                 "claude-haiku-4-5-20251001",
@@ -425,7 +426,6 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
         )
         self.assertEqual(native_models, catalog_native_models)
         self.assertNotIn("claude-opus-4-7", native_models)
-        self.assertNotIn("claude-fable-5", native_models)
         self.assertNotIn("claude-opus-4-5-20251101", native_models)
         self.assertNotIn("claude-sonnet-4-5-20250929", native_models)
 

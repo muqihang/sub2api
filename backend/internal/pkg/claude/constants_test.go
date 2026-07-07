@@ -82,15 +82,16 @@ func TestDefaultModels_ExposeCurrentClaudeCodeNativeSetOnly(t *testing.T) {
 	}
 
 	require.Equal(t, []string{
+		"claude-fable-5",
 		"claude-opus-4-8",
 		"claude-sonnet-4-6",
 		"claude-haiku-4-5-20251001",
 	}, ids)
+	require.Equal(t, "Claude Fable 5", byID["claude-fable-5"].DisplayName)
 	require.Equal(t, "Claude Opus 4.8", byID["claude-opus-4-8"].DisplayName)
 	require.NotContains(t, byID, "claude-opus-4-7")
 	require.NotContains(t, byID, "claude-opus-4-6")
 	require.NotContains(t, byID, "claude-opus-4-5-20251101")
-	require.NotContains(t, byID, "claude-fable-5")
 }
 
 func TestDefaultModelAliasesDoNotResurrectStaleOpusOrSonnetModels(t *testing.T) {
