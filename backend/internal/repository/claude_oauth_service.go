@@ -202,11 +202,6 @@ func (s *claudeOAuthService) ExchangeCodeForToken(ctx context.Context, code, cod
 		formData.Set("state", codeState)
 	}
 
-	// Setup token requires longer expiration (1 year)
-	if isSetupToken {
-		formData.Set("expires_in", "31536000") // 365 * 24 * 60 * 60 seconds
-	}
-
 	logger.LegacyPrintf("repository.claude_oauth", "[OAuth] Step 3: Exchanging code for token at %s", s.tokenURL)
 	logBody := map[string]any{}
 	for key, values := range formData {

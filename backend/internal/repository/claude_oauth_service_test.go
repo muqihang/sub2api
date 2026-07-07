@@ -238,7 +238,7 @@ func (s *ClaudeOAuthServiceSuite) TestExchangeCodeForToken() {
 			},
 		},
 		{
-			name: "setup_token_includes_expires_in",
+			name: "setup_token_omits_expires_in",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(oauth.TokenResponse{
@@ -253,9 +253,7 @@ func (s *ClaudeOAuthServiceSuite) TestExchangeCodeForToken() {
 				AccessToken: "at",
 			},
 			validate: func(captured requestCapture) {
-				// Setup token should include expires_in with 1 year value
-				require.Equal(s.T(), "31536000", captured.bodyForm.Get("expires_in"),
-					"setup token should include expires_in: 31536000")
+				require.Empty(s.T(), captured.bodyForm.Get("expires_in"), "setup token should not include expires_in")
 			},
 		},
 		{
