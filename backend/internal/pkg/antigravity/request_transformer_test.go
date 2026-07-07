@@ -431,6 +431,62 @@ func TestTransformClaudeToGeminiWithOptions_PreservesBillingHeaderSystemBlock(t 
 	}
 }
 
+func TestTransformClaudeToGeminiWithOptions_MessageSystemRoleMovesToSystemInstruction(t *testing.T) {
+	body, err := TransformClaudeToGeminiWithOptions(&ClaudeRequest{
+		Model:  "claude-3-5-sonnet-latest",
+		System: json.RawMessage(`"top level system"`),
+		Messages: []ClaudeMessage{
+			{Role: "system", Content: json.RawMessage(`"message system"`)},
+			{Role: "user", Content: json.RawMessage(`"hello"`)},
+		},
+	}, "project-1", "gemini-2.5-flash", DefaultTransformOptions())
+	require.NoError(t, err)
+
+	var req V1InternalRequest
+	require.NoError(t, json.Unmarshal(body, &req))
+	require.Len(t, req.Request.Contents, 1)
+	require.Equal(t, "user", req.Request.Contents[0].Role)
+	require.NotNil(t, req.Request.SystemInstruction)
+
+	var systemText []string
+	for _, part := range req.Request.SystemInstruction.Parts {
+		systemText = append(systemText, part.Text)
+	}
+	merged := strings.Join(systemText, "\n")
+	require.Contains(t, merged, "top level system")
+	require.Contains(t, merged, "message system")
+	require.Less(t, strings.Index(merged, "top level system"), strings.Index(merged, "message system"))
+	for _, content := range req.Request.Contents {
+		require.NotEqual(t, "system", content.Role)
+	}
+}
+
+func TestTransformClaudeToGeminiWithOptions_GeminiReasoningModelOmitsUnsupportedArguments(t *testing.T) {
+	temperature := 0.7
+	topP := 0.8
+	topK := 40
+
+	body, err := TransformClaudeToGeminiWithOptions(&ClaudeRequest{
+		Model:       "gemini-3.1-pro-high",
+		Temperature: &temperature,
+		TopP:        &topP,
+		TopK:        &topK,
+		Messages: []ClaudeMessage{
+			{Role: "user", Content: json.RawMessage(`"hello"`)},
+		},
+	}, "project-1", "gemini-3.1-pro-high", DefaultTransformOptions())
+	require.NoError(t, err)
+
+	var req V1InternalRequest
+	require.NoError(t, json.Unmarshal(body, &req))
+	require.Nil(t, req.Request.ToolConfig, "Gemini reasoning models reject forced empty toolConfig")
+	require.NotNil(t, req.Request.GenerationConfig)
+	require.Empty(t, req.Request.GenerationConfig.StopSequences)
+	require.Nil(t, req.Request.GenerationConfig.Temperature)
+	require.Nil(t, req.Request.GenerationConfig.TopP)
+	require.Nil(t, req.Request.GenerationConfig.TopK)
+}
+
 func TestTransformClaudeToGeminiWithOptions_PreservesWebSearchAlongsideFunctions(t *testing.T) {
 	claudeReq := &ClaudeRequest{
 		Model: "claude-3-5-sonnet-latest",

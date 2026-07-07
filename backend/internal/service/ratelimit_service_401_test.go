@@ -153,6 +153,7 @@ func TestRateLimitService_HandleUpstreamError_OAuth401SetsTempUnschedulable(t *t
 		require.Equal(t, 0, repo.setErrorCalls)
 		require.Equal(t, 1, repo.tempCalls)
 		require.Len(t, invalidator.accounts, 1)
+		require.Equal(t, 0, repo.updateExtraCalls, "non-Antigravity 401 must not set Antigravity force-refresh marker")
 	})
 
 	t.Run("antigravity_401_uses_SetError", func(t *testing.T) {
@@ -175,6 +176,39 @@ func TestRateLimitService_HandleUpstreamError_OAuth401SetsTempUnschedulable(t *t
 		require.Equal(t, 0, repo.tempCalls)
 		require.Empty(t, invalidator.accounts)
 	})
+}
+
+func TestRateLimitService_CheckErrorPolicy_Antigravity401TempUnschedMarksForceRefresh(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	account := &Account{
+		ID:       3675,
+		Platform: PlatformAntigravity,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token":  "expired-at",
+			"refresh_token": "rt-3675",
+		},
+		Extra: map[string]any{
+			"temp_unschedulable_enabled": true,
+			"temp_unschedulable_rules": []any{
+				map[string]any{
+					"error_code":       401,
+					"keywords":         []any{"unauthorized"},
+					"duration_minutes": 10,
+				},
+			},
+		},
+	}
+
+	result := service.CheckErrorPolicy(context.Background(), account, http.StatusUnauthorized, []byte("unauthorized"))
+
+	require.Equal(t, ErrorPolicyTempUnscheduled, result)
+	require.Equal(t, 1, repo.tempCalls)
+	require.Equal(t, 1, repo.updateExtraCalls)
+	require.Equal(t, true, repo.lastExtra[antigravityForceTokenRefreshExtraKey])
+	require.Equal(t, "401_invalid", repo.lastExtra[antigravityForceTokenRefreshReasonExtraKey])
+	require.Equal(t, true, account.Extra[antigravityForceTokenRefreshExtraKey])
 }
 
 // TestRateLimitService_HandleUpstreamError_OAuth401InvalidatorError

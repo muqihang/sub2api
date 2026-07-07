@@ -2133,6 +2133,20 @@ func (s *RateLimitService) triggerTempUnschedulable(ctx context.Context, account
 		slog.Warn("temp_unsched_set_failed", "account_id", account.ID, "error", err)
 		return false
 	}
+	if account.Platform == PlatformAntigravity && account.Type == AccountTypeOAuth && statusCode == http.StatusUnauthorized {
+		updates := antigravityForceTokenRefreshExtra("401_invalid")
+		if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+			slog.Warn("antigravity_401_force_refresh_mark_failed", "error", err)
+		} else {
+			if account.Extra == nil {
+				account.Extra = make(map[string]any, len(updates))
+			}
+			for k, v := range updates {
+				account.Extra[k] = v
+			}
+			slog.Info("antigravity_401_force_refresh_marked")
+		}
+	}
 
 	if s.tempUnschedCache != nil {
 		if err := s.tempUnschedCache.SetTempUnsched(ctx, account.ID, state); err != nil {

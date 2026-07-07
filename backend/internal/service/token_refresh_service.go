@@ -361,6 +361,7 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 			}
 			errorMsg := fmt.Sprintf("Token refresh failed (non-retryable): %v", err)
 			s.notifyAccountSchedulingBlocked(account, time.Time{}, "token_refresh_non_retryable")
+			s.clearAntigravityForceTokenRefresh(ctx, account, "non_retryable")
 			if setErr := s.accountRepo.SetError(ctx, account.ID, errorMsg); setErr != nil {
 				slog.Error("token_refresh.set_error_status_failed",
 					"account_id", account.ID,
@@ -425,6 +426,8 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 
 // postRefreshActions 刷新成功后的后续动作（清除错误状态、缓存失效、调度器同步等）
 func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *Account) {
+	s.clearAntigravityForceTokenRefresh(ctx, account, "success")
+
 	if account.Platform == PlatformOpenAI {
 		s.recordOpenAIAuthLifecycle(ctx, account, OpenAIAuthStateHealthy, OpenAIValidationOutcomeRTValidated, "", time.Now().UTC().Format(time.RFC3339))
 	}
@@ -489,6 +492,28 @@ func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *A
 	s.ensureOpenAIPrivacy(ctx, account)
 	// Antigravity OAuth: 刷新成功后，检查是否已设置 privacy_mode，未设置则调用 setUserSettings
 	s.ensureAntigravityPrivacy(ctx, account)
+}
+
+func (s *TokenRefreshService) clearAntigravityForceTokenRefresh(ctx context.Context, account *Account, outcome string) {
+	if s == nil || s.accountRepo == nil || account == nil || !accountNeedsAntigravityForceTokenRefresh(account) {
+		return
+	}
+	updates := clearAntigravityForceTokenRefreshExtra()
+	if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+		slog.Warn("token_refresh.clear_antigravity_force_refresh_failed",
+			"outcome", outcome,
+			"error", err,
+		)
+		return
+	}
+	if account.Extra != nil {
+		for k, v := range updates {
+			account.Extra[k] = v
+		}
+	}
+	slog.Info("token_refresh.cleared_antigravity_force_refresh",
+		"outcome", outcome,
+	)
 }
 
 func (s *TokenRefreshService) recordOpenAIAuthLifecycle(ctx context.Context, account *Account, authState, validationOutcome, refreshErrorCode, validatedAt string) {
