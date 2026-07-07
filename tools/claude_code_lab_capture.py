@@ -35,6 +35,29 @@ def _safe_command_display(command: list[str]) -> list[str]:
     return ["<empty>"] if not command else [command[0], *command[1:]]
 
 
+def _normalize_command(raw_command: list[str]) -> list[str]:
+    command = list(raw_command)
+    while command[:1] == ["--"]:
+        command = command[1:]
+    return command
+
+
+def _missing_native_attestation_secret(env: dict[str, str]) -> bool:
+    return not env.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "").strip()
+
+
+def _native_attestation_secret_state(env: dict[str, str], api_key_env: str, *, require_native_attestation: bool) -> str:
+    if not require_native_attestation:
+        return "disabled"
+    secret = env.get("SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET", "").strip()
+    if not secret:
+        return "missing"
+    api_key = env.get(api_key_env, "").strip()
+    if api_key and secret == api_key:
+        return "same_as_api_key"
+    return "present"
+
+
 def _write_json(path: Path, payload: dict[str, Any], *, mode: int = 0o600) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -71,6 +94,9 @@ def _read_guard_ready(proc: subprocess.Popen[str], timeout: float = 10.0) -> dic
 
 def _build_env(args: argparse.Namespace, port: int, run_dir: Path) -> dict[str, str]:
     env = dict(os.environ)
+    api_key = env.get(args.api_key_env)
+    if api_key is not None:
+        env[args.api_key_env] = api_key.strip()
     config_dir = Path(args.config_dir).expanduser() if args.config_dir else DEFAULT_LAB_HOME / "claude-config"
     config_dir.mkdir(parents=True, exist_ok=True)
     capture_home = run_dir.parent
@@ -240,6 +266,8 @@ def _start_guard(args: argparse.Namespace, port: int, run_dir: Path, env: dict[s
     ]
     if cert is not None and key is not None:
         guard_cmd.extend(["--cert-path", str(cert), "--key-path", str(key)])
+    if args.native_attestation:
+        guard_cmd.append("--native-attestation")
     proc = subprocess.Popen(
         guard_cmd,
         cwd=str(REPO_ROOT),
@@ -320,6 +348,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config-dir", help="Override isolated CLAUDE_CONFIG_DIR. Do not point this at ~/.claude.")
     parser.add_argument("--no-egress-guard", dest="egress_guard", action="store_false", help="Only capture /v1/messages via base URL; hard-coded HTTPS control plane may bypass capture.")
     parser.set_defaults(egress_guard=True)
+    parser.add_argument("--native-attestation", action="store_true", help="Enable internal native-attestation signing. Off by default for local smoke tests.")
     parser.add_argument("--capture-level", choices=["summary", "deep", "local-raw"], default="deep", help="summary=safe minimal, deep=field trees/event names, local-raw=redacted local-only artifacts")
     parser.add_argument("--netwatch-interval", type=float, default=float(os.environ.get("ZHUMENG_NETWATCH_INTERVAL", "2.0")), help="Seconds between process-level TCP destination snapshots; set 0 to disable.")
     parser.add_argument("--cost-max-tokens", type=int, default=200000)
@@ -342,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
         print("error: --api-base must point to Zhumeng/Sub2API, not Anthropic/Claude", file=sys.stderr)
         return 2
 
-    command = args.cmd[1:] if args.cmd[:1] == ["--"] else args.cmd
+    command = _normalize_command(args.cmd)
     if not command:
         command = ["claude"]
     if shutil.which(command[0]) is None:
@@ -359,6 +388,8 @@ def main(argv: list[str] | None = None) -> int:
 
     port = _free_port()
     env = _build_env(args, port, run_dir)
+    native_attestation_state = _native_attestation_secret_state(env, args.api_key_env, require_native_attestation=args.native_attestation)
+    missing_native_attestation = native_attestation_state == "missing"
     _write_json(run_dir / "run-metadata.json", {
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "mode": "egress_guard" if args.egress_guard else "messages_only",
@@ -373,6 +404,9 @@ def main(argv: list[str] | None = None) -> int:
         "stores_raw_token": False,
         "process_netwatch_enabled": args.netwatch_interval > 0,
         "process_netwatch_stores_payload": False,
+        "native_attestation_enabled": args.native_attestation,
+        "native_attestation_secret_present": not missing_native_attestation,
+        "native_attestation_secret_state": native_attestation_state,
     })
     _write_readme(run_dir, args, command, port)
 
@@ -384,6 +418,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[zhumeng-lab] capture run: {run_dir}")
         print(f"[zhumeng-lab] isolated CLAUDE_CONFIG_DIR: {env['CLAUDE_CONFIG_DIR']}")
         print(f"[zhumeng-lab] guard: http://127.0.0.1:{port}")
+        if args.native_attestation and missing_native_attestation:
+            print(
+                "[zhumeng-lab] WARNING: 缺少 SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET；"
+                "生产的 Claude Code only 原生证明链路会在本机 guard 处返回 403。",
+                file=sys.stderr,
+            )
+        elif args.native_attestation and native_attestation_state == "same_as_api_key":
+            print(
+                "[zhumeng-lab] WARNING: SUB2API_CLAUDE_CODE_NATIVE_ATTESTATION_SECRET 不能填写逐梦 API Key；"
+                "它必须是生产服务端配置的原生证明共享密钥，否则生产会返回 403。",
+                file=sys.stderr,
+            )
         print("[zhumeng-lab] starting Claude Code; press Ctrl+C/exit Claude when done")
         cli_proc = subprocess.Popen(command, env=env, cwd=os.getcwd())
         netwatch_proc = _start_netwatch(cli_proc.pid, run_dir, port, args.netwatch_interval)
