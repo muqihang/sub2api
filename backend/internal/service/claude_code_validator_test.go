@@ -377,6 +377,58 @@ func TestClaudeCodeValidator_BillingBlockStillRequiresClaudeCodeUA(t *testing.T)
 	require.False(t, ok)
 }
 
+func TestClaudeCodeValidator_BillingBlockRecognizedWithoutCCH(t *testing.T) {
+	monitorPrompt, err := os.ReadFile("testdata/security_monitor_system_prompt.txt")
+	require.NoError(t, err)
+
+	validator := NewClaudeCodeValidator()
+	require.Less(t, validator.bestSimilarityScore(string(monitorPrompt)), systemPromptThreshold)
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/v1/messages", nil)
+	req.Header.Set("User-Agent", "claude-cli/2.1.162 (external, cli)")
+	req.Header.Set("X-App", "cli")
+	req.Header.Set("anthropic-beta", "claude-code-20250219")
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	ok := validator.Validate(req, map[string]any{
+		"model": "claude-3-5-haiku-20241022",
+		"system": []any{
+			map[string]any{
+				"type": "text",
+				"text": "x-anthropic-billing-header: cc_version=2.1.162.884; cc_entrypoint=cli;",
+			},
+			map[string]any{
+				"type": "text",
+				"text": string(monitorPrompt),
+			},
+		},
+		"metadata": map[string]any{
+			"user_id": claudeCodeMetadataUserIDJSON,
+		},
+	})
+	require.True(t, ok, "no-CCH billing blocks should still identify real Claude Code sub-requests")
+}
+
+func TestClaudeCodeValidator_NoCCHBlockStillRequiresClaudeCodeUA(t *testing.T) {
+	validator := NewClaudeCodeValidator()
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/v1/messages", nil)
+	req.Header.Set("User-Agent", "curl/8.0.0")
+	req.Header.Set("X-App", "cli")
+	req.Header.Set("anthropic-beta", "claude-code-20250219")
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	ok := validator.Validate(req, map[string]any{
+		"model": "claude-3-5-haiku-20241022",
+		"system": []any{
+			map[string]any{
+				"type": "text",
+				"text": "x-anthropic-billing-header: cc_version=2.1.162.884; cc_entrypoint=cli;",
+			},
+		},
+	})
+	require.False(t, ok)
+}
+
 func TestClaudeCodeValidator_MessagesPathRejectsNonClaudeCodeUA(t *testing.T) {
 	validator := NewClaudeCodeValidator()
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/v1/messages", nil)
