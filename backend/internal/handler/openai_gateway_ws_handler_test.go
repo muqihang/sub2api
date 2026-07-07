@@ -459,6 +459,7 @@ func TestOpenAIGatewayWSHandler_InitialUnsupportedOAuthModelReturnsStructuredSel
 		},
 		Extra: map[string]any{
 			"openai_oauth_responses_websockets_v2_enabled": true,
+			"openai_content_safety_guard_mode":             "block",
 		},
 	}}
 
@@ -524,6 +525,7 @@ func TestOpenAIGatewayWSHandler_ContentSafetyRuntimeGuardCloseReasonIsNotReasoni
 		},
 		Extra: map[string]any{
 			"openai_oauth_responses_websockets_v2_enabled": true,
+			"openai_content_safety_guard_mode":             "block",
 		},
 	}}
 

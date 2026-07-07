@@ -441,6 +441,9 @@ func TestOpenAIImagesRuntimeGuardLocalBlockDoesNotReportSchedulerFailure(t *test
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
 		},
+		Extra: map[string]any{
+			"openai_content_safety_guard_mode": "block",
+		},
 	}
 	h, upstream := newOpenAIEgressPolicyHandlerHarness(
 		t,
