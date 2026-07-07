@@ -13,21 +13,28 @@ var CodexCLIUserAgentPrefixes = []string{
 // 该列表仅用于 OpenAI OAuth `codex_cli_only` 访问限制判定。
 var CodexOfficialClientUserAgentPrefixes = []string{
 	"codex_cli_rs/",
+	"codex-tui/",
 	"codex_vscode/",
+	"codex_vscode_copilot/",
 	"codex_app/",
 	"codex_chatgpt_desktop/",
 	"codex_atlas/",
 	"codex_exec/",
 	"codex_sdk_ts/",
-	"codex ",
 }
 
-// CodexOfficialClientOriginatorPrefixes matches Codex 官方客户端家族 originator 前缀。
-// 说明：OpenAI 官方 Codex 客户端并不只使用固定的 codex_app 标识。
-// 例如 codex_cli_rs、codex_vscode、codex_chatgpt_desktop、codex_atlas、codex_exec、codex_sdk_ts 等。
-var CodexOfficialClientOriginatorPrefixes = []string{
-	"codex_",
-	"codex ",
+const codexOfficialClientFamilyPrefix = "codex "
+
+var codexOfficialClientOriginators = map[string]bool{
+	"codex_cli_rs":          true,
+	"codex-tui":             true,
+	"codex_vscode":          true,
+	"codex_vscode_copilot":  true,
+	"codex_app":             true,
+	"codex_chatgpt_desktop": true,
+	"codex_atlas":           true,
+	"codex_exec":            true,
+	"codex_sdk_ts":          true,
 }
 
 // IsBrowserUserAgent 判断 User-Agent 是否来自浏览器（Chrome/Firefox/Safari/Edge/Opera 等）。
@@ -53,11 +60,52 @@ func IsCodexCLIRequest(userAgent string) bool {
 // IsCodexOfficialClientRequest checks if the User-Agent indicates a Codex 官方客户端请求。
 // 与 IsCodexCLIRequest 解耦，避免影响历史兼容逻辑。
 func IsCodexOfficialClientRequest(userAgent string) bool {
+	return isCodexOfficialClientRequest(userAgent, false)
+}
+
+// IsCodexOfficialClientRequestStrict is used by codex_cli_only access checks:
+// it refuses browser-style composite UAs that merely contain a Codex marker in
+// the middle, while still accepting official prefixes and the Codex UA trailer.
+func IsCodexOfficialClientRequestStrict(userAgent string) bool {
+	return isCodexOfficialClientRequest(userAgent, true)
+}
+
+func isCodexOfficialClientRequest(userAgent string, strict bool) bool {
 	ua := normalizeCodexClientHeader(userAgent)
 	if ua == "" {
 		return false
 	}
-	return matchCodexClientHeaderPrefixes(ua, CodexOfficialClientUserAgentPrefixes)
+	if strict {
+		if matchCodexClientHeaderStrictPrefixes(ua, CodexOfficialClientUserAgentPrefixes) {
+			return true
+		}
+	} else if matchCodexClientHeaderPrefixes(ua, CodexOfficialClientUserAgentPrefixes) {
+		return true
+	}
+	if strings.HasPrefix(ua, codexOfficialClientFamilyPrefix) {
+		return true
+	}
+	if name := codexUATrailerName(ua); name != "" {
+		return IsCodexOfficialClientOriginator(name)
+	}
+	return false
+}
+
+func codexUATrailerName(ua string) string {
+	last := strings.LastIndex(ua, "(")
+	if last < 0 {
+		return ""
+	}
+	rest := ua[last+1:]
+	closeIdx := strings.Index(rest, ")")
+	if closeIdx < 0 {
+		return ""
+	}
+	inner := strings.TrimSpace(rest[:closeIdx])
+	if semi := strings.Index(inner, ";"); semi >= 0 {
+		inner = strings.TrimSpace(inner[:semi])
+	}
+	return inner
 }
 
 // IsCodexOfficialClientOriginator checks if originator indicates a Codex 官方客户端请求。
@@ -66,7 +114,7 @@ func IsCodexOfficialClientOriginator(originator string) bool {
 	if v == "" {
 		return false
 	}
-	return matchCodexClientHeaderPrefixes(v, CodexOfficialClientOriginatorPrefixes)
+	return codexOfficialClientOriginators[v] || strings.HasPrefix(v, codexOfficialClientFamilyPrefix)
 }
 
 // IsCodexOfficialClientByHeaders checks whether the request headers indicate an
@@ -87,6 +135,19 @@ func matchCodexClientHeaderPrefixes(value string, prefixes []string) bool {
 		}
 		// 优先前缀匹配；若 UA/Originator 被网关拼接为复合字符串时，退化为包含匹配。
 		if strings.HasPrefix(value, normalizedPrefix) || strings.Contains(value, normalizedPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchCodexClientHeaderStrictPrefixes(value string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		normalizedPrefix := normalizeCodexClientHeader(prefix)
+		if normalizedPrefix == "" {
+			continue
+		}
+		if strings.HasPrefix(value, normalizedPrefix) {
 			return true
 		}
 	}

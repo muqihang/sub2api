@@ -64,6 +64,48 @@ func TestOpenAICodexClientRestrictionDetector_Detect(t *testing.T) {
 		require.Equal(t, CodexClientRestrictionReasonMatchedUA, result.Reason)
 	})
 
+	t.Run("开启后 codex-tui 命中", func(t *testing.T) {
+		detector := NewOpenAICodexClientRestrictionDetector(nil)
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra:    map[string]any{"codex_cli_only": true},
+		}
+
+		result := detector.Detect(newCodexDetectorTestContext("codex-tui/0.141.0 (Mac OS 15.5.0; arm64) ghostty/1.3.1 (codex-tui; 0.141.0)", ""), account, nil)
+		require.True(t, result.Enabled)
+		require.True(t, result.Matched)
+		require.Equal(t, CodexClientRestrictionReasonMatchedUA, result.Reason)
+	})
+
+	t.Run("开启后 originator override 可从 UA 尾部恢复 codex-tui", func(t *testing.T) {
+		detector := NewOpenAICodexClientRestrictionDetector(nil)
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra:    map[string]any{"codex_cli_only": true},
+		}
+
+		result := detector.Detect(newCodexDetectorTestContext("cccc/0.141.0 (Mac OS 15.5.0; arm64) ghostty/1.3.1 (codex-tui; 0.141.0)", ""), account, nil)
+		require.True(t, result.Enabled)
+		require.True(t, result.Matched)
+		require.Equal(t, CodexClientRestrictionReasonMatchedUA, result.Reason)
+	})
+
+	t.Run("开启后浏览器复合 UA 中段 codex_app 伪造不命中 strict", func(t *testing.T) {
+		detector := NewOpenAICodexClientRestrictionDetector(nil)
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra:    map[string]any{"codex_cli_only": true},
+		}
+
+		result := detector.Detect(newCodexDetectorTestContext("Mozilla/5.0 codex_app/0.1.0", ""), account, nil)
+		require.True(t, result.Enabled)
+		require.False(t, result.Matched)
+		require.Equal(t, CodexClientRestrictionReasonNotMatchedUA, result.Reason)
+	})
+
 	t.Run("开启后 codex_app 命中", func(t *testing.T) {
 		detector := NewOpenAICodexClientRestrictionDetector(nil)
 		account := &Account{
