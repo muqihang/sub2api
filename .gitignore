@@ -188,3 +188,6 @@ artifacts/
 
 # Caddy TLS material (do not commit)
 deploy/caddy_certs/
+
+# CodeGraph local index
+.codegraph/
