@@ -12,8 +12,15 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 )
 
-// tokenRefreshTempUnschedDuration token 刷新重试耗尽后临时不可调度的持续时间
-const tokenRefreshTempUnschedDuration = 10 * time.Minute
+const (
+	// tokenRefreshTempUnschedDuration token 刷新重试耗尽后临时不可调度的持续时间
+	tokenRefreshTempUnschedDuration = 10 * time.Minute
+
+	// TokenRefreshRetryExhaustedReasonPrefix marks temp-unsched reasons owned by
+	// the background token refresh loop. Repository candidate filtering must not
+	// match request-path cooldown reasons.
+	TokenRefreshRetryExhaustedReasonPrefix = "token refresh retry exhausted:"
+)
 
 // TokenRefreshService OAuth token自动刷新服务
 // 定期检查并刷新即将过期的token
@@ -36,6 +43,10 @@ type TokenRefreshService struct {
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
+}
+
+type tokenRefreshCandidateLister interface {
+	ListTokenRefreshCandidates(ctx context.Context) ([]Account, error)
 }
 
 // NewTokenRefreshService 创建token刷新服务
@@ -256,16 +267,16 @@ func (s *TokenRefreshService) processRefresh() {
 }
 
 // listManagedAccounts 获取参与后台刷新闭环的账号。
-// 默认包含所有 active 账号；额外补充 OpenAI quarantine 中仍可续期的 RT 账号。
+// 默认包含可刷新候选账号；额外补充 OpenAI managed-refresh 中仍可续期的 RT 账号。
 func (s *TokenRefreshService) listManagedAccounts(ctx context.Context) ([]Account, error) {
-	activeAccounts, err := s.accountRepo.ListActive(ctx)
+	candidates, err := s.listTokenRefreshCandidates(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	out := make([]Account, 0, len(activeAccounts))
-	seen := make(map[int64]struct{}, len(activeAccounts))
-	for _, account := range activeAccounts {
+	out := make([]Account, 0, len(candidates))
+	seen := make(map[int64]struct{}, len(candidates))
+	for _, account := range candidates {
 		out = append(out, account)
 		seen[account.ID] = struct{}{}
 	}
@@ -278,6 +289,9 @@ func (s *TokenRefreshService) listManagedAccounts(ctx context.Context) ([]Accoun
 		if _, exists := seen[account.ID]; exists {
 			continue
 		}
+		if isTokenRefreshRetryExhaustedCooldown(account, time.Now()) {
+			continue
+		}
 		if account.ShouldParticipateInOpenAIManagedRefresh() {
 			out = append(out, account)
 			seen[account.ID] = struct{}{}
@@ -285,6 +299,20 @@ func (s *TokenRefreshService) listManagedAccounts(ctx context.Context) ([]Accoun
 	}
 
 	return out, nil
+}
+
+func (s *TokenRefreshService) listTokenRefreshCandidates(ctx context.Context) ([]Account, error) {
+	if lister, ok := s.accountRepo.(tokenRefreshCandidateLister); ok {
+		return lister.ListTokenRefreshCandidates(ctx)
+	}
+	return s.accountRepo.ListActive(ctx)
+}
+
+func isTokenRefreshRetryExhaustedCooldown(account Account, now time.Time) bool {
+	if account.TempUnschedulableUntil == nil || !account.TempUnschedulableUntil.After(now) {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(account.TempUnschedulableReason), TokenRefreshRetryExhaustedReasonPrefix)
 }
 
 // refreshWithRetry 带重试的刷新
@@ -378,7 +406,7 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 
 	// 设置临时不可调度 10 分钟（不标记 error，保持 status=active 让下个刷新周期能继续尝试）
 	until := time.Now().Add(tokenRefreshTempUnschedDuration)
-	reason := fmt.Sprintf("token refresh retry exhausted: %v", lastErr)
+	reason := fmt.Sprintf("%s %v", TokenRefreshRetryExhaustedReasonPrefix, lastErr)
 	s.notifyAccountSchedulingBlocked(account, until, "token_refresh_retry_exhausted")
 	if setErr := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, reason); setErr != nil {
 		slog.Warn("token_refresh.set_temp_unschedulable_failed",

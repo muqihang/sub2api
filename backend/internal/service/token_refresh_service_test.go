@@ -14,16 +14,21 @@ import (
 
 type tokenRefreshAccountRepo struct {
 	mockAccountRepoForGemini
-	updateCalls            int
-	fullUpdateCalls        int
-	updateCredentialsCalls int
-	setErrorCalls          int
-	clearTempCalls         int
-	setTempUnschedCalls    int
-	lastAccount            *Account
-	updateErr              error
-	listActiveAccounts     []Account
-	listByPlatformAccounts []Account
+	updateCalls                     int
+	fullUpdateCalls                 int
+	updateCredentialsCalls          int
+	setErrorCalls                   int
+	clearTempCalls                  int
+	setTempUnschedCalls             int
+	lastTempUnschedReason           string
+	lastAccount                     *Account
+	updateErr                       error
+	listActiveAccounts              []Account
+	listTokenRefreshCandidates      []Account
+	listByPlatformAccounts          []Account
+	listActiveCalls                 int
+	listTokenRefreshCandidatesCalls int
+	listByPlatformCalls             int
 }
 
 func (r *tokenRefreshAccountRepo) Update(ctx context.Context, account *Account) error {
@@ -63,10 +68,23 @@ func (r *tokenRefreshAccountRepo) ClearTempUnschedulable(ctx context.Context, id
 
 func (r *tokenRefreshAccountRepo) SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
 	r.setTempUnschedCalls++
+	r.lastTempUnschedReason = reason
 	return nil
 }
 
 func (r *tokenRefreshAccountRepo) ListActive(ctx context.Context) ([]Account, error) {
+	r.listActiveCalls++
+	if r.listActiveAccounts != nil {
+		return append([]Account(nil), r.listActiveAccounts...), nil
+	}
+	return r.mockAccountRepoForGemini.ListActive(ctx)
+}
+
+func (r *tokenRefreshAccountRepo) ListTokenRefreshCandidates(ctx context.Context) ([]Account, error) {
+	r.listTokenRefreshCandidatesCalls++
+	if r.listTokenRefreshCandidates != nil {
+		return append([]Account(nil), r.listTokenRefreshCandidates...), nil
+	}
 	if r.listActiveAccounts != nil {
 		return append([]Account(nil), r.listActiveAccounts...), nil
 	}
@@ -74,6 +92,7 @@ func (r *tokenRefreshAccountRepo) ListActive(ctx context.Context) ([]Account, er
 }
 
 func (r *tokenRefreshAccountRepo) ListByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	r.listByPlatformCalls++
 	if platform == PlatformOpenAI && r.listByPlatformAccounts != nil {
 		return append([]Account(nil), r.listByPlatformAccounts...), nil
 	}
@@ -230,6 +249,108 @@ func TestTokenRefreshService_RefreshWithRetry_SyncsSchedulerCacheAfterSuccess(t 
 	require.Len(t, schedulerCache.setAccountCalls, 1)
 	require.Equal(t, int64(51), schedulerCache.setAccountCalls[0].ID)
 	require.Equal(t, "new-token", schedulerCache.setAccountCalls[0].GetCredential("access_token"))
+}
+
+func TestTokenRefreshService_ListManagedAccountsUsesTokenRefreshCandidates(t *testing.T) {
+	expiresSoon := time.Now().Add(5 * time.Minute)
+	repo := &tokenRefreshAccountRepo{
+		listActiveAccounts: []Account{
+			{ID: 99, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Status: StatusActive},
+		},
+		listTokenRefreshCandidates: []Account{
+			{
+				ID:        20,
+				Platform:  PlatformAnthropic,
+				Type:      AccountTypeSetupToken,
+				Status:    StatusActive,
+				ExpiresAt: &expiresSoon,
+				Credentials: map[string]any{
+					"expires_at": expiresSoon.Format(time.RFC3339),
+				},
+			},
+		},
+	}
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, &config.Config{}, nil)
+
+	accounts, err := service.listManagedAccounts(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, repo.listTokenRefreshCandidatesCalls)
+	require.Equal(t, 0, repo.listActiveCalls, "primary refresh scan must not use broad ListActive")
+	require.Len(t, accounts, 1)
+	require.Equal(t, int64(20), accounts[0].ID)
+	require.Equal(t, AccountTypeSetupToken, accounts[0].Type)
+}
+
+func TestTokenRefreshService_ListManagedAccountsKeepsMalformedClaudeRefreshCandidate(t *testing.T) {
+	expiresSoon := time.Now().Add(5 * time.Minute)
+	repo := &tokenRefreshAccountRepo{
+		listActiveAccounts: []Account{},
+		listTokenRefreshCandidates: []Account{
+			{
+				ID:        21,
+				Platform:  PlatformAnthropic,
+				Type:      AccountTypeSetupToken,
+				Status:    StatusActive,
+				ExpiresAt: &expiresSoon,
+				Credentials: map[string]any{
+					"expires_at": expiresSoon.Format(time.RFC3339),
+					// Intentionally no refresh_token: refresh should surface the existing
+					// non-retryable credential error instead of silently skipping the account.
+				},
+			},
+		},
+	}
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, &config.Config{}, nil)
+
+	accounts, err := service.listManagedAccounts(context.Background())
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	require.Equal(t, int64(21), accounts[0].ID)
+	require.Equal(t, "", accounts[0].GetCredential("refresh_token"))
+}
+
+func TestTokenRefreshService_ListManagedAccountsSkipsRetryExhaustedOpenAISupplementOnly(t *testing.T) {
+	future := time.Now().Add(10 * time.Minute)
+	repo := &tokenRefreshAccountRepo{
+		listTokenRefreshCandidates: []Account{},
+		listByPlatformAccounts: []Account{
+			{
+				ID:                      30,
+				Platform:                PlatformOpenAI,
+				Type:                    AccountTypeOAuth,
+				Status:                  StatusActive,
+				TempUnschedulableUntil:  &future,
+				TempUnschedulableReason: TokenRefreshRetryExhaustedReasonPrefix + " transient upstream error",
+				Extra: map[string]any{
+					"openai_pool_role":    OpenAIPoolRoleMain,
+					"openai_auth_state":   OpenAIAuthStateCooling,
+					"openai_token_source": OpenAITokenSourceRTManaged,
+				},
+				Credentials: map[string]any{"refresh_token": "rt-retry-exhausted"},
+			},
+			{
+				ID:                      31,
+				Platform:                PlatformOpenAI,
+				Type:                    AccountTypeOAuth,
+				Status:                  StatusActive,
+				TempUnschedulableUntil:  &future,
+				TempUnschedulableReason: "request path 401 cooldown",
+				Extra: map[string]any{
+					"openai_pool_role":    OpenAIPoolRoleMain,
+					"openai_auth_state":   OpenAIAuthStateCooling,
+					"openai_token_source": OpenAITokenSourceRTManaged,
+				},
+				Credentials: map[string]any{"refresh_token": "rt-request-cooldown"},
+			},
+		},
+	}
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, &config.Config{}, nil)
+
+	accounts, err := service.listManagedAccounts(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, repo.listByPlatformCalls)
+	require.Len(t, accounts, 1)
+	require.Equal(t, int64(31), accounts[0].ID)
 }
 
 func TestTokenRefreshService_ListManagedAccountsIncludesOpenAIQuarantine(t *testing.T) {
@@ -520,6 +641,8 @@ func TestTokenRefreshService_RefreshWithRetry_RefreshFailed(t *testing.T) {
 	require.Equal(t, 0, repo.updateCalls)   // 刷新失败不应更新
 	require.Equal(t, 0, invalidator.calls)  // 刷新失败不应触发缓存失效
 	require.Equal(t, 0, repo.setErrorCalls) // 可重试错误耗尽不标记 error，下个周期继续重试
+	require.Equal(t, 1, repo.setTempUnschedCalls)
+	require.Contains(t, repo.lastTempUnschedReason, TokenRefreshRetryExhaustedReasonPrefix)
 }
 
 // TestTokenRefreshService_RefreshWithRetry_AntigravityRefreshFailed 测试 Antigravity 刷新失败不设置错误状态
