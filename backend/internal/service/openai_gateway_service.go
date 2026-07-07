@@ -3240,6 +3240,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		disablePatch()
 		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Injected /responses image_generation tool for Codex client")
 	}
+	if !isCompactRequest && isCodexCLI && imageGenerationAllowed && ensureOpenAIResponsesImageGenerationToolChoiceAuto(reqBody) {
+		bodyModified = true
+		disablePatch()
+	}
 
 	if !isCompactRequest && normalizeOpenAIResponsesImageGenerationTools(reqBody) {
 		bodyModified = true
@@ -3302,6 +3306,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if codexImageGenerationBridgeEnabled && ensureOpenAIResponsesImageGenerationTool(decoded) {
 			markDecodedModified()
 			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Injected /responses image_generation tool for Codex client")
+		}
+		if codexImageGenerationBridgeEnabled && ensureOpenAIResponsesImageGenerationToolChoiceAuto(decoded) {
+			markDecodedModified()
 		}
 		if normalizeOpenAIResponsesImageGenerationTools(decoded) {
 			markDecodedModified()
