@@ -2997,12 +2997,11 @@ func (s *OpenAIGatewayService) readUpstreamErrorBody(resp *http.Response) []byte
 	return body
 }
 
-func (s *OpenAIGatewayService) handleFailoverSideEffects(ctx context.Context, resp *http.Response, account *Account, requestedModel ...string) {
+func (s *OpenAIGatewayService) handleFailoverSideEffects(ctx context.Context, resp *http.Response, account *Account, responseBody []byte, requestedModel ...string) {
 	if resp == nil {
 		return
 	}
-	body := s.readUpstreamErrorBody(resp)
-	s.handleFailoverSideEffectsWithBody(ctx, resp.StatusCode, resp.Header, body, account, requestedModel...)
+	s.handleFailoverSideEffectsWithBody(ctx, resp.StatusCode, resp.Header, responseBody, account, requestedModel...)
 }
 
 func (s *OpenAIGatewayService) handleFailoverSideEffectsWithBody(ctx context.Context, statusCode int, headers http.Header, body []byte, account *Account, requestedModel ...string) {
@@ -3814,7 +3813,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					Detail:             upstreamDetail,
 				})
 
-				s.handleFailoverSideEffects(ctx, resp, account, upstreamModel)
+				s.handleFailoverSideEffects(ctx, resp, account, respBody, upstreamModel)
 				return nil, &UpstreamFailoverError{
 					StatusCode:             resp.StatusCode,
 					ResponseBody:           respBody,
