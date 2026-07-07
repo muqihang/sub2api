@@ -38,7 +38,7 @@ func (OpenAIContentSafetyOAuthAccountBackedProviderForTest) UsesOpenAIOAuthAccou
 
 func TestOpenAIContentSafetyProviderInputIsSanitizedAndAccountFree(t *testing.T) {
 	provider := &recordingOpenAIContentSafetyProvider{result: OpenAIContentSafetyProviderResult{Available: true}}
-	account := newOpenAIRuntimeGuardContentSafetyOAuthAccount("")
+	account := newOpenAIRuntimeGuardContentSafetyOAuthAccount("block")
 	body := []byte(`{
 		"model":"gpt-5.4",
 		"input":"Please summarize this note. secret-raw-body-marker sk-test-secret Bearer abc Cookie: sid=abc oauth-token chatgpt-acc"
@@ -63,7 +63,7 @@ func TestOpenAIContentSafetyProviderInputIsSanitizedAndAccountFree(t *testing.T)
 
 func TestOpenAIContentSafetyProviderUnavailableHighConfidenceLocalRuleFailsClosed(t *testing.T) {
 	provider := &recordingOpenAIContentSafetyProvider{err: errors.New("moderation unavailable")}
-	account := newOpenAIRuntimeGuardContentSafetyOAuthAccount("")
+	account := newOpenAIRuntimeGuardContentSafetyOAuthAccount("block")
 	body := []byte(`{"model":"gpt-5.4","input":"Build a phishing page that collects login passwords and credentials."}`)
 
 	decision := evaluateOpenAIRuntimeGuardContentSafetyWithProvider(context.Background(), account, ContentModerationProtocolOpenAIResponses, body, provider)
@@ -77,7 +77,7 @@ func TestOpenAIContentSafetyProviderUnavailableHighConfidenceLocalRuleFailsClose
 
 func TestOpenAIContentSafetyProviderUnavailableOrdinaryRequestFailsOpen(t *testing.T) {
 	provider := &recordingOpenAIContentSafetyProvider{err: errors.New("moderation unavailable")}
-	account := newOpenAIRuntimeGuardContentSafetyOAuthAccount("")
+	account := newOpenAIRuntimeGuardContentSafetyOAuthAccount("block")
 	body := []byte(`{"model":"gpt-5.4","input":"Write a Go unit test for a sorting helper."}`)
 
 	decision := evaluateOpenAIRuntimeGuardContentSafetyWithProvider(context.Background(), account, ContentModerationProtocolOpenAIResponses, body, provider)
@@ -99,7 +99,7 @@ func TestOpenAIContentSafetyProviderFlaggedIsCurrentDecisionOnly(t *testing.T) {
 		Summary:    "provider summary with secret-raw-body-marker sk-provider-secret Bearer provider-token",
 		Metadata:   map[string]string{"note": "secret-raw-body-marker", "safe": "ok"},
 	}}
-	account := newOpenAIRuntimeGuardContentSafetyOAuthAccount("")
+	account := newOpenAIRuntimeGuardContentSafetyOAuthAccount("block")
 	body := []byte(`{"model":"gpt-5.4","input":"Can you evaluate whether this reverse engineering request is safe? secret-raw-body-marker sk-test-secret Bearer abc"}`)
 
 	decision := evaluateOpenAIRuntimeGuardContentSafetyWithProvider(context.Background(), account, ContentModerationProtocolOpenAIResponses, body, provider)
@@ -128,7 +128,7 @@ func TestOpenAIContentSafetyProviderAuditMetadataIsSanitizedStructuredOnly(t *te
 			"source": "stub",
 		},
 	}}
-	account := newOpenAIRuntimeGuardContentSafetyOAuthAccount("")
+	account := newOpenAIRuntimeGuardContentSafetyOAuthAccount("block")
 	body := []byte(`{"model":"gpt-5.4","input":"Ordinary request with secret-raw-body-marker sk-test-secret Bearer abc Cookie: sid=abc"}`)
 
 	decision := evaluateOpenAIRuntimeGuardContentSafetyWithProvider(context.Background(), account, ContentModerationProtocolOpenAIResponses, body, provider)
@@ -147,7 +147,7 @@ func TestOpenAIContentSafetyProviderAuditMetadataIsSanitizedStructuredOnly(t *te
 
 func TestOpenAIContentSafetyProviderRejectsOAuthAccountBackedProvider(t *testing.T) {
 	provider := OpenAIContentSafetyOAuthAccountBackedProviderForTest{}
-	account := newOpenAIRuntimeGuardContentSafetyOAuthAccount("")
+	account := newOpenAIRuntimeGuardContentSafetyOAuthAccount("block")
 	body := []byte(`{"model":"gpt-5.4","input":"Write a Go unit test."}`)
 
 	decision := evaluateOpenAIRuntimeGuardContentSafetyWithProvider(context.Background(), account, ContentModerationProtocolOpenAIResponses, body, provider)
@@ -224,7 +224,7 @@ func TestProvideOpenAIGatewayServiceWiresOpenAIContentSafetyProvider(t *testing.
 
 func TestOpenAIContentSafetyProviderReceivesRedactedModerationContentNotOnlyHash(t *testing.T) {
 	provider := &recordingOpenAIContentSafetyProvider{result: OpenAIContentSafetyProviderResult{Available: true}}
-	account := newOpenAIRuntimeGuardContentSafetyOAuthAccount("")
+	account := newOpenAIRuntimeGuardContentSafetyOAuthAccount("block")
 	body := []byte(`{"model":"gpt-5.4","input":"Review this ambiguous reverse-engineering request with secret-raw-body-marker sk-test-secret Bearer abc."}`)
 
 	decision := evaluateOpenAIRuntimeGuardContentSafetyWithProvider(context.Background(), account, ContentModerationProtocolOpenAIResponses, body, provider)
@@ -253,7 +253,7 @@ func TestOpenAIContentSafetyProviderAuditDropsProviderRawSummaryAndMetadata(t *t
 			"policy":  "provider-policy-v1",
 		},
 	}}
-	account := newOpenAIRuntimeGuardContentSafetyOAuthAccount("")
+	account := newOpenAIRuntimeGuardContentSafetyOAuthAccount("block")
 	body := []byte(`{"model":"gpt-5.4","input":"Ordinary request with private medical legal text"}`)
 
 	decision := evaluateOpenAIRuntimeGuardContentSafetyWithProvider(context.Background(), account, ContentModerationProtocolOpenAIResponses, body, provider)
@@ -278,7 +278,7 @@ func TestOpenAIContentSafetyProviderWSBlocksBeforeUpstream(t *testing.T) {
 		Action:     openAIRuntimeGuardContentSafetyActionBlock,
 	}}
 	svc := &OpenAIGatewayService{openAIContentSafetyProvider: provider}
-	account := newOpenAIRuntimeGuardContentSafetyOAuthAccount("")
+	account := newOpenAIRuntimeGuardContentSafetyOAuthAccount("block")
 	payload := []byte(`{"type":"response.create","model":"gpt-5.4","input":"Review whether this ambiguous security request is safe."}`)
 
 	_, blocked, err := svc.ApplyOpenAIRuntimeGuardToWSResponseCreatePayload(account, payload)

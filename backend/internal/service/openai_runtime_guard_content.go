@@ -79,7 +79,7 @@ func openAIRuntimeGuardContentSafetyMode(account *Account) string {
 
 func openAIRuntimeGuardContentSafetyDisabled(account *Account) bool {
 	switch openAIRuntimeGuardContentSafetyMode(account) {
-	case "off", "disabled", "disable", "false", "0":
+	case "", "off", "disabled", "disable", "false", "0":
 		return true
 	default:
 		return false

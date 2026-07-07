@@ -793,7 +793,11 @@ func newOpenAIRuntimeGuardForwardHarness(t *testing.T) (*httpUpstreamRecorder, *
 			"access_token":       "oauth-token",
 			"chatgpt_account_id": "chatgpt-acc",
 		},
-		Extra: map[string]any{"openai_passthrough": false, "openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeOff},
+		Extra: map[string]any{
+			"openai_passthrough":                        false,
+			"openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModeOff,
+			"openai_content_safety_guard_mode":          "block",
+		},
 	}
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
