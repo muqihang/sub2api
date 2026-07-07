@@ -756,6 +756,8 @@ func TestOpenAIGatewayServiceForwardImages_OAuthNonStreamModerationBlockedReturn
 
 	result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
 	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.False(t, errors.As(err, &failoverErr))
 	var upstreamErr *OpenAIImagesUpstreamError
 	require.ErrorAs(t, err, &upstreamErr)
 	require.Equal(t, http.StatusBadRequest, upstreamErr.StatusCode)
@@ -765,6 +767,81 @@ func TestOpenAIGatewayServiceForwardImages_OAuthNonStreamModerationBlockedReturn
 	require.Equal(t, "image_generation_user_error", gjson.Get(rec.Body.String(), "error.type").String())
 	require.Equal(t, "moderation_blocked", gjson.Get(rec.Body.String(), "error.code").String())
 	require.Contains(t, gjson.Get(rec.Body.String(), "error.message").String(), "safety system")
+}
+
+func TestOpenAIGatewayServiceForwardImages_OAuthNonStreamServerErrorReturnsFailoverBeforeFlush(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+	}{
+		{
+			name: "type error",
+			payload: "data: {\"type\":\"response.created\",\"response\":{\"created_at\":1710000021}}\n\n" +
+				"data: {\"type\":\"error\",\"error\":{\"type\":\"server_error\",\"code\":\"server_error\",\"message\":\"The image service is temporarily unavailable.\"}}\n\n",
+		},
+		{
+			name: "response failed",
+			payload: "data: {\"type\":\"response.created\",\"response\":{\"created_at\":1710000022}}\n\n" +
+				"data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_img_failed\",\"status\":\"failed\",\"error\":{\"type\":\"server_error\",\"code\":\"server_error\",\"message\":\"The image service failed.\"}}}\n\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","response_format":"b64_json"}`)
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = req
+			c.Set("api_key", &APIKey{ID: 42})
+
+			svc := &OpenAIGatewayService{
+				httpUpstream: &httpUpstreamRecorder{
+					resp: &http.Response{
+						StatusCode: http.StatusOK,
+						Header: http.Header{
+							"Content-Type": []string{"text/event-stream"},
+							"X-Request-Id": []string{"req_img_server_error"},
+						},
+						Body: io.NopCloser(strings.NewReader(tt.payload)),
+					},
+				},
+			}
+			parsed, err := svc.ParseOpenAIImagesRequest(c, body)
+			require.NoError(t, err)
+			account := &Account{
+				ID:       21,
+				Name:     "openai-oauth-server-error",
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeOAuth,
+				Credentials: map[string]any{
+					"access_token": "token-123",
+				},
+			}
+
+			result, err := svc.ForwardImages(context.Background(), c, account, body, parsed, "")
+
+			require.Nil(t, result)
+			var failoverErr *UpstreamFailoverError
+			require.ErrorAs(t, err, &failoverErr)
+			require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+			require.Contains(t, string(failoverErr.ResponseBody), "server_error")
+			require.False(t, c.Writer.Written())
+			require.Empty(t, rec.Body.String())
+
+			rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
+			require.True(t, ok)
+			events, ok := rawEvents.([]*OpsUpstreamErrorEvent)
+			require.True(t, ok)
+			require.Len(t, events, 1)
+			require.Equal(t, "failover", events[0].Kind)
+			require.Equal(t, account.ID, events[0].AccountID)
+			require.Equal(t, http.StatusBadGateway, events[0].UpstreamStatusCode)
+		})
+	}
 }
 
 func TestOpenAIGatewayServiceForwardImages_APIKeyGenerationUsesConfiguredV1BaseURL(t *testing.T) {
