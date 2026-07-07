@@ -180,6 +180,25 @@ func TestCCGatewayControlPlane_FormalPoolUntrustedModelDoesNotQuarantine(t *test
 	require.Equal(t, BudgetActionObserve, sink.risks[len(sink.risks)-1].ActionRecommendation)
 }
 
+func TestCCGatewayControlPlane_FormalPoolCredentialMismatchDoesNotQuarantineAccount(t *testing.T) {
+	account := newCCGatewayBoundaryAccount()
+	formalPoolApplyCompleteSchedulingEvidenceForTest(account)
+	account.Extra[FormalPoolExtraOnboardingStage] = FormalPoolStageWarming
+	repo := &formalRateLimitRepo{accountsByID: map[int64]*Account{account.ID: account}}
+	sink := &recordingBudgetLedgerSink{}
+	svc := &GatewayService{accountRepo: repo, sessionBudgetObserve: sink}
+
+	svc.handleCCGatewayControlPlaneSideEffects(context.Background(), account, http.StatusForbidden, "credential_account_mismatch", "Runtime registration credential proof does not match credential binding")
+
+	require.Equal(t, FormalPoolStageWarming, repo.accountsByID[account.ID].Extra[FormalPoolExtraOnboardingStage])
+	require.True(t, repo.accountsByID[account.ID].Schedulable)
+	require.NotEqual(t, StatusError, repo.accountsByID[account.ID].Status)
+	require.Empty(t, repo.accountsByID[account.ID].Extra[FormalPoolExtraRiskEventRef])
+	require.NotEmpty(t, sink.risks)
+	require.Equal(t, RiskEventKindControlPlaneModelPolicy, sink.risks[len(sink.risks)-1].Kind)
+	require.Equal(t, BudgetActionObserve, sink.risks[len(sink.risks)-1].ActionRecommendation)
+}
+
 func TestCCGatewayControlPlane_FormalPoolPlan76RequestShapeDoesNotQuarantine(t *testing.T) {
 	for _, tc := range []struct {
 		name string

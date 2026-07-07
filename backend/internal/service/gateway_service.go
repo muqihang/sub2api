@@ -8119,6 +8119,9 @@ func shouldQuarantineCCGatewayControlPlane(code string, message string, statusCo
 	if isCCGatewayRequestLevelEnvResidueVerifierReject(code, text) {
 		return false
 	}
+	if isCCGatewayRequestLevelCredentialBindingReject(code, text) {
+		return false
+	}
 	if isCCGatewayRequestLevelStripVerifierReject(code, text) {
 		return false
 	}
@@ -8163,6 +8166,19 @@ func shouldQuarantineCCGatewayControlPlaneForAccount(account *Account, code stri
 
 func isCCGatewayRequestLevelBillingReject(code string, text string) bool {
 	return code == "signing_untrusted_billing_input" || strings.Contains(text, "signing_untrusted_billing_input")
+}
+
+func isCCGatewayRequestLevelCredentialBindingReject(code string, text string) bool {
+	requestLevelCodes := []string{
+		"credential_account_mismatch",
+		"invalid_credential_binding_hmac",
+	}
+	for _, candidate := range requestLevelCodes {
+		if code == candidate || strings.Contains(text, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func isCCGatewayRequestLevelStripVerifierReject(code string, text string) bool {
