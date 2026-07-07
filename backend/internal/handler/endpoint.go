@@ -19,6 +19,7 @@ const (
 	EndpointChatCompletions   = "/v1/chat/completions"
 	EndpointEmbeddings        = "/v1/embeddings"
 	EndpointResponses         = "/v1/responses"
+	EndpointResponsesCompact  = "/v1/responses/compact"
 	EndpointImagesGenerations = "/v1/images/generations"
 	EndpointImagesEdits       = "/v1/images/edits"
 	EndpointGeminiModels      = "/v1beta/models"
@@ -53,13 +54,54 @@ func NormalizeInboundEndpoint(path string) string {
 		return EndpointImagesGenerations
 	case strings.Contains(path, EndpointImagesEdits) || strings.Contains(path, "/images/edits"):
 		return EndpointImagesEdits
-	case strings.Contains(path, EndpointResponses):
+	case isResponsesCompactInboundPath(path):
+		return EndpointResponsesCompact
+	case isResponsesInboundPath(path):
 		return EndpointResponses
 	case strings.Contains(path, EndpointGeminiModels):
 		return EndpointGeminiModels
 	default:
 		return path
 	}
+}
+
+func isResponsesCompactInboundPath(path string) bool {
+	path = strings.TrimRight(strings.TrimSpace(path), "/")
+	if path == "" {
+		return false
+	}
+	if hasEndpointPath(path, EndpointResponsesCompact) {
+		return true
+	}
+	return hasBareResponsesPath(path, "/responses/compact")
+}
+
+func isResponsesInboundPath(path string) bool {
+	path = strings.TrimRight(strings.TrimSpace(path), "/")
+	if path == "" {
+		return false
+	}
+	if hasEndpointPath(path, EndpointResponses) {
+		return true
+	}
+	return hasBareResponsesPath(path, "/responses")
+}
+
+func hasEndpointPath(path, endpoint string) bool {
+	idx := strings.Index(path, endpoint)
+	if idx < 0 {
+		return false
+	}
+	end := idx + len(endpoint)
+	return end == len(path) || path[end] == '/' || path[end] == '*'
+}
+
+func hasBareResponsesPath(path, suffix string) bool {
+	if path == suffix || strings.HasPrefix(path, suffix+"/") || strings.HasPrefix(path, suffix+"/*") {
+		return true
+	}
+	codexPath := "/backend-api/codex" + suffix
+	return path == codexPath || strings.HasPrefix(path, codexPath+"/") || strings.HasPrefix(path, codexPath+"/*")
 }
 
 // DeriveUpstreamEndpoint determines the upstream endpoint from the
@@ -80,6 +122,12 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
 	case service.PlatformOpenAI:
 		if inbound == EndpointEmbeddings || inbound == EndpointImagesGenerations || inbound == EndpointImagesEdits {
 			return inbound
+		}
+		if inbound == EndpointResponsesCompact {
+			if suffix := responsesSubpathSuffix(rawRequestPath); suffix != "" {
+				return EndpointResponses + suffix
+			}
+			return EndpointResponsesCompact
 		}
 		// OpenAI forwards everything to the Responses API.
 		// Preserve subresource suffix (e.g. /v1/responses/compact).
@@ -136,9 +184,12 @@ func responsesSubpathSuffix(rawPath string) string {
 // Apply this middleware to all gateway route groups.
 func InboundEndpointMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		path := c.FullPath()
-		if path == "" && c.Request != nil && c.Request.URL != nil {
+		path := ""
+		if c.Request != nil && c.Request.URL != nil {
 			path = c.Request.URL.Path
+		}
+		if path == "" {
+			path = c.FullPath()
 		}
 		c.Set(ctxKeyInboundEndpoint, NormalizeInboundEndpoint(path))
 		c.Next()
@@ -162,9 +213,11 @@ func GetInboundEndpoint(c *gin.Context) string {
 	// Fallback: normalize on the fly.
 	path := ""
 	if c != nil {
-		path = c.FullPath()
-		if path == "" && c.Request != nil && c.Request.URL != nil {
+		if c.Request != nil && c.Request.URL != nil {
 			path = c.Request.URL.Path
+		}
+		if path == "" {
+			path = c.FullPath()
 		}
 	}
 	return NormalizeInboundEndpoint(path)

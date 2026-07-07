@@ -111,14 +111,15 @@ func inboundIsResponses(c *gin.Context) bool {
 	if c == nil {
 		return false
 	}
-	p := strings.TrimRight(c.FullPath(), "/")
-	if p == "" && c.Request != nil && c.Request.URL != nil {
-		p = strings.TrimRight(c.Request.URL.Path, "/")
+	path := ""
+	if c.Request != nil && c.Request.URL != nil {
+		path = c.Request.URL.Path
 	}
-	if p == "" {
-		return false
+	if path == "" {
+		path = c.FullPath()
 	}
-	return strings.HasSuffix(p, "/responses") || strings.Contains(p, "/responses/")
+	endpoint := NormalizeInboundEndpoint(path)
+	return endpoint == EndpointResponses || endpoint == EndpointResponsesCompact
 }
 
 // synthesizeResponseID 为合成的 response.failed 事件生成一个稳定的 id。

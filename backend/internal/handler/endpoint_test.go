@@ -33,7 +33,7 @@ func TestNormalizeInboundEndpoint(t *testing.T) {
 		// Prefixed paths (antigravity, openai).
 		{"/antigravity/v1/messages", EndpointMessages},
 		{"/openai/v1/responses", EndpointResponses},
-		{"/openai/v1/responses/compact", EndpointResponses},
+		{"/openai/v1/responses/compact", EndpointResponsesCompact},
 		{"/openai/v1/images/generations", EndpointImagesGenerations},
 		{"/openai/v1/images/edits", EndpointImagesEdits},
 		{"/antigravity/v1beta/models/gemini:generateContent", EndpointGeminiModels},
@@ -52,6 +52,74 @@ func TestNormalizeInboundEndpoint(t *testing.T) {
 			require.Equal(t, tt.want, NormalizeInboundEndpoint(tt.path))
 		})
 	}
+}
+
+func TestNormalizeInboundEndpoint_ResponsesCompactAliasesAndBareBoundaries(t *testing.T) {
+	tests := []struct {
+		path string
+		want string
+	}{
+		{"/v1/responses/compact", EndpointResponsesCompact},
+		{"/v1/responses/compact/foo", EndpointResponsesCompact},
+		{"/openai/v1/responses/compact", EndpointResponsesCompact},
+		{"/openai/v1/responses/compact/foo", EndpointResponsesCompact},
+		{"/responses/compact", EndpointResponsesCompact},
+		{"/responses/compact/foo", EndpointResponsesCompact},
+		{"/backend-api/codex/responses/compact", EndpointResponsesCompact},
+		{"/backend-api/codex/responses/compact/foo", EndpointResponsesCompact},
+		{"/responses/foo", EndpointResponses},
+		{"/backend-api/codex/responses/foo", EndpointResponses},
+		{"/foo/responses", "/foo/responses"},
+		{"/foo/responses/compact", "/foo/responses/compact"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			require.Equal(t, tt.want, NormalizeInboundEndpoint(tt.path))
+		})
+	}
+}
+
+func TestInboundEndpointMiddleware_UsesRawURLPathForWildcardCompact(t *testing.T) {
+	router := gin.New()
+	router.Use(InboundEndpointMiddleware())
+
+	var captured string
+	router.POST("/v1/responses/*subpath", func(c *gin.Context) {
+		captured = GetInboundEndpoint(c)
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, EndpointResponsesCompact, captured)
+}
+
+func TestGetInboundEndpoint_FallbackUsesRawURLPathBeforeWildcardFullPath(t *testing.T) {
+	router := gin.New()
+
+	var captured string
+	router.POST("/v1/responses/*subpath", func(c *gin.Context) {
+		captured = GetInboundEndpoint(c)
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, EndpointResponsesCompact, captured)
+}
+
+func TestGetUpstreamEndpoint_CompactInboundPreservesCompactWithoutRawSuffix(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Set(ctxKeyInboundEndpoint, EndpointResponsesCompact)
+
+	require.Equal(t, EndpointResponsesCompact, GetUpstreamEndpoint(c, service.PlatformOpenAI))
+	require.Equal(t, EndpointResponsesCompact, DeriveUpstreamEndpoint(EndpointResponsesCompact, "/v1/responses", service.PlatformOpenAI))
 }
 
 // ──────────────────────────────────────────────────────────

@@ -251,3 +251,19 @@ func TestMapResponsesErrorCode(t *testing.T) {
 		assert.Equal(t, tc.out, mapResponsesErrorCode(tc.in), "in=%q", tc.in)
 	}
 }
+
+func TestInboundIsResponses_CompactCanonicalAndWildcard(t *testing.T) {
+	router := gin.New()
+	var got bool
+	router.POST("/v1/responses/*subpath", func(c *gin.Context) {
+		got = inboundIsResponses(c)
+		c.Status(http.StatusOK)
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	require.True(t, got)
+
+	c, _ := newGinContextForEndpoint(t, EndpointResponsesCompact)
+	require.True(t, inboundIsResponses(c))
+}
