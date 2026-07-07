@@ -23,6 +23,8 @@ OLD_PLUGIN_AUTH_GATE_EXPR = "function e(e){return e!==`chatgpt`}"
 NEW_PLUGIN_AUTH_GATE_EXPR = "function e(e){return!1&&e!==`xxxx`}"
 CODEX_260609_PLUGIN_AUTH_GATE_EXPR = "function pe(e){return e!==`chatgpt`}"
 CODEX_260609_PATCHED_PLUGIN_AUTH_GATE_EXPR = "function pe(e){return!1&&e!==`xxxx`}"
+CODEX_260609_PLUGIN_CURATED_HIDE_EXPR = "p&&(h=be)"
+CODEX_260609_PATCHED_PLUGIN_CURATED_HIDE_EXPR = "0&&(h=be)"
 OLD_PLUGIN_MENTION_MARKETPLACE_EXPR = "additionalMarketplaceKinds:[`shared-with-me`]"
 NEW_PLUGIN_MENTION_MARKETPLACE_EXPR = "additionalMarketplaceKinds:void 0/*zhumeng*/ "
 CURRENT_PLUGIN_MENTION_MARKETPLACE_C_EXPR = "c={additionalMarketplaceKinds:s?[`shared-with-me`]:[]}"
@@ -39,6 +41,10 @@ MODEL_PICKER_REPLACEMENTS = (
 PLUGIN_AUTH_GATE_REPLACEMENTS = (
     (OLD_PLUGIN_AUTH_GATE_EXPR, NEW_PLUGIN_AUTH_GATE_EXPR),
     (CODEX_260609_PLUGIN_AUTH_GATE_EXPR, CODEX_260609_PATCHED_PLUGIN_AUTH_GATE_EXPR),
+)
+
+PLUGIN_CURATED_VISIBILITY_REPLACEMENTS = (
+    (CODEX_260609_PLUGIN_CURATED_HIDE_EXPR, CODEX_260609_PATCHED_PLUGIN_CURATED_HIDE_EXPR),
 )
 
 PLUGIN_MENTION_MARKETPLACE_REPLACEMENTS = (
@@ -160,6 +166,36 @@ def inspect_plugin_mention_marketplace_app(app_path: Path) -> dict[str, object]:
         "target_file": target_file,
         "target_files": target_files,
         "candidate_files": candidate_plugin_mention_marketplace_files(archive),
+    }
+
+
+def inspect_plugin_curated_visibility_app(app_path: Path) -> dict[str, object]:
+    asar_path = app_path / "Contents" / "Resources" / "app.asar"
+    plist_path = app_path / "Contents" / "Info.plist"
+    if not asar_path.exists():
+        return {"status": "missing_asar", "integrity_ok": False}
+
+    archive = read_asar(asar_path)
+    counts = plugin_curated_visibility_counts(archive.data)
+    status = plugin_curated_visibility_status(counts)
+    target_file = None
+    integrity_ok = False
+    expression_offset = plugin_curated_visibility_offset_for_status(archive.data, status)
+    if expression_offset is not None:
+        entry_match = find_entry_covering_offset(archive, expression_offset)
+        if entry_match is not None:
+            target_file = entry_match["path"]
+            integrity_ok = entry_integrity_ok(archive, entry_match)
+    if integrity_ok:
+        integrity_ok = plist_hash_ok(plist_path, archive.header_bytes)
+    return {
+        "status": status,
+        "integrity_ok": integrity_ok,
+        "old_expression_count": counts["old"],
+        "new_expression_count": counts["new"],
+        "outside_candidate_expression_count": counts["outside"],
+        "target_file": target_file,
+        "candidate_files": candidate_plugin_curated_visibility_files(archive),
     }
 
 
@@ -417,6 +453,84 @@ def patch_plugin_mention_marketplace_app(
     }
 
 
+def patch_plugin_curated_visibility_app(
+    app_path: Path,
+    *,
+    backup_root: Path | None = None,
+    sign: bool = True,
+    verify_signature: bool = True,
+) -> dict[str, object]:
+    asar_path = app_path / "Contents" / "Resources" / "app.asar"
+    plist_path = app_path / "Contents" / "Info.plist"
+    require_plist_asar_integrity(plist_path)
+    archive = read_asar(asar_path)
+    counts = plugin_curated_visibility_counts(archive.data)
+
+    if counts["old"] == 0 and counts["new"] == 1 and counts["outside"] == 0:
+        offset = plugin_curated_visibility_offset_for_status(archive.data, "patched")
+        if offset is None:
+            raise ModelPickerPatchError("cannot locate existing plugin curated visibility patch")
+        return ensure_existing_byte_patch_integrity(
+            app_path,
+            asar_path,
+            plist_path,
+            archive,
+            status="patched",
+            offset=offset,
+            backup_root=backup_root,
+            backup_label="plugin-curated-visibility",
+            sign=sign,
+            verify_signature=verify_signature,
+        )
+    if counts["old"] != 1 or counts["new"] != 0 or counts["outside"] != 0:
+        raise ModelPickerPatchError(
+            "unexpected plugin curated visibility expression counts "
+            f"old={counts['old']} new={counts['new']} outside={counts['outside']}"
+        )
+
+    old_expr, new_expr = plugin_curated_visibility_replacement_for_data(archive.data)
+    old_bytes = old_expr.encode("utf-8")
+    new_bytes = new_expr.encode("utf-8")
+    if len(old_bytes) != len(new_bytes):
+        raise ModelPickerPatchError(f"replacement length mismatch {len(old_bytes)} != {len(new_bytes)}")
+
+    entry_match = find_plugin_curated_visibility_entry(archive, old_expr)
+    content = bytes(archive.data[entry_match["start"] : entry_match["end"]])
+    offset = entry_match["start"] + content.index(old_bytes)
+    patched = bytearray(archive.data)
+    patched[offset : offset + len(old_bytes)] = new_bytes
+    patched_archive = AsarArchive(
+        path=archive.path,
+        data=patched,
+        header=archive.header,
+        header_json_size=archive.header_json_size,
+        header_start=archive.header_start,
+        file_data_start=archive.file_data_start,
+    )
+    update_entry_integrity(patched_archive, entry_match)
+    write_updated_header(patched_archive)
+
+    backup_path = create_backup(asar_path, app_path=app_path, backup_root=backup_root, label="plugin-curated-visibility")
+    write_archive_with_rollback(
+        app_path,
+        asar_path,
+        plist_path,
+        patched_archive,
+        backup_path,
+        sign=sign,
+        verify_signature=verify_signature,
+    )
+    return {
+        "status": "patched",
+        "app_path": str(app_path),
+        "target_file": entry_match["path"],
+        "backup_path": str(backup_path),
+        "patched_offset": offset,
+        "restart_required": True,
+        "running_app_detected": codex_app_is_running(app_path),
+    }
+
+
 def restore_latest_model_picker_backup(
     app_path: Path,
     *,
@@ -549,6 +663,78 @@ def restore_latest_plugin_auth_gate_backup(
         "backup_path": str(backup),
         "restore_backup_path": str(restore_backup_path),
         "restored_offset": offset,
+        "restart_required": True,
+        "running_app_detected": codex_app_is_running(app_path),
+    }
+
+
+def restore_latest_plugin_curated_visibility_backup(
+    app_path: Path,
+    *,
+    backup_root: Path | None = None,
+    sign: bool = True,
+    verify_signature: bool = True,
+) -> dict[str, object]:
+    asar_path = app_path / "Contents" / "Resources" / "app.asar"
+    plist_path = app_path / "Contents" / "Info.plist"
+    require_plist_asar_integrity(plist_path)
+    backup = latest_backup(app_path=app_path, backup_root=backup_root, label="plugin-curated-visibility")
+    if backup is None:
+        raise ModelPickerPatchError("no plugin curated visibility backup found")
+
+    archive = read_asar(asar_path)
+    counts = plugin_curated_visibility_counts(archive.data)
+    if counts["old"] == 1 and counts["new"] == 0 and counts["outside"] == 0:
+        return {"status": "not_patched", "app_path": str(app_path), "backup_path": str(backup), "restart_required": False}
+    if counts["old"] != 0 or counts["new"] != 1 or counts["outside"] != 0:
+        raise ModelPickerPatchError(
+            "unexpected plugin curated visibility expression counts "
+            f"old={counts['old']} new={counts['new']} outside={counts['outside']}"
+        )
+
+    old_expr, new_expr = plugin_curated_visibility_restore_replacement_for_data(archive.data)
+    old_bytes = old_expr.encode("utf-8")
+    new_bytes = new_expr.encode("utf-8")
+    if len(new_bytes) != len(old_bytes):
+        raise ModelPickerPatchError(f"replacement length mismatch {len(new_bytes)} != {len(old_bytes)}")
+    entry_match = find_plugin_curated_visibility_entry(archive, new_expr)
+    content = bytes(archive.data[entry_match["start"] : entry_match["end"]])
+    offset = entry_match["start"] + content.index(new_bytes)
+    restored = bytearray(archive.data)
+    restored[offset : offset + len(new_bytes)] = old_bytes
+    restored_archive = AsarArchive(
+        path=archive.path,
+        data=restored,
+        header=archive.header,
+        header_json_size=archive.header_json_size,
+        header_start=archive.header_start,
+        file_data_start=archive.file_data_start,
+    )
+    update_entry_integrity(restored_archive, entry_match)
+    write_updated_header(restored_archive)
+
+    restore_backup_path = create_backup(
+        asar_path,
+        app_path=app_path,
+        backup_root=backup_root,
+        label="plugin-curated-visibility-restore",
+    )
+    write_archive_with_rollback(
+        app_path,
+        asar_path,
+        plist_path,
+        restored_archive,
+        restore_backup_path,
+        sign=sign,
+        verify_signature=verify_signature,
+    )
+    return {
+        "status": "restored",
+        "app_path": str(app_path),
+        "backup_path": str(backup),
+        "restore_backup_path": str(restore_backup_path),
+        "restored_offset": offset,
+        "target_file": entry_match["path"],
         "restart_required": True,
         "running_app_detected": codex_app_is_running(app_path),
     }
@@ -714,7 +900,7 @@ def ensure_existing_byte_patch_integrity(
             "app_path": str(app_path),
             "target_file": entry_match["path"],
         }
-        if backup_label in {"plugin-auth-gate", "plugin-mention-marketplace"}:
+        if backup_label in {"plugin-auth-gate", "plugin-mention-marketplace", "plugin-curated-visibility"}:
             result["restart_required"] = True
             result["running_app_detected"] = codex_app_is_running(app_path)
         return result
@@ -739,7 +925,7 @@ def ensure_existing_byte_patch_integrity(
         "target_file": entry_match["path"],
         "backup_path": str(backup_path),
     }
-    if backup_label in {"plugin-auth-gate", "plugin-mention-marketplace"}:
+    if backup_label in {"plugin-auth-gate", "plugin-mention-marketplace", "plugin-curated-visibility"}:
         result["restart_required"] = True
         result["running_app_detected"] = codex_app_is_running(app_path)
     return result
@@ -873,6 +1059,44 @@ def plugin_auth_gate_offset_for_status(data: bytes | bytearray, status: str) -> 
         return first_plugin_auth_gate_offset(archive, [new for _, new in PLUGIN_AUTH_GATE_REPLACEMENTS])
     return None
 
+
+
+def plugin_curated_visibility_counts(data: bytes | bytearray) -> dict[str, int]:
+    archive = read_asar_from_data(data)
+    old_exprs = [old.encode("utf-8") for old, _ in PLUGIN_CURATED_VISIBILITY_REPLACEMENTS]
+    new_exprs = [new.encode("utf-8") for _, new in PLUGIN_CURATED_VISIBILITY_REPLACEMENTS]
+    counts = {"old": 0, "new": 0, "outside": 0}
+    for entry_match in file_entries(archive):
+        content = bytes(archive.data[entry_match["start"] : entry_match["end"]])
+        old_count = sum(content.count(expr) for expr in old_exprs)
+        new_count = sum(content.count(expr) for expr in new_exprs)
+        if is_plugin_curated_visibility_candidate(entry_match["path"]):
+            counts["old"] += old_count
+            counts["new"] += new_count
+        else:
+            counts["outside"] += old_count + new_count
+    return counts
+
+
+def plugin_curated_visibility_status(counts: dict[str, int]) -> str:
+    if counts.get("outside", 0) != 0:
+        return "unknown"
+    if counts["old"] == 1 and counts["new"] == 0:
+        return "unpatched"
+    if counts["old"] == 0 and counts["new"] == 1:
+        return "patched"
+    return "unknown"
+
+
+def plugin_curated_visibility_offset_for_status(data: bytes | bytearray, status: str) -> int | None:
+    archive = read_asar_from_data(data)
+    if status == "unpatched":
+        return first_plugin_curated_visibility_offset(archive, [old for old, _ in PLUGIN_CURATED_VISIBILITY_REPLACEMENTS])
+    if status == "patched":
+        return first_plugin_curated_visibility_offset(archive, [new for _, new in PLUGIN_CURATED_VISIBILITY_REPLACEMENTS])
+    return None
+
+
 def plugin_mention_marketplace_counts(data: bytes | bytearray) -> dict[str, int]:
     archive = read_asar_from_data(data)
     old_exprs = [old.encode("utf-8") for old, _ in PLUGIN_MENTION_MARKETPLACE_REPLACEMENTS]
@@ -949,6 +1173,22 @@ def plugin_auth_gate_replacement_for_data(data: bytes | bytearray) -> tuple[str,
     matches = [(old, new) for old, new in PLUGIN_AUTH_GATE_REPLACEMENTS if haystack.count(old.encode("utf-8")) == 1]
     if len(matches) != 1:
         raise ModelPickerPatchError(f"expected one plugin auth gate replacement candidate, found {len(matches)}")
+    return matches[0]
+
+
+def plugin_curated_visibility_replacement_for_data(data: bytes | bytearray) -> tuple[str, str]:
+    haystack = bytes(data)
+    matches = [(old, new) for old, new in PLUGIN_CURATED_VISIBILITY_REPLACEMENTS if haystack.count(old.encode("utf-8")) == 1]
+    if len(matches) != 1:
+        raise ModelPickerPatchError(f"expected one plugin curated visibility replacement candidate, found {len(matches)}")
+    return matches[0]
+
+
+def plugin_curated_visibility_restore_replacement_for_data(data: bytes | bytearray) -> tuple[str, str]:
+    haystack = bytes(data)
+    matches = [(old, new) for old, new in PLUGIN_CURATED_VISIBILITY_REPLACEMENTS if haystack.count(new.encode("utf-8")) == 1]
+    if len(matches) != 1:
+        raise ModelPickerPatchError(f"expected one plugin curated visibility restore candidate, found {len(matches)}")
     return matches[0]
 
 
@@ -1075,6 +1315,10 @@ def candidate_plugin_auth_gate_files(archive: AsarArchive) -> list[str]:
     return [entry["path"] for entry in file_entries(archive) if is_plugin_auth_gate_candidate(entry["path"])]
 
 
+def candidate_plugin_curated_visibility_files(archive: AsarArchive) -> list[str]:
+    return [entry["path"] for entry in file_entries(archive) if is_plugin_curated_visibility_candidate(entry["path"])]
+
+
 def is_model_picker_candidate(file_path: str) -> bool:
     return (
         file_path.startswith("webview/assets/model-queries-")
@@ -1092,6 +1336,10 @@ def is_plugin_auth_gate_candidate(file_path: str) -> bool:
         or file_path.startswith("webview/assets/plugin-auth-")
         or file_path.startswith("webview/assets/use-plugins-")
     ) and file_path.endswith(".js")
+
+
+def is_plugin_curated_visibility_candidate(file_path: str) -> bool:
+    return file_path.startswith("webview/assets/use-plugins-") and file_path.endswith(".js")
 
 
 def is_plugin_mention_marketplace_candidate(file_path: str) -> bool:
@@ -1115,6 +1363,23 @@ def find_plugin_auth_gate_entry(archive: AsarArchive, expression: str) -> dict[s
             matches.append(entry_match)
     if len(matches) != 1:
         raise ModelPickerPatchError(f"expected one plugin auth gate candidate match, found {len(matches)}")
+    entry_match = matches[0]
+    if not isinstance(entry_match["entry"].get("integrity"), dict):
+        raise ModelPickerPatchError(f"asar file entry has no integrity metadata: {entry_match['path']}")
+    return entry_match
+
+
+def find_plugin_curated_visibility_entry(archive: AsarArchive, expression: str) -> dict[str, Any]:
+    expression_bytes = expression.encode("utf-8")
+    matches = []
+    for entry_match in file_entries(archive):
+        if not is_plugin_curated_visibility_candidate(entry_match["path"]):
+            continue
+        content = bytes(archive.data[entry_match["start"] : entry_match["end"]])
+        if content.count(expression_bytes) > 0:
+            matches.append(entry_match)
+    if len(matches) != 1:
+        raise ModelPickerPatchError(f"expected one plugin curated visibility candidate match, found {len(matches)}")
     entry_match = matches[0]
     if not isinstance(entry_match["entry"].get("integrity"), dict):
         raise ModelPickerPatchError(f"asar file entry has no integrity metadata: {entry_match['path']}")
@@ -1212,6 +1477,22 @@ def first_plugin_auth_gate_offset(archive: AsarArchive, expressions: list[str]) 
     offsets = []
     for entry_match in file_entries(archive):
         if not is_plugin_auth_gate_candidate(entry_match["path"]):
+            continue
+        content = bytes(archive.data[entry_match["start"] : entry_match["end"]])
+        for expr in expression_bytes:
+            index = content.find(expr)
+            if index >= 0:
+                offsets.append(entry_match["start"] + index)
+    if len(offsets) != 1:
+        return None
+    return offsets[0]
+
+
+def first_plugin_curated_visibility_offset(archive: AsarArchive, expressions: list[str]) -> int | None:
+    expression_bytes = [expression.encode("utf-8") for expression in expressions]
+    offsets = []
+    for entry_match in file_entries(archive):
+        if not is_plugin_curated_visibility_candidate(entry_match["path"]):
             continue
         content = bytes(archive.data[entry_match["start"] : entry_match["end"]])
         for expr in expression_bytes:

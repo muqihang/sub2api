@@ -163,6 +163,24 @@ def test_configure_keeps_bundled_plugins_available_when_marketplace_exists(tmp_p
     assert parsed["plugins"]["hyperframes@openai-curated"]["enabled"] is True
 
 
+def test_configure_auto_registers_local_openai_curated_marketplace(tmp_path: Path):
+    curated = tmp_path / ".tmp" / "plugins"
+    (curated / ".agents" / "plugins").mkdir(parents=True)
+    (curated / ".agents" / "plugins" / "marketplace.json").write_text(
+        '{"name":"openai-curated","plugins":[{"name":"linear"}]}',
+        encoding="utf-8",
+    )
+    manager = CodexConfigManager(tmp_path)
+
+    plan = manager.plan_configure(DEFAULT_PROFILE, 18081, "loopback-secret", SAMPLE_MODEL_CATALOG)
+    manager.apply_configure(plan)
+
+    parsed = __import__("tomllib").loads((tmp_path / "config.toml").read_text(encoding="utf-8"))
+    assert parsed["features"]["plugins"] is True
+    assert parsed["marketplaces"]["openai-curated"]["source_type"] == "local"
+    assert parsed["marketplaces"]["openai-curated"]["source"] == str(curated)
+
+
 def test_repair_preserves_current_managed_model_selection(tmp_path: Path):
     (tmp_path / "config.toml").write_text(
         "\n".join(

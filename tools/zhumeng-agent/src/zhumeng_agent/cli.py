@@ -33,8 +33,9 @@ from .adapters.codex.launcher import build_codex_launch_command, detect_codex_ap
 from .adapters.codex.model_picker import ModelPickerPatchError, patch_model_picker_app
 from .adapters.codex.model_picker import inspect_model_picker_app, restore_latest_model_picker_backup
 from .adapters.codex.model_picker import inspect_plugin_auth_gate_app, patch_plugin_auth_gate_app
+from .adapters.codex.model_picker import inspect_plugin_curated_visibility_app, patch_plugin_curated_visibility_app
 from .adapters.codex.model_picker import inspect_plugin_mention_marketplace_app, patch_plugin_mention_marketplace_app
-from .adapters.codex.model_picker import restore_latest_plugin_auth_gate_backup, restore_latest_plugin_mention_marketplace_backup
+from .adapters.codex.model_picker import restore_latest_plugin_auth_gate_backup, restore_latest_plugin_curated_visibility_backup, restore_latest_plugin_mention_marketplace_backup
 from .adapters.codex.model_picker import codex_app_is_running
 from .adapters.base import BaseAdapter
 from .adapters.claude_code.launcher import (
@@ -392,6 +393,7 @@ def patch_detected_codex_desktop() -> dict[str, object]:
             "model_picker": {"status": "app_not_found"},
             "plugin_auth_gate": {"status": "app_not_found"},
             "plugin_mention_marketplace": {"status": "app_not_found"},
+            "plugin_curated_visibility": {"status": "app_not_found"},
         }
     aggregate = patch_codex_enhancements(app_path, item="all")
     items = aggregate.get("items", {}) if isinstance(aggregate.get("items"), dict) else {}
@@ -401,6 +403,7 @@ def patch_detected_codex_desktop() -> dict[str, object]:
         "model_picker": items.get("model-picker", {"status": aggregate.get("status", "failed")}),
         "plugin_auth_gate": items.get("plugin-auth-gate", {"status": aggregate.get("status", "failed")}),
         "plugin_mention_marketplace": items.get("plugin-mention-marketplace", {"status": aggregate.get("status", "failed")}),
+        "plugin_curated_visibility": items.get("plugin-curated-visibility", {"status": aggregate.get("status", "failed")}),
     }
 
 
@@ -1056,6 +1059,11 @@ def build_desktop_status(state: dict[str, object]) -> dict[str, object]:
         "plugin_mention_marketplace",
         "plugin-mention-marketplace",
     )
+    plugin_curated_visibility = desktop_enhancement_item(
+        enhancements,
+        "plugin_curated_visibility",
+        "plugin-curated-visibility",
+    )
     claude_code_status = derive_claude_code_operator_status(state, process_alive=is_process_alive).to_safe_dict()
     adapters = {
         "codex": {
@@ -1087,6 +1095,7 @@ def build_desktop_status(state: dict[str, object]) -> dict[str, object]:
         "model_picker": model_picker,
         "plugin_auth_gate": plugin_auth_gate,
         "plugin_mention_marketplace": plugin_mention_marketplace,
+        "plugin_curated_visibility": plugin_curated_visibility,
         "model_catalog": state.get("model_catalog_meta", {}),
         "state": public_state(state),
     }
@@ -1494,6 +1503,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "model_picker": desktop_patches["model_picker"],
                 "plugin_auth_gate": desktop_patches["plugin_auth_gate"],
                 "plugin_mention_marketplace": desktop_patches["plugin_mention_marketplace"],
+                "plugin_curated_visibility": desktop_patches.get("plugin_curated_visibility", {}),
                 "capture": capture_status,
                 "model_catalog": model_catalog_meta,
             })
@@ -1601,6 +1611,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "model_picker": desktop_patches["model_picker"],
             "plugin_auth_gate": desktop_patches["plugin_auth_gate"],
             "plugin_mention_marketplace": desktop_patches["plugin_mention_marketplace"],
+            "plugin_curated_visibility": desktop_patches.get("plugin_curated_visibility", {}),
             "model_catalog": model_catalog_meta,
         })
 

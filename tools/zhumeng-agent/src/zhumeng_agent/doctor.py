@@ -11,6 +11,7 @@ from .adapters.codex.model_picker import (
     ModelPickerPatchError,
     inspect_model_picker_app,
     inspect_plugin_auth_gate_app,
+    inspect_plugin_curated_visibility_app,
     inspect_plugin_mention_marketplace_app,
 )
 from .adapters.codex.plugins import inspect_codex_plugins
@@ -81,6 +82,7 @@ def codex_doctor_report(
         model_picker = {"status": "app_not_found"}
         plugin_auth_gate: dict[str, object] = {"status": "app_not_found"}
         plugin_mention_marketplace: dict[str, object] = {"status": "app_not_found"}
+        plugin_curated_visibility: dict[str, object] = {"status": "app_not_found"}
     else:
         try:
             model_picker = inspect_model_picker_app(codex_app_path)
@@ -103,6 +105,13 @@ def codex_doctor_report(
                 "status": "failed",
                 "message": str(err),
             }
+        try:
+            plugin_curated_visibility = inspect_plugin_curated_visibility_app(codex_app_path)
+        except ModelPickerPatchError as err:
+            plugin_curated_visibility = {
+                "status": "failed",
+                "message": str(err),
+            }
     return {
         "client": "codex",
         "plugins": inspect_codex_plugins(
@@ -113,6 +122,7 @@ def codex_doctor_report(
         "model_picker": model_picker,
         "plugin_auth_gate": plugin_auth_gate,
         "plugin_mention_marketplace": plugin_mention_marketplace,
+        "plugin_curated_visibility": plugin_curated_visibility,
         "desktop_capture": {
             "config": capture_config.public_dict(),
             "installation": capture_install_manifest_state(capture_config),

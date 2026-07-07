@@ -262,7 +262,12 @@ class CodexConfigManager:
         return features
 
     def _should_enable_plugins(self) -> bool:
-        return bool(self._parsed_config_section("plugins")) or bool(self._parsed_config_section("marketplaces")) or self._bundled_marketplace_path().exists()
+        return (
+            bool(self._parsed_config_section("plugins"))
+            or bool(self._parsed_config_section("marketplaces"))
+            or self._bundled_marketplace_path().exists()
+            or self._curated_marketplace_path().exists()
+        )
 
     def _marketplace_sections(self) -> str:
         marketplaces: dict[str, dict[str, object]] = {}
@@ -282,6 +287,17 @@ class CodexConfigManager:
             )
             marketplaces["openai-bundled"]["source_type"] = "local"
             marketplaces["openai-bundled"]["source"] = str(bundled)
+        curated = self._curated_marketplace_path()
+        if curated.exists():
+            marketplaces.setdefault(
+                "openai-curated",
+                {
+                    "source_type": "local",
+                    "source": str(curated),
+                },
+            )
+            marketplaces["openai-curated"]["source_type"] = "local"
+            marketplaces["openai-curated"]["source"] = str(curated)
         return render_nested_sections("marketplaces", marketplaces)
 
     def _plugin_sections(self) -> str:
@@ -311,6 +327,9 @@ class CodexConfigManager:
 
     def _bundled_marketplace_path(self) -> Path:
         return self.codex_home / ".tmp" / "bundled-marketplaces" / "openai-bundled"
+
+    def _curated_marketplace_path(self) -> Path:
+        return self.codex_home / ".tmp" / "plugins"
 
     def _current_managed_model(self, provider: str) -> str | None:
         parsed = self._parsed_config()

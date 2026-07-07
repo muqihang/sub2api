@@ -34,6 +34,7 @@ cp4_fixture_route_catalog = _ROUTE_TRUST.cp4_fixture_route_catalog
 route_catalog_content_hash = _ROUTE_TRUST.route_catalog_content_hash
 
 
+
 class RecordingRunner:
     def __init__(self, stdout: str = "Claude Code 1.2.3\n"):
         self.stdout = stdout

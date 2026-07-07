@@ -17,6 +17,8 @@ from zhumeng_agent.adapters.codex.model_picker import (
     CODEX_260609_PATCHED_MODEL_PICKER_EXPR,
     CODEX_260609_PLUGIN_AUTH_GATE_EXPR,
     CODEX_260609_PATCHED_PLUGIN_AUTH_GATE_EXPR,
+    CODEX_260609_PLUGIN_CURATED_HIDE_EXPR,
+    CODEX_260609_PATCHED_PLUGIN_CURATED_HIDE_EXPR,
     NEW_MODEL_PICKER_EXPR,
     NEW_PLUGIN_AUTH_GATE_EXPR,
     OLD_PLUGIN_MENTION_MARKETPLACE_EXPR,
@@ -29,9 +31,11 @@ from zhumeng_agent.adapters.codex.model_picker import (
     inspect_plugin_auth_gate_app,
     patch_model_picker_app,
     patch_plugin_mention_marketplace_app,
+    patch_plugin_curated_visibility_app,
     patch_plugin_auth_gate_app,
     restore_latest_model_picker_backup,
     restore_latest_plugin_auth_gate_backup,
+    restore_latest_plugin_curated_visibility_backup,
 )
 
 
@@ -712,6 +716,48 @@ def test_plugin_mention_marketplace_patch_handles_current_prefetch_inline_and_me
     assert status["integrity_ok"] is True
 
 
+def test_plugin_curated_visibility_patch_disables_hidden_marketplace_filter(tmp_path: Path):
+    app = make_codex_app(
+        tmp_path,
+        b"prefix " + CODEX_260609_PLUGIN_CURATED_HIDE_EXPR.encode("utf-8") + b" suffix",
+        filename="use-plugins-test.js",
+    )
+
+    result = patch_plugin_curated_visibility_app(
+        app,
+        backup_root=tmp_path / "backups",
+        sign=False,
+        verify_signature=False,
+    )
+
+    assert result["status"] == "patched"
+    assert result["target_file"] == "webview/assets/use-plugins-test.js"
+    data = (app / "Contents" / "Resources" / "app.asar").read_bytes()
+    assert CODEX_260609_PLUGIN_CURATED_HIDE_EXPR.encode("utf-8") not in data
+    assert CODEX_260609_PATCHED_PLUGIN_CURATED_HIDE_EXPR.encode("utf-8") in data
+
+
+def test_plugin_curated_visibility_restore_reverts_patch(tmp_path: Path):
+    app = make_codex_app(
+        tmp_path,
+        b"prefix " + CODEX_260609_PLUGIN_CURATED_HIDE_EXPR.encode("utf-8") + b" suffix",
+        filename="use-plugins-test.js",
+    )
+
+    patch_plugin_curated_visibility_app(app, backup_root=tmp_path / "backups", sign=False, verify_signature=False)
+    result = restore_latest_plugin_curated_visibility_backup(
+        app,
+        backup_root=tmp_path / "backups",
+        sign=False,
+        verify_signature=False,
+    )
+
+    assert result["status"] == "restored"
+    data = (app / "Contents" / "Resources" / "app.asar").read_bytes()
+    assert CODEX_260609_PLUGIN_CURATED_HIDE_EXPR.encode("utf-8") in data
+    assert CODEX_260609_PATCHED_PLUGIN_CURATED_HIDE_EXPR.encode("utf-8") not in data
+
+
 def test_plugin_mention_marketplace_patch_refuses_non_candidate_expression_without_writing(tmp_path: Path):
     app = make_codex_app(
         tmp_path,
@@ -799,13 +845,16 @@ def test_codex_enhancement_aggregate_allows_running_app_when_already_patched(tmp
     monkeypatch.setattr(enhancements, "inspect_model_picker_app", lambda app_path: {"status": "patched", "integrity_ok": True})
     monkeypatch.setattr(enhancements, "inspect_plugin_auth_gate_app", lambda app_path: {"status": "patched", "integrity_ok": True})
     monkeypatch.setattr(enhancements, "inspect_plugin_mention_marketplace_app", lambda app_path: {"status": "patched", "integrity_ok": True})
+    monkeypatch.setattr(enhancements, "inspect_plugin_curated_visibility_app", lambda app_path: {"status": "patched", "integrity_ok": True})
     monkeypatch.setattr(enhancements, "patch_model_picker_app", lambda app_path: (_ for _ in ()).throw(AssertionError("must not patch")))
     monkeypatch.setattr(enhancements, "patch_plugin_auth_gate_app", lambda app_path: (_ for _ in ()).throw(AssertionError("must not patch")))
     monkeypatch.setattr(enhancements, "patch_plugin_mention_marketplace_app", lambda app_path: (_ for _ in ()).throw(AssertionError("must not patch")))
+    monkeypatch.setattr(enhancements, "patch_plugin_curated_visibility_app", lambda app_path: (_ for _ in ()).throw(AssertionError("must not patch")))
 
     result = enhancements.patch_codex_enhancements(app, item="all")
 
     assert result["status"] == "patched"
     assert result["restart_required"] is False
     assert result["items"]["model-picker"]["status"] == "patched"
+    assert result["items"]["plugin-curated-visibility"]["status"] == "patched"
     assert result["running_app_detected"] is True

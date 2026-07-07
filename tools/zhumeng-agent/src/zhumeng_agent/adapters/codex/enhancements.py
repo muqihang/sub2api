@@ -9,16 +9,19 @@ from .model_picker import (
     codex_app_is_running,
     inspect_model_picker_app,
     inspect_plugin_auth_gate_app,
+    inspect_plugin_curated_visibility_app,
     inspect_plugin_mention_marketplace_app,
     patch_model_picker_app,
     patch_plugin_auth_gate_app,
+    patch_plugin_curated_visibility_app,
     patch_plugin_mention_marketplace_app,
     restore_latest_model_picker_backup,
     restore_latest_plugin_auth_gate_backup,
+    restore_latest_plugin_curated_visibility_backup,
     restore_latest_plugin_mention_marketplace_backup,
 )
 
-ENHANCEMENT_ORDER = ("model-picker", "plugin-auth-gate", "plugin-mention-marketplace")
+ENHANCEMENT_ORDER = ("model-picker", "plugin-auth-gate", "plugin-mention-marketplace", "plugin-curated-visibility")
 
 
 def inspect_codex_enhancements(app_path: Path) -> dict[str, object]:
@@ -29,6 +32,7 @@ def inspect_codex_enhancements(app_path: Path) -> dict[str, object]:
             "model-picker": _safe(lambda: inspect_model_picker_app(app_path)),
             "plugin-auth-gate": _safe(lambda: inspect_plugin_auth_gate_app(app_path)),
             "plugin-mention-marketplace": _safe(lambda: inspect_plugin_mention_marketplace_app(app_path)),
+            "plugin-curated-visibility": _safe(lambda: inspect_plugin_curated_visibility_app(app_path)),
         },
         "running_app_detected": codex_app_is_running(app_path),
     }
@@ -55,6 +59,7 @@ def patch_codex_enhancements(app_path: Path, *, item: str = "all") -> dict[str, 
             "model-picker": lambda: patch_model_picker_app(app_path),
             "plugin-auth-gate": lambda: patch_plugin_auth_gate_app(app_path),
             "plugin-mention-marketplace": lambda: patch_plugin_mention_marketplace_app(app_path),
+            "plugin-curated-visibility": lambda: patch_plugin_curated_visibility_app(app_path),
         },
     )
     if any(str(result.get("status")) == "app_bundle_not_writable" for result in results.values()):
@@ -113,6 +118,7 @@ def restore_codex_enhancements(app_path: Path, *, item: str = "all") -> dict[str
             "model-picker": lambda: restore_latest_model_picker_backup(app_path),
             "plugin-auth-gate": lambda: restore_latest_plugin_auth_gate_backup(app_path),
             "plugin-mention-marketplace": lambda: restore_latest_plugin_mention_marketplace_backup(app_path),
+            "plugin-curated-visibility": lambda: restore_latest_plugin_curated_visibility_backup(app_path),
         },
     )
     if any(str(result.get("status")) == "app_bundle_not_writable" for result in results.values()):
