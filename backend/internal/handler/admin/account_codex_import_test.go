@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
 func TestParseCodexSessionImportEntriesSupportsRawTokenJSONAndArray(t *testing.T) {
@@ -142,7 +144,7 @@ func TestNormalizeCodexSessionJSONExtractsCredentialsAndIgnoresSessionToken(t *t
 	}
 }
 
-func TestMergeCodexImportCredentialsClearsStaleRefreshFieldsWhenIncomingHasNoRefreshToken(t *testing.T) {
+func TestMergeCodexImportCredentialsPreservesExistingRefreshFieldsWhenIncomingHasNoRefreshToken(t *testing.T) {
 	existing := map[string]any{
 		"access_token":       "old-access-token",
 		"refresh_token":      "old-refresh-token",
@@ -169,11 +171,11 @@ func TestMergeCodexImportCredentialsClearsStaleRefreshFieldsWhenIncomingHasNoRef
 	if merged["chatgpt_account_id"] != "acct-new" {
 		t.Fatalf("chatgpt_account_id = %v, want acct-new", merged["chatgpt_account_id"])
 	}
-	if _, ok := merged["refresh_token"]; ok {
-		t.Fatalf("refresh_token should be cleared")
+	if merged["refresh_token"] != "old-refresh-token" {
+		t.Fatalf("refresh_token = %v, want old-refresh-token", merged["refresh_token"])
 	}
-	if _, ok := merged["client_id"]; ok {
-		t.Fatalf("client_id should be cleared")
+	if merged["client_id"] != "old-client-id" {
+		t.Fatalf("client_id = %v, want old-client-id", merged["client_id"])
 	}
 	if _, ok := merged["id_token"]; ok {
 		t.Fatalf("id_token should be cleared")
@@ -315,6 +317,51 @@ func TestCodexIdentityKeysPreferStrongIdentifiers(t *testing.T) {
 	}
 	if !hasEmail {
 		t.Fatalf("weak identity should include email fallback: %v", keys)
+	}
+
+	keys = buildCodexImportIdentityKeys("acct-1", "user-1", "same@example.com", "token", "")
+	if len(keys) != 1 || !strings.HasPrefix(keys[0], "access:") {
+		t.Fatalf("accessToken-only import should use only access fingerprint: %v", keys)
+	}
+}
+
+func TestCodexAccountIndexAccessTokenOnlyDoesNotMatchSharedAccountOrUser(t *testing.T) {
+	existing := service.Account{
+		ID: 22,
+		Credentials: map[string]any{
+			"chatgpt_account_id": "team-1",
+			"chatgpt_user_id":    "user-1",
+			"access_token":       "old-access-token",
+			"refresh_token":      "refresh-token",
+		},
+	}
+	index := buildCodexAccountIndex([]service.Account{existing})
+
+	keys := buildCodexImportIdentityKeys("team-1", "user-1", "", "new-access-token", "")
+	if got := index.Find(keys); got != nil {
+		t.Fatalf("accessToken-only import matched existing account ID %d despite different access token", got.ID)
+	}
+
+	keys = buildCodexImportIdentityKeys("team-1", "user-1", "", "old-access-token", "")
+	got := index.Find(keys)
+	if got == nil || got.ID != existing.ID {
+		t.Fatalf("accessToken-only duplicate by fingerprint = %v, want account ID %d", got, existing.ID)
+	}
+}
+
+func TestCodexImportShouldPreserveExistingRefreshForAccessTokenOnlyUpdate(t *testing.T) {
+	existing := &service.Account{Credentials: map[string]any{"refresh_token": "existing-refresh-token"}}
+	item := &codexImportAccount{AccessToken: "new-access-token"}
+
+	if !codexImportShouldPreserveExistingRefresh(existing, item) {
+		t.Fatalf("accessToken-only update should preserve existing refresh_token")
+	}
+
+	if codexImportShouldPreserveExistingRefresh(existing, &codexImportAccount{RefreshToken: "new-refresh-token"}) {
+		t.Fatalf("full OAuth update should not preserve stale refresh_token")
+	}
+	if codexImportShouldPreserveExistingRefresh(&service.Account{Credentials: map[string]any{}}, item) {
+		t.Fatalf("accessToken-only update without existing refresh_token should remain access-only")
 	}
 }
 

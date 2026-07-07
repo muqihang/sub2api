@@ -244,6 +244,15 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 		markCodexIdentitySeen(seenIdentity, item.IdentityKeys, entry.Index)
 
 		if existing := index.Find(item.IdentityKeys); existing != nil && updateExisting {
+			if codexImportShouldPreserveExistingRefresh(existing, item) {
+				result.Warnings = append(result.Warnings, CodexSessionImportMessage{
+					Index:   entry.Index,
+					Name:    accountName,
+					Message: "已有账号包含 refresh_token，本次 accessToken-only 导入已保留自动续期凭据",
+				})
+				effectiveExpiresAt = nil
+				autoPauseOnExpired = nil
+			}
 			mergedCredentials := mergeCodexImportCredentials(existing.Credentials, credentials, item)
 			mergedExtra := mergeCodexImportMap(existing.Extra, extra)
 			updateInput := &service.UpdateAccountInput{
@@ -583,7 +592,7 @@ func normalizeCodexImportEntry(entry codexImportEntry) (*codexImportAccount, err
 
 	fingerprint := codexTokenFingerprint(item.AccessToken)
 	item.Extra["access_token_sha256"] = fingerprint
-	item.IdentityKeys = buildCodexIdentityKeys(item.AccountID, item.UserID, item.Email, item.AccessToken)
+	item.IdentityKeys = buildCodexImportIdentityKeys(item.AccountID, item.UserID, item.Email, item.AccessToken, item.RefreshToken)
 	item.Name = buildCodexImportAccountName(item, entry.Index)
 
 	return item, nil
@@ -823,6 +832,22 @@ func buildCodexIdentityKeys(accountID, userID, email, accessToken string) []stri
 	return keys
 }
 
+func buildCodexImportIdentityKeys(accountID, userID, email, accessToken, refreshToken string) []string {
+	accessToken = strings.TrimSpace(accessToken)
+	if strings.TrimSpace(refreshToken) == "" && accessToken != "" {
+		return []string{"access:" + codexTokenFingerprint(accessToken)}
+	}
+	return buildCodexIdentityKeys(accountID, userID, email, accessToken)
+}
+
+func codexImportShouldPreserveExistingRefresh(existing *service.Account, item *codexImportAccount) bool {
+	if existing == nil || item == nil {
+		return false
+	}
+	return strings.TrimSpace(item.RefreshToken) == "" &&
+		codexCredentialString(existing.Credentials, "refresh_token") != ""
+}
+
 func buildCodexAccountIndex(accounts []service.Account) *codexAccountIndex {
 	index := &codexAccountIndex{accountsByKey: map[string]service.Account{}}
 	for _, account := range accounts {
@@ -838,6 +863,7 @@ func (i *codexAccountIndex) Add(account service.Account) {
 	if i.accountsByKey == nil {
 		i.accountsByKey = map[string]service.Account{}
 	}
+	i.remove(account.ID)
 	keys := buildCodexIdentityKeys(
 		codexCredentialString(account.Credentials, "chatgpt_account_id"),
 		codexCredentialString(account.Credentials, "chatgpt_user_id"),
@@ -846,6 +872,17 @@ func (i *codexAccountIndex) Add(account service.Account) {
 	)
 	for _, key := range keys {
 		i.accountsByKey[key] = account
+	}
+}
+
+func (i *codexAccountIndex) remove(accountID int64) {
+	if i == nil || i.accountsByKey == nil || accountID <= 0 {
+		return
+	}
+	for key, account := range i.accountsByKey {
+		if account.ID == accountID {
+			delete(i.accountsByKey, key)
+		}
 	}
 }
 
@@ -893,8 +930,15 @@ func mergeCodexImportCredentials(existing, incoming map[string]any, item *codexI
 		return out
 	}
 	if strings.TrimSpace(item.RefreshToken) == "" {
-		delete(out, "refresh_token")
-		delete(out, "client_id")
+		if codexCredentialString(existing, "refresh_token") == "" {
+			delete(out, "refresh_token")
+			delete(out, "client_id")
+		} else {
+			out["refresh_token"] = existing["refresh_token"]
+			if clientID, ok := existing["client_id"]; ok {
+				out["client_id"] = clientID
+			}
+		}
 	}
 	if strings.TrimSpace(item.IDToken) == "" {
 		delete(out, "id_token")
