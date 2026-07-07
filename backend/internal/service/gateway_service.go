@@ -6303,6 +6303,33 @@ func parseClaudeUsageFromResponseBody(body []byte) *ClaudeUsage {
 	return usage
 }
 
+func (s *GatewayService) invalidNonStreamingJSONFailoverError(
+	ctx context.Context,
+	resp *http.Response,
+	account *Account,
+	body []byte,
+	requestedModel ...string,
+) error {
+	const statusCode = http.StatusBadGateway
+	headers := http.Header(nil)
+	if resp != nil && resp.Header != nil {
+		headers = resp.Header.Clone()
+	}
+	if s != nil && s.rateLimitService != nil && account != nil {
+		s.rateLimitService.HandleUpstreamError(ctx, account, statusCode, headers, body, requestedModel...)
+	}
+	retryableOnSameAccount := false
+	if account != nil {
+		retryableOnSameAccount = account.IsPoolMode() && account.IsPoolModeRetryableStatus(statusCode)
+	}
+	return &UpstreamFailoverError{
+		StatusCode:             statusCode,
+		ResponseBody:           body,
+		ResponseHeaders:        headers,
+		RetryableOnSameAccount: retryableOnSameAccount,
+	}
+}
+
 func observeAnthropicPassthroughCacheUsageIntoUsage(prefix string, usageNode gjson.Result, usage *ClaudeUsage) {
 	if usage == nil {
 		return
@@ -6463,6 +6490,10 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, anthropicTooLargeError)
 	if err != nil {
 		return nil, err
+	}
+
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices && !json.Valid(body) {
+		return nil, s.invalidNonStreamingJSONFailoverError(ctx, resp, account, body)
 	}
 
 	usage := parseClaudeUsageFromResponseBody(body)
@@ -9492,6 +9523,9 @@ func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *h
 		Usage ClaudeUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &response); err != nil {
+		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+			return nil, s.invalidNonStreamingJSONFailoverError(ctx, resp, account, body, mappedModel)
+		}
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
 
