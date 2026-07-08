@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"sync"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
@@ -15,6 +16,8 @@ import (
 type schedulerOutboxRepository struct {
 	db *sql.DB
 }
+
+const schedulerOutboxDefaultCleanSize = 5000
 
 func NewSchedulerOutboxRepository(db *sql.DB) service.SchedulerOutboxRepository {
 	return &schedulerOutboxRepository{db: db}
@@ -92,6 +95,61 @@ func (r *schedulerOutboxRepository) MaxID(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	return maxID, nil
+}
+
+func (r *schedulerOutboxRepository) DeleteConsumedUpTo(ctx context.Context, watermark int64, limit int) (int64, error) {
+	if watermark <= 0 {
+		return 0, nil
+	}
+	if limit <= 0 {
+		limit = schedulerOutboxDefaultCleanSize
+	}
+	result, err := r.db.ExecContext(ctx, `
+		WITH doomed AS (
+			SELECT id
+			FROM scheduler_outbox
+			WHERE id <= $1
+				AND created_at < NOW() - INTERVAL '10 seconds'
+			ORDER BY id ASC
+			LIMIT $2
+		)
+		DELETE FROM scheduler_outbox o
+		USING doomed d
+		WHERE o.id = d.id
+	`, watermark, limit)
+	if err != nil {
+		return 0, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return rows, nil
+}
+
+func (r *schedulerOutboxRepository) TryAcquireCleanupLock(ctx context.Context) (service.SchedulerOutboxCleanupLease, bool, error) {
+	var acquired bool
+	if err := r.db.QueryRowContext(ctx, "SELECT pg_try_advisory_lock(hashtext('scheduler_outbox_cleanup'))").Scan(&acquired); err != nil {
+		return nil, false, err
+	}
+	if !acquired {
+		return nil, false, nil
+	}
+	return &schedulerOutboxCleanupLease{db: r.db}, true, nil
+}
+
+type schedulerOutboxCleanupLease struct {
+	db   *sql.DB
+	once sync.Once
+}
+
+func (l *schedulerOutboxCleanupLease) Release() {
+	if l == nil || l.db == nil {
+		return
+	}
+	l.once.Do(func() {
+		_, _ = l.db.ExecContext(context.Background(), "SELECT pg_advisory_unlock(hashtext('scheduler_outbox_cleanup'))")
+	})
 }
 
 func enqueueSchedulerOutbox(ctx context.Context, exec sqlExecutor, eventType string, accountID *int64, groupID *int64, payload any) error {
