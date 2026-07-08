@@ -126,6 +126,56 @@ func TestCalculateCreateOrderPayAmountUsesCurrencyPrecision(t *testing.T) {
 	}
 }
 
+func TestCalculateCreateOrderPayAmountForSubscriptionAppliesCNYMultiplier(t *testing.T) {
+	t.Parallel()
+
+	amountStr, amount, err := calculateCreateOrderPayAmountForOrder(payment.OrderTypeSubscription, 7.99, 0, 0.14, "CNY")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if amountStr != "57.07" || amount != 57.07 {
+		t.Fatalf("subscription CNY pay amount = (%q, %v), want (57.07, 57.07)", amountStr, amount)
+	}
+}
+
+func TestCalculateCreateOrderPayAmountForSubscriptionDefaultMultiplierKeepsPrice(t *testing.T) {
+	t.Parallel()
+
+	for _, multiplier := range []float64{0, 1} {
+		amountStr, amount, err := calculateCreateOrderPayAmountForOrder(payment.OrderTypeSubscription, 7.99, 0, multiplier, "CNY")
+		if err != nil {
+			t.Fatalf("unexpected error for multiplier %v: %v", multiplier, err)
+		}
+		if amountStr != "7.99" || amount != 7.99 {
+			t.Fatalf("multiplier %v pay amount = (%q, %v), want (7.99, 7.99)", multiplier, amountStr, amount)
+		}
+	}
+}
+
+func TestCalculateCreateOrderPayAmountForSubscriptionDoesNotConvertNonCNY(t *testing.T) {
+	t.Parallel()
+
+	amountStr, amount, err := calculateCreateOrderPayAmountForOrder(payment.OrderTypeSubscription, 7.99, 0, 0.14, "USD")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if amountStr != "7.99" || amount != 7.99 {
+		t.Fatalf("USD subscription pay amount = (%q, %v), want (7.99, 7.99)", amountStr, amount)
+	}
+}
+
+func TestCalculateCreateOrderPayAmountForBalanceDoesNotDoubleConvert(t *testing.T) {
+	t.Parallel()
+
+	amountStr, amount, err := calculateCreateOrderPayAmountForOrder(payment.OrderTypeBalance, 57.07, 0, 0.14, "CNY")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if amountStr != "57.07" || amount != 57.07 {
+		t.Fatalf("balance CNY pay amount = (%q, %v), want (57.07, 57.07)", amountStr, amount)
+	}
+}
+
 func TestCalculateCreateOrderPayAmountRejectsFractionalZeroDecimal(t *testing.T) {
 	t.Parallel()
 
