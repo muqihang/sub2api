@@ -244,6 +244,58 @@ func TestOpenAIOAuthHandler_CreateAccountFromOAuthPersistsEgressBucket(t *testin
 	require.Equal(t, "disabled", adminSvc.createdAccounts[0].Extra["openai_runtime_guard_content_safety_mode"])
 }
 
+func TestOpenAIOAuthHandler_CreateAccountFromCodexPATCreatesOAuthPATAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	whoami := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "Bearer at-handler-test", r.Header.Get("authorization"))
+		require.Equal(t, "codex_cli_rs", r.Header.Get("originator"))
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"email":"user@example.com",
+			"chatgpt_user_id":"user-123",
+			"chatgpt_account_id":"acct-123",
+			"chatgpt_plan_type":"plus",
+			"chatgpt_account_is_fedramp":true
+		}`))
+	}))
+	defer whoami.Close()
+	t.Setenv("SUB2API_OPENAI_CODEX_PAT_WHOAMI_URL", whoami.URL)
+
+	router := gin.New()
+	oauthSvc := service.NewOpenAIOAuthService(nil, &openAIOAuthHandlerClientStub{})
+	defer oauthSvc.Stop()
+	adminSvc := newStubAdminService()
+	h := NewOpenAIOAuthHandler(oauthSvc, nil, adminSvc, nil)
+	router.POST("/api/v1/admin/openai/create-from-codex-pat", h.CreateAccountFromCodexPAT)
+
+	body := `{"access_token":" at-handler-test ","group_ids":[1,2],"credential_extras":{"model_mapping":{"gpt-5":"gpt-5-codex"},"refresh_token":"should-drop"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/openai/create-from-codex-pat", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotContains(t, rec.Body.String(), "at-handler-test")
+	require.Len(t, adminSvc.createdAccounts, 1)
+	created := adminSvc.createdAccounts[0]
+	require.Equal(t, service.PlatformOpenAI, created.Platform)
+	require.Equal(t, service.AccountTypeOAuth, created.Type)
+	require.Equal(t, "user@example.com", created.Name)
+	require.Equal(t, []int64{1, 2}, created.GroupIDs)
+	require.Equal(t, "at-handler-test", created.Credentials["access_token"])
+	require.Equal(t, service.OpenAIAuthModePersonalAccessToken, created.Credentials["auth_mode"])
+	require.Equal(t, "personal_access_token", created.Credentials["openai_auth_mode"])
+	require.Equal(t, "Bearer", created.Credentials["token_type"])
+	require.Equal(t, true, created.Credentials["chatgpt_account_is_fedramp"])
+	require.Equal(t, map[string]any{"gpt-5": "gpt-5-codex"}, created.Credentials["model_mapping"])
+	require.NotContains(t, created.Credentials, "refresh_token")
+	require.NotContains(t, created.Credentials, "id_token")
+	require.NotContains(t, created.Credentials, "expires_at")
+	require.Equal(t, "codex_personal_access_token", created.Extra["import_source"])
+	require.Equal(t, "codex_personal_access_token", created.Extra["auth_provider"])
+	require.NotContains(t, created.Extra["access_token_sha256"], "at-handler-test")
+}
+
 func TestOpenAIOAuthHandler_RefreshTokenReturnsEgressBucket(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

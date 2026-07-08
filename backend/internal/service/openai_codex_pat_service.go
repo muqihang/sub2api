@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -21,6 +22,13 @@ var openAIPersonalAccessTokenOAuthCredentialKeys = [...]string{
 	"expires_at",
 	"expires_in",
 	"client_id",
+}
+
+func openAICodexPATWhoamiEndpoint() string {
+	if override := strings.TrimSpace(os.Getenv("SUB2API_OPENAI_CODEX_PAT_WHOAMI_URL")); override != "" {
+		return override
+	}
+	return openAICodexPATWhoamiURL
 }
 
 type openAICodexPATWhoamiResponse struct {
@@ -52,7 +60,7 @@ func (s *OpenAIOAuthService) ValidateCodexPersonalAccessToken(ctx context.Contex
 		return nil, infraerrors.Newf(http.StatusBadRequest, "OPENAI_CODEX_PAT_PROXY_INVALID", "invalid proxy configuration: %v", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, openAICodexPATWhoamiURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, openAICodexPATWhoamiEndpoint(), nil)
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusInternalServerError, "OPENAI_CODEX_PAT_REQUEST_FAILED", "failed to build validation request: %v", err)
 	}
