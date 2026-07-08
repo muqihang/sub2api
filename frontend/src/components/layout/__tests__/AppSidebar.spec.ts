@@ -45,3 +45,11 @@ describe('AppSidebar Codex entry center user navigation', () => {
     expect(componentSource).toContain("{ path: '/codex', label: t('codex.title'), icon: ")
   })
 })
+
+describe('AppSidebar logo home navigation', () => {
+  it('links both logo and site name to the computed home path', () => {
+    expect(componentSource).toContain(':to="homePath"')
+    expect(componentSource).toContain("const homePath = computed(() => (isAdmin.value ? '/admin/dashboard' : '/dashboard'))")
+    expect(componentSource.match(/@click="handleMenuItemClick\(homePath\)"/g)?.length).toBeGreaterThanOrEqual(2)
+  })
+})
