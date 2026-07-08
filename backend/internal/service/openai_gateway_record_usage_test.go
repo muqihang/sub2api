@@ -177,10 +177,14 @@ func expectedOpenAICost(t *testing.T, svc *OpenAIGatewayService, model string, u
 	t.Helper()
 
 	cost, err := svc.billingService.CalculateCost(model, UsageTokens{
-		InputTokens:         max(usage.InputTokens-usage.CacheReadInputTokens, 0),
-		OutputTokens:        usage.OutputTokens,
-		CacheCreationTokens: usage.CacheCreationInputTokens,
-		CacheReadTokens:     usage.CacheReadInputTokens,
+		InputTokens:           max(usage.InputTokens-usage.CacheReadInputTokens, 0),
+		ImageInputTokens:      usage.ImageInputTokens,
+		OutputTokens:          usage.OutputTokens,
+		CacheCreationTokens:   usage.CacheCreationInputTokens,
+		CacheReadTokens:       usage.CacheReadInputTokens,
+		CacheCreation5mTokens: usage.CacheCreation5mTokens,
+		CacheCreation1hTokens: usage.CacheCreation1hTokens,
+		ImageOutputTokens:     usage.ImageOutputTokens,
 	}, multiplier)
 	require.NoError(t, err)
 	return cost
@@ -1941,4 +1945,34 @@ func TestGatewayServiceCalculateRecordUsageCost_ChannelImageBillingNormalizesMis
 	require.Equal(t, string(BillingModeImage), cost.BillingMode)
 	require.InDelta(t, 0.44, cost.TotalCost, 1e-12)
 	require.InDelta(t, 0.44, cost.ActualCost, 1e-12)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_DoubaoEmbeddingVisionUsesImageInputTokens(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, subRepo, nil)
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "resp_doubao_embedding_vision",
+			Model:     "doubao-embedding-vision",
+			Usage: OpenAIUsage{
+				InputTokens:      1340,
+				ImageInputTokens: 28,
+			},
+			Duration: time.Second,
+		},
+		APIKey:  &APIKey{ID: 4201},
+		User:    &User{ID: 4202},
+		Account: &Account{ID: 4203},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, usageRepo.lastLog)
+	wantBase := float64(1312)*0.098e-6 + float64(28)*0.252e-6
+	require.Equal(t, 1340, usageRepo.lastLog.InputTokens)
+	require.InDelta(t, wantBase, usageRepo.lastLog.InputCost, 1e-15)
+	require.InDelta(t, wantBase, usageRepo.lastLog.TotalCost, 1e-15)
+	require.InDelta(t, wantBase*1.1, usageRepo.lastLog.ActualCost, 1e-15)
 }

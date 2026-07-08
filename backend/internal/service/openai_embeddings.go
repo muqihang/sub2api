@@ -209,8 +209,13 @@ func extractOpenAIEmbeddingsUsage(body []byte) OpenAIUsage {
 		usage.Get("cache_creation_input_tokens"),
 		usage.Get("input_tokens_details.cache_creation_tokens"),
 	)
+	imageInputTokens := firstPositiveGJSONInt(
+		usage.Get("prompt_tokens_details.image_tokens"),
+		usage.Get("input_tokens_details.image_tokens"),
+	)
 	return OpenAIUsage{
 		InputTokens:              inputTokens,
+		ImageInputTokens:         imageInputTokens,
 		OutputTokens:             outputTokens,
 		CacheReadInputTokens:     cacheReadTokens,
 		CacheCreationInputTokens: cacheCreationTokens,

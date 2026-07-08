@@ -92,6 +92,7 @@ type BillingCache interface {
 type ModelPricing struct {
 	InputPricePerToken             float64 // 每token输入价格 (USD)
 	InputPricePerTokenPriority     float64 // priority service tier 下每token输入价格 (USD)
+	ImageInputPricePerToken        float64 // 图片输入 token 价格 (USD)，为 0 时回退到 InputPricePerToken
 	OutputPricePerToken            float64 // 每token输出价格 (USD)
 	OutputPricePerTokenPriority    float64 // priority service tier 下每token输出价格 (USD)
 	CacheCreationPricePerToken     float64 // 缓存创建每token价格 (USD)
@@ -138,6 +139,7 @@ func serviceTierCostMultiplier(serviceTier string) float64 {
 // UsageTokens 使用的token数量
 type UsageTokens struct {
 	InputTokens           int
+	ImageInputTokens      int
 	OutputTokens          int
 	CacheCreationTokens   int
 	CacheReadTokens       int
@@ -323,6 +325,13 @@ func (s *BillingService) initFallbackPricing() {
 	s.fallbackPrices["minimax-m2.5"] = newTextFallbackPricing(0.30e-6, 1.20e-6, 0.03e-6)
 	s.fallbackPrices["minimax-m2.1"] = newTextFallbackPricing(0.30e-6, 1.20e-6, 0.03e-6)
 	s.fallbackPrices["minimax-m2"] = newTextFallbackPricing(0.30e-6, 1.20e-6, 0.03e-6)
+
+	s.fallbackPrices["doubao-embedding-vision"] = &ModelPricing{
+		InputPricePerToken:      0.098e-6,
+		ImageInputPricePerToken: 0.252e-6,
+		OutputPricePerToken:     0,
+		SupportsCacheBreakdown:  false,
+	}
 
 	// OpenAI GPT-5.4（业务指定价格）
 	s.fallbackPrices["gpt-5.4"] = &ModelPricing{
@@ -521,6 +530,9 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	}
 	if strings.Contains(modelLower, "minimax-m2") {
 		return s.fallbackPrices["minimax-m2"]
+	}
+	if strings.Contains(modelLower, "doubao-embedding-vision") {
+		return s.fallbackPrices["doubao-embedding-vision"]
 	}
 	if strings.HasPrefix(modelLower, "gpt-image-2") {
 		return s.fallbackPrices["gpt-image-2"]
@@ -750,7 +762,21 @@ func (s *BillingService) computeTokenBreakdown(
 	}
 
 	bd := &CostBreakdown{}
-	bd.InputCost = float64(tokens.InputTokens) * inputPrice
+	if tokens.ImageInputTokens > 0 {
+		imageInputTokens := tokens.ImageInputTokens
+		textInputTokens := tokens.InputTokens - imageInputTokens
+		if textInputTokens < 0 {
+			textInputTokens = 0
+			imageInputTokens = tokens.InputTokens
+		}
+		imageInputPrice := pricing.ImageInputPricePerToken
+		if imageInputPrice == 0 {
+			imageInputPrice = inputPrice
+		}
+		bd.InputCost = float64(textInputTokens)*inputPrice + float64(imageInputTokens)*imageInputPrice
+	} else {
+		bd.InputCost = float64(tokens.InputTokens) * inputPrice
+	}
 
 	// 分离图片输出 token 与文本输出 token
 	textOutputTokens := tokens.OutputTokens - tokens.ImageOutputTokens
