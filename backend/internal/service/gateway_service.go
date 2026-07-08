@@ -5131,6 +5131,11 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		if err := replaceBody(FilterThinkingBlocks(body, reqModel)); err != nil {
 			return nil, err
 		}
+		if rewritten, applied := NormalizeChineseLLMThinking(body, reqModel); applied {
+			if err := replaceBody(rewritten); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	// 重试间复用同一请求体，避免每次 string(body) 产生额外分配。

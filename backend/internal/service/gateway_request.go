@@ -1233,6 +1233,29 @@ func normalizeGLMOpenAIReasoningEffort(raw string) string {
 	}
 }
 
+// NormalizeChineseLLMThinking rewrites Anthropic-compatible thinking controls
+// only for provider/model families with known protocol differences.
+func NormalizeChineseLLMThinking(body []byte, mappedModel string) ([]byte, bool) {
+	modelLower := strings.ToLower(strings.TrimSpace(mappedModel))
+	if !strings.HasPrefix(modelLower, "minimax-m") {
+		return body, false
+	}
+	if ResolveThinkingProtocol(modelLower) != ThinkingProtocolPassbackRequired {
+		return body, false
+	}
+	if !json.Valid(body) {
+		return body, false
+	}
+	if gjson.GetBytes(body, "thinking.type").String() != "enabled" {
+		return body, false
+	}
+	modified, err := sjson.SetBytes(body, "thinking.type", "adaptive")
+	if err != nil {
+		return body, false
+	}
+	return modified, true
+}
+
 // =========================
 // Thinking Budget Rectifier
 // =========================
