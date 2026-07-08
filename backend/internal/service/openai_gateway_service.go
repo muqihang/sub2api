@@ -3190,9 +3190,29 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	if apiKey != nil {
 		imageGenerationAllowed = GroupAllowsImageGeneration(apiKey.Group)
 	}
-	codexImageGenerationBridgeEnabled := isCodexCLI && imageGenerationAllowed && s.isCodexImageGenerationBridgeEnabled(ctx, account, apiKey)
+	codexImageGenerationExplicitToolPolicy := codexImageGenerationExplicitToolPolicyAllow
+	if isCodexCLI {
+		codexImageGenerationExplicitToolPolicy = account.CodexImageGenerationExplicitToolPolicy()
+	}
+	codexImageGenerationBridgeEnabled := isCodexCLI &&
+		imageGenerationAllowed &&
+		codexImageGenerationExplicitToolPolicy != codexImageGenerationExplicitToolPolicyStrip &&
+		s.isCodexImageGenerationBridgeEnabled(ctx, account, apiKey)
 	isCompactRequest := isOpenAIResponsesCompactPath(c)
-	imageIntent := IsImageGenerationIntent(openAIResponsesEndpoint, reqModel, body)
+	var imageIntent bool
+	if isCodexCLI && codexImageGenerationExplicitToolPolicy == codexImageGenerationExplicitToolPolicyStrip {
+		decoded, decodeErr := ensureReqBody()
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		if stripOpenAIImageGenerationTools(decoded) {
+			markDecodedModified()
+			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Stripped /responses image_generation tool for Codex client by account policy")
+		}
+		imageIntent = IsImageGenerationIntentMap(openAIResponsesEndpoint, reqModel, decoded)
+	} else {
+		imageIntent = IsImageGenerationIntent(openAIResponsesEndpoint, reqModel, body)
+	}
 	sparkToolStripModel := reqModel
 	if account != nil {
 		if mappedModel := strings.TrimSpace(account.GetMappedModel(sparkToolStripModel)); mappedModel != "" {
@@ -3236,12 +3256,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 
-	if !isCompactRequest && isCodexCLI && imageGenerationAllowed && ensureOpenAIResponsesImageGenerationTool(reqBody) {
+	if !isCompactRequest && codexImageGenerationBridgeEnabled && ensureOpenAIResponsesImageGenerationTool(reqBody) {
 		bodyModified = true
 		disablePatch()
 		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Injected /responses image_generation tool for Codex client")
 	}
-	if !isCompactRequest && isCodexCLI && imageGenerationAllowed && ensureOpenAIResponsesImageGenerationToolChoiceAuto(reqBody) {
+	if !isCompactRequest && codexImageGenerationBridgeEnabled && ensureOpenAIResponsesImageGenerationToolChoiceAuto(reqBody) {
 		bodyModified = true
 		disablePatch()
 	}
@@ -3251,7 +3271,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		disablePatch()
 		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Normalized /responses image_generation tool payload")
 	}
-	if !isCompactRequest && isCodexCLI && imageGenerationAllowed && applyCodexImageGenerationBridgeInstructions(reqBody) {
+	if !isCompactRequest && codexImageGenerationBridgeEnabled && applyCodexImageGenerationBridgeInstructions(reqBody) {
 		bodyModified = true
 		disablePatch()
 		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Added Codex image_generation bridge instructions")

@@ -4082,6 +4082,24 @@ export default {
         codexImageGenerationBridgeBadgeInherit: '渠道策略',
         codexImageGenerationBridgeBadgeEnabled: '账号开启',
         codexImageGenerationBridgeBadgeDisabled: '账号关闭',
+        codexImageTool: 'Codex 图片工具策略',
+        codexImageToolDesc:
+          '控制 Codex /responses 请求是否自动注入 image_generation 桥接工具，以及是否允许客户端显式携带图片工具。',
+        codexImageToolInherit: '跟随渠道',
+        codexImageToolInheritDesc: '不写入账号覆盖，继续使用渠道或全局策略。',
+        codexImageToolEnabled: '强制注入',
+        codexImageToolEnabledDesc:
+          '当路由账号支持图片时，为 Codex 请求注入桥接图片工具。',
+        codexImageToolDisabled: '不注入',
+        codexImageToolDisabledDesc:
+          '不自动注入图片工具，但允许客户端显式携带 image_generation 工具。',
+        codexImageToolBlock: '全部阻断',
+        codexImageToolBlockDesc:
+          '剥离客户端显式携带的 image_generation 工具，并跳过本账号桥接注入。',
+        codexImageToolBadgeInherit: '渠道策略',
+        codexImageToolBadgeEnabled: '强制注入',
+        codexImageToolBadgeDisabled: '不注入',
+        codexImageToolBadgeBlock: '全部阻断',
         compactMode: 'Compact 模式',
         compactModeDesc:
           '控制本账号在 /responses/compact 调度中的参与方式。Auto 跟随探测结果，Force On 强制允许，Force Off 强制排除。',

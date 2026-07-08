@@ -441,7 +441,7 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.openai_responses_supported).toBe(true)
   })
 
-  it('submits account-level Codex image generation bridge override', async () => {
+  it('submits Codex image tool force-inject mode as bridge override', async () => {
     const account = buildAccount()
     account.extra = {
       codex_image_generation_bridge: false,
@@ -454,11 +454,33 @@ describe('EditAccountModal', () => {
 
     const wrapper = mountModal(account)
 
-    await wrapper.get('button[data-testid="codex-image-bridge-enabled"]').trigger('click')
+    await wrapper.get('button[data-testid="codex-image-tool-enabled"]').trigger('click')
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
 
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.codex_image_generation_bridge).toBe(true)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('codex_image_generation_bridge_enabled')
+  })
+
+  it('submits Codex image tool block mode as strip policy', async () => {
+    const account = buildAccount()
+    account.extra = {
+      codex_image_generation_bridge: true,
+      codex_image_generation_bridge_enabled: true
+    }
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+
+    await wrapper.get('button[data-testid="codex-image-tool-block"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.codex_image_generation_explicit_tool_policy).toBe('strip')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('codex_image_generation_bridge')
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('codex_image_generation_bridge_enabled')
   })
 

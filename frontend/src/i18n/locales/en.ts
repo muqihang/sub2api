@@ -3921,6 +3921,24 @@ export default {
         codexImageGenerationBridgeBadgeInherit: 'Channel policy',
         codexImageGenerationBridgeBadgeEnabled: 'Account on',
         codexImageGenerationBridgeBadgeDisabled: 'Account off',
+        codexImageTool: 'Codex image tool policy',
+        codexImageToolDesc:
+          'Controls whether Codex /responses requests receive the image_generation bridge and whether client-provided image tools are allowed.',
+        codexImageToolInherit: 'Follow channel',
+        codexImageToolInheritDesc: 'Do not write an account override; use the channel or global policy.',
+        codexImageToolEnabled: 'Force inject',
+        codexImageToolEnabledDesc:
+          'Inject the bridge image_generation tool when the routed account supports images.',
+        codexImageToolDisabled: 'No injection',
+        codexImageToolDisabledDesc:
+          'Do not inject an image tool, but allow a client-provided image_generation tool.',
+        codexImageToolBlock: 'Block all',
+        codexImageToolBlockDesc:
+          'Strip client-provided image_generation tools and skip bridge injection for this account.',
+        codexImageToolBadgeInherit: 'Channel policy',
+        codexImageToolBadgeEnabled: 'Force inject',
+        codexImageToolBadgeDisabled: 'No injection',
+        codexImageToolBadgeBlock: 'Block all',
         compactMode: 'Compact mode',
         compactModeDesc:
           'Controls how this account participates in /responses/compact routing. Auto follows probe results, Force On always allows, Force Off always excludes.',
