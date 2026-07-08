@@ -1017,6 +1017,30 @@ describe("admin SettingsView wechat connect controls", () => {
     expect(link.attributes("rel")).toContain("noopener");
   });
 
+  it("builds OAuth callback suggestions from the configured API base", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      api_base_url: "https://api.example.com/api/v1",
+      github_oauth_enabled: true,
+      google_oauth_enabled: true,
+      linuxdo_connect_enabled: true,
+      wechat_connect_enabled: true,
+      oidc_connect_enabled: true,
+    });
+
+    const wrapper = mountView();
+
+    await flushPromises();
+    await openSecurityTab(wrapper);
+
+    const text = wrapper.text();
+    expect(text).toContain("https://api.example.com/api/v1/auth/oauth/linuxdo/callback");
+    expect(text).toContain("https://api.example.com/api/v1/auth/oauth/github/callback");
+    expect(text).toContain("https://api.example.com/api/v1/auth/oauth/google/callback");
+    expect(text).toContain("https://api.example.com/api/v1/auth/oauth/wechat/callback");
+    expect(text).toContain("https://api.example.com/api/v1/auth/oauth/oidc/callback");
+  });
+
   it("saves WeChat Connect fields using the backend contract and clears the secret after save", async () => {
     const wrapper = mountView();
 

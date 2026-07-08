@@ -6,13 +6,13 @@
 import axios, { AxiosInstance, AxiosError, InternalAxiosRequestConfig, AxiosResponse } from 'axios'
 import type { ApiResponse } from '@/types'
 import { getLocale } from '@/i18n'
-import { buildApiUrl, getAPIBaseURL } from '@/api/url'
+import { buildApiUrl, buildGatewayUrl, getAPIBaseURL } from '@/api/url'
 
 // ==================== Axios Instance Configuration ====================
 
 const API_BASE_URL = getAPIBaseURL()
 
-export { buildApiUrl }
+export { buildApiUrl, buildGatewayUrl }
 
 export const apiClient: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,

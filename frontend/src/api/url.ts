@@ -27,3 +27,16 @@ export function buildApiUrl(path: string): string {
   }
   return `${base}${suffix}`
 }
+
+export function buildGatewayUrl(path: string): string {
+  const suffix = normalizePath(path)
+  try {
+    const origin =
+      typeof window === 'undefined'
+        ? new URL(getAPIBaseURL()).origin
+        : new URL(getAPIBaseURL(), window.location.origin).origin
+    return `${origin}${suffix}`
+  } catch {
+    return suffix
+  }
+}

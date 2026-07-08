@@ -38,6 +38,20 @@ describe('API Client', () => {
       )
     })
 
+    it('builds gateway URLs from the configured API origin without leaking the /api/v1 prefix', async () => {
+      vi.resetModules()
+      vi.stubEnv('VITE_API_BASE_URL', 'https://api.example.com/api/v1/')
+
+      const mod = await import('@/api/client')
+
+      expect((mod as any).buildGatewayUrl('/v1/usage?days=30')).toBe(
+        'https://api.example.com/v1/usage?days=30'
+      )
+      expect((mod as any).buildGatewayUrl('/setup/status')).toBe(
+        'https://api.example.com/setup/status'
+      )
+    })
+
     it('自动附加 Authorization 头', async () => {
       localStorage.setItem('auth_token', 'my-jwt-token')
 
