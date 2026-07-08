@@ -9,11 +9,24 @@ vi.mock('vue-i18n', () => ({
 }))
 
 describe('PaymentMethodSelector', () => {
+  it('shows the configured display name for custom EasyPay methods', () => {
+    const wrapper = mount(PaymentMethodSelector, {
+      props: {
+        selected: 'ldc',
+        methods: [{ type: 'ldc', display_name: 'LDC Pay', fee_rate: 0, available: true }],
+      },
+    })
+
+    expect(wrapper.text()).toContain('LDC Pay')
+    expect(wrapper.text()).not.toContain('ldc')
+    expect(wrapper.text()).not.toContain('payment.methods.ldc')
+  })
+
   it('uses the generic selected style for custom methods that contain built-in names', () => {
     const wrapper = mount(PaymentMethodSelector, {
       props: {
         selected: 'card_alipay',
-        methods: [{ type: 'card_alipay', fee_rate: 0, available: true }],
+        methods: [{ type: 'card_alipay', display_name: 'Card Pay', fee_rate: 0, available: true }],
       },
     })
 
