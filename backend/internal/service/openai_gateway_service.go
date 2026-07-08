@@ -2926,9 +2926,7 @@ func (s *OpenAIGatewayService) DoNativeResponsesRequest(ctx context.Context, acc
 	}
 	if account.Type == AccountTypeOAuth {
 		req.Host = "chatgpt.com"
-		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
-			req.Header.Set("chatgpt-account-id", chatgptAccountID)
-		}
+		setOpenAIChatGPTAccountHeaders(req.Header, account)
 	}
 	if customUA := account.GetOpenAIUserAgent(); customUA != "" {
 		req.Header.Set("User-Agent", customUA)
@@ -4365,9 +4363,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		isCompactPath := isOpenAIResponsesCompactPath(c)
 		profileRouteKind := resolveOpenAIGatewayHTTPProfileRouteKind(isCompactPath, false)
 		req.Host = "chatgpt.com"
-		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
-			req.Header.Set("chatgpt-account-id", chatgptAccountID)
-		}
+		setOpenAIChatGPTAccountHeaders(req.Header, account)
 		apiKeyID := getAPIKeyIDFromContext(c)
 		// 先保存客户端原始值，再做 compact 补充，避免后续统一隔离时读到已处理的值。
 		clientSessionID := strings.TrimSpace(req.Header.Get("session_id"))
@@ -5174,11 +5170,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	if account.Type == AccountTypeOAuth {
 		// Required: set Host for ChatGPT API (must use req.Host, not Header.Set)
 		req.Host = "chatgpt.com"
-		// Required: set chatgpt-account-id header
-		chatgptAccountID := account.GetChatGPTAccountID()
-		if chatgptAccountID != "" {
-			req.Header.Set("chatgpt-account-id", chatgptAccountID)
-		}
+		setOpenAIChatGPTAccountHeaders(req.Header, account)
 	}
 
 	// Whitelist passthrough headers

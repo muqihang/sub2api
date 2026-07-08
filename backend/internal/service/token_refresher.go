@@ -100,6 +100,9 @@ func (r *OpenAITokenRefresher) NeedsRefresh(account *Account, refreshWindow time
 	if account == nil {
 		return false
 	}
+	if account.IsOpenAIPersonalAccessToken() {
+		return false
+	}
 	if strings.TrimSpace(account.GetOpenAIRefreshToken()) == "" {
 		return false
 	}
@@ -131,6 +134,7 @@ func (r *OpenAITokenRefresher) Refresh(ctx context.Context, account *Account) (m
 	if err != nil {
 		return nil, err
 	}
+	newCredentials = NormalizeOpenAIPersonalAccessTokenCredentials(account, tokenInfo, newCredentials)
 	capability := evaluateOpenAITokenCapability(tokenInfo)
 
 	if capability.Known && !capability.ResponsesWriteCapable {

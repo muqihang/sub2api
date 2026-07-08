@@ -599,7 +599,6 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	var authToken string
 	var apiURL string
 	var isOAuth bool
-	var chatgptAccountID string
 	var authErr error
 	openAICredentials := NewOpenAIGatewayCredentials(s.cfg, nil)
 
@@ -613,7 +612,6 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 
 		// OAuth uses ChatGPT internal API
 		apiURL = chatgptCodexAPIURL
-		chatgptAccountID = account.GetChatGPTAccountID()
 	} else if account.Type == "apikey" {
 		// API Key - use Platform API
 		authToken, authErr = openAICredentials.OpenAIAPIKey(account)
@@ -672,9 +670,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		} else {
 			req.Header.Set("User-Agent", codexCLIUserAgent)
 		}
-		if chatgptAccountID != "" {
-			req.Header.Set("chatgpt-account-id", chatgptAccountID)
-		}
+		setOpenAIChatGPTAccountHeaders(req.Header, account)
 	}
 	account.ApplyHeaderOverrides(req.Header)
 
@@ -777,7 +773,6 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	authToken := ""
 	apiURL := ""
 	isOAuth := false
-	chatgptAccountID := ""
 	var authErr error
 	openAICredentials := NewOpenAIGatewayCredentials(s.cfg, nil)
 
@@ -789,7 +784,6 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 			return s.sendErrorAndEnd(c, "No access token available")
 		}
 		apiURL = chatgptCodexAPIURL + "/compact"
-		chatgptAccountID = account.GetChatGPTAccountID()
 	case account.Type == AccountTypeAPIKey:
 		authToken, authErr = openAICredentials.OpenAIAPIKey(account)
 		if authErr != nil {
@@ -836,9 +830,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 
 	if isOAuth {
 		req.Host = "chatgpt.com"
-		if chatgptAccountID != "" {
-			req.Header.Set("chatgpt-account-id", chatgptAccountID)
-		}
+		setOpenAIChatGPTAccountHeaders(req.Header, account)
 	}
 	account.ApplyHeaderOverrides(req.Header)
 
@@ -1678,9 +1670,7 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	} else {
 		req.Header.Set("User-Agent", codexCLIUserAgent)
 	}
-	if chatgptAccountID := strings.TrimSpace(account.GetChatGPTAccountID()); chatgptAccountID != "" {
-		req.Header.Set("chatgpt-account-id", chatgptAccountID)
-	}
+	setOpenAIChatGPTAccountHeaders(req.Header, account)
 
 	resp, err := s.sendOpenAIAccountTestHTTPRequest(ctx, c, req, account)
 	if err != nil {
