@@ -16,6 +16,7 @@ export interface OpenAITokenInfo {
   email?: string
   name?: string
   plan_type?: string
+  subscription_expires_at?: string
   privacy_mode?: string
   egress_bucket?: string
   proxy_selected?: boolean
@@ -200,6 +201,9 @@ export function useOpenAIOAuth() {
     }
     if (tokenInfo.plan_type) {
       creds.plan_type = tokenInfo.plan_type
+    }
+    if (tokenInfo.subscription_expires_at) {
+      creds.subscription_expires_at = tokenInfo.subscription_expires_at
     }
     if (tokenInfo.client_id) {
       creds.client_id = tokenInfo.client_id

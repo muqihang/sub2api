@@ -57,6 +57,28 @@ func TestAccountTestService_OpenAIOAuthAccountConnectionAddsCodexCLIHeaders(t *t
 	require.Equal(t, "chatgpt-account", req.Header.Get("chatgpt-account-id"))
 }
 
+func TestAccountTestService_OpenAIOAuthAccountConnectionRespectsCustomUserAgent(t *testing.T) {
+	ctx := newOpenAIAccountTestHeaderContext()
+	upstream := &httpUpstreamRecorder{resp: newOpenAIAccountTestHeaderSSE()}
+	svc := &AccountTestService{httpUpstream: upstream, cfg: &config.Config{}}
+	account := &Account{
+		ID:          19203,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token": "test-access-token",
+			"user_agent":   "codex_cli_rs/9.9.9 custom",
+		},
+	}
+
+	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4", "", "")
+
+	require.NoError(t, err)
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, "codex_cli_rs/9.9.9 custom", upstream.requests[0].Header.Get("User-Agent"))
+}
+
 func TestAccountTestService_OpenAIAPIKeyAccountConnectionDoesNotAddCodexCLIHeaders(t *testing.T) {
 	ctx := newOpenAIAccountTestHeaderContext()
 	upstream := &httpUpstreamRecorder{resp: newOpenAIAccountTestHeaderSSE()}

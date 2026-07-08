@@ -271,6 +271,18 @@ func TestBackendModeAuthGuard(t *testing.T) {
 			wantStatus: http.StatusOK,
 		},
 		{
+			name:       "enabled_allows_github_complete_registration",
+			enabled:    "true",
+			path:       "/api/v1/auth/oauth/github/complete-registration",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "enabled_allows_google_complete_registration",
+			enabled:    "true",
+			path:       "/api/v1/auth/oauth/google/complete-registration",
+			wantStatus: http.StatusOK,
+		},
+		{
 			name:       "enabled_blocks_dingtalk_oauth_start",
 			enabled:    "true",
 			path:       "/api/v1/auth/oauth/dingtalk/start",

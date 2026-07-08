@@ -372,7 +372,9 @@ func (s *OpenAIOAuthService) enrichTokenInfo(ctx context.Context, tokenInfo *Ope
 		}
 	}
 	if info := fetchChatGPTAccountInfo(ctx, s.privacyClientFactory, tokenInfo.AccessToken, proxyURL, orgID); info != nil {
-		if info.PlanType != "" {
+		// ID-token chatgpt_plan_type is the canonical personal-plan value. The
+		// accounts/check endpoint can include inactive workspace billing plan names.
+		if shouldApplyChatGPTAccountInfoPlanType(tokenInfo.PlanType, info.PlanType) {
 			tokenInfo.PlanType = info.PlanType
 		}
 		if info.SubscriptionExpiresAt != "" {
@@ -390,6 +392,10 @@ func (s *OpenAIOAuthService) enrichTokenInfo(ctx context.Context, tokenInfo *Ope
 
 	// 尝试设置隐私（关闭训练数据共享），best-effort
 	tokenInfo.PrivacyMode = disableOpenAITraining(ctx, s.privacyClientFactory, tokenInfo.AccessToken, proxyURL)
+}
+
+func shouldApplyChatGPTAccountInfoPlanType(current, candidate string) bool {
+	return strings.TrimSpace(candidate) != "" && strings.TrimSpace(current) == ""
 }
 
 func resolveChatGPTSubscriptionAccountID(tokenInfo *OpenAITokenInfo, orgID string) string {

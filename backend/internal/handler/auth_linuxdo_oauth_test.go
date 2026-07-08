@@ -631,6 +631,80 @@ func TestLinuxDoOAuthCallbackCreatesChoicePendingSessionWhenSignupRequiresInvite
 	require.Equal(t, "third_party_signup", completion["choice_reason"])
 }
 
+func TestLinuxDoOAuthCallbackEmailVerificationRequiredHidesUpstreamEmail(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"linuxdo-access","token_type":"Bearer","expires_in":3600}`))
+		case "/userinfo":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"verify-123","username":"linuxdo_verify","name":"Verify User"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	handler, client := newOAuthPendingFlowTestHandlerWithOptions(t, false, true, nil)
+	handler.settingSvc = nil
+	handler.cfg = &config.Config{
+		JWT: config.JWTConfig{
+			Secret:                   "test-secret",
+			ExpireHour:               1,
+			AccessTokenExpireMinutes: 60,
+			RefreshTokenExpireDays:   7,
+		},
+		LinuxDo: config.LinuxDoConnectConfig{
+			Enabled:             true,
+			ClientID:            "linuxdo-client",
+			ClientSecret:        "linuxdo-secret",
+			AuthorizeURL:        upstream.URL + "/authorize",
+			TokenURL:            upstream.URL + "/token",
+			UserInfoURL:         upstream.URL + "/userinfo",
+			Scopes:              "read",
+			RedirectURL:         "https://api.example.com/api/v1/auth/oauth/linuxdo/callback",
+			FrontendRedirectURL: "/auth/linuxdo/callback",
+			TokenAuthMethod:     "client_secret_post",
+			UsePKCE:             true,
+		},
+	}
+	defer func() { _ = client.Close() }()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/linuxdo/callback?code=code-verify&state=state-verify", nil)
+	req.AddCookie(encodedCookie(linuxDoOAuthStateCookieName, "state-verify"))
+	req.AddCookie(encodedCookie(linuxDoOAuthRedirectCookie, "/dashboard"))
+	req.AddCookie(encodedCookie(linuxDoOAuthVerifierCookie, "verifier-verify"))
+	req.AddCookie(encodedCookie(linuxDoOAuthIntentCookieName, oauthIntentLogin))
+	req.AddCookie(encodedCookie(oauthPendingBrowserCookieName, "browser-verify"))
+	c.Request = req
+
+	handler.LinuxDoOAuthCallback(c)
+
+	require.Equal(t, http.StatusFound, recorder.Code)
+	sessionCookie := findCookie(recorder.Result().Cookies(), oauthPendingSessionCookieName)
+	require.NotNil(t, sessionCookie)
+
+	ctx := context.Background()
+	session, err := client.PendingAuthSession.Query().
+		Where(pendingauthsession.SessionTokenEQ(decodeCookieValueForTest(t, sessionCookie.Value))).
+		Only(ctx)
+	require.NoError(t, err)
+	require.Equal(t, oauthIntentLogin, session.Intent)
+	require.Empty(t, session.ResolvedEmail)
+
+	completion, ok := session.LocalFlowState[oauthCompletionResponseKey].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "create_account_required", completion["step"])
+	require.Equal(t, true, completion["email_binding_required"])
+	require.Equal(t, true, completion["force_email_on_signup"])
+	require.Equal(t, "email_verification_required", completion["choice_reason"])
+	require.NotContains(t, completion, "email")
+	require.NotContains(t, completion, "resolved_email")
+}
+
 func TestLinuxDoOAuthCallbackDirectlyLogsInNewUserWhenEmailVerificationDisabled(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

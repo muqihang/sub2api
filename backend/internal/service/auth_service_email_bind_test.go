@@ -297,6 +297,71 @@ func TestAuthServiceBindEmailIdentity_RejectsReservedEmail(t *testing.T) {
 	require.Nil(t, updatedUser)
 }
 
+func TestAuthServiceBindEmailIdentity_RejectsEmailOutsideRegistrationSuffixWhitelist(t *testing.T) {
+	cache := &emailBindCacheStub{
+		data: &service.VerificationCodeData{
+			Code:      "123456",
+			CreatedAt: time.Now().UTC(),
+			ExpiresAt: time.Now().UTC().Add(10 * time.Minute),
+		},
+	}
+	svc, _, client := newAuthServiceForEmailBind(t, map[string]string{
+		service.SettingKeyRegistrationEmailSuffixWhitelist: `["@allowed.com"]`,
+	}, cache, nil)
+
+	ctx := context.Background()
+	user, err := client.User.Create().
+		SetEmail("source-user@example.com").
+		SetUsername("source-user").
+		SetPasswordHash("old-hash").
+		SetBalance(1).
+		SetConcurrency(1).
+		SetRole(service.RoleUser).
+		SetStatus(service.StatusActive).
+		Save(ctx)
+	require.NoError(t, err)
+
+	updatedUser, err := svc.BindEmailIdentity(ctx, user.ID, "blocked@example.net", "123456", "new-password")
+	require.ErrorIs(t, err, service.ErrEmailSuffixNotAllowed)
+	require.Nil(t, updatedUser)
+
+	storedUser, err := client.User.Get(ctx, user.ID)
+	require.NoError(t, err)
+	require.Equal(t, "source-user@example.com", storedUser.Email)
+
+	identityCount, err := client.AuthIdentity.Query().
+		Where(
+			authidentity.UserIDEQ(user.ID),
+			authidentity.ProviderTypeEQ("email"),
+			authidentity.ProviderKeyEQ("email"),
+			authidentity.ProviderSubjectEQ("blocked@example.net"),
+		).
+		Count(ctx)
+	require.NoError(t, err)
+	require.Zero(t, identityCount)
+}
+
+func TestAuthServiceSendEmailIdentityBindCode_RejectsEmailOutsideRegistrationSuffixWhitelist(t *testing.T) {
+	svc, _, client := newAuthServiceForEmailBind(t, map[string]string{
+		service.SettingKeyRegistrationEmailSuffixWhitelist: `["@allowed.com"]`,
+	}, &emailBindCacheStub{}, nil)
+
+	ctx := context.Background()
+	user, err := client.User.Create().
+		SetEmail("source-user@example.com").
+		SetUsername("source-user").
+		SetPasswordHash("old-hash").
+		SetBalance(1).
+		SetConcurrency(1).
+		SetRole(service.RoleUser).
+		SetStatus(service.StatusActive).
+		Save(ctx)
+	require.NoError(t, err)
+
+	err = svc.SendEmailIdentityBindCode(ctx, user.ID, "blocked@example.net")
+	require.ErrorIs(t, err, service.ErrEmailSuffixNotAllowed)
+}
+
 func TestAuthServiceBindEmailIdentity_ReplacesBoundEmailAndSkipsFirstBindDefaults(t *testing.T) {
 	assigner := &emailBindDefaultSubAssignerStub{}
 	cache := &emailBindCacheStub{
