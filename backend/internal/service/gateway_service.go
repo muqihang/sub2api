@@ -684,6 +684,15 @@ func (e *UpstreamFailoverError) Error() string {
 	return fmt.Sprintf("upstream error: %d (failover)", e.StatusCode)
 }
 
+// sseStreamErrorEventError represents an upstream SSE event:error frame.
+// RawData is kept in memory for failover classification only; callers must not log
+// or persist it directly because upstream messages can include user content.
+type sseStreamErrorEventError struct {
+	RawData string
+}
+
+func (e *sseStreamErrorEventError) Error() string { return "have error in stream" }
+
 // TempUnscheduleRetryableError 对 RetryableOnSameAccount 类型的 failover 错误触发临时封禁。
 // 由 handler 层在同账号重试全部用尽、切换账号时调用。
 func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accountID int64, failoverErr *UpstreamFailoverError) {
@@ -5636,10 +5645,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	if reqStream {
 		streamResult, err := s.handleStreamingResponse(ctx, resp, c, account, startTime, originalModel, reqModel, shouldMimicClaudeCode)
 		if err != nil {
-			if err.Error() == "have error in stream" {
-				return nil, &UpstreamFailoverError{
-					StatusCode: 403,
-				}
+			var sseErr *sseStreamErrorEventError
+			if errors.As(err, &sseErr) {
+				return nil, s.buildSSEStreamErrorFailover(c, account, resp, sseErr.RawData)
 			}
 			return nil, err
 		}
@@ -8012,6 +8020,104 @@ func safeUpstreamErrorLogSummary(status int, body []byte) string {
 	return fmt.Sprintf("status_bucket=%s body_length_bucket=%s message=%s raw_body_omitted_reason=raw_body_omitted", statusBucketFromHTTP(status), safeLengthBucket(len(body)), msg)
 }
 
+func (s *GatewayService) buildSSEStreamErrorFailover(c *gin.Context, account *Account, resp *http.Response, rawData string) *UpstreamFailoverError {
+	const status = http.StatusForbidden
+	body, message, detail := safeSSEStreamErrorFailoverPayload(status, rawData)
+	setOpsUpstreamError(c, status, message, detail)
+
+	ev := OpsUpstreamErrorEvent{
+		UpstreamStatusCode: status,
+		Kind:               "stream_error",
+		Message:            message,
+		Detail:             detail,
+	}
+	if account != nil {
+		ev.Platform = account.Platform
+	}
+	if resp != nil {
+		ev.UpstreamRequestID = resp.Header.Get("x-request-id")
+	}
+	appendOpsUpstreamError(c, ev)
+
+	return &UpstreamFailoverError{
+		StatusCode:   status,
+		ResponseBody: body,
+	}
+}
+
+func safeSSEStreamErrorFailoverPayload(status int, rawData string) ([]byte, string, string) {
+	errorType := safeSSEStreamErrorClassifier(gjson.Get(rawData, "error.type").String())
+	if errorType == "" {
+		errorType = "unclassified"
+	}
+	errorCode := safeSSEStreamErrorClassifier(gjson.Get(rawData, "error.code").String())
+
+	upstream := map[string]any{
+		"event":                   "error",
+		"status_code":             status,
+		"error_type":              errorType,
+		"body_length_bucket":      safeLengthBucket(len(rawData)),
+		"raw_body_omitted_reason": "raw_body_omitted",
+	}
+	if errorCode != "" {
+		upstream["error_code"] = errorCode
+	}
+	payload := map[string]any{
+		"type": "error",
+		"error": map[string]any{
+			"type":    "stream_error",
+			"message": "upstream stream error",
+			"code":    errorType,
+		},
+		"upstream": upstream,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		body = []byte(`{"type":"error","error":{"type":"stream_error","message":"upstream stream error","code":"unclassified"},"upstream":{"event":"error","status_code":403,"error_type":"unclassified","body_length_bucket":"unknown","raw_body_omitted_reason":"raw_body_omitted"}}`)
+	}
+
+	detailParts := []string{
+		"event=error",
+		"status_bucket=" + statusBucketFromHTTP(status),
+		"error_type=" + errorType,
+		"body_length_bucket=" + safeLengthBucket(len(rawData)),
+		"raw_body_omitted_reason=raw_body_omitted",
+	}
+	if errorCode != "" {
+		detailParts = append(detailParts, "error_code="+errorCode)
+	}
+	return body, errorType, strings.Join(detailParts, " ")
+}
+
+func safeSSEStreamErrorClassifier(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	sanitized := sanitizeUpstreamErrorMessage(raw)
+	if sanitized == "" || strings.Contains(sanitized, "***") || strings.Contains(sanitized, "[") {
+		return ""
+	}
+	sanitized = strings.ToLower(sanitized)
+	var b strings.Builder
+	for _, r := range sanitized {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '_' || r == '-' || r == '.':
+			b.WriteRune(r)
+		case r == ' ' || r == ':' || r == '/':
+			b.WriteByte('_')
+		}
+		if b.Len() >= 80 {
+			break
+		}
+	}
+	return strings.Trim(b.String(), "_.-")
+}
+
 func safeUpstreamErrorDetailForOps(body []byte, maxBytes int) string {
 	return sanitizeUpstreamErrorBody(body, maxBytes)
 }
@@ -9279,7 +9385,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 		}
 
 		if eventName == "error" {
-			return nil, dataLine, nil, errors.New("have error in stream")
+			return nil, dataLine, nil, &sseStreamErrorEventError{RawData: dataLine}
 		}
 
 		if dataLine == "" {
@@ -10365,10 +10471,14 @@ func writeUsageLogBestEffort(ctx context.Context, repo UsageLogRepository, usage
 	if writer, ok := repo.(usageLogBestEffortWriter); ok {
 		if err := writer.CreateBestEffort(usageCtx, usageLog); err != nil {
 			logger.LegacyPrintf(logKey, "Create usage log failed: %v", err)
-			if IsUsageLogCreateDropped(err) {
-				return
+			fallbackCtx := usageCtx
+			fallbackCancel := func() {}
+			if usageCtx.Err() != nil {
+				cancel()
+				fallbackCtx, fallbackCancel = detachedBillingContext(ctx)
+				defer fallbackCancel()
 			}
-			if _, syncErr := repo.Create(usageCtx, usageLog); syncErr != nil {
+			if _, syncErr := repo.Create(fallbackCtx, usageLog); syncErr != nil {
 				logger.LegacyPrintf(logKey, "Create usage log sync fallback failed: %v", syncErr)
 			}
 		}

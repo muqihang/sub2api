@@ -2,9 +2,11 @@ package service
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -166,4 +168,84 @@ func TestGatewayService_StreamingKeepaliveKeepsPingForOlderClaudeCodeVersion(t *
 	body := rec.Body.String()
 	require.Contains(t, body, "event: ping")
 	require.NotContains(t, body, `"delta":{"type":"text_delta","text":""}`)
+}
+
+func TestGatewayService_StreamingSSEErrorEventReturnsTypedRawData(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newStreamingResponseTestGatewayService()
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	const rawError = `{"type":"error","error":{"type":"overloaded_error","code":"server_overloaded","message":"upstream overloaded"}}`
+	pr, pw := io.Pipe()
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: pr}
+	go func() {
+		defer func() { _ = pw.Close() }()
+		_, _ = pw.Write([]byte("event: error\ndata: " + rawError + "\n\n"))
+	}()
+
+	result, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "model", "model", false)
+	_ = pr.Close()
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	var sseErr *sseStreamErrorEventError
+	require.True(t, errors.As(err, &sseErr), "event:error must be recoverable via errors.As: %v", err)
+	require.Equal(t, "have error in stream", err.Error())
+	require.Equal(t, rawError, sseErr.RawData)
+}
+
+func TestGatewayService_SSEStreamErrorFailoverContextIsSafeAndStructured(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newStreamingResponseTestGatewayService()
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}}
+	resp.Header.Set("x-request-id", "req_safe_stream_error")
+	account := &Account{ID: 12345, Name: "sensitive-account-name", Platform: PlatformAnthropic, Type: AccountTypeOAuth}
+	rawError := `{"type":"error","error":{"type":"overloaded_error","code":"server_overloaded","message":"raw user prompt sk-secret-token"}}`
+
+	failoverErr := svc.buildSSEStreamErrorFailover(c, account, resp, rawError)
+
+	require.NotNil(t, failoverErr)
+	require.Equal(t, http.StatusForbidden, failoverErr.StatusCode)
+	body := string(failoverErr.ResponseBody)
+	require.JSONEq(t, `{
+		"type":"error",
+		"error":{"type":"stream_error","message":"upstream stream error","code":"overloaded_error"},
+		"upstream":{"event":"error","status_code":403,"error_type":"overloaded_error","error_code":"server_overloaded","body_length_bucket":"le_1kb","raw_body_omitted_reason":"raw_body_omitted"}
+	}`, body)
+	for _, forbidden := range []string{"raw user prompt", "sk-secret-token", "sensitive-account-name", "12345"} {
+		require.NotContains(t, body, forbidden)
+	}
+
+	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, ok)
+	events, ok := rawEvents.([]*OpsUpstreamErrorEvent)
+	require.True(t, ok)
+	require.Len(t, events, 1)
+	ev := events[0]
+	require.Equal(t, "stream_error", ev.Kind)
+	require.Equal(t, PlatformAnthropic, ev.Platform)
+	require.Equal(t, int64(0), ev.AccountID, "new stream-error ops event must not add raw account id")
+	require.Empty(t, ev.AccountName, "new stream-error ops event must not add raw account name")
+	require.Equal(t, "req_safe_stream_error", ev.UpstreamRequestID)
+	require.Equal(t, "overloaded_error", ev.Message)
+	require.Contains(t, ev.Detail, "error_type=overloaded_error")
+	require.Contains(t, ev.Detail, "error_code=server_overloaded")
+	require.Contains(t, ev.Detail, "raw_body_omitted_reason=raw_body_omitted")
+	for _, forbidden := range []string{"raw user prompt", "sk-secret-token", "sensitive-account-name", "12345", rawError} {
+		require.NotContains(t, ev.Detail, forbidden)
+		require.NotContains(t, ev.Message, forbidden)
+	}
+
+	topMessage, _ := c.Get(OpsUpstreamErrorMessageKey)
+	require.Equal(t, "overloaded_error", strings.TrimSpace(topMessage.(string)))
+	topDetail, _ := c.Get(OpsUpstreamErrorDetailKey)
+	require.NotContains(t, topDetail.(string), "raw user prompt")
+	require.NotContains(t, topDetail.(string), "sk-secret-token")
 }
