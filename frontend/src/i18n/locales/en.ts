@@ -283,6 +283,7 @@ export default {
     expand: 'Expand',
     collapse: 'Collapse',
     success: 'Success',
+    peakRateTooltip: 'Peak-rate window: {window}',
     error: 'Error',
     critical: 'Critical',
     warning: 'Warning',
@@ -2338,6 +2339,13 @@ export default {
         defaultValidityDays: 'Default Validity (Days)',
         validityHint: 'Number of days the subscription is valid when assigned to a user',
         noLimit: 'No limit'
+      },
+      peakRate: {
+        enabled: 'Peak-rate multiplier',
+        hint: 'Optional server-time window that multiplies token billing for subscription groups only.',
+        start: 'Start time',
+        end: 'End time',
+        multiplier: 'Peak multiplier'
       },
       imagePricing: {
         title: 'Image Generation Pricing',
@@ -7524,6 +7532,7 @@ export default {
     planFeatures: 'Features',
     planCard: {
       rate: 'Rate',
+      peakRate: 'Peak',
       dailyLimit: 'Daily',
       weeklyLimit: 'Weekly',
       monthlyLimit: 'Monthly',

@@ -206,6 +206,10 @@
               :platform="row.group.platform"
               :subscription-type="row.group.subscription_type"
               :rate-multiplier="row.group.rate_multiplier"
+                  :peak-rate-enabled="row.group.peak_rate_enabled"
+                  :peak-start="row.group.peak_start"
+                  :peak-end="row.group.peak_end"
+                  :peak-rate-multiplier="row.group.peak_rate_multiplier"
               :show-rate="false"
             />
             <span v-else class="text-sm text-gray-400 dark:text-dark-500">-</span>
@@ -506,6 +510,10 @@
                 :platform="(option as unknown as GroupOption).platform"
                 :subscription-type="(option as unknown as GroupOption).subscriptionType"
                 :rate-multiplier="(option as unknown as GroupOption).rate"
+                :peak-rate-enabled="(option as unknown as GroupOption).peakRateEnabled"
+                :peak-start="(option as unknown as GroupOption).peakStart"
+                :peak-end="(option as unknown as GroupOption).peakEnd"
+                :peak-rate-multiplier="(option as unknown as GroupOption).peakRateMultiplier"
               />
               <span v-else class="text-gray-400">{{ t('admin.subscriptions.selectGroup') }}</span>
             </template>
@@ -515,6 +523,10 @@
                 :platform="(option as unknown as GroupOption).platform"
                 :subscription-type="(option as unknown as GroupOption).subscriptionType"
                 :rate-multiplier="(option as unknown as GroupOption).rate"
+                :peak-rate-enabled="(option as unknown as GroupOption).peakRateEnabled"
+                :peak-start="(option as unknown as GroupOption).peakStart"
+                :peak-end="(option as unknown as GroupOption).peakEnd"
+                :peak-rate-multiplier="(option as unknown as GroupOption).peakRateMultiplier"
                 :description="(option as unknown as GroupOption).description"
                 :selected="selected"
               />
@@ -770,6 +782,10 @@ interface GroupOption {
   platform: GroupPlatform
   subscriptionType: SubscriptionType
   rate: number
+  peakRateEnabled?: boolean
+  peakStart?: string
+  peakEnd?: string
+  peakRateMultiplier?: number
 }
 
 // Guide modal state
@@ -981,7 +997,11 @@ const subscriptionGroupOptions = computed(() =>
       description: g.description,
       platform: g.platform,
       subscriptionType: g.subscription_type,
-      rate: g.rate_multiplier
+      rate: g.rate_multiplier,
+      peakRateEnabled: g.peak_rate_enabled,
+      peakStart: g.peak_start,
+      peakEnd: g.peak_end,
+      peakRateMultiplier: g.peak_rate_multiplier
     }))
 )
 

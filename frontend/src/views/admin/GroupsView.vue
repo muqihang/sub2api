@@ -643,6 +643,43 @@
                 :placeholder="t('admin.groups.subscription.noLimit')"
               />
             </div>
+            <div>
+              <div class="mb-2 flex items-center justify-between gap-3">
+                <div>
+                  <label class="input-label">{{ t("admin.groups.peakRate.enabled") }}</label>
+                  <p class="input-hint">{{ t("admin.groups.peakRate.hint") }}</p>
+                </div>
+                <button
+                  type="button"
+                  @click="createForm.peak_rate_enabled = !createForm.peak_rate_enabled"
+                  :class="[
+                    'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
+                    createForm.peak_rate_enabled ? 'bg-primary-600' : 'bg-gray-300 dark:bg-dark-600',
+                  ]"
+                >
+                  <span
+                    :class="[
+                      'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
+                      createForm.peak_rate_enabled ? 'translate-x-6' : 'translate-x-1',
+                    ]"
+                  />
+                </button>
+              </div>
+              <div v-if="createForm.peak_rate_enabled" class="grid grid-cols-1 gap-3 md:grid-cols-3">
+                <div>
+                  <label class="input-label">{{ t("admin.groups.peakRate.start") }}</label>
+                  <input v-model="createForm.peak_start" type="time" class="input" />
+                </div>
+                <div>
+                  <label class="input-label">{{ t("admin.groups.peakRate.end") }}</label>
+                  <input v-model="createForm.peak_end" type="time" class="input" />
+                </div>
+                <div>
+                  <label class="input-label">{{ t("admin.groups.peakRate.multiplier") }}</label>
+                  <input v-model.number="createForm.peak_rate_multiplier" type="number" step="0.01" min="0" class="input" />
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1934,6 +1971,43 @@
                 class="input"
                 :placeholder="t('admin.groups.subscription.noLimit')"
               />
+            </div>
+            <div>
+              <div class="mb-2 flex items-center justify-between gap-3">
+                <div>
+                  <label class="input-label">{{ t("admin.groups.peakRate.enabled") }}</label>
+                  <p class="input-hint">{{ t("admin.groups.peakRate.hint") }}</p>
+                </div>
+                <button
+                  type="button"
+                  @click="editForm.peak_rate_enabled = !editForm.peak_rate_enabled"
+                  :class="[
+                    'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
+                    editForm.peak_rate_enabled ? 'bg-primary-600' : 'bg-gray-300 dark:bg-dark-600',
+                  ]"
+                >
+                  <span
+                    :class="[
+                      'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
+                      editForm.peak_rate_enabled ? 'translate-x-6' : 'translate-x-1',
+                    ]"
+                  />
+                </button>
+              </div>
+              <div v-if="editForm.peak_rate_enabled" class="grid grid-cols-1 gap-3 md:grid-cols-3">
+                <div>
+                  <label class="input-label">{{ t("admin.groups.peakRate.start") }}</label>
+                  <input v-model="editForm.peak_start" type="time" class="input" />
+                </div>
+                <div>
+                  <label class="input-label">{{ t("admin.groups.peakRate.end") }}</label>
+                  <input v-model="editForm.peak_end" type="time" class="input" />
+                </div>
+                <div>
+                  <label class="input-label">{{ t("admin.groups.peakRate.multiplier") }}</label>
+                  <input v-model.number="editForm.peak_rate_multiplier" type="number" step="0.01" min="0" class="input" />
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -3341,6 +3415,10 @@ const createForm = reactive({
   daily_limit_usd: null as number | null,
   weekly_limit_usd: null as number | null,
   monthly_limit_usd: null as number | null,
+  peak_rate_enabled: false,
+  peak_start: "09:00",
+  peak_end: "18:00",
+  peak_rate_multiplier: 1,
   // 图片生成计费配置
   allow_image_generation: false,
   image_rate_independent: false,
@@ -3672,6 +3750,10 @@ const editForm = reactive({
   daily_limit_usd: null as number | null,
   weekly_limit_usd: null as number | null,
   monthly_limit_usd: null as number | null,
+  peak_rate_enabled: false,
+  peak_start: "09:00",
+  peak_end: "18:00",
+  peak_rate_multiplier: 1,
   // 图片生成计费配置
   allow_image_generation: false,
   image_rate_independent: false,
@@ -3924,6 +4006,10 @@ const closeCreateModal = () => {
   createForm.daily_limit_usd = null;
   createForm.weekly_limit_usd = null;
   createForm.monthly_limit_usd = null;
+  createForm.peak_rate_enabled = false;
+  createForm.peak_start = "09:00";
+  createForm.peak_end = "18:00";
+  createForm.peak_rate_multiplier = 1;
   createForm.allow_image_generation = false;
   createForm.image_rate_independent = false;
   createForm.image_rate_multiplier = 1;
@@ -4050,6 +4136,10 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.daily_limit_usd = group.daily_limit_usd;
   editForm.weekly_limit_usd = group.weekly_limit_usd;
   editForm.monthly_limit_usd = group.monthly_limit_usd;
+  editForm.peak_rate_enabled = group.peak_rate_enabled ?? false;
+  editForm.peak_start = group.peak_start || "09:00";
+  editForm.peak_end = group.peak_end || "18:00";
+  editForm.peak_rate_multiplier = group.peak_rate_multiplier ?? 1;
   editForm.allow_image_generation = group.allow_image_generation ?? false;
   editForm.image_rate_independent = group.image_rate_independent ?? false;
   editForm.image_rate_multiplier = group.image_rate_multiplier ?? 1;
@@ -4235,6 +4325,30 @@ watch(
     if (newVal === "subscription") {
       createForm.is_exclusive = true;
       createForm.fallback_group_id_on_invalid_request = null;
+      createForm.peak_start ||= "09:00";
+      createForm.peak_end ||= "18:00";
+      createForm.peak_rate_multiplier ||= 1;
+    } else {
+      createForm.peak_rate_enabled = false;
+      createForm.peak_start = "";
+      createForm.peak_end = "";
+      createForm.peak_rate_multiplier = 1;
+    }
+  },
+);
+
+watch(
+  () => editForm.subscription_type,
+  (newVal) => {
+    if (newVal === "subscription") {
+      editForm.peak_start ||= "09:00";
+      editForm.peak_end ||= "18:00";
+      editForm.peak_rate_multiplier ||= 1;
+    } else {
+      editForm.peak_rate_enabled = false;
+      editForm.peak_start = "";
+      editForm.peak_end = "";
+      editForm.peak_rate_multiplier = 1;
     }
   },
 );

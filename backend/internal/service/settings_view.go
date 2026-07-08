@@ -281,6 +281,8 @@ type PublicSettings struct {
 	GitHubOAuthEnabled       bool
 	GoogleOAuthEnabled       bool
 	Version                  string
+	ServerTimezone           string
+	ServerUTCOffset          string
 
 	BalanceLowNotifyEnabled     bool
 	AccountQuotaNotifyEnabled   bool

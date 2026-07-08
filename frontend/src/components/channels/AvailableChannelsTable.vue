@@ -92,6 +92,10 @@
                   :platform="g.platform as GroupPlatform"
                   :subscription-type="(g.subscription_type || 'standard') as SubscriptionType"
                   :rate-multiplier="g.rate_multiplier"
+                  :peak-rate-enabled="g.peak_rate_enabled"
+                  :peak-start="g.peak_start"
+                  :peak-end="g.peak_end"
+                  :peak-rate-multiplier="g.peak_rate_multiplier"
                   :user-rate-multiplier="userGroupRates[g.id] ?? null"
                   always-show-rate
                 />
@@ -114,6 +118,10 @@
                   :platform="g.platform as GroupPlatform"
                   :subscription-type="(g.subscription_type || 'standard') as SubscriptionType"
                   :rate-multiplier="g.rate_multiplier"
+                  :peak-rate-enabled="g.peak_rate_enabled"
+                  :peak-start="g.peak_start"
+                  :peak-end="g.peak_end"
+                  :peak-rate-multiplier="g.peak_rate_multiplier"
                   :user-rate-multiplier="userGroupRates[g.id] ?? null"
                   always-show-rate
                 />

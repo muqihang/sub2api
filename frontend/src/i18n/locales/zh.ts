@@ -283,6 +283,7 @@ export default {
     expand: '展开',
     collapse: '收起',
     success: '成功',
+    peakRateTooltip: '高峰倍率窗口：{window}',
     error: '错误',
     critical: '严重',
     warning: '警告',
@@ -2421,6 +2422,13 @@ export default {
         defaultValidityDays: '默认有效期（天）',
         validityHint: '分配给用户时订阅的有效天数',
         noLimit: '无限制'
+      },
+      peakRate: {
+        enabled: '高峰时段倍率',
+        hint: '仅订阅分组可用，按服务器时间在指定窗口内叠加 token 计费倍率。',
+        start: '开始时间',
+        end: '结束时间',
+        multiplier: '高峰倍率'
       },
       imagePricing: {
         title: '图片生成计费',
@@ -7704,6 +7712,7 @@ export default {
     planFeatures: '功能特性',
     planCard: {
       rate: '倍率',
+      peakRate: '高峰',
       dailyLimit: '日限额',
       weeklyLimit: '周限额',
       monthlyLimit: '月限额',

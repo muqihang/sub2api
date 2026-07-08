@@ -230,6 +230,8 @@ export interface PublicSettings {
   google_oauth_enabled: boolean
   backend_mode_enabled: boolean
   version: string
+  server_timezone?: string
+  server_utc_offset?: string
   balance_low_notify_enabled: boolean
   account_quota_notify_enabled: boolean
   balance_low_notify_threshold: number
@@ -527,6 +529,10 @@ export interface Group {
   allow_image_generation: boolean
   image_rate_independent: boolean
   image_rate_multiplier: number
+  peak_rate_enabled?: boolean
+  peak_start?: string
+  peak_end?: string
+  peak_rate_multiplier?: number
   image_price_1k: number | null
   image_price_2k: number | null
   image_price_4k: number | null

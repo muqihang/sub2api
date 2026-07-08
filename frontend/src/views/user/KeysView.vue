@@ -111,6 +111,10 @@
                   :platform="row.group.platform"
                   :subscription-type="row.group.subscription_type"
                   :rate-multiplier="row.group.rate_multiplier"
+                  :peak-rate-enabled="row.group.peak_rate_enabled"
+                  :peak-start="row.group.peak_start"
+                  :peak-end="row.group.peak_end"
+                  :peak-rate-multiplier="row.group.peak_rate_multiplier"
                   :user-rate-multiplier="userGroupRates[row.group.id]"
                 />
                 <span v-else class="text-sm text-gray-400 dark:text-dark-500">{{
@@ -442,6 +446,10 @@
                 :platform="(option as unknown as GroupOption).platform"
                 :subscription-type="(option as unknown as GroupOption).subscriptionType"
                 :rate-multiplier="(option as unknown as GroupOption).rate"
+                :peak-rate-enabled="(option as unknown as GroupOption).peakRateEnabled"
+                :peak-start="(option as unknown as GroupOption).peakStart"
+                :peak-end="(option as unknown as GroupOption).peakEnd"
+                :peak-rate-multiplier="(option as unknown as GroupOption).peakRateMultiplier"
                 :user-rate-multiplier="(option as unknown as GroupOption).userRate"
               />
               <span v-else class="text-gray-400">{{ t('keys.selectGroup') }}</span>
@@ -452,6 +460,10 @@
                 :platform="(option as unknown as GroupOption).platform"
                 :subscription-type="(option as unknown as GroupOption).subscriptionType"
                 :rate-multiplier="(option as unknown as GroupOption).rate"
+                :peak-rate-enabled="(option as unknown as GroupOption).peakRateEnabled"
+                :peak-start="(option as unknown as GroupOption).peakStart"
+                :peak-end="(option as unknown as GroupOption).peakEnd"
+                :peak-rate-multiplier="(option as unknown as GroupOption).peakRateMultiplier"
                 :user-rate-multiplier="(option as unknown as GroupOption).userRate"
                 :description="(option as unknown as GroupOption).description"
                 :selected="selected"
@@ -1116,6 +1128,10 @@ interface GroupOption {
   description: string | null
   rate: number
   userRate: number | null
+  peakRateEnabled?: boolean
+  peakStart?: string
+  peakEnd?: string
+  peakRateMultiplier?: number
   subscriptionType: SubscriptionType
   platform: GroupPlatform
   augmentGatewayEntitled: boolean
@@ -1285,6 +1301,10 @@ const groupOptions = computed(() =>
     description: group.description,
     rate: group.rate_multiplier,
     userRate: userGroupRates.value[group.id] ?? null,
+    peakRateEnabled: group.peak_rate_enabled,
+    peakStart: group.peak_start,
+    peakEnd: group.peak_end,
+    peakRateMultiplier: group.peak_rate_multiplier,
     subscriptionType: group.subscription_type,
     platform: group.platform,
     augmentGatewayEntitled: group.augment_gateway_entitled
