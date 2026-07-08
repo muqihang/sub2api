@@ -415,6 +415,12 @@ gateway:
       queue: 0.7
       error_rate: 0.8
       ttft: 0.5
+      # Prefer accounts whose active session window resets sooner; 0 disables.
+      # 倾向会话窗口更早重置的账号；0 表示关闭。
+      reset: 0.0
+      # Prefer accounts with healthier 7d quota headroom; 0 disables.
+      # 倾向 7d 剩余额度更健康的账号；0 表示关闭。
+      quota_headroom: 0.0
   # OpenAI 高级调度器补充配置
   openai_scheduler:
     # 是否允许 session_hash sticky 在账号健康度恶化时临时逃逸；false 可一键回退旧行为
@@ -516,6 +522,9 @@ gateway:
     # Fallback max waiting queue size
     # 兜底最大排队长度
     fallback_max_waiting: 100
+    # Prefer accounts whose session window resets soonest before load/LRU filtering. Default false.
+    # 在负载/LRU 前优先选择会话窗口最早重置账号；默认 false。
+    prefer_soonest_reset: false
     # Enable batch load calculation for scheduling
     # 启用调度批量负载计算
     load_batch_enabled: true
