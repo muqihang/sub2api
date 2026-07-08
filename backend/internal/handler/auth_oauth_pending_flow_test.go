@@ -16,6 +16,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/enttest"
 	"github.com/Wei-Shaw/sub2api/ent/identityadoptiondecision"
 	"github.com/Wei-Shaw/sub2api/ent/pendingauthsession"
+	"github.com/Wei-Shaw/sub2api/ent/promocode"
+	"github.com/Wei-Shaw/sub2api/ent/promocodeusage"
 	"github.com/Wei-Shaw/sub2api/ent/redeemcode"
 	dbuser "github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -73,6 +75,105 @@ func TestSetOAuthPendingSessionCookieUsesProviderCompletionPathPrefix(t *testing
 	cookie := findCookie(recorder.Result().Cookies(), oauthPendingSessionCookieName)
 	require.NotNil(t, cookie)
 	require.Equal(t, "/api/v1/auth/oauth", cookie.Path)
+}
+
+func TestCreateOAuthPendingSessionStoresPromoCodeFromCookie(t *testing.T) {
+	handler, client := newOAuthPendingFlowTestHandler(t, false)
+	ctx := context.Background()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/linuxdo/callback", nil)
+	req.AddCookie(&http.Cookie{Name: "oauth_promo_code", Value: encodeCookieValue("PROMO-OAUTH")})
+	c.Request = req
+
+	err := handler.createOAuthPendingSession(c, oauthPendingSessionPayload{
+		Intent:            oauthIntentLogin,
+		Identity:          service.PendingAuthIdentityKey{ProviderType: "linuxdo", ProviderKey: "linuxdo", ProviderSubject: "linuxdo-123"},
+		ResolvedEmail:     "linuxdo-123@linuxdo-connect.invalid",
+		RedirectTo:        "/dashboard",
+		BrowserSessionKey: "browser-promo-key",
+		CompletionResponse: map[string]any{
+			"step": oauthPendingChoiceStep,
+		},
+	})
+	require.NoError(t, err)
+
+	session, err := client.PendingAuthSession.Query().Only(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "PROMO-OAUTH", pendingSessionStringValue(session.LocalFlowState, "promo_code"))
+}
+
+func TestCreatePendingOAuthAccountAppliesPromoCodeFromPendingSession(t *testing.T) {
+	ctx := context.Background()
+	cache := &oauthPendingFlowEmailCacheStub{
+		verificationCodes: map[string]*service.VerificationCodeData{
+			"linuxdo-promo@example.com": {
+				Code:      "123456",
+				Attempts:  0,
+				CreatedAt: time.Now().UTC(),
+				ExpiresAt: time.Now().UTC().Add(15 * time.Minute),
+			},
+		},
+	}
+	handler, client := newOAuthPendingFlowTestHandlerWithDependencies(t, oauthPendingFlowTestHandlerOptions{
+		emailCache: cache,
+		settingValues: map[string]string{
+			service.SettingKeyPromoCodeEnabled: "true",
+		},
+		promoEnabled: true,
+	})
+
+	promo, err := client.PromoCode.Create().
+		SetCode("OAUTHBONUS").
+		SetBonusAmount(12.5).
+		SetMaxUses(5).
+		SetStatus(service.PromoCodeStatusActive).
+		SetNotes("oauth promo test").
+		Save(ctx)
+	require.NoError(t, err)
+
+	session, err := client.PendingAuthSession.Create().
+		SetSessionToken("pending-promo-session-token").
+		SetIntent(oauthIntentLogin).
+		SetProviderType("linuxdo").
+		SetProviderKey("linuxdo").
+		SetProviderSubject("linuxdo-promo-user").
+		SetResolvedEmail("linuxdo-promo@example.com").
+		SetRedirectTo("/dashboard").
+		SetBrowserSessionKey("browser-promo-create-key").
+		SetUpstreamIdentityClaims(map[string]any{
+			"username": "linuxdo_promo",
+		}).
+		SetLocalFlowState(map[string]any{
+			"step":       oauthPendingChoiceStep,
+			"error":      "registration_completion_required",
+			"promo_code": "OAUTHBONUS",
+		}).
+		SetExpiresAt(time.Now().UTC().Add(10 * time.Minute)).
+		Save(ctx)
+	require.NoError(t, err)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/oauth/pending/create", bytes.NewBufferString(`{"email":"linuxdo-promo@example.com","password":"secret-123","verify_code":"123456"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: oauthPendingSessionCookieName, Value: encodeCookieValue(session.SessionToken)})
+	req.AddCookie(&http.Cookie{Name: oauthPendingBrowserCookieName, Value: encodeCookieValue("browser-promo-create-key")})
+	c.Request = req
+
+	handler.CreatePendingOAuthAccount(c)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	user, err := client.User.Query().Where(dbuser.EmailEQ("linuxdo-promo@example.com")).Only(ctx)
+	require.NoError(t, err)
+	require.InDelta(t, 12.5, user.Balance, 0.0001)
+	usageCount, err := client.PromoCodeUsage.Query().Count(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, usageCount)
+	storedPromo, err := client.PromoCode.Get(ctx, promo.ID)
+	require.NoError(t, err)
+	require.Equal(t, 1, storedPromo.UsedCount)
 }
 
 func TestExchangePendingOAuthCompletionPreviewThenFinalizeAppliesAdoptionDecision(t *testing.T) {
@@ -2123,6 +2224,7 @@ type oauthPendingFlowTestHandlerOptions struct {
 	defaultSubAssigner service.DefaultSubscriptionAssigner
 	affiliateService   *service.AffiliateService
 	affiliateFactory   func(*dbent.Client, *service.SettingService) *service.AffiliateService
+	promoEnabled       bool
 	totpCache          service.TotpCache
 	totpEncryptor      service.SecretEncryptor
 	userRepoOptions    oauthPendingFlowUserRepoOptions
@@ -2211,6 +2313,10 @@ CREATE TABLE IF NOT EXISTS user_affiliates (
 		client:  client,
 		options: options.userRepoOptions,
 	}
+	var promoService *service.PromoService
+	if options.promoEnabled {
+		promoService = service.NewPromoService(&oauthPendingFlowPromoRepo{client: client}, userRepo, nil, client, nil)
+	}
 	redeemRepo := &oauthPendingFlowRedeemCodeRepo{client: client}
 	var emailService *service.EmailService
 	if options.emailCache != nil {
@@ -2230,7 +2336,7 @@ CREATE TABLE IF NOT EXISTS user_affiliates (
 		emailService,
 		nil,
 		nil,
-		nil,
+		promoService,
 		options.defaultSubAssigner,
 		affiliateService,
 		nil,
@@ -2813,8 +2919,177 @@ func (r *oauthPendingFlowUserRepo) ListWithFilters(context.Context, pagination.P
 	panic("unexpected ListWithFilters call")
 }
 
-func (r *oauthPendingFlowUserRepo) UpdateBalance(context.Context, int64, float64) error {
-	panic("unexpected UpdateBalance call")
+func (r *oauthPendingFlowUserRepo) UpdateBalance(ctx context.Context, id int64, amount float64) error {
+	client := r.client
+	if tx := dbent.TxFromContext(ctx); tx != nil {
+		client = tx.Client()
+	}
+	update := client.User.Update().Where(dbuser.IDEQ(id)).AddBalance(amount)
+	if amount > 0 {
+		update = update.AddTotalRecharged(amount)
+	}
+	n, err := update.Save(ctx)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return service.ErrUserNotFound
+	}
+	return nil
+}
+
+type oauthPendingFlowPromoRepo struct {
+	client *dbent.Client
+}
+
+func (r *oauthPendingFlowPromoRepo) promoClient(ctx context.Context) *dbent.Client {
+	if tx := dbent.TxFromContext(ctx); tx != nil {
+		return tx.Client()
+	}
+	return r.client
+}
+
+func oauthPendingFlowPromoToService(m *dbent.PromoCode) *service.PromoCode {
+	if m == nil {
+		return nil
+	}
+	notes := ""
+	if m.Notes != nil {
+		notes = *m.Notes
+	}
+	return &service.PromoCode{
+		ID:          m.ID,
+		Code:        m.Code,
+		BonusAmount: m.BonusAmount,
+		MaxUses:     m.MaxUses,
+		UsedCount:   m.UsedCount,
+		Status:      m.Status,
+		ExpiresAt:   m.ExpiresAt,
+		Notes:       notes,
+		CreatedAt:   m.CreatedAt,
+		UpdatedAt:   m.UpdatedAt,
+	}
+}
+
+func oauthPendingFlowPromoUsageToService(m *dbent.PromoCodeUsage) *service.PromoCodeUsage {
+	if m == nil {
+		return nil
+	}
+	return &service.PromoCodeUsage{
+		ID:          m.ID,
+		PromoCodeID: m.PromoCodeID,
+		UserID:      m.UserID,
+		BonusAmount: m.BonusAmount,
+		UsedAt:      m.UsedAt,
+	}
+}
+
+func (r *oauthPendingFlowPromoRepo) Create(ctx context.Context, code *service.PromoCode) error {
+	created, err := r.promoClient(ctx).PromoCode.Create().
+		SetCode(code.Code).
+		SetBonusAmount(code.BonusAmount).
+		SetMaxUses(code.MaxUses).
+		SetUsedCount(code.UsedCount).
+		SetStatus(code.Status).
+		SetNotes(code.Notes).
+		Save(ctx)
+	if err != nil {
+		return err
+	}
+	code.ID = created.ID
+	return nil
+}
+
+func (r *oauthPendingFlowPromoRepo) GetByID(ctx context.Context, id int64) (*service.PromoCode, error) {
+	m, err := r.promoClient(ctx).PromoCode.Get(ctx, id)
+	if err != nil {
+		if dbent.IsNotFound(err) {
+			return nil, service.ErrPromoCodeNotFound
+		}
+		return nil, err
+	}
+	return oauthPendingFlowPromoToService(m), nil
+}
+
+func (r *oauthPendingFlowPromoRepo) GetByCode(ctx context.Context, code string) (*service.PromoCode, error) {
+	return r.GetByCodeForUpdate(ctx, code)
+}
+
+func (r *oauthPendingFlowPromoRepo) GetByCodeForUpdate(ctx context.Context, code string) (*service.PromoCode, error) {
+	m, err := r.promoClient(ctx).PromoCode.Query().Where(promocode.CodeEqualFold(code)).Only(ctx)
+	if err != nil {
+		if dbent.IsNotFound(err) {
+			return nil, service.ErrPromoCodeNotFound
+		}
+		return nil, err
+	}
+	return oauthPendingFlowPromoToService(m), nil
+}
+
+func (r *oauthPendingFlowPromoRepo) Update(ctx context.Context, code *service.PromoCode) error {
+	builder := r.promoClient(ctx).PromoCode.UpdateOneID(code.ID).
+		SetCode(code.Code).
+		SetBonusAmount(code.BonusAmount).
+		SetMaxUses(code.MaxUses).
+		SetUsedCount(code.UsedCount).
+		SetStatus(code.Status).
+		SetNotes(code.Notes)
+	if code.ExpiresAt != nil {
+		builder.SetExpiresAt(*code.ExpiresAt)
+	} else {
+		builder.ClearExpiresAt()
+	}
+	_, err := builder.Save(ctx)
+	return err
+}
+
+func (r *oauthPendingFlowPromoRepo) Delete(ctx context.Context, id int64) error {
+	_, err := r.promoClient(ctx).PromoCode.Delete().Where(promocode.IDEQ(id)).Exec(ctx)
+	return err
+}
+
+func (r *oauthPendingFlowPromoRepo) List(context.Context, pagination.PaginationParams) ([]service.PromoCode, *pagination.PaginationResult, error) {
+	panic("unexpected promo List call")
+}
+
+func (r *oauthPendingFlowPromoRepo) ListWithFilters(context.Context, pagination.PaginationParams, string, string) ([]service.PromoCode, *pagination.PaginationResult, error) {
+	panic("unexpected promo ListWithFilters call")
+}
+
+func (r *oauthPendingFlowPromoRepo) CreateUsage(ctx context.Context, usage *service.PromoCodeUsage) error {
+	created, err := r.promoClient(ctx).PromoCodeUsage.Create().
+		SetPromoCodeID(usage.PromoCodeID).
+		SetUserID(usage.UserID).
+		SetBonusAmount(usage.BonusAmount).
+		SetUsedAt(usage.UsedAt).
+		Save(ctx)
+	if err != nil {
+		return err
+	}
+	usage.ID = created.ID
+	return nil
+}
+
+func (r *oauthPendingFlowPromoRepo) GetUsageByPromoCodeAndUser(ctx context.Context, promoCodeID, userID int64) (*service.PromoCodeUsage, error) {
+	m, err := r.promoClient(ctx).PromoCodeUsage.Query().
+		Where(promocodeusage.PromoCodeIDEQ(promoCodeID), promocodeusage.UserIDEQ(userID)).
+		Only(ctx)
+	if err != nil {
+		if dbent.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return oauthPendingFlowPromoUsageToService(m), nil
+}
+
+func (r *oauthPendingFlowPromoRepo) ListUsagesByPromoCode(context.Context, int64, pagination.PaginationParams) ([]service.PromoCodeUsage, *pagination.PaginationResult, error) {
+	panic("unexpected promo ListUsagesByPromoCode call")
+}
+
+func (r *oauthPendingFlowPromoRepo) IncrementUsedCount(ctx context.Context, id int64) error {
+	_, err := r.promoClient(ctx).PromoCode.UpdateOneID(id).AddUsedCount(1).Save(ctx)
+	return err
 }
 
 func (r *oauthPendingFlowUserRepo) DeductBalance(context.Context, int64, float64) error {

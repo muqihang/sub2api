@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,6 +20,29 @@ import (
 // TODO(task-1.10): newTestAuthHandlerWithDingTalk helper が追加されたら t.Skip を外す。
 func TestDingTalkOAuthStart_Disabled(t *testing.T) {
 	t.Skip("helper newTestAuthHandlerWithDingTalk added in Task 1.10; sentinel only")
+}
+
+func TestDingTalkOAuthStartCapturesPromoCode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := &AuthHandler{cfg: &config.Config{DingTalk: config.DingTalkConnectConfig{
+		Enabled:      true,
+		ClientID:     "dingtalk-client",
+		AuthorizeURL: "https://login.dingtalk.com/oauth2/auth",
+		RedirectURL:  "https://api.example.com/api/v1/auth/oauth/dingtalk/callback",
+		Scopes:       "openid",
+	}}}
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/dingtalk/start?redirect=/dashboard&promo_code=DINGPROMO", nil)
+
+	handler.DingTalkOAuthStart(c)
+
+	require.Equal(t, http.StatusFound, recorder.Code)
+	promoCookie := findCookie(recorder.Result().Cookies(), oauthPromoCodeCookieName)
+	require.NotNil(t, promoCookie)
+	require.Equal(t, "DINGPROMO", decodeCookieValueForTest(t, promoCookie.Value))
+	require.True(t, promoCookie.HttpOnly)
 }
 
 // TestBuildDingTalkSyntheticEmail_UsesUnionID 验证合成邮箱种子使用 unionID。

@@ -171,6 +171,33 @@ func TestLinuxDoOAuthBindStartRedirectsAndSetsBindCookies(t *testing.T) {
 	require.Equal(t, int64(42), userID)
 }
 
+func TestLinuxDoOAuthStartCapturesPromoCode(t *testing.T) {
+	handler := newLinuxDoOAuthTestHandler(t, false, config.LinuxDoConnectConfig{
+		Enabled:             true,
+		ClientID:            "linuxdo-client",
+		ClientSecret:        "linuxdo-secret",
+		AuthorizeURL:        "https://connect.linux.do/oauth/authorize",
+		TokenURL:            "https://connect.linux.do/oauth/token",
+		UserInfoURL:         "https://connect.linux.do/api/user",
+		Scopes:              "read",
+		RedirectURL:         "https://api.example.com/api/v1/auth/oauth/linuxdo/callback",
+		FrontendRedirectURL: "/auth/linuxdo/callback",
+		TokenAuthMethod:     "client_secret_post",
+	})
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/linuxdo/start?redirect=/dashboard&promo_code=LINUXPROMO", nil)
+
+	handler.LinuxDoOAuthStart(c)
+
+	require.Equal(t, http.StatusFound, recorder.Code)
+	promoCookie := findCookie(recorder.Result().Cookies(), oauthPromoCodeCookieName)
+	require.NotNil(t, promoCookie)
+	require.Equal(t, "LINUXPROMO", decodeCookieValueForTest(t, promoCookie.Value))
+	require.True(t, promoCookie.HttpOnly)
+}
+
 func TestLinuxDoOAuthStartOmitsPKCEWhenDisabled(t *testing.T) {
 	handler := newLinuxDoOAuthTestHandler(t, false, config.LinuxDoConnectConfig{
 		Enabled:             true,

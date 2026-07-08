@@ -130,6 +130,43 @@ func TestEmailOAuthCallbackExistingEmailLogsInWhenInvitationEnabled(t *testing.T
 	_ = user
 }
 
+func TestEmailOAuthCallbackStoresPromoCodeInPendingRegistrationSession(t *testing.T) {
+	handler, client := newOAuthPendingFlowTestHandlerWithDependencies(t, oauthPendingFlowTestHandlerOptions{
+		settingValues: map[string]string{
+			service.SettingKeyPromoCodeEnabled: "true",
+		},
+		promoEnabled: true,
+	})
+	ctx := context.Background()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/github/callback", nil)
+	req.AddCookie(&http.Cookie{Name: "oauth_promo_code", Value: encodeCookieValue("EMAILOAUTH")})
+	c.Request = req
+
+	handler.emailOAuthCallbackWithProfile(c, "github", config.EmailOAuthProviderConfig{
+		Enabled:             true,
+		ClientID:            "github-client",
+		ClientSecret:        "github-secret",
+		RedirectURL:         "https://app.example/api/v1/auth/oauth/github/callback",
+		FrontendRedirectURL: "/auth/oauth/callback",
+	}, "/auth/oauth/callback", "/dashboard", &emailOAuthProfile{
+		Subject:       "github-promo-user",
+		Email:         "promo-oauth@example.com",
+		EmailVerified: true,
+		Username:      "promo-oauth",
+	})
+
+	require.Equal(t, http.StatusFound, recorder.Code)
+	userCount, err := client.User.Query().Where(dbuser.EmailEQ("promo-oauth@example.com")).Count(ctx)
+	require.NoError(t, err)
+	require.Zero(t, userCount)
+	session, err := client.PendingAuthSession.Query().Only(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "EMAILOAUTH", pendingSessionStringValue(session.LocalFlowState, "promo_code"))
+}
+
 func TestEmailOAuthCallbackCreatesPasswordRegistrationSessionForNewEmail(t *testing.T) {
 	affiliateRepo := newOAuthEmailAffiliateRepoStub(map[string]int64{"AFF123": 1001})
 	handler, client := newOAuthPendingFlowTestHandlerWithDependencies(t, oauthPendingFlowTestHandlerOptions{
