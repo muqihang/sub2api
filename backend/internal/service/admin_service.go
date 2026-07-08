@@ -211,6 +211,10 @@ type CreateGroupInput struct {
 	AllowImageGeneration bool
 	ImageRateIndependent bool
 	ImageRateMultiplier  *float64
+	PeakRateEnabled      bool
+	PeakStart            string
+	PeakEnd              string
+	PeakRateMultiplier   *float64
 	ImagePrice1K         *float64
 	ImagePrice2K         *float64
 	ImagePrice4K         *float64
@@ -254,6 +258,10 @@ type UpdateGroupInput struct {
 	AllowImageGeneration *bool
 	ImageRateIndependent *bool
 	ImageRateMultiplier  *float64
+	PeakRateEnabled      *bool
+	PeakStart            *string
+	PeakEnd              *string
+	PeakRateMultiplier   *float64
 	ImagePrice1K         *float64
 	ImagePrice2K         *float64
 	ImagePrice4K         *float64
@@ -1842,6 +1850,16 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		}
 		imageRateMultiplier = *input.ImageRateMultiplier
 	}
+	peakRateMultiplier := 1.0
+	if input.PeakRateMultiplier != nil {
+		peakRateMultiplier = *input.PeakRateMultiplier
+	}
+	peakEnabled, peakStart, peakEnd, peakMultiplier := NormalizePeakRateConfig(
+		subscriptionType, input.PeakRateEnabled, input.PeakStart, input.PeakEnd, peakRateMultiplier,
+	)
+	if err := ValidatePeakRateConfig(subscriptionType, peakEnabled, peakStart, peakEnd, peakMultiplier); err != nil {
+		return nil, err
+	}
 
 	// 校验降级分组
 	if input.FallbackGroupID != nil {
@@ -1914,6 +1932,10 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		AllowImageGeneration:            input.AllowImageGeneration,
 		ImageRateIndependent:            input.ImageRateIndependent,
 		ImageRateMultiplier:             imageRateMultiplier,
+		PeakRateEnabled:                 peakEnabled,
+		PeakStart:                       peakStart,
+		PeakEnd:                         peakEnd,
+		PeakRateMultiplier:              peakMultiplier,
 		ImagePrice1K:                    imagePrice1K,
 		ImagePrice2K:                    imagePrice2K,
 		ImagePrice4K:                    imagePrice4K,
@@ -2108,6 +2130,24 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 			return nil, errors.New("image_rate_multiplier must be >= 0")
 		}
 		group.ImageRateMultiplier = *input.ImageRateMultiplier
+	}
+	if input.PeakRateEnabled != nil {
+		group.PeakRateEnabled = *input.PeakRateEnabled
+	}
+	if input.PeakStart != nil {
+		group.PeakStart = *input.PeakStart
+	}
+	if input.PeakEnd != nil {
+		group.PeakEnd = *input.PeakEnd
+	}
+	if input.PeakRateMultiplier != nil {
+		group.PeakRateMultiplier = *input.PeakRateMultiplier
+	}
+	group.PeakRateEnabled, group.PeakStart, group.PeakEnd, group.PeakRateMultiplier = NormalizePeakRateConfig(
+		group.SubscriptionType, group.PeakRateEnabled, group.PeakStart, group.PeakEnd, group.PeakRateMultiplier,
+	)
+	if err := ValidatePeakRateConfig(group.SubscriptionType, group.PeakRateEnabled, group.PeakStart, group.PeakEnd, group.PeakRateMultiplier); err != nil {
+		return nil, err
 	}
 	if input.ImagePrice1K != nil {
 		group.ImagePrice1K = normalizePrice(input.ImagePrice1K)

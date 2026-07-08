@@ -1,10 +1,13 @@
 package service
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 )
 
 type OpenAIMessagesDispatchModelConfig = domain.OpenAIMessagesDispatchModelConfig
@@ -16,9 +19,14 @@ type Group struct {
 	Description    string
 	Platform       string
 	RateMultiplier float64
-	IsExclusive    bool
-	Status         string
-	Hydrated       bool // indicates the group was loaded from a trusted repository source
+	// Peak-rate is an optional text-token multiplier for subscription groups only.
+	PeakRateEnabled    bool
+	PeakStart          string
+	PeakEnd            string
+	PeakRateMultiplier float64
+	IsExclusive        bool
+	Status             string
+	Hydrated           bool // indicates the group was loaded from a trusted repository source
 
 	SubscriptionType    string
 	DailyLimitUSD       *float64
@@ -170,4 +178,107 @@ func matchModelPattern(pattern, model string) bool {
 	}
 
 	return false
+}
+
+// parseMinutes parses "HH:MM" into minutes since midnight.
+// Keep the accepted set compatible with time.Parse("15:04"): hour may be one or
+// two digits, minute is exactly two digits, and the interval is same-day only.
+func parseMinutes(hhmm string) (int, bool) {
+	colon := strings.IndexByte(hhmm, ':')
+	if (colon != 1 && colon != 2) || len(hhmm)-colon-1 != 2 {
+		return 0, false
+	}
+	h := 0
+	for i := 0; i < colon; i++ {
+		d := hhmm[i] - '0'
+		if d > 9 {
+			return 0, false
+		}
+		h = h*10 + int(d)
+	}
+	m1, m2 := hhmm[colon+1]-'0', hhmm[colon+2]-'0'
+	if m1 > 9 || m2 > 9 {
+		return 0, false
+	}
+	m := int(m1)*10 + int(m2)
+	if h > 23 || m > 59 {
+		return 0, false
+	}
+	return h*60 + m, true
+}
+
+// PeakMultiplierAt returns the peak-rate multiplier for now.
+// Invalid or disabled configs safely degrade to 1.0.
+func (g *Group) PeakMultiplierAt(now time.Time) float64 {
+	if g == nil || !g.IsSubscriptionType() || !g.PeakRateEnabled || g.PeakStart == "" || g.PeakEnd == "" {
+		return 1.0
+	}
+	start, okStart := parseMinutes(g.PeakStart)
+	end, okEnd := parseMinutes(g.PeakEnd)
+	if !okStart || !okEnd || start >= end {
+		return 1.0
+	}
+	curTime := now.In(timezone.Location())
+	cur := curTime.Hour()*60 + curTime.Minute()
+	if cur >= start && cur < end {
+		return g.PeakRateMultiplier
+	}
+	return 1.0
+}
+
+// ValidatePeakRateConfig is the single validation source for peak-rate config.
+// multiplier=0 is allowed for explicit discounts/free peak windows.
+func ValidatePeakRateConfig(subscriptionType string, enabled bool, start, end string, multiplier float64) error {
+	if !enabled {
+		return nil
+	}
+	if subscriptionType != SubscriptionTypeSubscription {
+		return errors.New("高峰时段倍率仅支持订阅类型分组")
+	}
+	if start == "" || end == "" {
+		return errors.New("peak_rate_enabled 为 true 时 peak_start 与 peak_end 必填")
+	}
+	st, okStart := parseMinutes(start)
+	if !okStart {
+		return fmt.Errorf("peak_start 格式应为 HH:MM，got %q", start)
+	}
+	en, okEnd := parseMinutes(end)
+	if !okEnd {
+		return fmt.Errorf("peak_end 格式应为 HH:MM，got %q", end)
+	}
+	if st >= en {
+		return errors.New("peak_end 必须大于 peak_start（不支持跨天区间，如 22:00-02:00）")
+	}
+	if multiplier < 0 {
+		return errors.New("peak_rate_multiplier 不能为负")
+	}
+	return nil
+}
+
+// NormalizePeakRateConfig normalizes persisted peak-rate config for create/update.
+func NormalizePeakRateConfig(subscriptionType string, enabled bool, start, end string, multiplier float64) (bool, string, string, float64) {
+	if subscriptionType != SubscriptionTypeSubscription {
+		return false, "", "", 1.0
+	}
+	if !enabled {
+		if _, ok := parseMinutes(start); !ok {
+			start = ""
+		}
+		if _, ok := parseMinutes(end); !ok {
+			end = ""
+		}
+		if multiplier < 0 {
+			multiplier = 1.0
+		}
+	}
+	return enabled, start, end, multiplier
+}
+
+func computePeakAwareMultipliers(apiKey *APIKey, base float64, now time.Time) (text, image float64) {
+	image = resolveImageRateMultiplier(apiKey, base)
+	peak := 1.0
+	if apiKey != nil && apiKey.Group != nil {
+		peak = apiKey.Group.PeakMultiplierAt(now)
+	}
+	return base * peak, image
 }
