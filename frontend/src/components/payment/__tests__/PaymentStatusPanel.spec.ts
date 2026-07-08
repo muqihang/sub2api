@@ -162,4 +162,38 @@ describe('PaymentStatusPanel', () => {
     expect(wrapper.text()).toContain('payment.result.success')
     expect(wrapper.emitted('success')).toHaveLength(1)
   })
+
+  it('uses paid order currency for pay amount and USD for credited amount', async () => {
+    pollOrderStatus.mockResolvedValue({
+      ...orderFactory('COMPLETED'),
+      amount: 100,
+      pay_amount: 108,
+      currency: 'CNY',
+      order_type: 'subscription',
+    })
+
+    const wrapper = mount(PaymentStatusPanel, {
+      props: {
+        orderId: 42,
+        qrCode: 'https://pay.example.com/qr/42',
+        expiresAt: '2099-01-01T12:30:00Z',
+        paymentType: 'alipay',
+        orderType: 'subscription',
+        currency: 'USD',
+      },
+      global: {
+        stubs: {
+          Icon: true,
+        },
+      },
+    })
+
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(3000)
+    await flushPromises()
+
+    expect(pollOrderStatus).toHaveBeenCalledWith(42)
+    expect(wrapper.text()).toContain('$100.00')
+    expect(wrapper.text()).toContain('¥108.00')
+  })
 })
