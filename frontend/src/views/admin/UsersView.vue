@@ -1180,6 +1180,8 @@ const getPlatformUsage = (userId: number, platform: string) =>
 type UsageMetric = 'today' | 'total'
 type UsageSortState = { key: string; metric: UsageMetric; order: 'asc' | 'desc' } | null
 const USAGE_SORT_STORAGE_KEY = 'admin-users-usage-sort'
+// 列头排序按钮点击后弹出的"今日/近30天"选择菜单，同时只允许一个列展开。
+const openUsageSortMenu = ref<string | null>(null)
 
 const loadInitialUsageSort = (): UsageSortState => {
   try {
@@ -1206,6 +1208,12 @@ const persistUsageSort = () => {
     console.error('Failed to persist usage sort:', e)
   }
 }
+const clearUsageSort = () => {
+  if (!usageSort.value) return
+  usageSort.value = null
+  openUsageSortMenu.value = null
+  persistUsageSort()
+}
 
 const isUsageSortActive = (key: string, metric: UsageMetric) =>
   !!usageSort.value && usageSort.value.key === key && usageSort.value.metric === metric
@@ -1225,9 +1233,7 @@ const toggleUsageSort = (key: string, metric: UsageMetric) => {
   openUsageSortMenu.value = null
 }
 
-// 列头排序按钮点击后弹出的"今日/近30天"选择菜单，同时只允许一个列展开。
 // 点击图标本身不触发排序，仅开关菜单；首次排序由用户在菜单内选择 metric 触发（默认 desc，详见 toggleUsageSort）。
-const openUsageSortMenu = ref<string | null>(null)
 const toggleUsageSortMenu = (key: string) => {
   openUsageSortMenu.value = openUsageSortMenu.value === key ? null : key
 }
@@ -1599,6 +1605,7 @@ const handlePageSizeChange = (pageSize: number) => {
 }
 
 const handleSort = (key: string, order: 'asc' | 'desc') => {
+  clearUsageSort()
   sortState.sort_by = key
   sortState.sort_order = order
   pagination.page = 1
