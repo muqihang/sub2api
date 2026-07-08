@@ -30,6 +30,7 @@ const (
 	OrderStatusFailed            = payment.OrderStatusFailed
 	OrderStatusRefundRequested   = payment.OrderStatusRefundRequested
 	OrderStatusRefunding         = payment.OrderStatusRefunding
+	OrderStatusRefundPending     = payment.OrderStatusRefundPending
 	OrderStatusPartiallyRefunded = payment.OrderStatusPartiallyRefunded
 	OrderStatusRefunded          = payment.OrderStatusRefunded
 	OrderStatusRefundFailed      = payment.OrderStatusRefundFailed
