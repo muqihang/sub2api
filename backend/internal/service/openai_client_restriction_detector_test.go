@@ -23,6 +23,31 @@ func newCodexDetectorTestContext(ua string, originator string) *gin.Context {
 	return c
 }
 
+func TestCodexClientRestrictionMessage(t *testing.T) {
+	t.Run("version too low includes detected and minimum versions", func(t *testing.T) {
+		msg := CodexClientRestrictionMessage(CodexClientRestrictionDetectionResult{
+			Reason:          CodexClientRestrictionReasonVersionTooLow,
+			DetectedVersion: "0.39.0",
+			MinCodexVersion: "0.42.0",
+		})
+		require.Equal(t, "Your Codex version (0.39.0) is below the minimum required version (0.42.0). Please update Codex.", msg)
+	})
+
+	t.Run("version too high includes detected and maximum versions", func(t *testing.T) {
+		msg := CodexClientRestrictionMessage(CodexClientRestrictionDetectionResult{
+			Reason:          CodexClientRestrictionReasonVersionTooHigh,
+			DetectedVersion: "0.45.0",
+			MaxCodexVersion: "0.42.0",
+		})
+		require.Equal(t, "Your Codex version (0.45.0) exceeds the maximum allowed version (0.42.0). Please downgrade Codex to 0.42.0 or lower.", msg)
+	})
+
+	t.Run("non official detection keeps generic message", func(t *testing.T) {
+		msg := CodexClientRestrictionMessage(CodexClientRestrictionDetectionResult{Reason: CodexClientRestrictionReasonNotMatchedUA})
+		require.Equal(t, CodexOfficialClientsOnlyMessage, msg)
+	})
+}
+
 func TestOpenAICodexClientRestrictionDetector_Detect(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

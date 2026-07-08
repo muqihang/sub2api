@@ -1,10 +1,17 @@
 package service
 
 import (
+	"fmt"
+
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/gin-gonic/gin"
 )
+
+// CodexOfficialClientsOnlyMessage is the generic 403 message for codex_cli_only denials.
+// Version-boundary denials can use a more specific client-facing message because the
+// request has already been identified as an official Codex client.
+const CodexOfficialClientsOnlyMessage = "This account only allows Codex official clients"
 
 const (
 	// CodexClientRestrictionReasonDisabled 表示账号未开启 codex_cli_only。
@@ -21,13 +28,20 @@ const (
 	CodexClientRestrictionReasonNotMatchedUA = "official_client_user_agent_not_matched"
 	// CodexClientRestrictionReasonForceCodexCLI 表示通过 ForceCodexCLI 配置兜底放行。
 	CodexClientRestrictionReasonForceCodexCLI = "force_codex_cli_enabled"
+	// CodexClientRestrictionReasonVersionTooLow 表示官方 Codex 客户端版本低于策略要求。
+	CodexClientRestrictionReasonVersionTooLow = "codex_version_too_low"
+	// CodexClientRestrictionReasonVersionTooHigh 表示官方 Codex 客户端版本高于策略允许范围。
+	CodexClientRestrictionReasonVersionTooHigh = "codex_version_too_high"
 )
 
 // CodexClientRestrictionDetectionResult 是 codex_cli_only 统一检测入口结果。
 type CodexClientRestrictionDetectionResult struct {
-	Enabled bool
-	Matched bool
-	Reason  string
+	Enabled         bool
+	Matched         bool
+	Reason          string
+	DetectedVersion string
+	MinCodexVersion string
+	MaxCodexVersion string
 }
 
 // CodexClientRestrictionDetector 定义 codex_cli_only 统一检测入口。
@@ -106,5 +120,24 @@ func (d *OpenAICodexClientRestrictionDetector) Detect(c *gin.Context, account *A
 		Enabled: true,
 		Matched: false,
 		Reason:  CodexClientRestrictionReasonNotMatchedUA,
+	}
+}
+
+// CodexClientRestrictionMessage maps a codex_cli_only detection result to the
+// client-facing 403 message. Only version-boundary denials reveal version details.
+func CodexClientRestrictionMessage(r CodexClientRestrictionDetectionResult) string {
+	switch r.Reason {
+	case CodexClientRestrictionReasonVersionTooLow:
+		return fmt.Sprintf(
+			"Your Codex version (%s) is below the minimum required version (%s). Please update Codex.",
+			r.DetectedVersion, r.MinCodexVersion,
+		)
+	case CodexClientRestrictionReasonVersionTooHigh:
+		return fmt.Sprintf(
+			"Your Codex version (%s) exceeds the maximum allowed version (%s). Please downgrade Codex to %s or lower.",
+			r.DetectedVersion, r.MaxCodexVersion, r.MaxCodexVersion,
+		)
+	default:
+		return CodexOfficialClientsOnlyMessage
 	}
 }

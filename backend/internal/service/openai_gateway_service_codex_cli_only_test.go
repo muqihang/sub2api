@@ -59,6 +59,52 @@ func TestOpenAIGatewayService_GetCodexClientRestrictionDetector(t *testing.T) {
 	})
 }
 
+func TestOpenAIGatewayService_Forward_CodexVersionGateMessage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	newCtx := func() (*httptest.ResponseRecorder, *gin.Context) {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
+		return rec, c
+	}
+	account := func() *Account {
+		return &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{"codex_cli_only": true}}
+	}
+	body := []byte(`{"model":"gpt-5.5-codex"}`)
+
+	t.Run("version too low returns version-specific message", func(t *testing.T) {
+		rec, c := newCtx()
+		svc := &OpenAIGatewayService{codexDetector: &stubCodexRestrictionDetector{result: CodexClientRestrictionDetectionResult{
+			Enabled:         true,
+			Matched:         false,
+			Reason:          CodexClientRestrictionReasonVersionTooLow,
+			DetectedVersion: "0.39.0",
+			MinCodexVersion: "0.42.0",
+		}}}
+
+		_, err := svc.Forward(context.Background(), c, account(), body)
+		require.Error(t, err)
+		require.Equal(t, http.StatusForbidden, rec.Code)
+		require.Contains(t, rec.Body.String(), "Your Codex version (0.39.0) is below the minimum required version (0.42.0)")
+		require.NotContains(t, rec.Body.String(), "This account only allows Codex official clients")
+	})
+
+	t.Run("non official detection keeps generic message", func(t *testing.T) {
+		rec, c := newCtx()
+		svc := &OpenAIGatewayService{codexDetector: &stubCodexRestrictionDetector{result: CodexClientRestrictionDetectionResult{
+			Enabled: true,
+			Matched: false,
+			Reason:  CodexClientRestrictionReasonNotMatchedUA,
+		}}}
+
+		_, err := svc.Forward(context.Background(), c, account(), body)
+		require.Error(t, err)
+		require.Equal(t, http.StatusForbidden, rec.Code)
+		require.Contains(t, rec.Body.String(), "This account only allows Codex official clients")
+	})
+}
+
 func TestGetAPIKeyIDFromContext(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
