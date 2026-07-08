@@ -67,7 +67,7 @@ func (s *PaymentService) CreateOrder(ctx context.Context, req CreateOrderRequest
 			return nil, err
 		}
 	}
-	payAmountStr, payAmount, err := calculateCreateOrderPayAmountForOrder(req.OrderType, limitAmount, feeRate, cfg.BalanceRechargeMultiplier, methodCurrency)
+	payAmountStr, payAmount, err := calculateCreateOrderPayAmountForOrder(req.OrderType, limitAmount, feeRate, cfg.SubscriptionUSDToCNYRate, methodCurrency)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +83,7 @@ func (s *PaymentService) CreateOrder(ctx context.Context, req CreateOrderRequest
 		selectedCurrency = paymentProviderConfigCurrency(sel.ProviderKey, sel.Config)
 	}
 	if selectedCurrency != methodCurrency {
-		payAmountStr, payAmount, err = calculateCreateOrderPayAmountForOrder(req.OrderType, limitAmount, feeRate, cfg.BalanceRechargeMultiplier, selectedCurrency)
+		payAmountStr, payAmount, err = calculateCreateOrderPayAmountForOrder(req.OrderType, limitAmount, feeRate, cfg.SubscriptionUSDToCNYRate, selectedCurrency)
 		if err != nil {
 			return nil, err
 		}
@@ -629,17 +629,17 @@ func calculateCreateOrderPayAmount(limitAmount, feeRate float64, currency string
 	return payAmountStr, payAmount, nil
 }
 
-func calculateCreateOrderPayAmountForOrder(orderType string, limitAmount, feeRate, multiplier float64, currency string) (string, float64, error) {
-	paymentAmount := calculateCreateOrderPaymentAmount(orderType, limitAmount, multiplier, currency)
+func calculateCreateOrderPayAmountForOrder(orderType string, limitAmount, feeRate, subscriptionUSDToCNYRate float64, currency string) (string, float64, error) {
+	paymentAmount := calculateCreateOrderPaymentAmount(orderType, limitAmount, subscriptionUSDToCNYRate, currency)
 	return calculateCreateOrderPayAmount(paymentAmount, feeRate, currency)
 }
 
-func calculateCreateOrderPaymentAmount(orderType string, limitAmount, multiplier float64, currency string) float64 {
+func calculateCreateOrderPaymentAmount(orderType string, limitAmount, subscriptionUSDToCNYRate float64, currency string) float64 {
 	normalizedCurrency, err := payment.NormalizePaymentCurrency(currency)
 	if err != nil || normalizedCurrency != payment.DefaultPaymentCurrency || orderType != payment.OrderTypeSubscription {
 		return limitAmount
 	}
-	return calculateGatewayPaymentAmount(limitAmount, multiplier, normalizedCurrency)
+	return calculateSubscriptionGatewayBaseAmount(limitAmount, subscriptionUSDToCNYRate, normalizedCurrency)
 }
 
 func validateCreateOrderAmountCurrency(amount float64, currency string) error {

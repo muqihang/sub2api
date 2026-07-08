@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import PaymentView from '../PaymentView.vue'
 import { PAYMENT_RECOVERY_STORAGE_KEY } from '@/components/payment/paymentFlow'
+import { formatPaymentAmount } from '@/components/payment/currency'
 
 const routeState = vi.hoisted(() => ({
   path: '/purchase',
@@ -84,37 +85,48 @@ vi.mock('@/utils/device', () => ({
   isMobileDevice: () => true,
 }))
 
-function checkoutInfoFixture() {
+
+type CheckoutInfoFixtureOptions = {
+  checkout?: Record<string, unknown>
+  methods?: Record<string, Record<string, unknown>>
+  method?: Record<string, unknown>
+  plan?: Record<string, unknown>
+}
+
+function checkoutInfoFixture(options: CheckoutInfoFixtureOptions = {}) {
+  const wxpay = {
+    daily_limit: 0,
+    daily_used: 0,
+    daily_remaining: 0,
+    single_min: 0,
+    single_max: 0,
+    fee_rate: 0,
+    available: true,
+    ...(options.method || {}),
+  }
   return {
     data: {
-      methods: {
-        wxpay: {
-          daily_limit: 0,
-          daily_used: 0,
-          daily_remaining: 0,
-          single_min: 0,
-          single_max: 0,
-          fee_rate: 0,
-          available: true,
-        },
-      },
+      methods: options.methods || { wxpay },
       global_min: 0,
       global_max: 0,
       plans: [],
       balance_disabled: false,
       balance_recharge_multiplier: 1,
+      subscription_usd_to_cny_rate: 0,
       recharge_fee_rate: 0,
       help_text: '',
       help_image_url: '',
       stripe_publishable_key: '',
+      ...(options.checkout || {}),
     },
   }
 }
 
-function checkoutInfoWithPlansFixture() {
+function checkoutInfoWithPlansFixture(options: CheckoutInfoFixtureOptions = {}) {
+  const base = checkoutInfoFixture(options)
   return {
     data: {
-      ...checkoutInfoFixture().data,
+      ...base.data,
       plans: [
         {
           id: 7,
@@ -134,6 +146,7 @@ function checkoutInfoWithPlansFixture() {
           sort_order: 1,
           for_sale: true,
           group_name: 'OpenAI',
+          ...(options.plan || {}),
         },
       ],
     },
@@ -180,6 +193,132 @@ function oauthOrderFixture() {
   }
 }
 
+
+
+async function mountSubscriptionConfirm(options: CheckoutInfoFixtureOptions = {}) {
+  vi.useRealTimers()
+  routeState.path = '/purchase'
+  routeState.query = {
+    tab: 'subscription',
+    group: '3',
+  }
+  routerReplace.mockReset().mockResolvedValue(undefined)
+  routerPush.mockReset().mockResolvedValue(undefined)
+  routerResolve.mockClear()
+  createOrder.mockReset()
+  refreshUser.mockReset()
+  fetchActiveSubscriptions.mockReset().mockResolvedValue(undefined)
+  showError.mockReset()
+  showInfo.mockReset()
+  showWarning.mockReset()
+  getCheckoutInfo.mockReset().mockResolvedValue(checkoutInfoWithPlansFixture(options))
+  bridgeInvoke.mockReset()
+  window.localStorage.clear()
+  ;(window as Window & { WeixinJSBridge?: { invoke: typeof bridgeInvoke } }).WeixinJSBridge = undefined
+
+  const wrapper = shallowMount(PaymentView, {
+    global: {
+      stubs: {
+        AppLayout: {
+          template: '<div><slot /></div>',
+        },
+        Teleport: true,
+        Transition: false,
+      },
+    },
+  })
+  await flushPromises()
+  await flushPromises()
+  return wrapper
+}
+
+describe('PaymentView subscription confirmation amounts', () => {
+  it('shows converted CNY pay amount using the subscription rate, not the balance multiplier', async () => {
+    const wrapper = await mountSubscriptionConfirm({
+      checkout: {
+        balance_recharge_multiplier: 0.14,
+        subscription_usd_to_cny_rate: 7.15,
+      },
+      method: {
+        currency: 'CNY',
+      },
+      plan: {
+        price: 9.99,
+        original_price: 12.99,
+      },
+    })
+
+    const text = wrapper.text()
+    const convertedPrice = formatPaymentAmount(71.43, 'CNY')
+    const convertedOriginalPrice = formatPaymentAmount(92.88, 'CNY')
+
+    expect(text).toContain(convertedPrice)
+    expect(text).toContain(convertedOriginalPrice)
+    expect(text).not.toContain(formatPaymentAmount(9.99, 'CNY'))
+    expect(text).not.toContain(formatPaymentAmount(71.36, 'CNY'))
+    expect(wrapper.findAll('button').some(button => button.text().includes(convertedPrice))).toBe(true)
+  })
+
+  it('keeps plan price when the subscription rate is not configured or payment currency is not CNY', async () => {
+    const cnyWrapper = await mountSubscriptionConfirm({
+      checkout: {
+        balance_recharge_multiplier: 0.14,
+        subscription_usd_to_cny_rate: 0,
+      },
+      method: {
+        currency: 'CNY',
+      },
+      plan: {
+        price: 7.99,
+      },
+    })
+
+    expect(cnyWrapper.text()).toContain(formatPaymentAmount(7.99, 'CNY'))
+    expect(cnyWrapper.text()).not.toContain(formatPaymentAmount(57.07, 'CNY'))
+    expect(cnyWrapper.text()).not.toContain(formatPaymentAmount(57.13, 'CNY'))
+
+    const usdWrapper = await mountSubscriptionConfirm({
+      checkout: {
+        subscription_usd_to_cny_rate: 7.15,
+      },
+      method: {
+        currency: 'USD',
+      },
+      plan: {
+        price: 7.99,
+        original_price: 9.99,
+      },
+    })
+
+    expect(usdWrapper.text()).toContain(formatPaymentAmount(7.99, 'USD'))
+    expect(usdWrapper.text()).toContain(formatPaymentAmount(9.99, 'USD'))
+  })
+
+  it('adds fee rate after CNY rate conversion to match backend pay_amount', async () => {
+    const wrapper = await mountSubscriptionConfirm({
+      checkout: {
+        subscription_usd_to_cny_rate: 7.15,
+        recharge_fee_rate: 2.5,
+      },
+      method: {
+        currency: 'CNY',
+      },
+      plan: {
+        price: 9.99,
+      },
+    })
+
+    const text = wrapper.text()
+    const convertedPrice = formatPaymentAmount(71.43, 'CNY')
+    const fee = formatPaymentAmount(1.79, 'CNY')
+    const total = formatPaymentAmount(73.22, 'CNY')
+
+    expect(text).toContain(convertedPrice)
+    expect(text).toContain(fee)
+    expect(text).toContain(total)
+    expect(wrapper.findAll('button').some(button => button.text().includes(total))).toBe(true)
+  })
+})
 
 describe('PaymentView payment recovery', () => {
   beforeEach(() => {
