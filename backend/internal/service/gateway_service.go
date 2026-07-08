@@ -4865,7 +4865,10 @@ func (s *GatewayService) shouldInjectAnthropicCacheTTL1h(ctx context.Context, ac
 
 func (s *GatewayService) gatewayForwardingSettings(ctx context.Context) (fingerprintUnification, metadataPassthrough, cchSigning bool) {
 	if s != nil && s.settingService != nil {
-		return s.settingService.GetGatewayForwardingSettings(ctx)
+		fp, mp, _ := s.settingService.GetGatewayForwardingSettings(ctx)
+		// enable_cch_signing is retained only for backward-compatible settings reads.
+		// New Claude Code CLI traffic no longer carries cch=..., so gateway signing is a no-op.
+		return fp, mp, false
 	}
 	return true, false, false
 }
