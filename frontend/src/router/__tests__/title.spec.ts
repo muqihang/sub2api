@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { resolveDocumentTitle } from '@/router/title'
+import { resolveDocumentTitle, resolveRouteDocumentTitle } from '@/router/title'
 
 describe('resolveDocumentTitle', () => {
   it('路由存在标题时，使用“路由标题 - 站点名”格式', () => {
@@ -21,5 +21,27 @@ describe('resolveDocumentTitle', () => {
 
     expect(before).toBe('Admin Dashboard - Alpha')
     expect(after).toBe('Admin Dashboard - Beta')
+  })
+})
+
+describe('resolveRouteDocumentTitle', () => {
+  it('uses custom page menu label after menu settings load', () => {
+    const route = {
+      name: 'CustomPage',
+      params: { id: 'scheduler' },
+      meta: { title: 'Custom Page' },
+    }
+
+    expect(resolveRouteDocumentTitle(route, 'Sub2API')).toBe('Custom Page - Sub2API')
+    expect(resolveRouteDocumentTitle(route, 'Sub2API', [
+      {
+        id: 'scheduler',
+        label: '账号调度器',
+        icon_svg: '',
+        url: 'https://example.com',
+        visibility: 'admin',
+        sort_order: 0,
+      },
+    ])).toBe('账号调度器 - Sub2API')
   })
 })
