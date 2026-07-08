@@ -487,6 +487,7 @@ export default {
     },
     dingtalk: {
       signIn: '钉钉登录',
+      iconText: '钉',
       callbackTitle: '正在完成钉钉登录',
       callbackProcessing: '正在验证钉钉登录信息，请稍候...',
       callbackHint: '如果页面未自动跳转，请返回登录页重试。',
@@ -561,6 +562,7 @@ export default {
     },
     linuxdoCallbackPageTitle: 'LinuxDo 登录回调',
     dingtalkCallbackPageTitle: '钉钉登录回调',
+    dingtalkProviderName: '钉钉',
     oidcCallbackPageTitle: 'OIDC 登录回调',
     oauthCallbackPageTitle: 'OAuth 回调',
     wechatProviderName: '微信',
@@ -611,6 +613,26 @@ export default {
     invalidResetLinkHint: '此密码重置链接无效或已过期。请重新请求一个新链接。',
     requestNewResetLink: '请求新的重置链接',
     invalidOrExpiredToken: '密码重置链接无效或已过期。请重新请求一个新链接。'
+  },
+
+  legal: {
+    loginAgreementPrompt: {
+      checkboxPrefix: '我已阅读并同意',
+      documentSeparator: '、',
+      noticeTitle: '继续登录前需要先同意最新条款。',
+      noticeDescription: '未同意前，账号密码输入和快捷登录会保持禁用。',
+      viewTerms: '查看条款',
+      dialogTitle: '条款更新通知',
+      dialogDescription: '我们的服务条款已于 {date} 更新。在继续使用服务之前，请仔细阅读并同意以下条款。',
+      recently: '近期',
+      relatedDocuments: '相关文档',
+      reject: '拒绝',
+      accept: '同意并继续',
+      loginRejectedWarning: '未同意最新条款前，无法输入账号密码或使用快捷登录。',
+      loginRequiredWarning: '请先阅读并同意最新条款后再登录。',
+      registerRejectedWarning: '未同意最新条款前，无法注册或使用快捷登录。',
+      registerRequiredWarning: '请先阅读并同意最新条款后再注册。',
+    },
   },
 
   // Dashboard
@@ -2265,6 +2287,7 @@ export default {
       },
       usageToday: '今日',
       usageTotal: '累计',
+      rateLabel: '倍率',
       accountsAvailable: '可用:',
       accountsRateLimited: '限流:',
       accountsTotal: '总量:',
@@ -2334,6 +2357,14 @@ export default {
       public: '公开',
       rateAndAccounts: '{rate}x 费率 · {count} 个账号',
       accountsCount: '{count} 个账号',
+      accountFilters: {
+        title: '账号过滤控制',
+        oauthOnly: '仅允许 OAuth 账号',
+        oauthOnlyEnabled: '已启用 — 排除 API Key 类型账号',
+        privacySetOnly: '仅允许隐私保护已设置的账号',
+        privacySetOnlyEnabled: '已启用 — Privacy 未设置的账号将被排除',
+        disabled: '未启用',
+      },
       enterGroupName: '请输入分组名称',
       optionalDescription: '可选描述',
       platformHint: '选择此分组关联的平台',
@@ -2405,7 +2436,10 @@ export default {
         title: '自定义 /v1/models 模型列表',
         hint: '仅影响 /v1/models 展示结果，不影响白名单模型调用和账号调度。',
         loading: '正在加载模型列表...',
-        empty: '暂无可展示模型'
+        empty: '暂无可展示模型',
+        selectedSummary: '已选 {selected} / {total}',
+        selectAll: '全选',
+        invertSelection: '反选',
       },
       claudeCode: {
         title: 'Claude Code 客户端限制',
@@ -2678,6 +2712,7 @@ export default {
     riskControl: {
       title: '风控中心',
       description: '配置内容审计策略并查看审核记录',
+      defaultBlockMessage: '内容审计命中风险规则，请调整输入后重试',
       loadFailed: '加载风控中心失败',
       saveFailed: '保存内容审计配置失败',
       logsFailed: '加载审核记录失败',
@@ -4496,12 +4531,20 @@ export default {
           builtInTitle: '内置授权（Gemini CLI / Code Assist）',
           builtInDesc: '使用 Google 内置客户端 ID，无需管理员配置。',
           builtInRequirement: '需要 GCP 项目并填写 Project ID。',
+          googleOneDesc: '个人账号，享受 Google One 订阅配额',
+          codeAssistDesc: '企业级，需要 GCP 项目',
+          codeAssistRequirement: '需要激活 GCP 项目并绑定信用卡',
+          showAdvanced: '显示高级选项（自建 OAuth Client）',
+          hideAdvanced: '隐藏高级选项（自建 OAuth Client）',
           gcpProjectLink: '创建项目',
           customTitle: '自定义授权（AI Studio OAuth）',
           customDesc: '使用管理员预设的 OAuth 客户端，适合组织管理。',
           customRequirement: '需管理员配置 Client ID 并加入测试用户白名单。',
           badges: {
             recommended: '推荐',
+            individuals: '推荐个人用户',
+            noGcp: '无需 GCP',
+            enterprise: '企业用户',
             highConcurrency: '高并发',
             noAdmin: '无需管理员配置',
             orgManaged: '组织管理',
@@ -4522,6 +4565,7 @@ export default {
           },
           links: {
             countryCheck: '检查归属地',
+            countryChange: '修改归属地',
             geminiWebActivation: '激活 Gemini Web',
             gcpProject: '打开 GCP 控制台'
           }
@@ -5277,6 +5321,7 @@ export default {
       totalRequests: '总请求',
       avgQps: '平均 QPS',
       avgTps: '平均 TPS',
+      autoRefreshRemaining: '剩余 {seconds}s',
       avgLatency: '平均请求时长',
       avgTtft: '平均首 Token 延迟',
       exceptions: '异常数',
@@ -7239,6 +7284,10 @@ export default {
   // Custom Page (iframe embed)
   customPage: {
     title: '自定义页面',
+    tableOfContents: '目录',
+    copyCode: '复制',
+    copiedCode: '已复制 ✓',
+    copyCodeFailed: '失败',
     openInNewTab: '新窗口打开',
     notFoundTitle: '页面不存在',
     notFoundDesc: '该自定义页面不存在或已被删除。',

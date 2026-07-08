@@ -488,6 +488,7 @@ export default {
     },
     dingtalk: {
       signIn: 'Continue with DingTalk',
+      iconText: 'D',
       callbackTitle: 'Signing you in with DingTalk',
       callbackProcessing: 'Completing DingTalk login, please wait...',
       callbackHint: 'If you are not redirected automatically, go back to the login page and try again.',
@@ -563,6 +564,7 @@ export default {
     },
     linuxdoCallbackPageTitle: 'LinuxDo Sign-In Callback',
     dingtalkCallbackPageTitle: 'DingTalk Sign-In Callback',
+    dingtalkProviderName: 'DingTalk',
     oidcCallbackPageTitle: 'OIDC Sign-In Callback',
     oauthCallbackPageTitle: 'OAuth Callback',
     wechatProviderName: 'WeChat',
@@ -612,6 +614,26 @@ export default {
     invalidResetLinkHint: 'This password reset link is invalid or has expired. Please request a new one.',
     requestNewResetLink: 'Request New Reset Link',
     invalidOrExpiredToken: 'The password reset link is invalid or has expired. Please request a new one.'
+  },
+
+  legal: {
+    loginAgreementPrompt: {
+      checkboxPrefix: 'I have read and agree to',
+      documentSeparator: ', ',
+      noticeTitle: 'Please agree to the latest terms before continuing.',
+      noticeDescription: 'Username/password input and quick sign-in stay disabled until you agree.',
+      viewTerms: 'View terms',
+      dialogTitle: 'Terms Update Notice',
+      dialogDescription: 'Our service terms were updated on {date}. Please read and agree to the following terms before continuing.',
+      recently: 'recently',
+      relatedDocuments: 'Related documents',
+      reject: 'Reject',
+      accept: 'Agree and continue',
+      loginRejectedWarning: 'You cannot enter credentials or use quick sign-in until you agree to the latest terms.',
+      loginRequiredWarning: 'Please read and agree to the latest terms before signing in.',
+      registerRejectedWarning: 'You cannot register or use quick sign-in until you agree to the latest terms.',
+      registerRequiredWarning: 'Please read and agree to the latest terms before registering.',
+    },
   },
 
   // Dashboard
@@ -2212,12 +2234,21 @@ export default {
       },
       usageToday: 'Today',
       usageTotal: 'Total',
+      rateLabel: 'rate',
       accountsAvailable: 'Avail:',
       accountsRateLimited: 'Limited:',
       accountsTotal: 'Total:',
       accountsUnit: '',
       rateAndAccounts: '{rate}x rate · {count} accounts',
       accountsCount: '{count} accounts',
+      accountFilters: {
+        title: 'Account filter controls',
+        oauthOnly: 'Only allow OAuth accounts',
+        oauthOnlyEnabled: 'Enabled — API key accounts are excluded',
+        privacySetOnly: 'Only allow accounts with privacy protection set',
+        privacySetOnlyEnabled: 'Enabled — accounts without Privacy set are excluded',
+        disabled: 'Disabled',
+      },
       form: {
         name: 'Name',
         description: 'Description',
@@ -2322,7 +2353,10 @@ export default {
         title: 'Custom /v1/models Model List',
         hint: 'Only changes the /v1/models response. Whitelist model calls and account routing are unchanged.',
         loading: 'Loading model list...',
-        empty: 'No displayable models'
+        empty: 'No displayable models',
+        selectedSummary: 'Selected {selected} / {total}',
+        selectAll: 'Select all',
+        invertSelection: 'Invert',
       },
       claudeCode: {
         title: 'Claude Code Client Restriction',
@@ -2601,6 +2635,7 @@ export default {
     riskControl: {
       title: 'Risk Control',
       description: 'Configure content moderation and review audit records',
+      defaultBlockMessage: 'Content moderation matched a risk rule. Please adjust your input and try again.',
       loadFailed: 'Failed to load risk control',
       saveFailed: 'Failed to save content moderation config',
       logsFailed: 'Failed to load audit records',
@@ -4351,12 +4386,20 @@ export default {
           builtInTitle: 'Built-in OAuth (Gemini CLI / Code Assist)',
           builtInDesc: 'Uses Google built-in client ID. No admin configuration required.',
           builtInRequirement: 'Requires a GCP project and Project ID.',
+          googleOneDesc: 'Personal account with Google One subscription quota',
+          codeAssistDesc: 'Enterprise-grade, requires a GCP project',
+          codeAssistRequirement: 'Requires an active GCP project with billing enabled',
+          showAdvanced: 'Show advanced options (custom OAuth Client)',
+          hideAdvanced: 'Hide advanced options (custom OAuth Client)',
           gcpProjectLink: 'Create project',
           customTitle: 'Custom OAuth (AI Studio OAuth)',
           customDesc: 'Uses admin-configured OAuth client for org management.',
           customRequirement: 'Admin must configure Client ID and add you as a test user.',
           badges: {
             recommended: 'Recommended',
+            individuals: 'Recommended for individuals',
+            noGcp: 'No GCP required',
+            enterprise: 'Enterprise users',
             highConcurrency: 'High concurrency',
             noAdmin: 'No admin setup',
             orgManaged: 'Org managed',
@@ -4377,6 +4420,7 @@ export default {
           },
           links: {
             countryCheck: 'Check country association',
+            countryChange: 'Change country association',
             geminiWebActivation: 'Activate Gemini Web',
             gcpProject: 'Open GCP Console'
           }
@@ -5123,6 +5167,7 @@ export default {
       totalRequests: 'Total Requests',
       avgQps: 'Avg QPS',
       avgTps: 'Avg TPS',
+      autoRefreshRemaining: '{seconds}s remaining',
       avgLatency: 'Avg Request Duration',
       avgTtft: 'Avg TTFT',
       exceptions: 'Exceptions',
@@ -7085,6 +7130,10 @@ export default {
   // Custom Page (iframe embed)
   customPage: {
     title: 'Custom Page',
+    tableOfContents: 'Contents',
+    copyCode: 'Copy',
+    copiedCode: 'Copied ✓',
+    copyCodeFailed: 'Failed',
     openInNewTab: 'Open in new tab',
     notFoundTitle: 'Page not found',
     notFoundDesc: 'This custom page does not exist or has been removed.',
