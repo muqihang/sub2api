@@ -226,6 +226,36 @@ func TestIsModelRateLimited(t *testing.T) {
 			requestedModel: "gpt-5.4",
 			expected:       false,
 		},
+		{
+			name: "anthropic fable family key blocks fable variants",
+			account: &Account{
+				Platform: PlatformAnthropic,
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						"claude-fable-5": map[string]any{
+							"rate_limit_reset_at": future,
+						},
+					},
+				},
+			},
+			requestedModel: "claude-fable-5[1m]",
+			expected:       true,
+		},
+		{
+			name: "anthropic fable family key does not block non-fable",
+			account: &Account{
+				Platform: PlatformAnthropic,
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						"claude-fable-5": map[string]any{
+							"rate_limit_reset_at": future,
+						},
+					},
+				},
+			},
+			requestedModel: "claude-sonnet-4-5",
+			expected:       false,
+		},
 	}
 
 	for _, tt := range tests {

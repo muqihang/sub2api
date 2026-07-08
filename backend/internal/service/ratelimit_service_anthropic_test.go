@@ -117,11 +117,40 @@ func TestCalculateAnthropic429ResetTime_NoPerWindowHeaders(t *testing.T) {
 
 type anthropic429FallbackRepo struct {
 	sessionWindowMockRepo
-	rateLimitedAt *time.Time
+	rateLimitedAt       *time.Time
+	modelRateLimitCalls []anthropicModelRateLimitCall
+	tempUnschedCalls    []anthropicTempUnschedCall
+}
+
+type anthropicModelRateLimitCall struct {
+	ID      int64
+	Scope   string
+	ResetAt time.Time
+	Reason  string
+}
+
+type anthropicTempUnschedCall struct {
+	ID     int64
+	Until  time.Time
+	Reason string
 }
 
 func (r *anthropic429FallbackRepo) SetRateLimited(_ context.Context, _ int64, resetAt time.Time) error {
 	r.rateLimitedAt = &resetAt
+	return nil
+}
+
+func (r *anthropic429FallbackRepo) SetModelRateLimit(_ context.Context, id int64, scope string, resetAt time.Time, reason ...string) error {
+	call := anthropicModelRateLimitCall{ID: id, Scope: scope, ResetAt: resetAt}
+	if len(reason) > 0 {
+		call.Reason = reason[0]
+	}
+	r.modelRateLimitCalls = append(r.modelRateLimitCalls, call)
+	return nil
+}
+
+func (r *anthropic429FallbackRepo) SetTempUnschedulable(_ context.Context, id int64, until time.Time, reason string) error {
+	r.tempUnschedCalls = append(r.tempUnschedCalls, anthropicTempUnschedCall{ID: id, Until: until, Reason: reason})
 	return nil
 }
 
@@ -162,6 +191,75 @@ func TestHandleUpstreamError_AnthropicWindowLimitPreemptsTempUnschedRule(t *test
 	}
 	if len(repo.sessionWindowCalls) != 1 || repo.sessionWindowCalls[0].Status != "rejected" {
 		t.Fatalf("expected rejected session window update, got %+v", repo.sessionWindowCalls)
+	}
+}
+
+func TestHandleUpstreamError_AnthropicFableWindowLimitSetsModelScopeOnly(t *testing.T) {
+	resetAt := time.Now().Add(4 * time.Hour).UTC().Truncate(time.Second)
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-status", "allowed")
+	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.25")
+	headers.Set("anthropic-ratelimit-unified-5h-reset", strconv.FormatInt(time.Now().Add(2*time.Hour).Unix(), 10))
+	headers.Set("anthropic-ratelimit-unified-7d-utilization", "0.40")
+	headers.Set("anthropic-ratelimit-unified-7d-reset", strconv.FormatInt(time.Now().Add(6*24*time.Hour).Unix(), 10))
+	headers.Set("anthropic-ratelimit-unified-7d_oi-status", "rejected")
+	headers.Set("anthropic-ratelimit-unified-7d_oi-utilization", "1.0")
+	headers.Set("anthropic-ratelimit-unified-7d_oi-reset", strconv.FormatInt(resetAt.Unix(), 10))
+
+	repo := &anthropic429FallbackRepo{}
+	svc := newRateLimitServiceForTest(repo)
+	account := &Account{
+		ID:       73,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"temp_unschedulable_enabled": true,
+			"temp_unschedulable_rules": []any{
+				map[string]any{
+					"error_code":       http.StatusTooManyRequests,
+					"keywords":         []any{"rate limit"},
+					"duration_minutes": 10,
+				},
+			},
+		},
+	}
+
+	shouldDisable := svc.HandleUpstreamError(
+		context.Background(),
+		account,
+		http.StatusTooManyRequests,
+		headers,
+		[]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"rate limit exceeded"}}`),
+	)
+
+	if shouldDisable {
+		t.Fatal("expected Fable-only window 429 to keep account schedulable for other models")
+	}
+	if repo.rateLimitedAt != nil {
+		t.Fatalf("expected no account-level SetRateLimited call, got %v", repo.rateLimitedAt)
+	}
+	if len(repo.sessionWindowCalls) != 0 {
+		t.Fatalf("expected no rejected session-window rewrite, got %+v", repo.sessionWindowCalls)
+	}
+	if len(repo.tempUnschedCalls) != 0 {
+		t.Fatalf("expected no temp-unsched fallback for Fable-only 429, got %+v", repo.tempUnschedCalls)
+	}
+	if len(repo.modelRateLimitCalls) != 1 {
+		t.Fatalf("expected one model-rate-limit call, got %+v", repo.modelRateLimitCalls)
+	}
+	call := repo.modelRateLimitCalls[0]
+	if call.ID != 73 || call.Scope != "claude-fable-5" || !call.ResetAt.Equal(resetAt) || call.Reason != "anthropic_7d_oi_window_exhausted" {
+		t.Fatalf("unexpected model-rate-limit call: %+v", call)
+	}
+	if len(repo.updateExtraCalls) != 1 {
+		t.Fatalf("expected passive usage sampling from 429 headers, got %+v", repo.updateExtraCalls)
+	}
+	updates := repo.updateExtraCalls[0].Updates
+	if got := updates["passive_usage_7d_oi_utilization"]; got != 1.0 {
+		t.Fatalf("expected passive_usage_7d_oi_utilization=1.0, got %#v", got)
+	}
+	if got := updates["passive_usage_7d_oi_reset"]; got != resetAt.Unix() {
+		t.Fatalf("expected passive_usage_7d_oi_reset=%d, got %#v", resetAt.Unix(), got)
 	}
 }
 

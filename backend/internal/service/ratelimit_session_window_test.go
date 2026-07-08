@@ -385,6 +385,31 @@ func TestUpdateSessionWindow_StoresPercentUtilizationHeaders(t *testing.T) {
 	}
 }
 
+func TestUpdateSessionWindow_SamplesFablePassiveUsage(t *testing.T) {
+	end := time.Now().Add(2 * time.Hour)
+	repo := &sessionWindowMockRepo{}
+	svc := newRateLimitServiceForTest(repo)
+	account := &Account{ID: 74, SessionWindowEnd: &end}
+	resetAt := time.Now().Add(6 * 24 * time.Hour).UTC().Truncate(time.Second)
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-status", "allowed")
+	headers.Set("anthropic-ratelimit-unified-7d_oi-utilization", "0.73")
+	headers.Set("anthropic-ratelimit-unified-7d_oi-reset", fmt.Sprintf("%d", resetAt.Unix()))
+
+	svc.UpdateSessionWindow(context.Background(), account, headers)
+
+	if len(repo.updateExtraCalls) != 1 {
+		t.Fatalf("expected 1 UpdateExtra call, got %d", len(repo.updateExtraCalls))
+	}
+	updates := repo.updateExtraCalls[0].Updates
+	if val, ok := updates["passive_usage_7d_oi_utilization"].(float64); !ok || val != 0.73 {
+		t.Fatalf("expected fable utilization 0.73, got %#v", updates["passive_usage_7d_oi_utilization"])
+	}
+	if got := updates["passive_usage_7d_oi_reset"]; got != resetAt.Unix() {
+		t.Fatalf("expected fable reset %d, got %#v", resetAt.Unix(), got)
+	}
+}
+
 func TestUpdateSessionWindow_ParsesRFC3339AndMillisResetHeaders(t *testing.T) {
 	cases := []struct {
 		name string

@@ -72,6 +72,44 @@ describe('AccountUsageCell', () => {
     })
   })
 
+  it('Anthropic OAuth usage renders Fable 7d window', async () => {
+    getUsage.mockResolvedValue({
+      five_hour: null,
+      seven_day: null,
+      seven_day_sonnet: null,
+      seven_day_fable: {
+        utilization: 88,
+        resets_at: '2099-03-13T12:00:00Z',
+        remaining_seconds: 3600
+      }
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 101,
+          platform: 'anthropic',
+          type: 'oauth',
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ resetsAt }}|{{ color }}</div>'
+          },
+          AccountQuotaInfo: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    expect(getUsage).toHaveBeenCalledWith(101, 'passive')
+    expect(wrapper.text()).toContain('7d F|88|2099-03-13T12:00:00Z|amber')
+  })
+
   it('Antigravity 图片用量会聚合新旧 image 模型', async () => {
     getUsage.mockResolvedValue({
       antigravity_quota: {
