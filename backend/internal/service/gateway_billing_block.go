@@ -3,8 +3,6 @@ package service
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
-	"fmt"
 	"unicode/utf16"
 
 	"github.com/tidwall/gjson"
@@ -78,30 +76,4 @@ func extractFirstUserText(body []byte) string {
 		return false
 	})
 	return first
-}
-
-// buildBillingAttributionBlockJSON 构造 system 数组的 billing attribution block。
-//
-// 形态严格对齐真实 Claude Code CLI：
-//
-//	{"type":"text","text":"x-anthropic-billing-header: cc_version={cliVersion}.{fp}; cc_entrypoint=sdk-cli; cch=00000;"}
-//
-// cch=00000 是签名占位符，由 signBillingHeaderCCH 在 buildUpstreamRequest 阶段
-// 替换为基于完整 body 的 xxhash64 5 位十六进制摘要。
-//
-// 此 block 不带 cache_control（与真实 CLI 一致；cache breakpoint 由后续的
-// Claude Code prompt block 承担）。
-func buildBillingAttributionBlockJSON(body []byte, cliVersion string) ([]byte, error) {
-	if cliVersion == "" {
-		return nil, fmt.Errorf("cliVersion required")
-	}
-	fp := computeClaudeCodeFingerprint(body, cliVersion)
-	text := fmt.Sprintf(
-		"x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=sdk-cli; cch=00000;",
-		cliVersion, fp,
-	)
-	return json.Marshal(map[string]string{
-		"type": "text",
-		"text": text,
-	})
 }

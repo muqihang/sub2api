@@ -1,7 +1,6 @@
 package service
 
 import (
-	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -29,16 +28,4 @@ func TestComputeClaudeCodeFingerprint_NodeGoldens(t *testing.T) {
 			require.Equal(t, tt.want, computeClaudeCodeFingerprint(body, "2.1.145"))
 		})
 	}
-}
-
-func TestBuildBillingAttributionBlockJSON_UsesSDKCLIEntrypoint(t *testing.T) {
-	body := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hello capture 世界 emoji 😀 cch test"}]}]}`)
-
-	block, err := buildBillingAttributionBlockJSON(body, "2.1.145")
-	require.NoError(t, err)
-
-	var parsed map[string]string
-	require.NoError(t, json.Unmarshal(block, &parsed))
-	require.Equal(t, "text", parsed["type"])
-	require.Equal(t, "x-anthropic-billing-header: cc_version=2.1.145.88a; cc_entrypoint=sdk-cli; cch=00000;", parsed["text"])
 }

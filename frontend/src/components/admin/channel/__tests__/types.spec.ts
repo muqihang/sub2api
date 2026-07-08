@@ -23,7 +23,7 @@ describe('validateIntervals', () => {
         makeInterval({ min_tokens: 0, max_tokens: null, input_price: 1, output_price: 1 }),
         makeInterval({ min_tokens: 200000, max_tokens: 500000, input_price: 2, output_price: 2 }),
       ]
-      expect(validateIntervals(intervals, 'token')).toMatch(/无上限/)
+      expect(validateIntervals(intervals, 'token')).toMatch(/unbounded interval/)
     })
 
     it('accepts unbounded interval at the end', () => {
@@ -39,7 +39,7 @@ describe('validateIntervals', () => {
         makeInterval({ min_tokens: 0, max_tokens: 250000, input_price: 1, output_price: 1 }),
         makeInterval({ min_tokens: 200000, max_tokens: 500000, input_price: 2, output_price: 2 }),
       ]
-      expect(validateIntervals(intervals, 'token')).toMatch(/重叠/)
+      expect(validateIntervals(intervals, 'token')).toMatch(/overlap/)
     })
 
     it('defaults mode to token when omitted', () => {
@@ -47,7 +47,7 @@ describe('validateIntervals', () => {
         makeInterval({ min_tokens: 0, max_tokens: null, input_price: 1, output_price: 1 }),
         makeInterval({ min_tokens: 100, max_tokens: 200, input_price: 2, output_price: 2 }),
       ]
-      expect(validateIntervals(intervals)).toMatch(/无上限/)
+      expect(validateIntervals(intervals)).toMatch(/unbounded interval/)
     })
   })
 
@@ -66,14 +66,30 @@ describe('validateIntervals', () => {
       const intervals: IntervalFormEntry[] = [
         makeInterval({ tier_label: '1K', per_request_price: -1 }),
       ]
-      expect(validateIntervals(intervals, 'image')).toMatch(/不能为负数/)
+      expect(validateIntervals(intervals, 'image')).toMatch(/cannot be negative/)
+    })
+
+
+
+    it('uses localized validation messages when a translator is supplied', () => {
+      const intervals: IntervalFormEntry[] = [
+        makeInterval({ tier_label: '1K', per_request_price: -1 }),
+      ]
+      const t = (key: string, params?: Record<string, unknown>) => {
+        const messages: Record<string, string> = {
+          'admin.channels.intervalValidation.price.perRequestPrice': '单次价格',
+          'admin.channels.intervalValidation.negativePrice': `区间 #${params?.index}: ${params?.field}不能为负数`,
+        }
+        return messages[key] || key
+      }
+      expect(validateIntervals(intervals, 'image', t)).toContain('单次价格不能为负数')
     })
 
     it('still rejects max <= min on a single tier', () => {
       const intervals: IntervalFormEntry[] = [
         makeInterval({ tier_label: '1K', min_tokens: 100, max_tokens: 50, per_request_price: 0.04 }),
       ]
-      expect(validateIntervals(intervals, 'image')).toMatch(/必须大于/)
+      expect(validateIntervals(intervals, 'image')).toMatch(/must be greater/)
     })
   })
 })
