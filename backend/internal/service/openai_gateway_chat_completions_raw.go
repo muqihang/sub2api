@@ -160,6 +160,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	if customUA != "" {
 		upstreamReq.Header.Set("user-agent", customUA)
 	}
+	account.ApplyHeaderOverrides(upstreamReq.Header)
 
 	// 6. Send request
 	resp, err := s.sendOpenAIHTTPRequest(ctx, c, upstreamReq, account)

@@ -2699,6 +2699,9 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 			return nil, err
 		}
 	}
+	if err := NormalizeHeaderOverrideCredentials(input.Credentials); err != nil {
+		return nil, err
+	}
 
 	account := &Account{
 		Name:        input.Name,
@@ -3035,6 +3038,9 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		} else {
 			account.Credentials = MergePreservingSensitiveCreds(account.Credentials, input.Credentials)
 		}
+		if err := NormalizeHeaderOverrideCredentials(account.Credentials); err != nil {
+			return nil, err
+		}
 	}
 	// Extra 使用 map：需要区分“未提供(nil)”与“显式清空({})”。
 	// 关闭配额限制时前端会删除 quota_* 键并提交 extra:{}，此时也必须落库。
@@ -3247,6 +3253,9 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		}
 	}
 	bulkCredentials := filterAdminBulkUpdateCredentials(input.Credentials)
+	if err := NormalizeHeaderOverrideCredentials(bulkCredentials); err != nil {
+		return nil, err
+	}
 	bulkExtra := filterAdminBulkUpdateAuthorityExtra(input.Extra)
 
 	if input.Schedulable != nil && *input.Schedulable {

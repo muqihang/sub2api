@@ -1285,6 +1285,8 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 		}
 	}
 
+	account.ApplyHeaderOverrides(headers)
+
 	return headers, sessionResolution, nil
 }
 

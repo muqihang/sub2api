@@ -209,6 +209,7 @@ func (s *AccountTestService) buildAnthropicUpstreamModelsRequest(ctx context.Con
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("anthropic-beta", betaHeader)
 	req.Header.Set(authHeaderName, authHeaderValue)
+	account.ApplyHeaderOverrides(req.Header)
 	return req, nil
 }
 
@@ -278,6 +279,7 @@ func (s *AccountTestService) buildOpenAIUpstreamModelsRequest(ctx context.Contex
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	account.ApplyHeaderOverrides(req.Header)
 	return req, nil
 }
 

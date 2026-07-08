@@ -174,6 +174,7 @@ func (s *OpenAIGatewayService) buildInputTokensUpstreamRequest(
 	if customUA != "" {
 		req.Header.Set("User-Agent", customUA)
 	}
+	account.ApplyHeaderOverrides(req.Header)
 	return req, nil
 }
 
