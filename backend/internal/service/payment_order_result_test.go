@@ -91,6 +91,28 @@ func TestBuildCreateOrderResponseCopiesJSAPIPayload(t *testing.T) {
 	}
 }
 
+func TestSanitizeCreatePaymentResponseDetailsRemovesNULBytes(t *testing.T) {
+	t.Parallel()
+
+	resp := &payment.CreatePaymentResponse{
+		TradeNo: "trade\x00no",
+		PayURL:  "https://pay.example/\x00session",
+		QRCode:  "weixin://wxpay/bizpayurl?pr=\x00test",
+	}
+
+	sanitizeCreatePaymentResponseDetails(resp)
+
+	if resp.TradeNo != "tradeno" {
+		t.Fatalf("TradeNo = %q, want tradeno", resp.TradeNo)
+	}
+	if resp.PayURL != "https://pay.example/session" {
+		t.Fatalf("PayURL = %q, want https://pay.example/session", resp.PayURL)
+	}
+	if resp.QRCode != "weixin://wxpay/bizpayurl?pr=test" {
+		t.Fatalf("QRCode = %q, want sanitized QR code", resp.QRCode)
+	}
+}
+
 func TestValidateSelectedCreateOrderAmountCurrencyRejectsFractionalZeroDecimal(t *testing.T) {
 	t.Parallel()
 

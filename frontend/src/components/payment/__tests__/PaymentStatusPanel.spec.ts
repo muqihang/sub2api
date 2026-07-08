@@ -196,4 +196,26 @@ describe('PaymentStatusPanel', () => {
     expect(wrapper.text()).toContain('$100.00')
     expect(wrapper.text()).toContain('¥108.00')
   })
+
+  it('does not treat custom payment types containing alipay as built-in Alipay', async () => {
+    const wrapper = mount(PaymentStatusPanel, {
+      props: {
+        orderId: 42,
+        qrCode: 'https://pay.example.com/qr/42',
+        expiresAt: '2099-01-01T12:30:00Z',
+        paymentType: 'card_alipay',
+        orderType: 'balance',
+      },
+      global: {
+        stubs: {
+          Icon: true,
+        },
+      },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('payment.qr.scanToPay')
+    expect(wrapper.text()).not.toContain('payment.qr.scanAlipay')
+  })
 })
