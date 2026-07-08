@@ -3754,6 +3754,24 @@ export default {
         passiveSampled: '被动采样',
         activeQuery: '查询'
       },
+      openaiQuotaReset: {
+        count: '次数',
+        reset: '重置',
+        countTooltipLoad: '点击加载剩余重置次数',
+        countTooltipRefresh: '点击刷新剩余重置次数',
+        resetTooltipReady: '消耗 1 次重置次数以立即恢复当前窗口',
+        resetTooltipNeedQuery: '先点击「次数」加载剩余重置次数',
+        resetTooltipNoCredits: '没有可用的重置次数',
+        noCreditsAvailable: '没有可用的重置次数',
+        resetSuccess: '已重置 {windows} 个窗口',
+        confirmTitle: '确认重置周限',
+        confirmMessage: '将消耗 1 次重置次数立即恢复当前窗口，剩余 {count} 次。此操作不可撤销，确定继续吗？',
+        expiresAt: '到期 {time}',
+        expiresAtFull: '重置次数到期时间: {time}',
+        expandExpirations: '展开另外 {count} 个到期时间',
+        collapseExpirations: '收起重置次数到期时间',
+        expirationDetails: '重置次数到期明细'
+      },
       tier: {
         free: 'Free',
         pro: 'Pro',

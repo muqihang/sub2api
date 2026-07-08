@@ -40,7 +40,7 @@ func (s *openAIOAuthHandlerClientStub) RefreshTokenWithClientID(ctx context.Cont
 func TestOpenAIOAuthHandler_GatewayTemplates(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	h := NewOpenAIOAuthHandler(nil, nil, newStubAdminService())
+	h := NewOpenAIOAuthHandler(nil, nil, newStubAdminService(), nil)
 	router.GET("/api/v1/admin/openai/gateway/templates", h.GatewayTemplates)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/openai/gateway/templates?base_url=https://api.example.com&api_key=sk-user&gateway_token=gw-123", nil)
@@ -84,7 +84,7 @@ func TestOpenAIOAuthHandler_GatewayStatus(t *testing.T) {
 	}
 	core := service.NewOpenAIGatewayCoreService(repo, cfg, nil)
 	gateway := service.NewOpenAIGatewayService(nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, core, nil, nil, nil)
-	h := NewOpenAIOAuthHandler(nil, gateway, newStubAdminService())
+	h := NewOpenAIOAuthHandler(nil, gateway, newStubAdminService(), nil)
 	router.GET("/api/v1/admin/openai/gateway/status", h.GatewayStatus)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/openai/gateway/status", nil)
@@ -120,7 +120,7 @@ func TestOpenAIOAuthHandler_UpdateGatewayRuntime(t *testing.T) {
 		},
 	}
 	gateway := service.NewOpenAIGatewayService(nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil, core, nil, nil, nil)
-	h := NewOpenAIOAuthHandler(nil, gateway, adminSvc)
+	h := NewOpenAIOAuthHandler(nil, gateway, adminSvc, nil)
 	router.POST("/api/v1/admin/openai/gateway/accounts/:id/runtime", h.UpdateGatewayRuntime)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/openai/gateway/accounts/3/runtime", strings.NewReader(`{"egress_bucket":"bucket-a","profile_mode":"frozen"}`))
@@ -154,7 +154,7 @@ func TestOpenAIOAuthHandler_UpdateGatewayRuntimeSetsTLSPolicyAndPreservesRuntime
 		},
 	}
 	gateway := service.NewOpenAIGatewayService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, core, nil, nil, nil)
-	h := NewOpenAIOAuthHandler(nil, gateway, adminSvc)
+	h := NewOpenAIOAuthHandler(nil, gateway, adminSvc, nil)
 	router.POST("/api/v1/admin/openai/gateway/accounts/:id/runtime", h.UpdateGatewayRuntime)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/openai/gateway/accounts/3/runtime", strings.NewReader(`{"openai_gateway_tls":{"enabled":true,"profile_id":7}}`))
@@ -189,7 +189,7 @@ func TestOpenAIOAuthHandler_UpdateGatewayRuntimeRejectsTLSOverrideWhenBucketDisa
 		},
 	}
 	gateway := service.NewOpenAIGatewayService(nil, nil, nil, nil, nil, nil, nil, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, core, nil, nil, nil)
-	h := NewOpenAIOAuthHandler(nil, gateway, adminSvc)
+	h := NewOpenAIOAuthHandler(nil, gateway, adminSvc, nil)
 	router.POST("/api/v1/admin/openai/gateway/accounts/:id/runtime", h.UpdateGatewayRuntime)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/openai/gateway/accounts/3/runtime", strings.NewReader(`{"openai_gateway_tls":{"enabled":true,"profile_id":7}}`))
@@ -227,7 +227,7 @@ func TestOpenAIOAuthHandler_CreateAccountFromOAuthPersistsEgressBucket(t *testin
 	require.NotEmpty(t, state)
 
 	adminSvc := newStubAdminService()
-	h := NewOpenAIOAuthHandler(oauthSvc, nil, adminSvc)
+	h := NewOpenAIOAuthHandler(oauthSvc, nil, adminSvc, nil)
 	router.POST("/api/v1/admin/openai/create-from-oauth", h.CreateAccountFromOAuth)
 
 	body := `{"session_id":"` + authResult.SessionID + `","code":"auth-code","state":"` + state + `","name":"oauth-account"}`
@@ -261,7 +261,7 @@ func TestOpenAIOAuthHandler_RefreshTokenReturnsEgressBucket(t *testing.T) {
 	oauthSvc := service.NewOpenAIOAuthService(nil, &openAIOAuthHandlerClientStub{})
 	defer oauthSvc.Stop()
 	oauthSvc.SetGatewayCoreService(core)
-	h := NewOpenAIOAuthHandler(oauthSvc, nil, newStubAdminService())
+	h := NewOpenAIOAuthHandler(oauthSvc, nil, newStubAdminService(), nil)
 	router.POST("/api/v1/admin/openai/refresh-token", h.RefreshToken)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/openai/refresh-token", strings.NewReader(`{"refresh_token":"rt","egress_bucket":"bucket-a"}`))
@@ -278,7 +278,7 @@ func TestOpenAIOAuthHandler_RefreshTokenReturnsEgressBucket(t *testing.T) {
 func TestOpenAIOAuthHandler_GatewayTemplatesDownload(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	h := NewOpenAIOAuthHandler(nil, nil, newStubAdminService())
+	h := NewOpenAIOAuthHandler(nil, nil, newStubAdminService(), nil)
 	router.GET("/api/v1/admin/openai/gateway/templates/download", h.DownloadGatewayTemplate)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/openai/gateway/templates/download?base_url=https://api.example.com&api_key=sk-user&gateway_token=gw-123&format=codex-wrapper.sh", nil)

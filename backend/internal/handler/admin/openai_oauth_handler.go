@@ -20,6 +20,7 @@ type OpenAIOAuthHandler struct {
 	gatewayCoreService   *service.OpenAIGatewayCoreService
 	openaiGatewayService *service.OpenAIGatewayService
 	adminService         service.AdminService
+	quotaService         *service.OpenAIQuotaService
 }
 
 func oauthPlatformFromPath(c *gin.Context) string {
@@ -27,7 +28,7 @@ func oauthPlatformFromPath(c *gin.Context) string {
 }
 
 // NewOpenAIOAuthHandler creates a new OpenAI OAuth handler
-func NewOpenAIOAuthHandler(openaiOAuthService *service.OpenAIOAuthService, openaiGatewayService *service.OpenAIGatewayService, adminService service.AdminService) *OpenAIOAuthHandler {
+func NewOpenAIOAuthHandler(openaiOAuthService *service.OpenAIOAuthService, openaiGatewayService *service.OpenAIGatewayService, adminService service.AdminService, quotaService *service.OpenAIQuotaService) *OpenAIOAuthHandler {
 	return &OpenAIOAuthHandler{
 		openaiOAuthService: openaiOAuthService,
 		gatewayCoreService: func() *service.OpenAIGatewayCoreService {
@@ -38,6 +39,7 @@ func NewOpenAIOAuthHandler(openaiOAuthService *service.OpenAIOAuthService, opena
 		}(),
 		openaiGatewayService: openaiGatewayService,
 		adminService:         adminService,
+		quotaService:         quotaService,
 	}
 }
 
@@ -213,6 +215,46 @@ func (h *OpenAIOAuthHandler) RefreshAccountToken(c *gin.Context) {
 	}
 
 	response.Success(c, dto.AccountFromService(updatedAccount))
+}
+
+// QueryQuota queries reset-credit and rate-limit metadata for an OpenAI OAuth account.
+// GET /api/v1/admin/openai/accounts/:id/quota
+func (h *OpenAIOAuthHandler) QueryQuota(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || accountID <= 0 {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if h.quotaService == nil {
+		response.Error(c, http.StatusInternalServerError, "openai quota service is not configured")
+		return
+	}
+	usage, err := h.quotaService.QueryUsage(c.Request.Context(), accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, usage)
+}
+
+// ResetQuota consumes one upstream OpenAI reset credit for an OAuth account.
+// POST /api/v1/admin/openai/accounts/:id/reset-quota
+func (h *OpenAIOAuthHandler) ResetQuota(c *gin.Context) {
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || accountID <= 0 {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	if h.quotaService == nil {
+		response.Error(c, http.StatusInternalServerError, "openai quota service is not configured")
+		return
+	}
+	result, err := h.quotaService.ResetCredit(c.Request.Context(), accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, result)
 }
 
 // CreateAccountFromOAuth creates a new OpenAI OAuth account from token info
