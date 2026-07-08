@@ -28,6 +28,7 @@ import (
 	"unsafe"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/anthropicfp"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -4863,6 +4864,30 @@ func (s *GatewayService) shouldInjectAnthropicCacheTTL1h(ctx context.Context, ac
 	return s.settingService.IsAnthropicCacheTTL1hInjectionEnabled(ctx)
 }
 
+// shouldNormalizeClientDateline reports whether the request body's client
+// dateline should be normalized before forwarding to Anthropic. Scope is limited
+// to Anthropic OAuth/setup-token accounts; API-key passthrough is intentionally
+// excluded so stored API-key traffic stays byte-compatible with callers.
+func (s *GatewayService) shouldNormalizeClientDateline(ctx context.Context, account *Account) bool {
+	if account == nil || !account.IsAnthropicOAuthOrSetupToken() || s == nil || s.settingService == nil {
+		return false
+	}
+	return s.settingService.IsClientDatelineNormalizationEnabled(ctx)
+}
+
+// normalizeClientDatelineIfEnabled returns a rewritten body only when the
+// switch is on, the account qualifies, and a fingerprinted dateline was found.
+func (s *GatewayService) normalizeClientDatelineIfEnabled(ctx context.Context, account *Account, body []byte) ([]byte, bool) {
+	if !s.shouldNormalizeClientDateline(ctx, account) {
+		return nil, false
+	}
+	next, _, changed := anthropicfp.NormalizeDateline(body)
+	if !changed {
+		return nil, false
+	}
+	return next, true
+}
+
 func (s *GatewayService) gatewayForwardingSettings(ctx context.Context) (fingerprintUnification, metadataPassthrough, cchSigning bool) {
 	if s != nil && s.settingService != nil {
 		fp, mp, _ := s.settingService.GetGatewayForwardingSettings(ctx)
@@ -5042,6 +5067,15 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			if err := replaceBody(applyToolsLastCacheBreakpoint(body)); err != nil {
 				return nil, err
 			}
+		}
+	}
+
+	// 客户端 dateline 归一化：仅对 Anthropic OAuth/SetupToken 账号生效。
+	// 运行在 CC Gateway attestation/buildUpstreamRequest 之前，确保后续签名/映射
+	// 都基于归一化后的 body。
+	if next, ok := s.normalizeClientDatelineIfEnabled(ctx, account, body); ok {
+		if err := replaceBody(next); err != nil {
+			return nil, err
 		}
 	}
 
