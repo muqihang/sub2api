@@ -5029,6 +5029,20 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		if resp.StatusCode == http.StatusUnauthorized && !auth401RefreshRetried && s.shouldRefreshFormalPoolAuth401(account) {
 			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 			_ = resp.Body.Close()
+			if shouldBypassFormalPoolInlineAuthRefreshForModel(account, reqModel) {
+				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+					Platform:           account.Platform,
+					AccountID:          account.ID,
+					AccountName:        account.Name,
+					UpstreamStatusCode: resp.StatusCode,
+					UpstreamRequestID:  resp.Header.Get("x-request-id"),
+					UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
+					Kind:               "formal_pool_candidate_model_401_failover",
+					Message:            extractUpstreamErrorMessage(respBody),
+				})
+				s.observeSessionBudgetResponse(ctx, account, budgetObservation, resp.Header, resp.StatusCode, respBody)
+				return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
+			}
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,
@@ -8436,6 +8450,22 @@ func (s *GatewayService) shouldRefreshFormalPoolAuth401(account *Account) bool {
 		return false
 	}
 	return strings.TrimSpace(account.GetCredential("refresh_token")) != ""
+}
+
+func shouldBypassFormalPoolInlineAuthRefreshForModel(account *Account, model string) bool {
+	if account == nil || !IsFormalPoolAccount(account) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "claude-fable-5",
+		"claude-opus-4-8",
+		"claude-opus-4-8-thinking",
+		"claude-sonnet-4-6",
+		"claude-sonnet-4-6-thinking":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *GatewayService) refreshFormalPoolAuth401(ctx context.Context, account *Account, staleAccessToken string) (*Account, error) {

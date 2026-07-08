@@ -668,3 +668,29 @@ func TestFormalPoolAuth401InvalidGrantQuarantinesWithoutRetry(t *testing.T) {
 		})
 	}
 }
+
+func TestFormalPoolCandidateModel401DoesNotConsumeRefreshTokenOrQuarantine(t *testing.T) {
+	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
+	account := newFormalPoolRefreshAccount(AccountTypeSetupToken)
+	upstream := &formalPoolAuthRetryUpstream{responses: []*http.Response{newFormalPool401Response()}}
+	executor := &formalPoolGatewayRefreshExecutor{err: errors.New("invalid_grant: refresh token is invalid")}
+	svc, repo, schedulerCache, _ := newFormalPoolAuthRetryGateway(t, account, upstream, executor)
+	repo.cloneOnGet = true
+	c, ctx := newAnthropicForwardTestContext("/v1/messages", true)
+	c.Request.Header.Set("X-Claude-Code-Session-Id", "11111111-2222-4333-8444-555555555555")
+	body := []byte(`{"model":"claude-fable-5","stream":false,"metadata":{"user_id":"{\"device_id\":\"client-device\",\"session_id\":\"11111111-2222-4333-8444-555555555555\"}"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+
+	_, err := svc.Forward(ctx, c, account, parseAnthropicRequestForTest(t, body))
+
+	require.Error(t, err)
+	var failoverErr *UpstreamFailoverError
+	require.True(t, errors.As(err, &failoverErr), "candidate model 401 should fail over without inline token exchange")
+	require.Equal(t, http.StatusUnauthorized, failoverErr.StatusCode)
+	require.Equal(t, 1, upstream.requests)
+	require.Equal(t, 0, executor.refreshCalls)
+	require.Empty(t, schedulerCache.setAccountCalls)
+	require.NotEqual(t, FormalPoolStageQuarantined, repo.accountsByID[account.ID].Extra[FormalPoolExtraOnboardingStage])
+	require.NotEqual(t, "refresh_token_invalid", repo.accountsByID[account.ID].Extra[FormalPoolExtraLastFailureCode])
+	require.True(t, repo.accountsByID[account.ID].Schedulable)
+	require.Equal(t, StatusActive, repo.accountsByID[account.ID].Status)
+}
