@@ -215,6 +215,43 @@ describe('UseKeyModal', () => {
     expect(codeBlock.text()).not.toContain('"name": "GPT-5.4 Nano"')
   })
 
+  it('renders GPT-5.6 OpenAI models in OpenCode config', async () => {
+    listCodexManagedDevices.mockResolvedValue([])
+    const wrapper = mount(UseKeyModal, {
+      props: {
+        show: true,
+        apiKeyId: 42,
+        apiKey: 'sk-test',
+        baseUrl: 'https://example.com/v1',
+        platform: 'openai'
+      },
+      global: {
+        stubs: {
+          BaseDialog: {
+            template: '<div><slot /><slot name="footer" /></div>'
+          },
+          Icon: {
+            template: '<span />'
+          }
+        }
+      }
+    })
+
+    const opencodeTab = wrapper.findAll('button').find((button) =>
+      button.text().includes('keys.useKeyModal.cliTabs.opencode')
+    )
+
+    expect(opencodeTab).toBeDefined()
+    await opencodeTab!.trigger('click')
+    await nextTick()
+
+    const codeBlock = wrapper.find('pre code')
+    expect(codeBlock.text()).toContain('"gpt-5.6-sol"')
+    expect(codeBlock.text()).toContain('"name": "GPT-5.6 Sol"')
+    expect(codeBlock.text()).toContain('"gpt-5.6-terra"')
+    expect(codeBlock.text()).toContain('"gpt-5.6-luna"')
+  })
+
   it('renders Claude Fable 5 adaptive thinking in Antigravity OpenCode config', async () => {
     listCodexManagedDevices.mockResolvedValue([])
     const wrapper = mount(UseKeyModal, {

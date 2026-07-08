@@ -18,6 +18,9 @@ type Model struct {
 
 // DefaultModels OpenAI models list
 var DefaultModels = []Model{
+	{ID: "gpt-5.6-sol", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Sol"},
+	{ID: "gpt-5.6-terra", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Terra"},
+	{ID: "gpt-5.6-luna", Object: "model", Created: 1780876800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.6 Luna"},
 	{ID: "gpt-5.5", Object: "model", Created: 1776873600, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.5"},
 	{ID: "gpt-5.4-pro", Object: "model", Created: 1772668800, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.4 Pro"},
 	{ID: "gpt-5.4", Object: "model", Created: 1738368000, OwnedBy: "openai", Type: "model", DisplayName: "GPT-5.4"},
@@ -63,6 +66,7 @@ var instructionsGPT55 string
 
 // CodexBaseInstructionsForModel 按模型返回最匹配的真实 Codex base instructions：
 //   - 含 "codex" 的模型（gpt-5-codex / gpt-5.x-codex / codex-max / spark 等）→ GPT-5-Codex prompt
+//   - gpt-5.6 / gpt-5.5 系非 codex 模型 → GPT-5.5 prompt
 //   - gpt-5.2 系非 codex 模型 → GPT-5.2 prompt
 //   - gpt-5.1 / gpt-5 系非 codex 模型 → GPT-5.1 prompt
 //   - 其它 → 回退到 GPT-5-Codex prompt
@@ -73,7 +77,7 @@ func CodexBaseInstructionsForModel(model string) string {
 	switch {
 	case strings.Contains(m, "codex"):
 		return DefaultInstructions
-	case strings.HasPrefix(m, "gpt-5.5"):
+	case strings.HasPrefix(m, "gpt-5.6"), strings.HasPrefix(m, "gpt-5.5"):
 		if v := strings.TrimSpace(instructionsGPT55); v != "" {
 			return instructionsGPT55
 		}
