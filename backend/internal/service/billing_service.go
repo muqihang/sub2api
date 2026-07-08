@@ -184,6 +184,15 @@ func NewBillingService(cfg *config.Config, pricingService *PricingService) *Bill
 	return s
 }
 
+func newTextFallbackPricing(inputPrice, outputPrice, cacheReadPrice float64) *ModelPricing {
+	return &ModelPricing{
+		InputPricePerToken:     inputPrice,
+		OutputPricePerToken:    outputPrice,
+		CacheReadPricePerToken: cacheReadPrice,
+		SupportsCacheBreakdown: false,
+	}
+}
+
 // initFallbackPricing 初始化硬编码回退价格（当动态价格不可用时使用）
 // 价格单位：USD per token（与LiteLLM格式一致）
 func (s *BillingService) initFallbackPricing() {
@@ -285,6 +294,35 @@ func (s *BillingService) initFallbackPricing() {
 		CacheReadPricePerToken: 0.003625e-6, // $0.003625 per MTok cache hit input
 		SupportsCacheBreakdown: false,
 	}
+
+	// Chinese LLM fallback pricing uses explicit whitelist entries only, so
+	// unlisted domestic-provider aliases do not get silently mispriced.
+	s.fallbackPrices["glm-5.1"] = newTextFallbackPricing(1.4e-6, 4.4e-6, 0.26e-6)
+	s.fallbackPrices["glm-5"] = newTextFallbackPricing(1.0e-6, 3.2e-6, 0.20e-6)
+	s.fallbackPrices["glm-5-turbo"] = newTextFallbackPricing(1.2e-6, 4.0e-6, 0.24e-6)
+	s.fallbackPrices["glm-4.7"] = newTextFallbackPricing(0.60e-6, 2.2e-6, 0.11e-6)
+	s.fallbackPrices["glm-4.7-flashx"] = newTextFallbackPricing(0.07e-6, 0.4e-6, 0.01e-6)
+	s.fallbackPrices["glm-4.7-flash"] = newTextFallbackPricing(0, 0, 0)
+	s.fallbackPrices["glm-4.6"] = newTextFallbackPricing(0.60e-6, 2.2e-6, 0.11e-6)
+	s.fallbackPrices["glm-4.5"] = newTextFallbackPricing(0.60e-6, 2.2e-6, 0.11e-6)
+	s.fallbackPrices["glm-4.5-x"] = newTextFallbackPricing(2.2e-6, 8.9e-6, 0.45e-6)
+	s.fallbackPrices["glm-4.5-air"] = newTextFallbackPricing(0.20e-6, 1.1e-6, 0.03e-6)
+	s.fallbackPrices["glm-4.5-airx"] = newTextFallbackPricing(1.1e-6, 4.5e-6, 0.22e-6)
+	s.fallbackPrices["glm-4.5-flash"] = newTextFallbackPricing(0, 0, 0)
+	s.fallbackPrices["glm-4-32b-0414-128k"] = newTextFallbackPricing(0.10e-6, 0.10e-6, 0)
+
+	s.fallbackPrices["kimi-k2.6"] = newTextFallbackPricing(0.95e-6, 4.0e-6, 0.15e-6)
+	s.fallbackPrices["kimi-for-coding"] = newTextFallbackPricing(0.95e-6, 4.0e-6, 0.15e-6)
+	s.fallbackPrices["kimi-k2.5"] = newTextFallbackPricing(0.60e-6, 3.0e-6, 0.098e-6)
+	s.fallbackPrices["kimi-k2-thinking"] = newTextFallbackPricing(0.56e-6, 2.24e-6, 0.14e-6)
+	s.fallbackPrices["kimi-k2"] = newTextFallbackPricing(0.56e-6, 2.24e-6, 0.14e-6)
+
+	s.fallbackPrices["minimax-m3"] = newTextFallbackPricing(0.60e-6, 2.40e-6, 0.12e-6)
+	s.fallbackPrices["minimax-m2.7"] = newTextFallbackPricing(0.30e-6, 1.20e-6, 0.06e-6)
+	s.fallbackPrices["minimax-m2.7-highspeed"] = newTextFallbackPricing(0.60e-6, 2.40e-6, 0.06e-6)
+	s.fallbackPrices["minimax-m2.5"] = newTextFallbackPricing(0.30e-6, 1.20e-6, 0.03e-6)
+	s.fallbackPrices["minimax-m2.1"] = newTextFallbackPricing(0.30e-6, 1.20e-6, 0.03e-6)
+	s.fallbackPrices["minimax-m2"] = newTextFallbackPricing(0.30e-6, 1.20e-6, 0.03e-6)
 
 	// OpenAI GPT-5.4（业务指定价格）
 	s.fallbackPrices["gpt-5.4"] = &ModelPricing{
@@ -408,6 +446,81 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	}
 	if strings.Contains(modelLower, "deepseek-v4-pro") {
 		return s.fallbackPrices["deepseek-v4-pro"]
+	}
+	if strings.Contains(modelLower, "glm-5.1") {
+		return s.fallbackPrices["glm-5.1"]
+	}
+	if strings.Contains(modelLower, "glm-5-turbo") || strings.Contains(modelLower, "glm-5turbo") {
+		return s.fallbackPrices["glm-5-turbo"]
+	}
+	if strings.Contains(modelLower, "glm-5") {
+		return s.fallbackPrices["glm-5"]
+	}
+	if strings.Contains(modelLower, "glm-4.7-flashx") || strings.Contains(modelLower, "glm-4-7-flashx") {
+		return s.fallbackPrices["glm-4.7-flashx"]
+	}
+	if strings.Contains(modelLower, "glm-4.7-flash") || strings.Contains(modelLower, "glm-4-7-flash") {
+		return s.fallbackPrices["glm-4.7-flash"]
+	}
+	if strings.Contains(modelLower, "glm-4.7") || strings.Contains(modelLower, "glm-4-7") {
+		return s.fallbackPrices["glm-4.7"]
+	}
+	if strings.Contains(modelLower, "glm-4.6") || strings.Contains(modelLower, "glm-4-6") {
+		return s.fallbackPrices["glm-4.6"]
+	}
+	if strings.Contains(modelLower, "glm-4.5-airx") || strings.Contains(modelLower, "glm-4-5-airx") {
+		return s.fallbackPrices["glm-4.5-airx"]
+	}
+	if strings.Contains(modelLower, "glm-4.5-air") || strings.Contains(modelLower, "glm-4-5-air") {
+		return s.fallbackPrices["glm-4.5-air"]
+	}
+	if strings.Contains(modelLower, "glm-4.5-x") || strings.Contains(modelLower, "glm-4-5-x") {
+		return s.fallbackPrices["glm-4.5-x"]
+	}
+	if strings.Contains(modelLower, "glm-4.5-flash") || strings.Contains(modelLower, "glm-4-5-flash") {
+		return s.fallbackPrices["glm-4.5-flash"]
+	}
+	if strings.Contains(modelLower, "glm-4.5") || strings.Contains(modelLower, "glm-4-5") {
+		return s.fallbackPrices["glm-4.5"]
+	}
+	if strings.Contains(modelLower, "glm-4-32b-0414-128k") {
+		return s.fallbackPrices["glm-4-32b-0414-128k"]
+	}
+	if strings.Contains(modelLower, "kimi-for-coding") {
+		return s.fallbackPrices["kimi-for-coding"]
+	}
+	if strings.Contains(modelLower, "kimi-k2-0905") || strings.Contains(modelLower, "kimi-k2-0711") {
+		return nil
+	}
+	if strings.Contains(modelLower, "kimi-k2.6") || strings.Contains(modelLower, "kimi-k2-6") {
+		return s.fallbackPrices["kimi-k2.6"]
+	}
+	if strings.Contains(modelLower, "kimi-k2.5") || strings.Contains(modelLower, "kimi-k2-5") {
+		return s.fallbackPrices["kimi-k2.5"]
+	}
+	if strings.Contains(modelLower, "kimi-k2-thinking") {
+		return s.fallbackPrices["kimi-k2-thinking"]
+	}
+	if strings.Contains(modelLower, "kimi-k2") {
+		return s.fallbackPrices["kimi-k2"]
+	}
+	if strings.Contains(modelLower, "minimax-m3") {
+		return s.fallbackPrices["minimax-m3"]
+	}
+	if strings.Contains(modelLower, "minimax-m2.7-highspeed") || strings.Contains(modelLower, "minimax-m2-7-highspeed") {
+		return s.fallbackPrices["minimax-m2.7-highspeed"]
+	}
+	if strings.Contains(modelLower, "minimax-m2.7") || strings.Contains(modelLower, "minimax-m2-7") {
+		return s.fallbackPrices["minimax-m2.7"]
+	}
+	if strings.Contains(modelLower, "minimax-m2.5") || strings.Contains(modelLower, "minimax-m2-5") {
+		return s.fallbackPrices["minimax-m2.5"]
+	}
+	if strings.Contains(modelLower, "minimax-m2.1") || strings.Contains(modelLower, "minimax-m2-1") {
+		return s.fallbackPrices["minimax-m2.1"]
+	}
+	if strings.Contains(modelLower, "minimax-m2") {
+		return s.fallbackPrices["minimax-m2"]
 	}
 	if strings.HasPrefix(modelLower, "gpt-image-2") {
 		return s.fallbackPrices["gpt-image-2"]
