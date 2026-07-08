@@ -188,6 +188,35 @@ func TestCalculateCreateOrderPayAmountRejectsFractionalZeroDecimal(t *testing.T)
 	}
 }
 
+func TestComputeValidityDaysSupportsSingularAndPluralUnits(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		days int
+		unit string
+		want int
+	}{
+		{name: "day", days: 1, unit: "day", want: 1},
+		{name: "days", days: 2, unit: "days", want: 2},
+		{name: "week", days: 1, unit: "week", want: 7},
+		{name: "weeks", days: 2, unit: "weeks", want: 14},
+		{name: "month", days: 1, unit: "month", want: 30},
+		{name: "months", days: 2, unit: "months", want: 60},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := psComputeValidityDays(tt.days, tt.unit); got != tt.want {
+				t.Fatalf("psComputeValidityDays(%d, %q) = %d, want %d", tt.days, tt.unit, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildPaymentSubjectAppliesAffixToSubscriptionPlanProductName(t *testing.T) {
 	t.Parallel()
 
