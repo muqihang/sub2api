@@ -3222,7 +3222,7 @@ export default {
           resetQuota: '重置配额',
           resetQuotaDesc: '将日/周/月用量归零，重新开始计算',
           revoke: '撤销',
-          revokeDesc: '立即终止该用户的订阅，不可恢复'
+          revokeDesc: '立即终止该用户的订阅，可在已撤销列表中恢复'
         },
         tip: '提示：订阅分组下拉列表中只会显示计费类型为「订阅」且状态为「正常」的分组。如果没有可选项，请先到分组管理中创建。'
       }
@@ -6624,8 +6624,8 @@ export default {
         field_cid: '支付渠道 ID',
         field_cidAlipay: '支付宝渠道 ID',
         field_cidWxpay: '微信渠道 ID',
-        easypayCustomMethods: '易支付自定义方式',
-        easypayCustomMethodsHint: '添加当前易支付接口额外支持的方式。支付方式会记录到 Sub2API 订单中，上游 type 会作为易支付 type 参数提交。',
+        easypayCustomMethods: '易支付自定义支付方式',
+        easypayCustomMethodsHint: '添加当前易支付服务商额外支持的支付方式。支付方式会记录到 Sub2API 订单中，上游 type 会作为易支付 type 参数提交。',
         addCustomMethod: '添加方式',
         customMethodType: '支付方式',
         customMethodUpstreamType: '上游 type',
