@@ -33,19 +33,49 @@
 
       <template #actions>
         <div class="flex justify-end gap-3">
-        <button
-          @click="loadApiKeys"
-          :disabled="loading"
-          class="btn btn-secondary"
-          :title="t('common.refresh')"
-        >
-          <Icon name="refresh" size="md" :class="loading ? 'animate-spin' : ''" />
-        </button>
-        <button @click="showCreateModal = true" class="btn btn-primary" data-tour="keys-create-btn">
-          <Icon name="plus" size="md" class="mr-2" />
-          {{ t('keys.createKey') }}
-        </button>
-      </div>
+          <button
+            @click="loadApiKeys"
+            :disabled="loading"
+            class="btn btn-secondary"
+            :title="t('common.refresh')"
+          >
+            <Icon name="refresh" size="md" :class="loading ? 'animate-spin' : ''" />
+          </button>
+          <div class="relative" ref="columnDropdownRef">
+            <button
+              @click="showColumnDropdown = !showColumnDropdown"
+              class="btn btn-secondary px-2 md:px-3"
+              :title="t('keys.columnSettings')"
+            >
+              <Icon name="grid" size="sm" class="md:mr-1.5" />
+              <span class="hidden md:inline">{{ t('keys.columnSettings') }}</span>
+            </button>
+            <div
+              v-if="showColumnDropdown"
+              class="absolute right-0 top-full z-50 mt-1 max-h-80 w-48 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-dark-600 dark:bg-dark-800"
+            >
+              <button
+                v-for="col in toggleableColumns"
+                :key="col.key"
+                @click="toggleColumn(col.key)"
+                class="flex w-full items-center justify-between px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-dark-700"
+              >
+                <span>{{ col.label }}</span>
+                <Icon
+                  v-if="isColumnVisible(col.key)"
+                  name="check"
+                  size="sm"
+                  class="text-primary-500"
+                  :stroke-width="2"
+                />
+              </button>
+            </div>
+          </div>
+          <button @click="showCreateModal = true" class="btn btn-primary" data-tour="keys-create-btn">
+            <Icon name="plus" size="md" class="mr-2" />
+            {{ t('keys.createKey') }}
+          </button>
+        </div>
       </template>
 
       <template #table>
@@ -1080,7 +1110,7 @@
 </template>
 
 <script setup lang="ts">
-	import { ref, computed, onMounted, onUnmounted, type ComponentPublicInstance } from 'vue'
+	import { ref, reactive, computed, onMounted, onUnmounted, type ComponentPublicInstance } from 'vue'
 	import { useRoute, useRouter } from 'vue-router'
 	import { useI18n } from 'vue-i18n'
 	import { useAppStore } from '@/stores/app'
@@ -1143,7 +1173,7 @@ const { copyToClipboard: clipboardCopy } = useClipboard()
 const route = useRoute()
 const router = useRouter()
 
-const columns = computed<Column[]>(() => [
+const allColumns = computed<Column[]>(() => [
   { key: 'name', label: t('common.name'), sortable: true },
   { key: 'key', label: t('keys.apiKey'), sortable: false },
   { key: 'group', label: t('keys.group'), sortable: false },
@@ -1155,6 +1185,71 @@ const columns = computed<Column[]>(() => [
   { key: 'created_at', label: t('keys.created'), sortable: true },
   { key: 'actions', label: t('common.actions'), sortable: false }
 ])
+
+const ALWAYS_VISIBLE_COLUMNS = new Set(['name', 'actions'])
+const DEFAULT_HIDDEN_COLUMNS = ['rate_limit', 'last_used_at']
+const HIDDEN_COLUMNS_KEY = 'api-key-hidden-columns'
+const COLUMN_SETTINGS_VERSION_KEY = 'api-key-column-settings-version'
+const COLUMN_SETTINGS_VERSION = 1
+
+const toggleableColumns = computed(() =>
+  allColumns.value.filter((col) => !ALWAYS_VISIBLE_COLUMNS.has(col.key))
+)
+const hiddenColumns = reactive<Set<string>>(new Set())
+
+const getToggleableColumnKeys = () =>
+  new Set(toggleableColumns.value.map((col) => col.key))
+
+const saveColumnsToStorage = () => {
+  try {
+    const validKeys = getToggleableColumnKeys()
+    localStorage.setItem(
+      HIDDEN_COLUMNS_KEY,
+      JSON.stringify([...hiddenColumns].filter((key) => validKeys.has(key)))
+    )
+    localStorage.setItem(COLUMN_SETTINGS_VERSION_KEY, String(COLUMN_SETTINGS_VERSION))
+  } catch {
+    // Ignore localStorage failures; column visibility is a UI preference.
+  }
+}
+
+const loadSavedColumns = () => {
+  hiddenColumns.clear()
+  try {
+    const saved = localStorage.getItem(HIDDEN_COLUMNS_KEY)
+    if (saved) {
+      const parsed = JSON.parse(saved)
+      const validKeys = getToggleableColumnKeys()
+      if (Array.isArray(parsed)) {
+        parsed
+          .filter((key): key is string => typeof key === 'string' && validKeys.has(key))
+          .forEach((key) => hiddenColumns.add(key))
+      }
+    } else {
+      DEFAULT_HIDDEN_COLUMNS.forEach((key) => hiddenColumns.add(key))
+    }
+    localStorage.setItem(COLUMN_SETTINGS_VERSION_KEY, String(COLUMN_SETTINGS_VERSION))
+  } catch {
+    hiddenColumns.clear()
+    DEFAULT_HIDDEN_COLUMNS.forEach((key) => hiddenColumns.add(key))
+  }
+}
+
+const toggleColumn = (key: string) => {
+  if (!getToggleableColumnKeys().has(key)) return
+  if (hiddenColumns.has(key)) {
+    hiddenColumns.delete(key)
+  } else {
+    hiddenColumns.add(key)
+  }
+  saveColumnsToStorage()
+}
+
+const isColumnVisible = (key: string) => !hiddenColumns.has(key)
+
+const columns = computed<Column[]>(() =>
+  allColumns.value.filter((col) => ALWAYS_VISIBLE_COLUMNS.has(col.key) || !hiddenColumns.has(col.key))
+)
 
 const apiKeys = ref<ApiKey[]>([])
 const groups = ref<Group[]>([])
@@ -1188,12 +1283,14 @@ const showResetQuotaDialog = ref(false)
 const showResetRateLimitDialog = ref(false)
 const showUseKeyModal = ref(false)
 const showCcsClientSelect = ref(false)
+const showColumnDropdown = ref(false)
 const pendingCcsRow = ref<ApiKey | null>(null)
 const selectedKey = ref<ApiKey | null>(null)
 const copiedKeyId = ref<number | null>(null)
 const groupSelectorKeyId = ref<number | null>(null)
 const publicSettings = ref<PublicSettings | null>(null)
 const dropdownRef = ref<HTMLElement | null>(null)
+const columnDropdownRef = ref<HTMLElement | null>(null)
 const dropdownPosition = ref<{ top?: number; bottom?: number; left: number } | null>(null)
 const groupButtonRefs = ref<Map<number, HTMLElement>>(new Map())
 let abortController: AbortController | null = null
@@ -1887,6 +1984,7 @@ function formatResetTime(resetAt: string | null): string {
 }
 
 onMounted(() => {
+  loadSavedColumns()
   loadApiKeys()
   loadGroups().then(() => maybeOpenAugmentKeyCreate())
   loadUserGroupRates()
