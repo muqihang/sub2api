@@ -763,6 +763,7 @@ export default {
     today: '今日',
     total: '近30天',
     quota: '额度',
+    currentConcurrency: '当前并发',
     lastUsedAt: '上次使用时间',
     useKey: '使用密钥',
     useKeyModal: {

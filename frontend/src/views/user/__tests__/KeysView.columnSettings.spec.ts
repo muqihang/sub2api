@@ -42,6 +42,7 @@ const messages: Record<string, string> = {
   'keys.created': 'Created',
   'keys.expiresAt': 'Expires',
   'keys.group': 'Group',
+  'keys.currentConcurrency': 'Current Concurrency',
   'keys.lastUsedAt': 'Last Used',
   'keys.rateLimitColumn': 'Rate Limit',
   'keys.searchPlaceholder': 'Search keys',
@@ -106,6 +107,7 @@ const createApiKey = (): ApiKey => ({
   expires_at: null,
   created_at: '2026-07-01T00:00:00Z',
   updated_at: '2026-07-01T00:00:00Z',
+  current_concurrency: 3,
   rate_limit_5h: 0,
   rate_limit_1d: 0,
   rate_limit_7d: 0,
@@ -123,7 +125,7 @@ const createApiKey = (): ApiKey => ({
 const DataTableStub = {
   props: ['columns', 'data'],
   emits: ['sort'],
-  template: '<div><div data-test="columns">{{ columns.map((col) => col.key).join(",") }}</div><div v-for="row in data" :key="row.id"><slot name="cell-name" :value="row.name" :row="row" /></div></div>',
+  template: '<div><div data-test="columns">{{ columns.map((col) => col.key).join(",") }}</div><div v-for="row in data" :key="row.id"><slot name="cell-name" :value="row.name" :row="row" /><div data-test="current-concurrency"><slot name="cell-current_concurrency" :value="row.current_concurrency" :row="row" /></div></div></div>',
 }
 
 const mountView = async () => {
@@ -183,6 +185,7 @@ describe('user KeysView column settings', () => {
       'name',
       'key',
       'group',
+      'current_concurrency',
       'usage',
       'expires_at',
       'status',
@@ -200,5 +203,12 @@ describe('user KeysView column settings', () => {
     expect(visibleColumns(wrapper)).toContain('rate_limit')
     expect(JSON.parse(localStorage.getItem('api-key-hidden-columns') || '[]')).toEqual(['last_used_at'])
     expect(localStorage.getItem('api-key-column-settings-version')).toBe('1')
+  })
+
+  it('renders current concurrency for each API key', async () => {
+    const wrapper = await mountView()
+
+    expect(visibleColumns(wrapper)).toContain('current_concurrency')
+    expect(wrapper.get('[data-test="current-concurrency"]').text()).toContain('3')
   })
 })

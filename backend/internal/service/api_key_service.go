@@ -233,6 +233,7 @@ type APIKeyService struct {
 	authGroup             singleflight.Group
 	lastUsedTouchL1       sync.Map // keyID -> nextAllowedAt(time.Time)
 	lastUsedTouchSF       singleflight.Group
+	concurrencyService    *ConcurrencyService
 }
 
 // NewAPIKeyService 创建API Key服务实例
@@ -256,6 +257,14 @@ func NewAPIKeyService(
 	}
 	svc.initAuthCache(cfg)
 	return svc
+}
+
+// SetConcurrencyService attaches the optional stats-only concurrency reader.
+func (s *APIKeyService) SetConcurrencyService(concurrencyService *ConcurrencyService) {
+	if s == nil {
+		return
+	}
+	s.concurrencyService = concurrencyService
 }
 
 // SetRateLimitCacheInvalidator sets the optional rate limit cache invalidator.
@@ -547,6 +556,7 @@ func (s *APIKeyService) List(ctx context.Context, userID int64, params paginatio
 	if err != nil {
 		return nil, nil, fmt.Errorf("list api keys: %w", err)
 	}
+	s.fillCurrentConcurrency(ctx, keys)
 	return keys, pagination, nil
 }
 
@@ -569,7 +579,36 @@ func (s *APIKeyService) GetByID(ctx context.Context, id int64) (*APIKey, error) 
 		return nil, fmt.Errorf("get api key: %w", err)
 	}
 	s.compileAPIKeyIPRules(apiKey)
+	s.fillCurrentConcurrencyForKey(ctx, apiKey)
 	return apiKey, nil
+}
+
+func (s *APIKeyService) fillCurrentConcurrency(ctx context.Context, keys []APIKey) {
+	if s == nil || s.concurrencyService == nil || len(keys) == 0 {
+		return
+	}
+	ids := make([]int64, 0, len(keys))
+	for i := range keys {
+		if keys[i].ID > 0 {
+			ids = append(ids, keys[i].ID)
+		}
+	}
+	counts, err := s.concurrencyService.GetAPIKeyConcurrencyBatch(ctx, ids)
+	if err != nil {
+		return
+	}
+	for i := range keys {
+		keys[i].CurrentConcurrency = counts[keys[i].ID]
+	}
+}
+
+func (s *APIKeyService) fillCurrentConcurrencyForKey(ctx context.Context, apiKey *APIKey) {
+	if apiKey == nil {
+		return
+	}
+	keys := []APIKey{*apiKey}
+	s.fillCurrentConcurrency(ctx, keys)
+	apiKey.CurrentConcurrency = keys[0].CurrentConcurrency
 }
 
 // GetByKey 根据Key字符串获取API Key（用于认证）

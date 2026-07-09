@@ -764,6 +764,7 @@ export default {
     today: 'Today',
     total: 'Last 30d',
     quota: 'Quota',
+    currentConcurrency: 'Current Concurrency',
     lastUsedAt: 'Last Used',
     useKey: 'Use Key',
     useKeyModal: {

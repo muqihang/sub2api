@@ -384,3 +384,83 @@ func TestIncrementAccountWaitCount_NilCache(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, allowed)
 }
+
+type apiKeyConcurrencyCacheForTest struct {
+	stubConcurrencyCacheForTest
+	counts            map[int64]int
+	batchErr          error
+	trackErr          error
+	releaseErr        error
+	trackedAPIKeyID   int64
+	releasedAPIKeyID  int64
+	trackedRequestID  string
+	releasedRequestID string
+}
+
+func (c *apiKeyConcurrencyCacheForTest) TrackAPIKeySlot(_ context.Context, apiKeyID int64, requestID string) error {
+	c.trackedAPIKeyID = apiKeyID
+	c.trackedRequestID = requestID
+	return c.trackErr
+}
+
+func (c *apiKeyConcurrencyCacheForTest) ReleaseAPIKeySlot(_ context.Context, apiKeyID int64, requestID string) error {
+	c.releasedAPIKeyID = apiKeyID
+	c.releasedRequestID = requestID
+	return c.releaseErr
+}
+
+func (c *apiKeyConcurrencyCacheForTest) GetAPIKeyConcurrencyBatch(_ context.Context, ids []int64) (map[int64]int, error) {
+	if c.batchErr != nil {
+		return nil, c.batchErr
+	}
+	out := make(map[int64]int, len(ids))
+	for _, id := range ids {
+		out[id] = c.counts[id]
+	}
+	return out, nil
+}
+
+func TestConcurrencyService_GetAPIKeyConcurrencyBatchReturnsCounts(t *testing.T) {
+	cache := &apiKeyConcurrencyCacheForTest{counts: map[int64]int{10: 2, 11: 4}}
+	svc := NewConcurrencyService(cache)
+
+	counts, err := svc.GetAPIKeyConcurrencyBatch(context.Background(), []int64{10, 11, 12})
+	require.NoError(t, err)
+	require.Equal(t, map[int64]int{10: 2, 11: 4, 12: 0}, counts)
+}
+
+func TestConcurrencyService_GetAPIKeyConcurrencyBatchFallsBackToZero(t *testing.T) {
+	svc := NewConcurrencyService(&stubConcurrencyCacheForTest{})
+	counts, err := svc.GetAPIKeyConcurrencyBatch(context.Background(), []int64{10, 11})
+	require.NoError(t, err)
+	require.Equal(t, map[int64]int{10: 0, 11: 0}, counts)
+
+	errCache := &apiKeyConcurrencyCacheForTest{batchErr: errors.New("redis unavailable")}
+	svc = NewConcurrencyService(errCache)
+	counts, err = svc.GetAPIKeyConcurrencyBatch(context.Background(), []int64{12})
+	require.NoError(t, err)
+	require.Equal(t, map[int64]int{12: 0}, counts)
+}
+
+func TestConcurrencyService_TrackAPIKeySlotTracksAndReleases(t *testing.T) {
+	cache := &apiKeyConcurrencyCacheForTest{}
+	svc := NewConcurrencyService(cache)
+
+	release := svc.TrackAPIKeySlot(context.Background(), 42)
+	require.Equal(t, int64(42), cache.trackedAPIKeyID)
+	require.NotEmpty(t, cache.trackedRequestID)
+
+	release()
+	require.Equal(t, int64(42), cache.releasedAPIKeyID)
+	require.Equal(t, cache.trackedRequestID, cache.releasedRequestID)
+}
+
+func TestConcurrencyService_TrackAPIKeySlotIsBestEffort(t *testing.T) {
+	cache := &apiKeyConcurrencyCacheForTest{trackErr: errors.New("redis unavailable")}
+	svc := NewConcurrencyService(cache)
+
+	release := svc.TrackAPIKeySlot(context.Background(), 42)
+	require.NotNil(t, release)
+	release()
+	require.Zero(t, cache.releasedAPIKeyID)
+}

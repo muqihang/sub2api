@@ -44,6 +44,7 @@ type APIKey struct {
 	LastUsedAt          *time.Time
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
+	CurrentConcurrency  int // Real-time active request count for this API key (stats only)
 	User                *User
 	Group               *Group
 

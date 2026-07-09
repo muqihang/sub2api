@@ -98,6 +98,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	opsRepository := repository.NewOpsRepository(db)
 	concurrencyCache := repository.ProvideConcurrencyCache(redisClient, configConfig)
 	concurrencyService := service.ProvideConcurrencyService(concurrencyCache, accountRepository, configConfig)
+	apiKeyService.SetConcurrencyService(concurrencyService)
 	usageBillingRepository := repository.NewUsageBillingRepository(client, db)
 	gatewayCache := repository.NewGatewayCache(redisClient)
 	schedulerOutboxRepository := repository.NewSchedulerOutboxRepository(db)

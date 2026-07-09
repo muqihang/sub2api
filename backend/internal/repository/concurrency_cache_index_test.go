@@ -161,3 +161,31 @@ func TestConcurrencyCacheCleanupStaleProcessSlotsUsesIndexesAndSweepsLegacyWaitO
 	_, err = rdb.ZScore(ctx, userActiveIndexKey, strconv.FormatInt(userID, 10)).Result()
 	require.NoError(t, err, "remaining current-process user slot should keep index member")
 }
+
+func TestConcurrencyCacheAPIKeySlotsTrackReleaseAndStartupCleanup(t *testing.T) {
+	ctx := context.Background()
+	cache, rdb := newConcurrencyCacheWithMiniRedis(t)
+	apiKeyID := int64(3301)
+	member := strconv.FormatInt(apiKeyID, 10)
+
+	require.NoError(t, cache.TrackAPIKeySlot(ctx, apiKeyID, "keep-1"))
+	counts, err := cache.GetAPIKeyConcurrencyBatch(ctx, []int64{apiKeyID})
+	require.NoError(t, err)
+	require.Equal(t, 1, counts[apiKeyID])
+	_, err = rdb.ZScore(ctx, apiKeyActiveIndexKey, member).Result()
+	require.NoError(t, err, "api key slot track should add active index member")
+
+	require.NoError(t, cache.ReleaseAPIKeySlot(ctx, apiKeyID, "keep-1"))
+	counts, err = cache.GetAPIKeyConcurrencyBatch(ctx, []int64{apiKeyID})
+	require.NoError(t, err)
+	require.Equal(t, 0, counts[apiKeyID])
+	_, err = rdb.ZScore(ctx, apiKeyActiveIndexKey, member).Result()
+	require.ErrorIs(t, err, redis.Nil, "release of last api key slot should remove active index member")
+
+	require.NoError(t, cache.TrackAPIKeySlot(ctx, apiKeyID, "dead-1"))
+	require.NoError(t, cache.TrackAPIKeySlot(ctx, apiKeyID, "keep-2"))
+	require.NoError(t, cache.CleanupStaleProcessSlots(ctx, "keep-"))
+	counts, err = cache.GetAPIKeyConcurrencyBatch(ctx, []int64{apiKeyID})
+	require.NoError(t, err)
+	require.Equal(t, 1, counts[apiKeyID], "startup cleanup should remove only stale process api key slots")
+}
