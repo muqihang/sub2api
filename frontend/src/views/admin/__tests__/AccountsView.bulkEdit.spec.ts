@@ -217,6 +217,10 @@ describe('admin AccountsView bulk edit scope', () => {
     const columnKeys = wrapper.findAll('[data-test="column-key"]').map(node => node.text())
     expect(columnKeys).toContain('created_at')
     const columns = wrapper.getComponent(DataTableStub).props('columns') as Array<{ key: string; label: string; sortable: boolean }>
+    expect(columns.find(column => column.key === 'id')).toMatchObject({
+      label: 'admin.accounts.columns.id',
+      sortable: true
+    })
     expect(columns.find(column => column.key === 'created_at')).toMatchObject({
       label: 'admin.accounts.columns.createdAt',
       sortable: true

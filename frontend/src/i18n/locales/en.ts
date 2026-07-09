@@ -2234,6 +2234,7 @@ export default {
       public: 'Public',
       columns: {
         name: 'Name',
+        id: 'Account ID',
         platform: 'Platform',
         rateMultiplier: 'Rate Multiplier',
         rpmOverride: 'RPM Override',
