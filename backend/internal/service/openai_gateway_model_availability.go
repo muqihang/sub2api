@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-func (s *OpenAIGatewayService) DiagnoseModelAvailabilityForPlatform(ctx context.Context, groupID *int64, requestedModel string, _ string) ModelAvailabilityDiagnosis {
+func (s *OpenAIGatewayService) DiagnoseModelAvailabilityForPlatform(ctx context.Context, groupID *int64, requestedModel string, platform string) ModelAvailabilityDiagnosis {
 	if s == nil {
 		return ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: true}
 	}
@@ -14,7 +14,7 @@ func (s *OpenAIGatewayService) DiagnoseModelAvailabilityForPlatform(ctx context.
 		return ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: true}
 	}
 
-	accounts, err := s.listSchedulableAccounts(ctx, groupID)
+	accounts, err := s.listSchedulableAccountsForPlatform(ctx, groupID, platform)
 	if err != nil {
 		return ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: true}
 	}

@@ -4115,3 +4115,17 @@ func TestOpenAIStreamingPassthroughResponseFailedAfterOutputSanitizesVerboseResp
 	require.NotContains(t, body, `"output"`)
 	require.NotContains(t, body, `"usage"`)
 }
+
+func TestOpenAIGatewayModelAvailabilityScopesCandidatesByPlatform(t *testing.T) {
+	svc := &OpenAIGatewayService{
+		accountRepo: stubOpenAIAccountRepo{accounts: []Account{
+			{ID: 1, Platform: PlatformOpenAI, Schedulable: true},
+		}},
+		cfg: &config.Config{},
+	}
+
+	diag := svc.DiagnoseModelAvailabilityForPlatform(context.Background(), nil, "grok-4", PlatformGrok)
+
+	require.False(t, diag.HasAccountsInPool, "OpenAI accounts must not satisfy Grok availability diagnosis")
+	require.False(t, diag.HasModelSupport)
+}
