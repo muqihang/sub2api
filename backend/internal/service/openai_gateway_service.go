@@ -388,6 +388,7 @@ type OpenAIGatewayService struct {
 	httpUpstream                HTTPUpstream
 	deferredService             *DeferredService
 	openAITokenProvider         *OpenAITokenProvider
+	grokTokenProvider           *GrokTokenProvider
 	gatewayCoreService          *OpenAIGatewayCoreService
 	toolCorrector               *CodexToolCorrector
 	openaiWSResolver            OpenAIWSProtocolResolver
@@ -451,6 +452,7 @@ func NewOpenAIGatewayService(
 	var entityRateLimitSvc *EntityRateLimitService
 	var userPlatformQuotaRepo UserPlatformQuotaRepository
 	var openAIContentSafetyProvider OpenAIContentSafetyProvider
+	var grokTokenProvider *GrokTokenProvider
 	for _, dep := range optionalDeps {
 		switch typed := dep.(type) {
 		case *OpenAIGatewayCoreService:
@@ -471,6 +473,8 @@ func NewOpenAIGatewayService(
 			userPlatformQuotaRepo = typed
 		case OpenAIContentSafetyProvider:
 			openAIContentSafetyProvider = typed
+		case *GrokTokenProvider:
+			grokTokenProvider = typed
 		}
 	}
 
@@ -498,6 +502,7 @@ func NewOpenAIGatewayService(
 		httpUpstream:                httpUpstream,
 		deferredService:             deferredService,
 		openAITokenProvider:         openAITokenProvider,
+		grokTokenProvider:           grokTokenProvider,
 		gatewayCoreService:          gatewayCoreService,
 		toolCorrector:               NewCodexToolCorrector(),
 		openaiWSResolver:            NewOpenAIWSProtocolResolver(cfg),
@@ -3119,6 +3124,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	requestView := newOpenAIRequestView(body)
 	reqModel, reqStream, promptCacheKey := requestView.Model, requestView.Stream, requestView.PromptCacheKey
 	originalModel := reqModel
+
+	if account != nil && account.Platform == PlatformGrok {
+		_ = promptCacheKey
+		return s.forwardGrokResponses(ctx, c, account, body, originalModel, reqStream, startTime)
+	}
 
 	if shouldApplyOpenAIReasoningEffortGuard(account) {
 		if blocked := s.blockOpenAIRuntimeGuardLearnedRequest(c, account, reqModel, "responses"); blocked != nil {

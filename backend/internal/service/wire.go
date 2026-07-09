@@ -301,7 +301,19 @@ func ProvideOpenAIGatewayService(
 	entityRegistryRepo EntityRegistryRepository,
 	entityRateLimitService *EntityRateLimitService,
 	contentModerationService *ContentModerationService,
+	optionalDeps ...any,
 ) *OpenAIGatewayService {
+	deps := []any{
+		gatewayCoreService,
+		resolver,
+		channelService,
+		balanceNotifyService,
+		settingService,
+		entityRegistryRepo,
+		entityRateLimitService,
+		NewContentModerationOpenAIContentSafetyProvider(contentModerationService),
+	}
+	deps = append(deps, optionalDeps...)
 	return NewOpenAIGatewayService(
 		accountRepo,
 		usageLogRepo,
@@ -319,14 +331,7 @@ func ProvideOpenAIGatewayService(
 		httpUpstream,
 		deferredService,
 		openAITokenProvider,
-		gatewayCoreService,
-		resolver,
-		channelService,
-		balanceNotifyService,
-		settingService,
-		entityRegistryRepo,
-		entityRateLimitService,
-		NewContentModerationOpenAIContentSafetyProvider(contentModerationService),
+		deps...,
 	)
 }
 
