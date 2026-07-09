@@ -210,6 +210,67 @@ describe('admin RiskControlView', () => {
     }))
   })
 
+
+  it('shows matched keyword in risk-control logs without raw prompt content', async () => {
+    listLogs.mockResolvedValue({
+      items: [{
+        id: 1,
+        request_id: 'req-1',
+        user_id: 42,
+        user_email: 'user@example.com',
+        api_key_id: null,
+        api_key_name: '',
+        group_id: null,
+        group_name: '',
+        endpoint: '/v1/messages',
+        provider: 'anthropic',
+        model: 'claude-sonnet-5',
+        mode: 'pre_block',
+        action: 'keyword_block',
+        flagged: true,
+        highest_category: 'keyword',
+        highest_score: 1,
+        matched_keyword: 'blocked-keyword',
+        category_scores: { keyword: 1 },
+        threshold_snapshot: {},
+        input_excerpt: 'sanitized excerpt',
+        upstream_latency_ms: null,
+        error: '',
+        violation_count: 0,
+        auto_banned: false,
+        email_sent: false,
+        user_status: '',
+        queue_delay_ms: null,
+        created_at: '2026-07-09T00:00:00Z',
+      }],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+
+    const wrapper = mount(RiskControlView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          BaseDialog: BaseDialogStub,
+          Icon: true,
+          Select: true,
+          Toggle: true,
+          Pagination: true,
+          ModelWhitelistSelector: ModelWhitelistSelectorStub,
+        },
+      },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('admin.riskControl.matchedKeyword')
+    expect(wrapper.text()).toContain('blocked-keyword')
+    expect(wrapper.text()).toContain('sanitized excerpt')
+    expect(wrapper.text()).not.toContain('full raw prompt text')
+  })
+
   it('saves the selected model filter mode and models', async () => {
     const wrapper = mount(RiskControlView, {
       global: {
