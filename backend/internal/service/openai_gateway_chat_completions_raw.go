@@ -14,6 +14,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -119,19 +120,33 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	)
 
 	// 5. Build upstream request
-	apiKey, err := NewOpenAIGatewayCredentials(s.cfg, nil).OpenAIAPIKey(account)
-	if err != nil {
-		return nil, fmt.Errorf("account %d api_key unavailable: %w", account.ID, err)
+	authToken := ""
+	targetURL := ""
+	var err error
+	if account.Platform == PlatformGrok {
+		authToken, err = s.getGrokAccessToken(ctx, account)
+		if err != nil {
+			return nil, fmt.Errorf("get grok access token: %w", err)
+		}
+		targetURL, err = xai.BuildChatCompletionsURL(account.GetGrokBaseURL())
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		authToken, err = NewOpenAIGatewayCredentials(s.cfg, nil).OpenAIAPIKey(account)
+		if err != nil {
+			return nil, fmt.Errorf("account %d api_key unavailable: %w", account.ID, err)
+		}
+		baseURL := account.GetOpenAIBaseURL()
+		if baseURL == "" {
+			baseURL = "https://api.openai.com"
+		}
+		validatedURL, err := s.validateUpstreamBaseURL(baseURL)
+		if err != nil {
+			return nil, fmt.Errorf("invalid base_url: %w", err)
+		}
+		targetURL = buildOpenAIChatCompletionsURLForAccount(validatedURL, account)
 	}
-	baseURL := account.GetOpenAIBaseURL()
-	if baseURL == "" {
-		baseURL = "https://api.openai.com"
-	}
-	validatedURL, err := s.validateUpstreamBaseURL(baseURL)
-	if err != nil {
-		return nil, fmt.Errorf("invalid base_url: %w", err)
-	}
-	targetURL := buildOpenAIChatCompletionsURLForAccount(validatedURL, account)
 
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
 	upstreamReq, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, targetURL, bytes.NewReader(upstreamBody))
@@ -139,9 +154,11 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
-	upstreamReq = upstreamReq.WithContext(WithHTTPUpstreamProfile(upstreamReq.Context(), HTTPUpstreamProfileOpenAI))
+	if account.Platform != PlatformGrok {
+		upstreamReq = upstreamReq.WithContext(WithHTTPUpstreamProfile(upstreamReq.Context(), HTTPUpstreamProfileOpenAI))
+	}
 	upstreamReq.Header.Set("Content-Type", "application/json")
-	upstreamReq.Header.Set("Authorization", "Bearer "+apiKey)
+	upstreamReq.Header.Set("Authorization", "Bearer "+authToken)
 	if clientStream {
 		upstreamReq.Header.Set("Accept", "text/event-stream")
 	} else {
@@ -158,13 +175,24 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		}
 	}
 	customUA := account.GetOpenAIUserAgent()
-	if customUA != "" {
+	if account.Platform == PlatformGrok {
+		upstreamReq.Header.Set("user-agent", "sub2api-grok/1.0")
+	} else if customUA != "" {
 		upstreamReq.Header.Set("user-agent", customUA)
 	}
 	account.ApplyHeaderOverrides(upstreamReq.Header)
 
 	// 6. Send request
-	resp, err := s.sendOpenAIHTTPRequest(ctx, c, upstreamReq, account)
+	var resp *http.Response
+	if account.Platform == PlatformGrok {
+		proxyURL := ""
+		if account.ProxyID != nil && account.Proxy != nil {
+			proxyURL = account.Proxy.URL()
+		}
+		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+	} else {
+		resp, err = s.sendOpenAIHTTPRequest(ctx, c, upstreamReq, account)
+	}
 	if err != nil {
 		if isOpenAIEgressPolicyError(err) {
 			return nil, err
@@ -179,6 +207,10 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
+		if account.Platform == PlatformGrok {
+			s.updateGrokUsageSnapshot(ctx, account.ID, xai.ParseQuotaHeaders(resp.Header, resp.StatusCode))
+			s.handleGrokAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header)
+		}
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {

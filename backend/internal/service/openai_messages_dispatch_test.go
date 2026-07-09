@@ -25,3 +25,14 @@ func TestNormalizeOpenAIMessagesDispatchModelConfig(t *testing.T) {
 		"claude-sonnet-4-5-20250929": "gpt-5.2",
 	}, cfg.ExactModelMappings)
 }
+
+func TestResolveMessagesDispatchModelGrokMapsClaudeFamilyToDefault(t *testing.T) {
+	t.Parallel()
+
+	group := &Group{Platform: PlatformGrok}
+
+	require.Equal(t, "grok-4.3", group.ResolveMessagesDispatchModel("claude-sonnet-4-5-20250929"))
+	require.Equal(t, "grok-4.3", group.ResolveMessagesDispatchModel("claude-opus-4-6"))
+	require.Equal(t, "grok-4.3", group.ResolveMessagesDispatchModel("claude-haiku-4-5"))
+	require.Empty(t, group.ResolveMessagesDispatchModel("gpt-5.4"))
+}

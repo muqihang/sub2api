@@ -805,6 +805,27 @@ func TestOpenAIResponsesWebSocket_FirstMessageTimeoutUsesConfig(t *testing.T) {
 	}
 }
 
+func TestAllowOpenAICompatibleMessagesDispatchAllowsGrokEvenWhenFlagDisabled(t *testing.T) {
+	require.True(t, allowOpenAICompatibleMessagesDispatch(&service.APIKey{
+		Group: &service.Group{
+			Platform:              service.PlatformGrok,
+			AllowMessagesDispatch: false,
+		},
+	}))
+	require.False(t, allowOpenAICompatibleMessagesDispatch(&service.APIKey{
+		Group: &service.Group{
+			Platform:              service.PlatformOpenAI,
+			AllowMessagesDispatch: false,
+		},
+	}))
+	require.True(t, allowOpenAICompatibleMessagesDispatch(&service.APIKey{
+		Group: &service.Group{
+			Platform:              service.PlatformOpenAI,
+			AllowMessagesDispatch: true,
+		},
+	}))
+}
+
 func TestOpenAIResponsesWebSocket_PreviousResponseIDKindLoggedBeforeAcquireFailure(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

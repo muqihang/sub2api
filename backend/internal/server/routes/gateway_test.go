@@ -156,6 +156,33 @@ func TestGatewayRoutesGrokMediaRoutesAreRegistered(t *testing.T) {
 	}
 }
 
+func TestGatewayRoutesGrokOpenAICompatibleRoutesAreRegistered(t *testing.T) {
+	router := newGatewayRoutesTestRouterWithPlatform(service.PlatformGrok)
+
+	for _, tc := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodPost, "/v1/responses", `{"model":"grok","input":"hi"}`},
+		{http.MethodPost, "/responses", `{"model":"grok","input":"hi"}`},
+		{http.MethodPost, "/v1/messages", `{"model":"claude-sonnet-4-5-20250929","messages":[{"role":"user","content":"hi"}]}`},
+		{http.MethodPost, "/v1/chat/completions", `{"model":"grok","messages":[{"role":"user","content":"hi"}]}`},
+		{http.MethodPost, "/chat/completions", `{"model":"grok","messages":[{"role":"user","content":"hi"}]}`},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			router.ServeHTTP(w, req)
+
+			require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should reach an OpenAI-compatible Grok handler", tc.path)
+			require.NotContains(t, w.Body.String(), service.AnthropicCompatUnsupportedProtocolMessage())
+		})
+	}
+}
+
 func TestGatewayRoutesOpenAIResponsesCompactPathIsRegistered(t *testing.T) {
 	router := newGatewayRoutesTestRouter()
 

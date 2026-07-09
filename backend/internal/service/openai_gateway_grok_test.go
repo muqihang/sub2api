@@ -158,6 +158,110 @@ func TestOpenAIGatewayService_ForwardGrokResponsesFailoverStoresQuotaSnapshot(t 
 	require.WithinDuration(t, time.Now().Add(17*time.Second), repo.lastTempUnschedUntil, 3*time.Second)
 }
 
+func TestOpenAIGatewayService_ForwardAsAnthropicGrokUsesXAIResponsesAndSanitizedBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{
+		"model":"claude-sonnet-4-5-20250929",
+		"stream":true,
+		"messages":[{"role":"user","content":"hello"}],
+		"metadata":{"user_id":"session-grok"}
+	}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type":   []string{"text/event-stream"},
+			"Xai-Request-Id": []string{"xai-msg-1"},
+		},
+		Body: io.NopCloser(strings.NewReader(
+			"event: response.output_text.delta\n" +
+				`data: {"type":"response.output_text.delta","delta":"hello"}` + "\n\n" +
+				"event: response.completed\n" +
+				`data: {"type":"response.completed","response":{"id":"resp_grok_msg","model":"grok-4.3","status":"completed","usage":{"input_tokens":2,"output_tokens":3}}}` + "\n\n",
+		)),
+	}}
+	svc := &OpenAIGatewayService{httpUpstream: upstream}
+	account := &Account{
+		ID:          903,
+		Name:        "grok-oauth",
+		Platform:    PlatformGrok,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token":  "grok-access-token",
+			"base_url":      xai.DefaultCLIBaseURL,
+			"model_mapping": map[string]any{"claude-sonnet-4-5-20250929": "grok-4.3"},
+		},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	result, err := svc.ForwardAsAnthropic(context.Background(), c, account, body, "prompt-cache-key", "grok-4.3")
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, xai.DefaultCLIBaseURL+"/responses", upstream.lastReq.URL.String())
+	require.Equal(t, "Bearer grok-access-token", upstream.lastReq.Header.Get("Authorization"))
+	require.Equal(t, "grok-4.3", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.False(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_key").Exists(), "Grok messages path must not apply Codex OAuth prompt cache transform")
+	require.NotContains(t, string(upstream.lastBody), "You are ChatGPT")
+	require.Contains(t, rec.Body.String(), "content_block_delta")
+	require.Equal(t, "grok-4.3", result.UpstreamModel)
+	require.Equal(t, 2, result.Usage.InputTokens)
+	require.Equal(t, 3, result.Usage.OutputTokens)
+}
+
+func TestOpenAIGatewayService_ForwardAsChatCompletionsGrokOAuthUsesXAIChatCompletions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"grok","stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type":   []string{"application/json"},
+			"Xai-Request-Id": []string{"xai-chat-1"},
+		},
+		Body: io.NopCloser(strings.NewReader(`{"id":"chatcmpl_grok","object":"chat.completion","model":"grok-4.3","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`)),
+	}}
+	svc := &OpenAIGatewayService{httpUpstream: upstream}
+	account := &Account{
+		ID:          904,
+		Name:        "grok-oauth",
+		Platform:    PlatformGrok,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"access_token":  "grok-access-token",
+			"base_url":      xai.DefaultCLIBaseURL,
+			"model_mapping": map[string]any{"grok": "grok-4.3"},
+		},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, xai.DefaultCLIBaseURL+"/chat/completions", upstream.lastReq.URL.String())
+	require.Equal(t, "Bearer grok-access-token", upstream.lastReq.Header.Get("Authorization"))
+	require.Equal(t, "grok-4.3", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.NotContains(t, string(upstream.lastBody), "prompt_cache_key")
+	require.Equal(t, "grok-4.3", result.UpstreamModel)
+	require.Equal(t, 2, result.Usage.InputTokens)
+	require.Equal(t, 3, result.Usage.OutputTokens)
+}
+
 type grokResponsesAccountRepoStub struct {
 	lastUpdateExtraID     int64
 	lastUpdateExtra       map[string]any

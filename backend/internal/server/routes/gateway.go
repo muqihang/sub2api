@@ -125,6 +125,14 @@ func registerGatewayRoutes(
 	if claudeCodeNativeAuth != nil {
 		v1GatewayAuth = claudeCodeNativeMessagesAuth(apiKeyAuth, claudeCodeNativeAuth)
 	}
+	isOpenAIResponsesCompatibleGatewayPlatform := func(c *gin.Context) bool {
+		switch getGroupPlatform(c) {
+		case service.PlatformOpenAI, service.PlatformGrok:
+			return true
+		default:
+			return false
+		}
+	}
 	requireOpenAIGroup := func(c *gin.Context) bool {
 		if getGroupPlatform(c) == service.PlatformOpenAI {
 			return true
@@ -185,6 +193,10 @@ func registerGatewayRoutes(
 	{
 		// /v1/messages: auto-route based on group platform
 		gateway.POST("/messages", func(c *gin.Context) {
+			if getGroupPlatform(c) == service.PlatformGrok {
+				h.OpenAIGateway.Messages(c)
+				return
+			}
 			if getGroupPlatform(c) == service.PlatformOpenAI && shouldAutoRouteOpenAIGroupToOpenAI(c.Request.Header) {
 				h.OpenAIGateway.Messages(c)
 				return
@@ -194,6 +206,17 @@ func registerGatewayRoutes(
 		// /v1/messages/count_tokens: ordinary OpenAI groups use Responses
 		// input_tokens; Claude native/bridge markers keep the local guarded path.
 		gateway.POST("/messages/count_tokens", func(c *gin.Context) {
+			if getGroupPlatform(c) == service.PlatformGrok {
+				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
+				c.JSON(http.StatusNotFound, gin.H{
+					"type": "error",
+					"error": gin.H{
+						"type":    "not_found_error",
+						"message": "Token counting is not supported for this platform",
+					},
+				})
+				return
+			}
 			if getGroupPlatform(c) == service.PlatformOpenAI && shouldRejectOpenAIGroupCountTokens(c.Request.Header) {
 				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
 				c.JSON(http.StatusNotFound, gin.H{
@@ -215,14 +238,14 @@ func registerGatewayRoutes(
 		gateway.GET("/usage", h.Gateway.Usage)
 		// OpenAI Responses API: auto-route based on group platform
 		gateway.POST("/responses", func(c *gin.Context) {
-			if getGroupPlatform(c) == service.PlatformOpenAI {
+			if isOpenAIResponsesCompatibleGatewayPlatform(c) {
 				h.OpenAIGateway.Responses(c)
 				return
 			}
 			writeAnthropicCompatUnsupportedProtocol(c)
 		})
 		gateway.POST("/responses/*subpath", func(c *gin.Context) {
-			if getGroupPlatform(c) == service.PlatformOpenAI {
+			if isOpenAIResponsesCompatibleGatewayPlatform(c) {
 				h.OpenAIGateway.Responses(c)
 				return
 			}
@@ -231,7 +254,7 @@ func registerGatewayRoutes(
 		gateway.GET("/responses", openAIGatewayHandler(h.OpenAIGateway.ResponsesWebSocket))
 		// OpenAI Chat Completions API: auto-route based on group platform
 		gateway.POST("/chat/completions", func(c *gin.Context) {
-			if getGroupPlatform(c) == service.PlatformOpenAI {
+			if isOpenAIResponsesCompatibleGatewayPlatform(c) {
 				h.OpenAIGateway.ChatCompletions(c)
 				return
 			}
@@ -273,7 +296,7 @@ func registerGatewayRoutes(
 
 	// OpenAI Responses API（不带v1前缀的别名）— auto-route based on group platform
 	responsesHandler := func(c *gin.Context) {
-		if getGroupPlatform(c) == service.PlatformOpenAI {
+		if isOpenAIResponsesCompatibleGatewayPlatform(c) {
 			h.OpenAIGateway.Responses(c)
 			return
 		}
@@ -292,7 +315,7 @@ func registerGatewayRoutes(
 	}
 	// OpenAI Chat Completions API（不带v1前缀的别名）— auto-route based on group platform
 	r.POST("/chat/completions", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
-		if getGroupPlatform(c) == service.PlatformOpenAI {
+		if isOpenAIResponsesCompatibleGatewayPlatform(c) {
 			h.OpenAIGateway.ChatCompletions(c)
 			return
 		}
