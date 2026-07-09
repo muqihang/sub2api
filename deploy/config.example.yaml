@@ -1111,6 +1111,10 @@ pricing:
 # 计费配置
 # =============================================================================
 billing:
+  # Conservative minimum balance required before forwarding balance-billed requests.
+  # Set to 0 to only require balance > 0.
+  # 余额计费请求转发前要求的保守最小余额；设为 0 则仅要求余额 > 0。
+  minimum_balance_reserve: 0.000001
   circuit_breaker:
     # Enable circuit breaker for billing service
     # 启用计费服务熔断器
