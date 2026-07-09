@@ -144,4 +144,23 @@ describe('useModelWhitelist', () => {
       modelMappings: [{ from: 'gpt-latest', to: 'gpt-5.4' }]
     })
   })
+
+  it('xAI/Grok model list includes official media models and presets', () => {
+    const models = getModelsByPlatform('xai')
+
+    expect(models).toEqual(expect.arrayContaining([
+      'grok-imagine',
+      'grok-imagine-image',
+      'grok-imagine-image-quality',
+      'grok-imagine-edit',
+      'grok-imagine-video',
+      'grok-imagine-video-1.5'
+    ]))
+    expect(getPresetMappingsByPlatform('xai')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: 'grok-imagine', to: 'grok-imagine-image-quality' }),
+      expect.objectContaining({ from: 'grok-imagine-edit', to: 'grok-imagine-edit' }),
+      expect.objectContaining({ from: 'grok-imagine-video-1.5', to: 'grok-imagine-video-1.5' })
+    ]))
+  })
+
 })

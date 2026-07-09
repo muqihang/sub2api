@@ -168,3 +168,13 @@ func TestMigration154AddsAccountAutoPauseExpiryPartialIndex(t *testing.T) {
 	require.Contains(t, sql, "auto_pause_on_expired = TRUE")
 	require.Contains(t, sql, "expires_at IS NOT NULL")
 }
+
+func TestMigration159BackfillsGrokMediaGenerationGroups(t *testing.T) {
+	content, err := FS.ReadFile("159_enable_grok_media_generation_groups.sql")
+	require.NoError(t, err)
+
+	sql := string(content)
+	require.Contains(t, sql, "UPDATE groups")
+	require.Contains(t, sql, "platform = 'grok'")
+	require.Contains(t, sql, "allow_image_generation = false")
+}

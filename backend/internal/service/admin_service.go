@@ -1793,6 +1793,11 @@ func (s *adminServiceImpl) GetGroupModelsListCandidates(ctx context.Context, id 
 	return candidates, nil
 }
 
+func defaultAllowImageGenerationForPlatform(platform string) bool {
+	// Grok image/video media routes use the existing image-generation group gate.
+	return platform == PlatformGrok
+}
+
 func defaultModelsListCandidateIDs(platform string) []string {
 	switch platform {
 	case PlatformOpenAI:
@@ -1916,6 +1921,8 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		}
 	}
 
+	allowImageGeneration := input.AllowImageGeneration || defaultAllowImageGenerationForPlatform(platform)
+
 	group := &Group{
 		Name:                            input.Name,
 		Description:                     input.Description,
@@ -1929,7 +1936,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		MonthlyLimitUSD:                 monthlyLimit,
 		AugmentGatewayEntitled:          input.AugmentGatewayEntitled,
 		CodexGatewayEntitled:            input.CodexGatewayEntitled,
-		AllowImageGeneration:            input.AllowImageGeneration,
+		AllowImageGeneration:            allowImageGeneration,
 		ImageRateIndependent:            input.ImageRateIndependent,
 		ImageRateMultiplier:             imageRateMultiplier,
 		PeakRateEnabled:                 peakEnabled,

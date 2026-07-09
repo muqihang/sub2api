@@ -601,4 +601,35 @@ describe('EditAccountModal', () => {
 
     expect(updateAccountMock).not.toHaveBeenCalled()
   })
+
+  it('loads and persists Grok OAuth model mappings', async () => {
+    const account = buildAccount()
+    account.platform = 'grok'
+    account.type = 'oauth'
+    account.credentials = {
+      access_token: 'redacted',
+      model_mapping: {
+        'grok-imagine': 'grok-imagine-image-quality'
+      }
+    }
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+
+    const requestInputs = wrapper.findAll('input[placeholder="admin.accounts.requestModel"]')
+    const actualInputs = wrapper.findAll('input[placeholder="admin.accounts.actualModel"]')
+    expect((requestInputs[0].element as HTMLInputElement).value).toBe('grok-imagine')
+    expect((actualInputs[0].element as HTMLInputElement).value).toBe('grok-imagine-image-quality')
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.model_mapping).toEqual({
+      'grok-imagine': 'grok-imagine-image-quality'
+    })
+  })
+
 })
