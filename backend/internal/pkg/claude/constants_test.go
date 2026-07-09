@@ -83,10 +83,12 @@ func TestDefaultModels_ExposeCurrentClaudeCodeNativeSetOnly(t *testing.T) {
 
 	require.Equal(t, []string{
 		"claude-opus-4-8",
+		"claude-sonnet-5",
 		"claude-sonnet-4-6",
 		"claude-haiku-4-5-20251001",
 	}, ids)
 	require.Equal(t, "Claude Opus 4.8", byID["claude-opus-4-8"].DisplayName)
+	require.Equal(t, "Claude Sonnet 5", byID["claude-sonnet-5"].DisplayName)
 	require.NotContains(t, byID, "claude-opus-4-7")
 	require.NotContains(t, byID, "claude-opus-4-6")
 	require.NotContains(t, byID, "claude-opus-4-5-20251101")
