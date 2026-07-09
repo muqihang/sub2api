@@ -150,14 +150,15 @@ def test_cp2_native_claude_overlay_models_are_current_curated_formal_pool_only(t
     }
 
     assert native_model_ids == {
+        "claude-fable-5",
         "claude-opus-4-8",
+        "claude-sonnet-5",
         "claude-sonnet-4-6",
         "claude-haiku-4-5-20251001",
     }
     assert "claude-opus-4-7" not in native_model_ids
     assert "claude-opus-4-5-20251101" not in native_model_ids
     assert "claude-sonnet-4-5-20250929" not in native_model_ids
-    assert "claude-fable-5" not in native_model_ids
 
 
 def test_cp2_model_list_capture_shows_mixed_models_but_marks_bridges_disabled(tmp_path: Path):

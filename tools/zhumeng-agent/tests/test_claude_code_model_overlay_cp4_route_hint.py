@@ -276,7 +276,9 @@ def test_cp4_guard_catalog_native_claude_models_are_current_curated_only(tmp_pat
     }
 
     assert native_models == {
+        "claude-fable-5",
         "claude-opus-4-8",
+        "claude-sonnet-5",
         "claude-sonnet-4-6",
         "claude-haiku-4-5-20251001",
     }
@@ -284,7 +286,6 @@ def test_cp4_guard_catalog_native_claude_models_are_current_curated_only(tmp_pat
     assert "claude-haiku-4-5" not in native_models
     assert "claude-opus-4-5-20251101" not in native_models
     assert "claude-sonnet-4-5-20250929" not in native_models
-    assert "claude-fable-5" not in native_models
 
 
 def json_escape(value: str) -> str:

@@ -13,7 +13,7 @@ from typing import Mapping
 
 from .runtime_installer import ManagedRuntimeInstallPlan, ensure_managed_runtime_write_path
 
-CLAUDE_NATIVE_MODEL_ALLOWLIST = frozenset({"claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"})
+CLAUDE_NATIVE_MODEL_ALLOWLIST = frozenset({"claude-fable-5", "claude-opus-4-8", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"})
 CLAUDE_CODE_BRIDGE_MODEL_IDS = (
     "claude-code-bridge-gpt-5.5",
     "claude-code-bridge-gpt-5.4",
@@ -1216,11 +1216,31 @@ def _resolution_for_entry(
 def _default_cp2_models() -> tuple[RuntimeModelOverlayEntry, ...]:
     return (
         RuntimeModelOverlayEntry(
+            model_id="claude-fable-5",
+            display_label="Claude Fable 5",
+            provider="claude",
+            route="claude_native",
+            upstream_model_id="claude-fable-5",
+            client_type="claude_code_native",
+            live_enabled=True,
+            formal_pool_eligible=True,
+        ),
+        RuntimeModelOverlayEntry(
             model_id="claude-opus-4-8",
             display_label="Claude Opus 4.8",
             provider="claude",
             route="claude_native",
             upstream_model_id="claude-opus-4-8",
+            client_type="claude_code_native",
+            live_enabled=True,
+            formal_pool_eligible=True,
+        ),
+        RuntimeModelOverlayEntry(
+            model_id="claude-sonnet-5",
+            display_label="Claude Sonnet 5",
+            provider="claude",
+            route="claude_native",
+            upstream_model_id="claude-sonnet-5",
             client_type="claude_code_native",
             live_enabled=True,
             formal_pool_eligible=True,

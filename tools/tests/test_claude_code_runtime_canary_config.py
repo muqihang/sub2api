@@ -417,7 +417,9 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
 
         self.assertEqual(
             {
+                "claude-fable-5",
                 "claude-opus-4-8",
+                "claude-sonnet-5",
                 "claude-sonnet-4-6",
                 "claude-haiku-4-5-20251001",
             },
@@ -425,7 +427,6 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
         )
         self.assertEqual(native_models, catalog_native_models)
         self.assertNotIn("claude-opus-4-7", native_models)
-        self.assertNotIn("claude-fable-5", native_models)
         self.assertNotIn("claude-opus-4-5-20251101", native_models)
         self.assertNotIn("claude-sonnet-4-5-20250929", native_models)
 
@@ -725,7 +726,9 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
 
         self.assertIn("zhumeng-claude-code-native", sql)
         self.assertIn("WHERE id = 8", sql)
+        self.assertIn("claude-fable-5", sql)
         self.assertIn("claude-opus-4-8", sql)
+        self.assertIn("claude-sonnet-5", sql)
         self.assertIn("claude-sonnet-4-6", sql)
         self.assertIn("claude-haiku-4-5-20251001", sql)
         self.assertIn("claude-code-bridge-gpt-5.5", sql)
@@ -734,7 +737,6 @@ class ClaudeCodeRuntimeCanaryConfigTests(unittest.TestCase):
         self.assertIn("claude-code-bridge-glm-5.2-1m", sql)
         self.assertIn("claude-code-bridge-kimi-k2.7-code", sql)
         self.assertNotIn("claude-opus-4-7", sql)
-        self.assertNotIn("claude-fable-5", sql)
         self.assertNotIn("claude-opus-4-5-20251101", sql)
         self.assertNotIn("claude-sonnet-4-5-20250929", sql)
 
