@@ -1790,7 +1790,7 @@ func (s *RateLimitService) UpdateSessionWindow(ctx context.Context, account *Acc
 	// 如果状态为allowed且之前有限流，说明窗口已重置，清除限流状态
 	if status == "allowed" && account.IsRateLimited() {
 		if err := s.ClearRateLimit(ctx, account.ID); err != nil {
-			slog.Warn("rate_limit_clear_failed", "account_id", account.ID, "error", err)
+			slog.Warn("rate_limit_clear_failed", "error", err)
 		}
 	}
 }
