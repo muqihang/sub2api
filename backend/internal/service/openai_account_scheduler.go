@@ -45,6 +45,7 @@ var openAIAdvancedSchedulerSettingSF singleflight.Group
 
 type OpenAIAccountScheduleRequest struct {
 	GroupID                 *int64
+	TargetPlatform          string
 	SessionHash             string
 	StickyAccountID         int64
 	PreserveStickyBinding   bool
@@ -275,8 +276,9 @@ func (s *defaultOpenAIAccountScheduler) Select(
 		s.metrics.recordSelect(decision)
 	}()
 
+	targetPlatform := openAISchedulerTargetPlatform(req.TargetPlatform)
 	previousResponseID := strings.TrimSpace(req.PreviousResponseID)
-	if previousResponseID != "" {
+	if targetPlatform == PlatformOpenAI && previousResponseID != "" {
 		selection, err := s.service.selectAccountByPreviousResponseIDForCapability(
 			ctx,
 			req.GroupID,
@@ -371,7 +373,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, false, nil
 	}
-	if shouldClearStickySession(account, req.RequestedModel) || !account.IsOpenAI() || !account.IsSchedulable() {
+	if shouldClearStickySession(account, req.RequestedModel) || !accountMatchesOpenAISchedulerPlatform(account, req.TargetPlatform) || !account.IsSchedulable() {
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, false, nil
 	}
@@ -382,7 +384,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, false, nil
 	}
-	account = s.service.recheckSelectedOpenAIAccountFromDB(ctx, account, req.RequestedModel, req.RequireCompact, req.RequiredCapability, req.RequiredImageCapability)
+	account = s.service.recheckSelectedSchedulerAccountFromDB(ctx, account, req)
 	if account == nil || !openAIStickyAccountMatchesGroup(account, req.GroupID) || !s.isAccountTransportCompatible(account, req.RequiredTransport) {
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, false, nil
@@ -901,11 +903,11 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 	compactBlocked := false
 	for i := 0; i < len(selectionOrder); i++ {
 		candidate := selectionOrder[i]
-		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability)
+		fresh := s.service.resolveFreshSchedulableSchedulerAccount(ctx, candidate.account, req)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
-		fresh = s.service.recheckSelectedOpenAIAccountFromDB(ctx, fresh, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability)
+		fresh = s.service.recheckSelectedSchedulerAccountFromDB(ctx, fresh, req)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
@@ -948,7 +950,8 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
 ) (*AccountSelectionResult, int, int, float64, error) {
-	accounts, err := s.service.listSchedulableAccounts(ctx, req.GroupID)
+	targetPlatform := openAISchedulerTargetPlatform(req.TargetPlatform)
+	accounts, err := s.service.listSchedulableAccountsForPlatform(ctx, req.GroupID, targetPlatform)
 	if err != nil {
 		return nil, 0, 0, 0, err
 	}
@@ -972,14 +975,14 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 				continue
 			}
 		}
-		if !account.IsSchedulable() || !account.IsOpenAI() {
+		if !account.IsSchedulable() || !accountMatchesOpenAISchedulerPlatform(account, req.TargetPlatform) {
 			continue
 		}
-		if s.service.isOpenAIAccountRuntimeBlocked(account) {
+		if targetPlatform == PlatformOpenAI && s.service.isOpenAIAccountRuntimeBlocked(account) {
 			continue
 		}
 		// require_privacy_set: 跳过 privacy 未设置的账号并标记异常
-		if schedGroup != nil && schedGroup.RequirePrivacySet && !account.IsPrivacySet() {
+		if targetPlatform == PlatformOpenAI && schedGroup != nil && schedGroup.RequirePrivacySet && !account.IsPrivacySet() {
 			s.service.BlockAccountScheduling(account, time.Time{}, "privacy_not_set")
 			_ = s.service.accountRepo.SetError(ctx, account.ID,
 				fmt.Sprintf("Privacy not set, required by group [%s]", schedGroup.Name))
@@ -1057,11 +1060,11 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	cfg := s.service.schedulingConfig()
 	// WaitPlan.MaxConcurrency 使用 Concurrency（非 EffectiveLoadFactor），因为 WaitPlan 控制的是 Redis 实际并发槽位等待。
 	for _, candidate := range selectionOrder {
-		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability)
+		fresh := s.service.resolveFreshSchedulableSchedulerAccount(ctx, candidate.account, req)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
-		fresh = s.service.recheckSelectedOpenAIAccountFromDB(ctx, fresh, req.RequestedModel, false, req.RequiredCapability, req.RequiredImageCapability)
+		fresh = s.service.recheckSelectedSchedulerAccountFromDB(ctx, fresh, req)
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
@@ -1093,9 +1096,37 @@ func (s *defaultOpenAIAccountScheduler) isAccountTransportCompatible(account *Ac
 	return s.service.isOpenAIAccountTransportCompatible(account, requiredTransport)
 }
 
+func openAISchedulerTargetPlatform(platform string) string {
+	platform = strings.TrimSpace(platform)
+	if platform == "" {
+		return PlatformOpenAI
+	}
+	return platform
+}
+
+func accountMatchesOpenAISchedulerPlatform(account *Account, platform string) bool {
+	if account == nil {
+		return false
+	}
+	return account.Platform == openAISchedulerTargetPlatform(platform)
+}
+
 func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.Context, account *Account, req OpenAIAccountScheduleRequest) bool {
 	if account == nil {
 		return false
+	}
+	targetPlatform := openAISchedulerTargetPlatform(req.TargetPlatform)
+	if account.Platform != targetPlatform {
+		return false
+	}
+	if targetPlatform != PlatformOpenAI {
+		if !account.IsSchedulableForModelWithContext(ctx, req.RequestedModel) {
+			return false
+		}
+		if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
+			return false
+		}
+		return req.RequiredCapability == "" && req.RequiredImageCapability == "" && !req.RequireCompact
 	}
 	if s != nil && s.service != nil && s.service.isOpenAIAccountRuntimeBlocked(account) {
 		return false
@@ -1362,6 +1393,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 
 	return scheduler.Select(ctx, OpenAIAccountScheduleRequest{
 		GroupID:                 groupID,
+		TargetPlatform:          PlatformOpenAI,
 		SessionHash:             sessionHash,
 		StickyAccountID:         stickyAccountID,
 		PreviousResponseID:      previousResponseID,

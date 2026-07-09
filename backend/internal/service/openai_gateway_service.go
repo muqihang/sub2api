@@ -2652,18 +2652,26 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 }
 
 func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64) ([]Account, error) {
+	return s.listSchedulableAccountsForPlatform(ctx, groupID, PlatformOpenAI)
+}
+
+func (s *OpenAIGatewayService) listSchedulableAccountsForPlatform(ctx context.Context, groupID *int64, platform string) ([]Account, error) {
+	platform = strings.TrimSpace(platform)
+	if platform == "" {
+		platform = PlatformOpenAI
+	}
 	if s.schedulerSnapshot != nil {
-		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, PlatformOpenAI, false)
+		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, false)
 		return accounts, err
 	}
 	var accounts []Account
 	var err error
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
-		accounts, err = s.accountRepo.ListSchedulableByPlatform(ctx, PlatformOpenAI)
+		accounts, err = s.accountRepo.ListSchedulableByPlatform(ctx, platform)
 	} else if groupID != nil {
-		accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, PlatformOpenAI)
+		accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, platform)
 	} else {
-		accounts, err = s.accountRepo.ListSchedulableUngroupedByPlatform(ctx, PlatformOpenAI)
+		accounts, err = s.accountRepo.ListSchedulableUngroupedByPlatform(ctx, platform)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("query accounts failed: %w", err)
@@ -2701,6 +2709,24 @@ func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccount(ctx context.
 	return fresh
 }
 
+func (s *OpenAIGatewayService) resolveFreshSchedulableSchedulerAccount(ctx context.Context, account *Account, req OpenAIAccountScheduleRequest) *Account {
+	if openAISchedulerTargetPlatform(req.TargetPlatform) == PlatformOpenAI {
+		return s.resolveFreshSchedulableOpenAIAccount(ctx, account, req.RequestedModel, req.RequireCompact, req.RequiredCapability, req.RequiredImageCapability)
+	}
+	fresh := account
+	if s.schedulerSnapshot != nil {
+		current, err := s.getSchedulableAccount(ctx, account.ID)
+		if err != nil || current == nil {
+			return nil
+		}
+		fresh = current
+	}
+	if !isSchedulerAccountEligibleForRequest(ctx, fresh, req) {
+		return nil
+	}
+	return fresh
+}
+
 func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Context, account *Account, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability) *Account {
 	if account == nil {
 		return nil
@@ -2723,6 +2749,43 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 		return nil
 	}
 	return latest
+}
+
+func (s *OpenAIGatewayService) recheckSelectedSchedulerAccountFromDB(ctx context.Context, account *Account, req OpenAIAccountScheduleRequest) *Account {
+	if openAISchedulerTargetPlatform(req.TargetPlatform) == PlatformOpenAI {
+		return s.recheckSelectedOpenAIAccountFromDB(ctx, account, req.RequestedModel, req.RequireCompact, req.RequiredCapability, req.RequiredImageCapability)
+	}
+	if account == nil {
+		return nil
+	}
+	if s.schedulerSnapshot == nil || s.accountRepo == nil {
+		if !isSchedulerAccountEligibleForRequest(ctx, account, req) {
+			return nil
+		}
+		return account
+	}
+	latest, err := s.accountRepo.GetByID(ctx, account.ID)
+	if err != nil || latest == nil {
+		return nil
+	}
+	if !isSchedulerAccountEligibleForRequest(ctx, latest, req) {
+		return nil
+	}
+	return latest
+}
+
+func isSchedulerAccountEligibleForRequest(ctx context.Context, account *Account, req OpenAIAccountScheduleRequest) bool {
+	targetPlatform := openAISchedulerTargetPlatform(req.TargetPlatform)
+	if targetPlatform == PlatformOpenAI {
+		return isOpenAIAccountEligibleForRequest(ctx, account, req.RequestedModel, req.RequireCompact, req.RequiredCapability, req.RequiredImageCapability)
+	}
+	if account == nil || account.Platform != targetPlatform || !account.IsSchedulableForModelWithContext(ctx, req.RequestedModel) {
+		return false
+	}
+	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
+		return false
+	}
+	return req.RequiredCapability == "" && req.RequiredImageCapability == "" && !req.RequireCompact
 }
 
 func (s *OpenAIGatewayService) getSchedulableAccount(ctx context.Context, accountID int64) (*Account, error) {

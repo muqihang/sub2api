@@ -19,10 +19,18 @@ import (
 )
 
 func newGatewayRoutesTestRouter() *gin.Engine {
-	return newGatewayRoutesTestRouterWithAugmentGatewaySpy(nil)
+	return newGatewayRoutesTestRouterWithPlatformAndAugmentGatewaySpy(service.PlatformOpenAI, nil)
 }
 
 func newGatewayRoutesTestRouterWithAugmentGatewaySpy(spy *gatewayRoutesAugmentGatewayExecutorSpy) *gin.Engine {
+	return newGatewayRoutesTestRouterWithPlatformAndAugmentGatewaySpy(service.PlatformOpenAI, spy)
+}
+
+func newGatewayRoutesTestRouterWithPlatform(platform string) *gin.Engine {
+	return newGatewayRoutesTestRouterWithPlatformAndAugmentGatewaySpy(platform, nil)
+}
+
+func newGatewayRoutesTestRouterWithPlatformAndAugmentGatewaySpy(platform string, spy *gatewayRoutesAugmentGatewayExecutorSpy) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 
@@ -67,7 +75,7 @@ func newGatewayRoutesTestRouterWithAugmentGatewaySpy(spy *gatewayRoutesAugmentGa
 			groupID := int64(1)
 			c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{
 				GroupID: &groupID,
-				Group:   &service.Group{Platform: service.PlatformOpenAI},
+				Group:   &service.Group{Platform: platform},
 			})
 			c.Next()
 		}),
@@ -117,6 +125,35 @@ func (s *gatewayRoutesAugmentGatewayExecutorSpy) StreamCalls() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.streamCalls
+}
+
+func TestGatewayRoutesGrokMediaRoutesAreRegistered(t *testing.T) {
+	router := newGatewayRoutesTestRouterWithPlatform(service.PlatformGrok)
+
+	for _, tc := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodPost, "/v1/images/generations", `{"model":"grok-imagine","prompt":"draw"}`},
+		{http.MethodPost, "/v1/images/edits", `{"model":"grok-imagine-edit","prompt":"edit"}`},
+		{http.MethodPost, "/v1/videos/generations", `{"model":"grok-imagine-video","prompt":"video"}`},
+		{http.MethodGet, "/v1/videos/video_123", ``},
+		{http.MethodPost, "/images/generations", `{"model":"grok-imagine","prompt":"draw"}`},
+		{http.MethodPost, "/images/edits", `{"model":"grok-imagine-edit","prompt":"edit"}`},
+		{http.MethodPost, "/videos/generations", `{"model":"grok-imagine-video","prompt":"video"}`},
+		{http.MethodGet, "/videos/video_123", ``},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			router.ServeHTTP(w, req)
+
+			require.NotEqual(t, http.StatusNotFound, w.Code, "Grok media route should reach the Grok media handler instead of the platform unsupported gate")
+		})
+	}
 }
 
 func TestGatewayRoutesOpenAIResponsesCompactPathIsRegistered(t *testing.T) {
