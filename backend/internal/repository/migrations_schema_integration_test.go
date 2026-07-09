@@ -87,6 +87,10 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	requireColumn(t, tx, "usage_billing_dedup_archive", "request_fingerprint", "character varying", 64, false)
 	requireIndex(t, tx, "usage_billing_dedup_archive", "usage_billing_dedup_archive_pkey")
 
+	// ops_system_logs: API key id index for operational log triage.
+	requireColumn(t, tx, "ops_system_logs", "api_key_id", "bigint", 0, true)
+	requireIndex(t, tx, "ops_system_logs", "idx_ops_system_logs_api_key_id_created_at")
+
 	// settings table should exist
 	var settingsRegclass sql.NullString
 	require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT to_regclass('public.settings')").Scan(&settingsRegclass))
