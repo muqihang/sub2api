@@ -166,8 +166,11 @@ func validateAndSetAPIKeyContext(
 		}
 		allowed, _ := ip.CheckIPRestrictionWithCompiledRules(clientIP, apiKey.CompiledIPWhitelist, apiKey.CompiledIPBlacklist)
 		if !allowed {
+			if clientIP == "" {
+				clientIP = "unknown"
+			}
 			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonIPRestriction)
-			writeError(c, 403, "ACCESS_DENIED", "Access denied")
+			writeError(c, 403, "ACCESS_DENIED", "Access denied. Your IP is "+clientIP)
 			return false
 		}
 	}
