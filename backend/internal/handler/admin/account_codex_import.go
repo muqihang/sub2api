@@ -106,7 +106,7 @@ type codexJWTOpenAIClaims struct {
 }
 
 type codexAccountIndex struct {
-	accountsByKey map[string]service.Account
+	accountsByKey map[string][]service.Account
 }
 
 func (h *AccountHandler) ImportCodexSession(c *gin.Context) {
@@ -178,7 +178,7 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 	}
 	skipMixedChannelCheck := req.ConfirmMixedChannelRisk != nil && *req.ConfirmMixedChannelRisk
 
-	seenIdentity := map[string]int{}
+	seenIdentity := map[string]codexSeenIdentity{}
 	for _, entry := range entries {
 		item, err := normalizeCodexImportEntry(entry)
 		if err != nil {
@@ -225,7 +225,7 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 			})
 		}
 
-		if duplicateIndex, ok := firstSeenCodexIdentity(seenIdentity, item.IdentityKeys); ok {
+		if duplicateIndex, ok := firstSeenCodexIdentity(seenIdentity, item.IdentityKeys, item.UserID); ok {
 			message := fmt.Sprintf("与第 %d 条导入项重复，已跳过", duplicateIndex)
 			result.Skipped++
 			result.Items = append(result.Items, CodexSessionImportItem{
@@ -241,9 +241,18 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 			})
 			continue
 		}
-		markCodexIdentitySeen(seenIdentity, item.IdentityKeys, entry.Index)
+		markCodexIdentitySeen(seenIdentity, item.IdentityKeys, entry.Index, item.UserID)
 
-		if existing := index.Find(item.IdentityKeys); existing != nil && updateExisting {
+		existing, matchedKey := index.Find(item.IdentityKeys, item.UserID)
+		if existing != nil && updateExisting {
+			if strings.HasPrefix(matchedKey, "account:") && item.UserID != "" &&
+				codexCredentialString(existing.Credentials, "chatgpt_user_id") == "" {
+				result.Warnings = append(result.Warnings, CodexSessionImportMessage{
+					Index:   entry.Index,
+					Name:    accountName,
+					Message: "已有账号未记录 chatgpt_user_id，已按共享的 chatgpt_account_id 匹配并回填，请确认两者属于同一用户",
+				})
+			}
 			if codexImportShouldPreserveExistingRefresh(existing, item) {
 				result.Warnings = append(result.Warnings, CodexSessionImportMessage{
 					Index:   entry.Index,
@@ -815,9 +824,6 @@ func buildCodexIdentityKeys(accountID, userID, email, accessToken string) []stri
 	keys := make([]string, 0, 4)
 	accountID = strings.TrimSpace(accountID)
 	userID = strings.TrimSpace(userID)
-	if accountID != "" {
-		keys = append(keys, "account:"+accountID)
-	}
 	if userID != "" {
 		keys = append(keys, "user:"+userID)
 	}
@@ -828,6 +834,9 @@ func buildCodexIdentityKeys(accountID, userID, email, accessToken string) []stri
 	}
 	if accessToken = strings.TrimSpace(accessToken); accessToken != "" {
 		keys = append(keys, "access:"+codexTokenFingerprint(accessToken))
+	}
+	if accountID != "" {
+		keys = append(keys, "account:"+accountID)
 	}
 	return keys
 }
@@ -849,7 +858,7 @@ func codexImportShouldPreserveExistingRefresh(existing *service.Account, item *c
 }
 
 func buildCodexAccountIndex(accounts []service.Account) *codexAccountIndex {
-	index := &codexAccountIndex{accountsByKey: map[string]service.Account{}}
+	index := &codexAccountIndex{accountsByKey: map[string][]service.Account{}}
 	for _, account := range accounts {
 		index.Add(account)
 	}
@@ -861,7 +870,7 @@ func (i *codexAccountIndex) Add(account service.Account) {
 		return
 	}
 	if i.accountsByKey == nil {
-		i.accountsByKey = map[string]service.Account{}
+		i.accountsByKey = map[string][]service.Account{}
 	}
 	i.remove(account.ID)
 	keys := buildCodexIdentityKeys(
@@ -871,7 +880,7 @@ func (i *codexAccountIndex) Add(account service.Account) {
 		codexCredentialString(account.Credentials, "access_token"),
 	)
 	for _, key := range keys {
-		i.accountsByKey[key] = account
+		i.accountsByKey[key] = upsertCodexAccount(i.accountsByKey[key], account)
 	}
 }
 
@@ -879,37 +888,77 @@ func (i *codexAccountIndex) remove(accountID int64) {
 	if i == nil || i.accountsByKey == nil || accountID <= 0 {
 		return
 	}
-	for key, account := range i.accountsByKey {
-		if account.ID == accountID {
+	for key, accounts := range i.accountsByKey {
+		kept := accounts[:0]
+		for _, account := range accounts {
+			if account.ID != accountID {
+				kept = append(kept, account)
+			}
+		}
+		if len(kept) == 0 {
 			delete(i.accountsByKey, key)
+			continue
 		}
+		i.accountsByKey[key] = kept
 	}
 }
 
-func (i *codexAccountIndex) Find(keys []string) *service.Account {
+func upsertCodexAccount(accounts []service.Account, account service.Account) []service.Account {
+	for idx := range accounts {
+		if accounts[idx].ID == account.ID {
+			accounts[idx] = account
+			return accounts
+		}
+	}
+	return append(accounts, account)
+}
+
+func (i *codexAccountIndex) Find(keys []string, userID string) (*service.Account, string) {
 	if i == nil {
-		return nil
+		return nil, ""
 	}
 	for _, key := range keys {
-		if account, ok := i.accountsByKey[key]; ok {
-			return &account
+		for _, account := range i.accountsByKey[key] {
+			if codexIdentityConflicts(key, userID, codexCredentialString(account.Credentials, "chatgpt_user_id")) {
+				continue
+			}
+			return &account, key
 		}
 	}
-	return nil
+	return nil, ""
 }
 
-func firstSeenCodexIdentity(seen map[string]int, keys []string) (int, bool) {
+func codexIdentityConflicts(key, userID, storedUserID string) bool {
+	if !strings.HasPrefix(key, "account:") {
+		return false
+	}
+	userID = strings.TrimSpace(userID)
+	storedUserID = strings.TrimSpace(storedUserID)
+	return userID != "" && storedUserID != "" && userID != storedUserID
+}
+
+type codexSeenIdentity struct {
+	index  int
+	userID string
+}
+
+func firstSeenCodexIdentity(seen map[string]codexSeenIdentity, keys []string, userID string) (int, bool) {
 	for _, key := range keys {
-		if index, ok := seen[key]; ok {
-			return index, true
+		entry, ok := seen[key]
+		if !ok {
+			continue
 		}
+		if codexIdentityConflicts(key, userID, entry.userID) {
+			continue
+		}
+		return entry.index, true
 	}
 	return 0, false
 }
 
-func markCodexIdentitySeen(seen map[string]int, keys []string, index int) {
+func markCodexIdentitySeen(seen map[string]codexSeenIdentity, keys []string, index int, userID string) {
 	for _, key := range keys {
-		seen[key] = index
+		seen[key] = codexSeenIdentity{index: index, userID: userID}
 	}
 }
 

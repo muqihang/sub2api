@@ -302,6 +302,12 @@ func TestResolveCodexImportExpiryForNoRefreshTokenUsesEarlierRequestExpiry(t *te
 
 func TestCodexIdentityKeysPreferStrongIdentifiers(t *testing.T) {
 	keys := buildCodexIdentityKeys("acct-1", "user-1", "same@example.com", "token")
+	if len(keys) == 0 || keys[0] != "user:user-1" {
+		t.Fatalf("user key should have highest priority: %v", keys)
+	}
+	if keys[len(keys)-1] != "account:acct-1" {
+		t.Fatalf("shared account key should be last fallback: %v", keys)
+	}
 	for _, key := range keys {
 		if strings.HasPrefix(key, "email:") {
 			t.Fatalf("strong identity should not include email fallback: %v", keys)
@@ -325,6 +331,110 @@ func TestCodexIdentityKeysPreferStrongIdentifiers(t *testing.T) {
 	}
 }
 
+func TestCodexAccountIndexDoesNotMatchDifferentUsersInSameChatGPTAccount(t *testing.T) {
+	existing := service.Account{
+		ID: 10,
+		Credentials: map[string]any{
+			"chatgpt_account_id": "team-1",
+			"chatgpt_user_id":    "user-1",
+			"access_token":       "token-1",
+			"refresh_token":      "refresh-1",
+		},
+	}
+	index := buildCodexAccountIndex([]service.Account{existing})
+
+	keys := buildCodexImportIdentityKeys("team-1", "user-2", "", "token-2", "refresh-2")
+	if got, _ := index.Find(keys, "user-2"); got != nil {
+		t.Fatalf("Find matched account ID %d for a different chatgpt_user_id in the same team", got.ID)
+	}
+
+	keys = buildCodexImportIdentityKeys("team-1", "user-1", "", "token-2", "refresh-2")
+	got, _ := index.Find(keys, "user-1")
+	if got == nil || got.ID != existing.ID {
+		t.Fatalf("Find by same chatgpt_user_id = %v, want account ID %d", got, existing.ID)
+	}
+}
+
+func TestCodexAccountIndexFallsBackToAccountKeyWhenRefreshTokenExistsAndUserIDMissing(t *testing.T) {
+	legacy := service.Account{
+		ID: 20,
+		Credentials: map[string]any{
+			"chatgpt_account_id": "team-1",
+			"access_token":       "legacy-token",
+			"refresh_token":      "legacy-refresh",
+		},
+	}
+	index := buildCodexAccountIndex([]service.Account{legacy})
+
+	keys := buildCodexImportIdentityKeys("team-1", "user-1", "", "new-token", "new-refresh")
+	got, matchedKey := index.Find(keys, "user-1")
+	if got == nil || got.ID != legacy.ID || matchedKey != "account:team-1" {
+		t.Fatalf("Find legacy account = (%v, %q), want account ID %d by account key", got, matchedKey, legacy.ID)
+	}
+}
+
+func TestCodexAccountIndexStoresMultipleSharedAccountCandidates(t *testing.T) {
+	accounts := []service.Account{
+		{ID: 1, Credentials: map[string]any{"chatgpt_account_id": "team-1", "chatgpt_user_id": "user-1", "access_token": "token-1", "refresh_token": "refresh-1"}},
+		{ID: 2, Credentials: map[string]any{"chatgpt_account_id": "team-1", "chatgpt_user_id": "user-2", "access_token": "token-2", "refresh_token": "refresh-2"}},
+	}
+	index := buildCodexAccountIndex(accounts)
+
+	keys := buildCodexImportIdentityKeys("team-1", "user-2", "", "new-token", "refresh-new")
+	got, _ := index.Find(keys, "user-2")
+	if got == nil || got.ID != 2 {
+		t.Fatalf("Find should select matching user candidate, got %v", got)
+	}
+}
+
+func TestCodexAccountIndexReplacesStaleCandidateAfterUpsert(t *testing.T) {
+	legacy := service.Account{
+		ID: 30,
+		Credentials: map[string]any{
+			"chatgpt_account_id": "team-1",
+			"access_token":       "legacy-token",
+			"refresh_token":      "legacy-refresh",
+		},
+	}
+	index := buildCodexAccountIndex([]service.Account{legacy})
+	backfilled := legacy
+	backfilled.Credentials = map[string]any{
+		"chatgpt_account_id": "team-1",
+		"chatgpt_user_id":    "user-1",
+		"access_token":       "new-token",
+		"refresh_token":      "new-refresh",
+	}
+	index.Add(backfilled)
+
+	keys := buildCodexImportIdentityKeys("team-1", "user-2", "", "other-token", "refresh-other")
+	if got, _ := index.Find(keys, "user-2"); got != nil {
+		t.Fatalf("stale no-user candidate matched after upsert: account ID %d", got.ID)
+	}
+
+	keys = buildCodexImportIdentityKeys("team-1", "user-1", "", "other-token", "refresh-other")
+	got, _ := index.Find(keys, "user-1")
+	if got == nil || got.ID != backfilled.ID {
+		t.Fatalf("Find after upsert = %v, want account ID %d", got, backfilled.ID)
+	}
+}
+
+func TestCodexIdentitySeenDistinguishesTeamMembers(t *testing.T) {
+	seen := map[string]codexSeenIdentity{}
+	member1 := buildCodexIdentityKeys("team-1", "user-1", "", "token-1")
+	markCodexIdentitySeen(seen, member1, 1, "user-1")
+
+	member2 := buildCodexIdentityKeys("team-1", "user-2", "", "token-2")
+	if index, ok := firstSeenCodexIdentity(seen, member2, "user-2"); ok {
+		t.Fatalf("different team member treated as duplicate of entry %d", index)
+	}
+
+	again := buildCodexIdentityKeys("team-1", "user-1", "", "token-3")
+	index, ok := firstSeenCodexIdentity(seen, again, "user-1")
+	if !ok || index != 1 {
+		t.Fatalf("same user re-entry dedup = (%d, %v), want (1, true)", index, ok)
+	}
+}
+
 func TestCodexAccountIndexAccessTokenOnlyDoesNotMatchSharedAccountOrUser(t *testing.T) {
 	existing := service.Account{
 		ID: 22,
@@ -338,12 +448,12 @@ func TestCodexAccountIndexAccessTokenOnlyDoesNotMatchSharedAccountOrUser(t *test
 	index := buildCodexAccountIndex([]service.Account{existing})
 
 	keys := buildCodexImportIdentityKeys("team-1", "user-1", "", "new-access-token", "")
-	if got := index.Find(keys); got != nil {
+	if got, _ := index.Find(keys, "user-1"); got != nil {
 		t.Fatalf("accessToken-only import matched existing account ID %d despite different access token", got.ID)
 	}
 
 	keys = buildCodexImportIdentityKeys("team-1", "user-1", "", "old-access-token", "")
-	got := index.Find(keys)
+	got, _ := index.Find(keys, "user-1")
 	if got == nil || got.ID != existing.ID {
 		t.Fatalf("accessToken-only duplicate by fingerprint = %v, want account ID %d", got, existing.ID)
 	}
