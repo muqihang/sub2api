@@ -35,6 +35,7 @@ func TestProvideAdminHandlersWiresEntityHandler(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil,
 		entityHandler,
 		nil,
 		nil,

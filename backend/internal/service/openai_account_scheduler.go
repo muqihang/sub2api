@@ -1123,6 +1123,11 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.C
 		if !account.IsSchedulableForModelWithContext(ctx, req.RequestedModel) {
 			return false
 		}
+		if account.IsGrok() {
+			if paused, _ := shouldAutoPauseGrokAccountByQuota(account); paused {
+				return false
+			}
+		}
 		if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
 			return false
 		}

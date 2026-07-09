@@ -55,6 +55,11 @@ func (s *OpenAIGatewayService) selectAccountForModelFromPlatform(ctx context.Con
 		if !account.IsSchedulable() || account.Platform != platform {
 			continue
 		}
+		if account.IsGrok() {
+			if paused, _ := shouldAutoPauseGrokAccountByQuota(account); paused {
+				continue
+			}
+		}
 		if requestedModel != "" && !account.IsModelSupported(requestedModel) {
 			continue
 		}

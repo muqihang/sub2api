@@ -3840,7 +3840,15 @@ export default {
         gemini3Image: 'G31FI',
         claude: 'Claude',
         passiveSampled: '被动采样',
-        activeQuery: '查询'
+        activeQuery: '查询',
+        grokProbe: '探测',
+        grokProbeTooltip: '用最小 responses 请求查询 xAI 限流响应头',
+        grokResetUnsupported: '不可重置',
+        grokResetUnsupportedTooltip: 'xAI 未提供订阅配额重置接口',
+        grokNoHeaders: '未观察到配额响应头',
+        grokRequests: '请求',
+        grokTokens: 'Token',
+        grokRetryAfter: '{time} 后重试'
       },
       openaiQuotaReset: {
         count: '次数',

@@ -2782,6 +2782,11 @@ func isSchedulerAccountEligibleForRequest(ctx context.Context, account *Account,
 	if account == nil || account.Platform != targetPlatform || !account.IsSchedulableForModelWithContext(ctx, req.RequestedModel) {
 		return false
 	}
+	if account.IsGrok() {
+		if paused, _ := shouldAutoPauseGrokAccountByQuota(account); paused {
+			return false
+		}
+	}
 	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
 		return false
 	}

@@ -4650,7 +4650,15 @@ export default {
         gemini3Image: 'G31FI',
         claude: 'Claude',
         passiveSampled: 'Passive',
-        activeQuery: 'Query'
+        activeQuery: 'Query',
+        grokProbe: 'Probe',
+        grokProbeTooltip: 'Query xAI rate-limit headers with a minimal responses request',
+        grokResetUnsupported: 'Reset N/A',
+        grokResetUnsupportedTooltip: 'xAI does not expose a subscription quota reset endpoint',
+        grokNoHeaders: 'No quota headers observed',
+        grokRequests: 'Req',
+        grokTokens: 'Tok',
+        grokRetryAfter: 'Retry after {time}'
       },
       openaiQuotaReset: {
         count: 'Credits',

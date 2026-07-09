@@ -23,6 +23,7 @@ vi.mock('vue-i18n', async () => {
       t: (key: string) => key
     })
   }
+
 })
 
 function makeAccount(overrides: Partial<Account>): Account {
@@ -723,4 +724,34 @@ describe('AccountUsageCell', () => {
 		expect(wrapper.text()).toContain('A $0.00')
 		expect(wrapper.text()).toContain('U $0.00')
   })
+
+  it('Grok OAuth accounts show an on-demand quota probe without generic usage fetch', async () => {
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 5001,
+          platform: 'grok',
+          type: 'oauth',
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: true,
+          AccountQuotaInfo: true,
+          GrokQuotaProbeCell: {
+            props: ['account'],
+            template: '<div data-testid="grok-quota-probe">probe {{ account.id }}</div>'
+          }
+        }
+      }
+    })
+
+    await flushPromises()
+
+    expect(getUsage).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="grok-quota-probe"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('probe 5001')
+  })
+
 })
