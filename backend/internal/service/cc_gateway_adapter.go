@@ -1536,6 +1536,9 @@ func ccGatewayObservedCLIVersionBucketFromHeaders(headers http.Header) string {
 	return ccGatewayObservedCLIVersionBucketFromValues(
 		getHeaderRaw(headers, "User-Agent"),
 		getHeaderRaw(headers, ClaudeCodeNativeClaudeCodeVersionHeader),
+		getHeaderRaw(headers, "X-Claude-Code-Version"),
+		getHeaderRaw(headers, "X-Claude-Client-Version"),
+		getHeaderRaw(headers, "X-Claude-Code-Client-Version"),
 	)
 }
 
@@ -1547,7 +1550,13 @@ func ccGatewayObservedCLIVersionBucketWithBillingHeaders(req *http.Request, bill
 				return version
 			}
 		}
-		values = append(values, getHeaderRaw(req.Header, "User-Agent"), getHeaderRaw(req.Header, ClaudeCodeNativeClaudeCodeVersionHeader))
+		values = append(values,
+			getHeaderRaw(req.Header, "User-Agent"),
+			getHeaderRaw(req.Header, ClaudeCodeNativeClaudeCodeVersionHeader),
+			getHeaderRaw(req.Header, "X-Claude-Code-Version"),
+			getHeaderRaw(req.Header, "X-Claude-Client-Version"),
+			getHeaderRaw(req.Header, "X-Claude-Code-Client-Version"),
+		)
 	}
 	values = append(values, billingHeaders...)
 	return ccGatewayObservedCLIVersionBucketFromValues(values...)
