@@ -30,6 +30,8 @@ func TestGetModelPricing_ChineseProviderFallbacks(t *testing.T) {
 		{model: "kimi-for-coding", inputPrice: 0.95e-6, outputPrice: 4.00e-6, cacheRead: 0.15e-6},
 		{model: "minimax-m3", inputPrice: 0.60e-6, outputPrice: 2.40e-6, cacheRead: 0.12e-6},
 		{model: "minimax-m2.7-highspeed", inputPrice: 0.60e-6, outputPrice: 2.40e-6, cacheRead: 0.06e-6},
+		{model: "deepseek-chat", inputPrice: 0.14e-6, outputPrice: 0.28e-6, cacheRead: 0.0028e-6},
+		{model: "deepseek-reasoner", inputPrice: 0.14e-6, outputPrice: 0.28e-6, cacheRead: 0.0028e-6},
 	}
 
 	for _, tt := range tests {

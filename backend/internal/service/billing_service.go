@@ -456,6 +456,9 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	if strings.Contains(modelLower, "deepseek-v4-pro") {
 		return s.fallbackPrices["deepseek-v4-pro"]
 	}
+	if strings.Contains(modelLower, "deepseek-chat") || strings.Contains(modelLower, "deepseek-reasoner") {
+		return s.fallbackPrices["deepseek-v4-flash"]
+	}
 	if strings.Contains(modelLower, "glm-5.1") {
 		return s.fallbackPrices["glm-5.1"]
 	}
