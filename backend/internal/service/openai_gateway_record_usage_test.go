@@ -1976,3 +1976,151 @@ func TestOpenAIGatewayServiceRecordUsage_DoubaoEmbeddingVisionUsesImageInputToke
 	require.InDelta(t, wantBase, usageRepo.lastLog.TotalCost, 1e-15)
 	require.InDelta(t, wantBase*1.1, usageRepo.lastLog.ActualCost, 1e-15)
 }
+
+type openAIRecordUsagePlatformQuotaRepoStub struct {
+	increments chan UserPlatformQuotaSnapshot
+}
+
+func newOpenAIRecordUsagePlatformQuotaRepoStub() *openAIRecordUsagePlatformQuotaRepoStub {
+	return &openAIRecordUsagePlatformQuotaRepoStub{increments: make(chan UserPlatformQuotaSnapshot, 4)}
+}
+
+func (s *openAIRecordUsagePlatformQuotaRepoStub) GetByUserPlatform(context.Context, int64, string) (*UserPlatformQuotaRecord, error) {
+	return nil, nil
+}
+
+func (s *openAIRecordUsagePlatformQuotaRepoStub) BulkInsertInitial(context.Context, []UserPlatformQuotaRecord) error {
+	return nil
+}
+
+func (s *openAIRecordUsagePlatformQuotaRepoStub) IncrementUsageWithReset(_ context.Context, userID int64, platform string, cost float64, _ time.Time) error {
+	s.increments <- UserPlatformQuotaSnapshot{UserID: userID, Platform: platform, DailyUsageUSD: cost}
+	return nil
+}
+
+func (s *openAIRecordUsagePlatformQuotaRepoStub) ListByUser(context.Context, int64) ([]UserPlatformQuotaRecord, error) {
+	return nil, nil
+}
+
+func (s *openAIRecordUsagePlatformQuotaRepoStub) UpsertForUser(context.Context, int64, []UserPlatformQuotaRecord) error {
+	return nil
+}
+
+func (s *openAIRecordUsagePlatformQuotaRepoStub) ResetExpiredWindow(context.Context, int64, string, string, time.Time) error {
+	return nil
+}
+
+func (s *openAIRecordUsagePlatformQuotaRepoStub) BatchSnapshotUsage(context.Context, []UserPlatformQuotaSnapshot, time.Time) error {
+	return nil
+}
+
+func TestOpenAIGatewayServiceRecordUsage_UsesInputQuotaPlatformForPostBilling(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	quotaRepo := newOpenAIRecordUsagePlatformQuotaRepoStub()
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	cfg := &config.Config{}
+	cfg.Default.RateMultiplier = 1
+	cfg.Database.UserPlatformQuotaFlusherEnabled = false
+	svc := NewOpenAIGatewayService(
+		nil,
+		usageRepo,
+		billingRepo,
+		userRepo,
+		subRepo,
+		nil,
+		nil,
+		cfg,
+		nil,
+		nil,
+		NewBillingService(cfg, nil),
+		nil,
+		&BillingCacheService{cfg: cfg},
+		nil,
+		&DeferredService{},
+		nil,
+		quotaRepo,
+	)
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "resp_quota_platform_input",
+			Usage:     OpenAIUsage{InputTokens: 10, OutputTokens: 4},
+			Model:     "gpt-5.1",
+			Duration:  time.Second,
+		},
+		APIKey: &APIKey{
+			ID:    11001,
+			Group: &Group{Platform: PlatformOpenAI, RateMultiplier: 1},
+		},
+		User:          &User{ID: 21001},
+		Account:       &Account{ID: 31001, Type: AccountTypeAPIKey},
+		QuotaPlatform: PlatformAntigravity,
+	})
+
+	require.NoError(t, err)
+	select {
+	case got := <-quotaRepo.increments:
+		require.Equal(t, int64(21001), got.UserID)
+		require.Equal(t, PlatformAntigravity, got.Platform)
+		require.Greater(t, got.DailyUsageUSD, 0.0)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for platform quota increment")
+	}
+}
+
+func TestOpenAIGatewayServiceRecordUsage_FallsBackToAPIKeyPlatformWhenQuotaPlatformMissing(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	quotaRepo := newOpenAIRecordUsagePlatformQuotaRepoStub()
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	cfg := &config.Config{}
+	cfg.Default.RateMultiplier = 1
+	cfg.Database.UserPlatformQuotaFlusherEnabled = false
+	svc := NewOpenAIGatewayService(
+		nil,
+		usageRepo,
+		billingRepo,
+		userRepo,
+		subRepo,
+		nil,
+		nil,
+		cfg,
+		nil,
+		nil,
+		NewBillingService(cfg, nil),
+		nil,
+		&BillingCacheService{cfg: cfg},
+		nil,
+		&DeferredService{},
+		nil,
+		quotaRepo,
+	)
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "resp_quota_platform_fallback",
+			Usage:     OpenAIUsage{InputTokens: 10, OutputTokens: 4},
+			Model:     "gpt-5.1",
+			Duration:  time.Second,
+		},
+		APIKey: &APIKey{
+			ID:    11002,
+			Group: &Group{Platform: PlatformOpenAI, RateMultiplier: 1},
+		},
+		User:    &User{ID: 21002},
+		Account: &Account{ID: 31002, Type: AccountTypeAPIKey},
+	})
+
+	require.NoError(t, err)
+	select {
+	case got := <-quotaRepo.increments:
+		require.Equal(t, int64(21002), got.UserID)
+		require.Equal(t, PlatformOpenAI, got.Platform)
+		require.Greater(t, got.DailyUsageUSD, 0.0)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for platform quota increment")
+	}
+}
