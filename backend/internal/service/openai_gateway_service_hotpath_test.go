@@ -653,6 +653,36 @@ func TestExtractOpenAIRequestMetaFromBody(t *testing.T) {
 	}
 }
 
+func TestExtractOpenAIReasoningEffort_ChineseThinkingFallback(t *testing.T) {
+	reqBody := map[string]any{
+		"model":    "glm-5.1",
+		"thinking": map[string]any{"type": "enabled"},
+	}
+	got := extractOpenAIReasoningEffort(reqBody, "glm-5.1")
+	require.NotNil(t, got)
+	require.Equal(t, "high", *got)
+
+	reqBody["reasoning_effort"] = "medium"
+	got = extractOpenAIReasoningEffort(reqBody, "glm-5.1")
+	require.NotNil(t, got)
+	require.Equal(t, "medium", *got)
+}
+
+func TestExtractOpenAIReasoningEffortFromBody_ChineseThinkingFallback(t *testing.T) {
+	body := []byte(`{"model":"glm-5.1","thinking":{"type":"enabled"}}`)
+	got := extractOpenAIReasoningEffortFromBody(body, "glm-5.1")
+	require.NotNil(t, got)
+	require.Equal(t, "high", *got)
+
+	explicitBody := []byte(`{"model":"glm-5.1","thinking":{"type":"enabled"},"reasoning_effort":"medium"}`)
+	got = extractOpenAIReasoningEffortFromBody(explicitBody, "glm-5.1")
+	require.NotNil(t, got)
+	require.Equal(t, "medium", *got)
+
+	deepseekBody := []byte(`{"model":"deepseek-v4-pro","thinking":{"type":"enabled"}}`)
+	require.Nil(t, extractOpenAIReasoningEffortFromBody(deepseekBody, "deepseek-v4-pro"))
+}
+
 func TestExtractOpenAIReasoningEffortFromBody(t *testing.T) {
 	tests := []struct {
 		name      string

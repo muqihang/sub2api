@@ -81,6 +81,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	// 2. Resolve model mapping (same as ForwardAsChatCompletions)
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	reasoningEffort = ApplyChineseThinkingEffortFallback(reasoningEffort, body, upstreamModel)
 
 	// 3. Rewrite model in body (no protocol conversion)
 	upstreamBody := body

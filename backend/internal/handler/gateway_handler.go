@@ -643,6 +643,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 			if result.ReasoningEffort == nil {
 				result.ReasoningEffort = service.NormalizeClaudeOutputEffort(parsedReq.OutputEffort)
+				if result.ReasoningEffort == nil && parsedReq.ThinkingEnabled {
+					result.ReasoningEffort = service.DefaultEffortForChineseThinkingEnabled(result.UpstreamModel)
+				}
 			}
 
 			// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
@@ -1063,6 +1066,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 			if result.ReasoningEffort == nil {
 				result.ReasoningEffort = service.NormalizeClaudeOutputEffort(attemptParsedReq.OutputEffort)
+				if result.ReasoningEffort == nil && attemptParsedReq.ThinkingEnabled {
+					result.ReasoningEffort = service.DefaultEffortForChineseThinkingEnabled(result.UpstreamModel)
+				}
 			}
 
 			// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。

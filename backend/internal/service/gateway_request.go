@@ -1233,6 +1233,41 @@ func normalizeGLMOpenAIReasoningEffort(raw string) string {
 	}
 }
 
+// DefaultEffortForChineseThinkingEnabled returns a usage-only default for
+// passback-required Chinese models whose protocol exposes thinking as on/off.
+func DefaultEffortForChineseThinkingEnabled(mappedModel string) *string {
+	modelLower := strings.ToLower(strings.TrimSpace(mappedModel))
+	if ResolveThinkingProtocol(modelLower) != ThinkingProtocolPassbackRequired {
+		return nil
+	}
+	if strings.HasPrefix(modelLower, "deepseek-") {
+		return nil
+	}
+	effort := "high"
+	return &effort
+}
+
+// OpenAIBodyHasThinkingEnabled detects OpenAI-compatible thinking controls.
+func OpenAIBodyHasThinkingEnabled(body []byte) bool {
+	if !json.Valid(body) {
+		return false
+	}
+	thinkingType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String()))
+	return thinkingType == "enabled" || thinkingType == "adaptive"
+}
+
+// ApplyChineseThinkingEffortFallback fills a usage-only reasoning_effort default
+// without overriding an explicit client/model-derived effort.
+func ApplyChineseThinkingEffortFallback(effort *string, body []byte, mappedModel string) *string {
+	if effort != nil {
+		return effort
+	}
+	if !OpenAIBodyHasThinkingEnabled(body) {
+		return nil
+	}
+	return DefaultEffortForChineseThinkingEnabled(mappedModel)
+}
+
 // NormalizeChineseLLMThinking rewrites Anthropic-compatible thinking controls
 // only for provider/model families with known protocol differences.
 func NormalizeChineseLLMThinking(body []byte, mappedModel string) ([]byte, bool) {

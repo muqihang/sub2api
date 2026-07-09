@@ -3130,6 +3130,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	if passthroughEnabled {
 		// 透传分支只需要轻量提取字段，避免热路径全量 Unmarshal。
 		reasoningEffort := extractOpenAIReasoningEffortFromBody(body, reqModel)
+		reasoningEffort = ApplyChineseThinkingEffortFallback(reasoningEffort, body, account.GetMappedModel(reqModel))
 		return s.forwardOpenAIPassthrough(ctx, c, account, originalBody, reqModel, reasoningEffort, reqStream, startTime)
 	}
 
@@ -3890,6 +3891,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		defer func() { _ = resp.Body.Close() }()
 
 		reasoningEffort := extractOpenAIReasoningEffortFromBody(body, originalModel)
+		reasoningEffort = ApplyChineseThinkingEffortFallback(reasoningEffort, body, upstreamModel)
 		serviceTier := extractOpenAIServiceTierFromBody(body)
 		// 上游接受后只保留计费需要的标量，避免响应处理期间继续保活完整 input/tools map。
 		reqBody = nil
@@ -7846,10 +7848,11 @@ func extractOpenAIReasoningEffortFromBody(body []byte, requestedModel string) *s
 	}
 
 	value := deriveOpenAIReasoningEffortFromModel(requestedModel)
-	if value == "" {
-		return nil
+	if value != "" {
+		return &value
 	}
-	return &value
+
+	return ApplyChineseThinkingEffortFallback(nil, body, requestedModel)
 }
 
 func extractOpenAIServiceTier(reqBody map[string]any) *string {
@@ -8403,6 +8406,22 @@ func getOpenAIRequestBodyMap(_ *gin.Context, body []byte) (map[string]any, error
 	return reqBody, nil
 }
 
+func openAIRequestMapHasThinkingEnabled(reqBody map[string]any) bool {
+	if reqBody == nil {
+		return false
+	}
+	thinking, ok := reqBody["thinking"].(map[string]any)
+	if !ok || thinking == nil {
+		return false
+	}
+	thinkingType, ok := thinking["type"].(string)
+	if !ok {
+		return false
+	}
+	value := strings.ToLower(strings.TrimSpace(thinkingType))
+	return value == "enabled" || value == "adaptive"
+}
+
 func extractOpenAIReasoningEffort(reqBody map[string]any, requestedModel string) *string {
 	if value, present := getOpenAIReasoningEffortFromReqBody(reqBody); present {
 		if value == "" {
@@ -8412,10 +8431,13 @@ func extractOpenAIReasoningEffort(reqBody map[string]any, requestedModel string)
 	}
 
 	value := deriveOpenAIReasoningEffortFromModel(requestedModel)
-	if value == "" {
+	if value != "" {
+		return &value
+	}
+	if !openAIRequestMapHasThinkingEnabled(reqBody) {
 		return nil
 	}
-	return &value
+	return DefaultEffortForChineseThinkingEnabled(requestedModel)
 }
 
 func normalizeOpenAIReasoningEffort(raw string) string {
