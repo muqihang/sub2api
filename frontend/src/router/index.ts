@@ -13,6 +13,7 @@ import { useRoutePrefetch } from '@/composables/useRoutePrefetch'
 import { getSetupStatus } from '@/api/setup'
 import { resolveCompletedSetupRedirectPath } from './setupRedirect'
 import { resolveRouteDocumentTitle } from './title'
+import { loadBatchImageAccess } from '@/composables/useBatchImageAccess'
 
 /**
  * Route definitions with lazy loading
@@ -242,6 +243,7 @@ export const routes: RouteRecordRaw[] = [
     meta: {
       requiresAuth: true,
       requiresAdmin: false,
+      requiresBatchImageAccess: true,
       title: 'Batch Image Guide',
       titleKey: 'batchImageGuide.title',
       descriptionKey: 'batchImageGuide.description'
@@ -916,6 +918,11 @@ router.beforeEach(async (to, _from, next) => {
   // Check admin requirement
   if (requiresAdmin && !authStore.isAdmin) {
     // User is authenticated but not admin, redirect to user dashboard
+    next('/dashboard')
+    return
+  }
+
+  if (to.meta.requiresBatchImageAccess && !(await loadBatchImageAccess())) {
     next('/dashboard')
     return
   }

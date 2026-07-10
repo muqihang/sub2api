@@ -16,6 +16,21 @@ type recordingBatchImageQueue struct {
 	enqueued []string
 }
 
+type retryingBatchImageQueue struct {
+	*fakeBatchImageQueue
+	failures int
+	enqueued []string
+}
+
+func (q *retryingBatchImageQueue) Enqueue(_ context.Context, batchID string) error {
+	q.enqueued = append(q.enqueued, batchID)
+	if q.failures > 0 {
+		q.failures--
+		return errors.New("redis unavailable")
+	}
+	return nil
+}
+
 func (q *recordingBatchImageQueue) Enqueue(_ context.Context, batchID string) error {
 	q.enqueued = append(q.enqueued, batchID)
 	return nil
@@ -114,4 +129,56 @@ func TestBatchImageBillingRecoveryService_EnqueuesRetryWhenReleaseFails(t *testi
 	require.Equal(t, 0, released)
 	require.Equal(t, BatchImageJobStatusFailed, repo.jobs[stale.BatchID].Status)
 	require.Equal(t, []string{stale.BatchID}, queue.enqueued)
+}
+
+func TestBatchImageBillingRecoveryService_RequeuesSubmittedQueueFailures(t *testing.T) {
+	repo := newFakeBatchImageRepository()
+	providerJobName := "providers/submitted"
+	repo.jobs["imgbatch_queue_recovery"] = &BatchImageJob{
+		BatchID:          "imgbatch_queue_recovery",
+		Status:           BatchImageJobStatusSubmitted,
+		ProviderJobName:  &providerJobName,
+		LastErrorCode:    batchImageStringPtr("QUEUE_FAILED"),
+		LastErrorMessage: batchImageStringPtr("redis unavailable"),
+	}
+	queue := &retryingBatchImageQueue{fakeBatchImageQueue: newFakeBatchImageQueue(""), failures: 1}
+	svc := &BatchImageBillingRecoveryService{Repo: repo, Queue: queue, Limit: 10}
+
+	requeued, err := svc.RequeueSubmittedFailuresOnce(context.Background())
+	require.Error(t, err)
+	require.Zero(t, requeued)
+	require.Equal(t, "QUEUE_FAILED", batchImageDerefString(repo.jobs["imgbatch_queue_recovery"].LastErrorCode))
+
+	requeued, err = svc.RequeueSubmittedFailuresOnce(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, requeued)
+	require.Nil(t, repo.jobs["imgbatch_queue_recovery"].LastErrorCode)
+	require.Nil(t, repo.jobs["imgbatch_queue_recovery"].LastErrorMessage)
+	require.Equal(t, []string{"imgbatch_queue_recovery", "imgbatch_queue_recovery"}, queue.enqueued)
+}
+
+func (r *fakeBatchImageRepository) ListBatchImageJobsPendingEnqueue(_ context.Context, limit int) ([]*BatchImageJob, error) {
+	jobs := make([]*BatchImageJob, 0)
+	for _, job := range r.jobs {
+		if job.Status == BatchImageJobStatusSubmitted &&
+			batchImageDerefString(job.ProviderJobName) != "" &&
+			batchImageDerefString(job.LastErrorCode) == "QUEUE_FAILED" {
+			jobs = append(jobs, job)
+		}
+		if limit > 0 && len(jobs) >= limit {
+			break
+		}
+	}
+	return jobs, nil
+}
+
+func (r *fakeBatchImageRepository) MarkBatchImageJobQueueRecovered(_ context.Context, batchID string) error {
+	job, ok := r.jobs[batchID]
+	if !ok {
+		return ErrBatchImageJobNotFound
+	}
+	job.LastErrorCode = nil
+	job.LastErrorMessage = nil
+	r.events[batchID] = append(r.events[batchID], "queue_recovered")
+	return nil
 }

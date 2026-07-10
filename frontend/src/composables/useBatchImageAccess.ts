@@ -8,6 +8,8 @@ const loaded = ref(false)
 const loading = ref(false)
 const hasAllowedBatchImageKey = ref(false)
 let pendingLoad: Promise<boolean> | null = null
+let loadedForUserId: number | null = null
+let loadGeneration = 0
 const pageSize = 100
 
 function keyAllowsBatchImage(key: ApiKey): boolean {
@@ -18,17 +20,31 @@ function keyAllowsBatchImage(key: ApiKey): boolean {
   )
 }
 
-async function loadBatchImageAccess(force = false): Promise<boolean> {
+function resetBatchImageAccess(userId: number | null = null): void {
+  loaded.value = false
+  loading.value = false
+  hasAllowedBatchImageKey.value = false
+  pendingLoad = null
+  loadedForUserId = userId
+  loadGeneration += 1
+}
+
+export async function loadBatchImageAccess(force = false): Promise<boolean> {
   if (!getActivePinia()) {
     loaded.value = true
     hasAllowedBatchImageKey.value = false
     return false
   }
   const authStore = useAuthStore()
-  if (!authStore.isAuthenticated) {
+  const userId = authStore.user?.id ?? null
+  if (!authStore.isAuthenticated || userId === null) {
+    resetBatchImageAccess()
     loaded.value = true
-    hasAllowedBatchImageKey.value = false
     return false
+  }
+
+  if (loadedForUserId !== userId) {
+    resetBatchImageAccess(userId)
   }
 
   if (loaded.value && !force) {
@@ -40,7 +56,8 @@ async function loadBatchImageAccess(force = false): Promise<boolean> {
   }
 
   loading.value = true
-  pendingLoad = (async () => {
+  const generation = ++loadGeneration
+  const load = (async () => {
     let page = 1
     while (true) {
       const response = await keysAPI.list(page, pageSize, {
@@ -48,6 +65,9 @@ async function loadBatchImageAccess(force = false): Promise<boolean> {
         sort_by: 'created_at',
         sort_order: 'desc'
       })
+      if (useAuthStore().user?.id !== userId || generation !== loadGeneration) {
+        return false
+      }
 
       if ((response.items || []).some(keyAllowsBatchImage)) {
         hasAllowedBatchImageKey.value = true
@@ -65,15 +85,20 @@ async function loadBatchImageAccess(force = false): Promise<boolean> {
     }
   })()
     .catch(() => {
-      hasAllowedBatchImageKey.value = false
-      loaded.value = true
+      if (useAuthStore().user?.id === userId && generation === loadGeneration) {
+        hasAllowedBatchImageKey.value = false
+        loaded.value = true
+      }
       return false
     })
     .finally(() => {
-      loading.value = false
-      pendingLoad = null
+      if (pendingLoad === load) {
+        loading.value = false
+        pendingLoad = null
+      }
     })
 
+  pendingLoad = load
   return pendingLoad
 }
 

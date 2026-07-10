@@ -1071,7 +1071,7 @@ func TestOpenAITokenProvider_Real_RefreshErrorFailsClosedAndBlocks(t *testing.T)
 			"expires_at":    expiresAt,
 		},
 	}
-	repo.account = account
+	repo.accountsByID = map[int64]*Account{account.ID: account}
 	cacheKey := OpenAITokenCacheKey(account)
 	cache.tokens[cacheKey] = "stale-cached-token"
 	cache.getErr = errors.New("force cache miss")
@@ -1109,7 +1109,7 @@ func TestOpenAITokenProvider_Real_RetryableRefreshErrorFailsClosedWithShortCoold
 			"expires_at":    expiresAt,
 		},
 	}
-	repo.account = account
+	repo.accountsByID = map[int64]*Account{account.ID: account}
 	cache.getErr = errors.New("force cache miss")
 	executor := &refreshAPIExecutorStub{needsRefresh: true, err: errors.New("oauth refresh failed: upstream timeout")}
 	provider := NewOpenAITokenProvider(repo, cache, nil)

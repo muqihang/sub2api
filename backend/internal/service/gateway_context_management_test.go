@@ -425,7 +425,7 @@ func TestBuildUpstreamRequest_OAuthMimicHaiku_StripsContextManagementEndToEnd(t 
 	svc := &GatewayService{cfg: &config.Config{}}
 	req, _, err := svc.buildUpstreamRequest(
 		context.Background(), c, account, body,
-		"oauth-tok", "oauth", "claude-haiku-4-5", false, true, // mimicClaudeCode=true
+		"oauth-tok", "oauth", "claude-haiku-4-5", false, true, false, // mimicClaudeCode=true
 	)
 	require.NoError(t, err)
 
@@ -455,7 +455,7 @@ func TestBuildUpstreamRequest_OAuthMimicNonHaiku_PreservesContextManagementEndTo
 	svc := &GatewayService{cfg: &config.Config{}}
 	req, _, err := svc.buildUpstreamRequest(
 		context.Background(), c, account, body,
-		"oauth-tok", "oauth", "claude-sonnet-4-6", false, true,
+		"oauth-tok", "oauth", "claude-sonnet-4-6", false, true, false,
 	)
 	require.NoError(t, err)
 
@@ -486,7 +486,7 @@ func TestBuildUpstreamRequest_OAuthTransparentHaikuWithRealCCBeta_PreservesField
 	svc := &GatewayService{cfg: &config.Config{}}
 	req, _, err := svc.buildUpstreamRequest(
 		context.Background(), c, account, body,
-		"oauth-tok", "oauth", "claude-haiku-4-5", false, false, // mimicClaudeCode=false（真 CC）
+		"oauth-tok", "oauth", "claude-haiku-4-5", false, false, false, // mimicClaudeCode=false（真 CC）
 	)
 	require.NoError(t, err)
 
@@ -578,7 +578,7 @@ func TestBuildCountTokensRequest_OAuthMimicHaiku_PreservesContextManagementEndTo
 	svc := &GatewayService{cfg: &config.Config{}}
 	req, _, err := svc.buildCountTokensRequest(
 		context.Background(), c, account, body,
-		"oauth-tok", "oauth", "claude-haiku-4-5", true, // mimicClaudeCode=true
+		"oauth-tok", "oauth", "claude-haiku-4-5", true, false, // mimicClaudeCode=true
 	)
 	require.NoError(t, err)
 
@@ -609,7 +609,7 @@ func TestBuildCountTokensRequest_APIKeyHaiku_StripsContextManagementEndToEnd(t *
 	svc := &GatewayService{cfg: &config.Config{}}
 	req, _, err := svc.buildCountTokensRequest(
 		context.Background(), c, account, body,
-		"sk-ant-xxx", "apikey", "claude-haiku-4-5", false,
+		"sk-ant-xxx", "apikey", "claude-haiku-4-5", false, false,
 	)
 	require.NoError(t, err)
 
@@ -653,7 +653,7 @@ func TestBuildUpstreamRequest_APIKeyHaikuWithContextManagement_StripsField(t *te
 	svc := &GatewayService{cfg: &config.Config{}}
 	req, _, err := svc.buildUpstreamRequest(
 		context.Background(), c, account, body,
-		"sk-ant-xxx", "apikey", "claude-haiku-4-5", false, false,
+		"sk-ant-xxx", "apikey", "claude-haiku-4-5", false, false, false,
 	)
 	require.NoError(t, err)
 
