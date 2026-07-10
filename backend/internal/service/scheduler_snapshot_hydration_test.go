@@ -164,7 +164,7 @@ func TestGatewaySelectAccountWithLoadAwareness_HydratesSelectedAccountFromSchedu
 				Concurrency: 1,
 				Priority:    1,
 				Credentials: map[string]any{
-					"api_key": "anthropic-live-key",
+					"api_key": "selected-credential-marker",
 				},
 			},
 		},
@@ -184,8 +184,63 @@ func TestGatewaySelectAccountWithLoadAwareness_HydratesSelectedAccountFromSchedu
 	if result == nil || result.Account == nil {
 		t.Fatalf("expected selected account")
 	}
-	if got := result.Account.GetCredential("api_key"); got != "anthropic-live-key" {
-		t.Fatalf("expected hydrated api key, got %q", got)
+	if result.Account.GetCredential("api_key") != "selected-credential-marker" {
+		t.Fatal("expected selected account credentials to be hydrated")
+	}
+}
+
+func TestGatewaySelectAccountWithLoadAwareness_HydratesStickyWaitPlanAccount(t *testing.T) {
+	cache := &snapshotHydrationCache{
+		snapshot: []*Account{
+			{
+				ID:          9,
+				Platform:    PlatformAnthropic,
+				Type:        AccountTypeAPIKey,
+				Status:      StatusActive,
+				Schedulable: true,
+				Concurrency: 1,
+				Priority:    1,
+			},
+		},
+		accounts: map[int64]*Account{
+			9: {
+				ID:          9,
+				Platform:    PlatformAnthropic,
+				Type:        AccountTypeAPIKey,
+				Status:      StatusActive,
+				Schedulable: true,
+				Concurrency: 1,
+				Priority:    1,
+				Credentials: map[string]any{
+					"api_key": "sticky-credential-marker",
+				},
+			},
+		},
+	}
+
+	cfg := testConfig()
+	cfg.Gateway.Scheduling.StickySessionMaxWaiting = 1
+	cfg.Gateway.Scheduling.StickySessionWaitTimeout = time.Second
+	concurrencyCache := &mockConcurrencyCache{
+		acquireResults: map[int64]bool{9: false},
+		waitCounts:     map[int64]int{9: 0},
+	}
+	svc := &GatewayService{
+		schedulerSnapshot:  NewSchedulerSnapshotService(cache, nil, nil, nil, nil),
+		cache:              &mockGatewayCacheForPlatform{sessionBindings: map[string]int64{"sticky": 9}},
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), nil, "sticky", "claude-3-5-sonnet-20241022", nil, "", 0)
+	if err != nil {
+		t.Fatalf("SelectAccountWithLoadAwareness error: %v", err)
+	}
+	if selection == nil || selection.Account == nil || selection.WaitPlan == nil {
+		t.Fatal("expected sticky wait selection")
+	}
+	if selection.Account.GetCredential("api_key") != "sticky-credential-marker" {
+		t.Fatal("expected selected account credentials to be hydrated")
 	}
 }
 

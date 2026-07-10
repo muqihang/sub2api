@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -164,6 +165,34 @@ func TestHandleStreamingResponse_CacheTokens(t *testing.T) {
 	require.Equal(t, 15, result.usage.OutputTokens)
 	require.Equal(t, 20, result.usage.CacheCreationInputTokens)
 	require.Equal(t, 30, result.usage.CacheReadInputTokens)
+}
+
+func TestHandleStreamingResponse_ClientDisconnectStillMergesCurrentEventUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := newMinimalGatewayService()
+
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	ginContext.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	ginContext.Writer = &failingGinWriter{ResponseWriter: ginContext.Writer, failAfter: 0}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			`data: {"type":"message_delta","usage":{"output_tokens":11}}`,
+			"",
+			`data: {"type":"message_stop"}`,
+			"",
+			"data: [DONE]",
+			"",
+		}, "\n"))),
+	}
+
+	result, err := svc.handleStreamingResponse(context.Background(), resp, ginContext, &Account{ID: 1}, time.Now(), "model", "model", false)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.usage)
+	require.Equal(t, 11, result.usage.OutputTokens)
 }
 
 func TestHandleStreamingResponse_EmptyStream(t *testing.T) {

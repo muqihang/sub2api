@@ -512,6 +512,147 @@ func TestApiKeyAuthWithSubscriptionGoogle_DisabledKey(t *testing.T) {
 	require.Equal(t, "UNAUTHENTICATED", resp.Error.Status)
 }
 
+func TestApiKeyAuthWithSubscriptionGoogle_RejectsRestrictedKeyStates(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	baseUser := &service.User{
+		ID:          123,
+		Role:        service.RoleUser,
+		Status:      service.StatusActive,
+		Balance:     10,
+		Concurrency: 1,
+	}
+	past := time.Now().Add(-time.Minute)
+
+	testCases := []struct {
+		name       string
+		key        *service.APIKey
+		cfg        *config.Config
+		remoteAddr string
+		status     int
+		message    string
+	}{
+		{
+			name: "IP whitelist",
+			key: &service.APIKey{
+				ID:          1,
+				Key:         "google-ip-restricted",
+				Status:      service.StatusActive,
+				User:        baseUser,
+				IPWhitelist: []string{"203.0.113.0/24"},
+			},
+			cfg:        &config.Config{RunMode: config.RunModeSimple},
+			remoteAddr: "198.51.100.12:4567",
+			status:     http.StatusForbidden,
+			message:    "Access denied. Your IP is 198.51.100.12",
+		},
+		{
+			name: "exclusive group authorization",
+			key: func() *service.APIKey {
+				groupID := int64(55)
+				return &service.APIKey{
+					ID:      2,
+					Key:     "google-exclusive-group",
+					GroupID: &groupID,
+					Status:  service.StatusActive,
+					User:    baseUser,
+					Group: &service.Group{
+						ID:          groupID,
+						Platform:    service.PlatformGemini,
+						Status:      service.StatusActive,
+						IsExclusive: true,
+					},
+				}
+			}(),
+			cfg:     &config.Config{RunMode: config.RunModeSimple},
+			status:  http.StatusForbidden,
+			message: "API Key 所属专属分组不再允许当前用户使用",
+		},
+		{
+			name: "expired status",
+			key: &service.APIKey{
+				ID:     3,
+				Key:    "google-expired-status",
+				Status: service.StatusAPIKeyExpired,
+				User:   baseUser,
+			},
+			cfg:     &config.Config{RunMode: config.RunModeStandard},
+			status:  http.StatusForbidden,
+			message: "API key 已过期",
+		},
+		{
+			name: "runtime expiry",
+			key: &service.APIKey{
+				ID:        4,
+				Key:       "google-runtime-expiry",
+				Status:    service.StatusActive,
+				User:      baseUser,
+				ExpiresAt: &past,
+			},
+			cfg:     &config.Config{RunMode: config.RunModeStandard},
+			status:  http.StatusForbidden,
+			message: "API key 已过期",
+		},
+		{
+			name: "quota exhausted status",
+			key: &service.APIKey{
+				ID:     5,
+				Key:    "google-quota-status",
+				Status: service.StatusAPIKeyQuotaExhausted,
+				User:   baseUser,
+			},
+			cfg:     &config.Config{RunMode: config.RunModeStandard},
+			status:  http.StatusTooManyRequests,
+			message: "API key 额度已用完",
+		},
+		{
+			name: "runtime quota exhaustion",
+			key: &service.APIKey{
+				ID:        6,
+				Key:       "google-runtime-quota",
+				Status:    service.StatusActive,
+				User:      baseUser,
+				Quota:     10,
+				QuotaUsed: 10,
+			},
+			cfg:     &config.Config{RunMode: config.RunModeStandard},
+			status:  http.StatusTooManyRequests,
+			message: "API key 额度已用完",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			apiKeyService := newTestAPIKeyService(fakeAPIKeyRepo{
+				getByKey: func(_ context.Context, key string) (*service.APIKey, error) {
+					if key != testCase.key.Key {
+						return nil, service.ErrAPIKeyNotFound
+					}
+					clone := *testCase.key
+					return &clone, nil
+				},
+			})
+			router := gin.New()
+			require.NoError(t, router.SetTrustedProxies(nil))
+			router.Use(APIKeyAuthWithSubscriptionGoogle(apiKeyService, nil, testCase.cfg))
+			router.GET("/v1beta/test", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+
+			req := httptest.NewRequest(http.MethodGet, "/v1beta/test", nil)
+			req.Header.Set("x-goog-api-key", testCase.key.Key)
+			if testCase.remoteAddr != "" {
+				req.RemoteAddr = testCase.remoteAddr
+			}
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			require.Equal(t, testCase.status, rec.Code)
+			var response googleErrorResponse
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+			require.Equal(t, testCase.message, response.Error.Message)
+		})
+	}
+}
+
 func TestApiKeyAuthWithSubscriptionGoogle_InsufficientBalance(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
