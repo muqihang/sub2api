@@ -393,7 +393,7 @@ func grokMediaBaseURL(account *Account) string {
 func prepareGrokMediaForwardBody(endpoint GrokMediaEndpoint, body []byte, contentType string) ([]byte, string, error) {
 	if endpoint != GrokMediaEndpointImagesEdits || gjson.ValidBytes(body) {
 		if gjson.ValidBytes(body) {
-			return rewriteGrokMediaJSONModelAlias(body, contentType)
+			return normalizeGrokMediaForwardBody(endpoint, body, contentType)
 		}
 		return body, contentType, nil
 	}
@@ -452,9 +452,10 @@ func prepareGrokMediaForwardBody(endpoint GrokMediaEndpoint, body []byte, conten
 	return out, "application/json", nil
 }
 
-func rewriteGrokMediaJSONModelAlias(body []byte, contentType string) ([]byte, string, error) {
+func normalizeGrokMediaForwardBody(endpoint GrokMediaEndpoint, body []byte, contentType string) ([]byte, string, error) {
 	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
-	normalized := normalizeGrokMediaModelAlias(model)
+	info := ParseGrokMediaRequest(contentType, body)
+	normalized := normalizeGrokMediaModelForEndpoint(endpoint, model, info.HasInputImage())
 	if normalized == model || normalized == "" {
 		return body, contentType, nil
 	}
@@ -463,6 +464,23 @@ func rewriteGrokMediaJSONModelAlias(body []byte, contentType string) ([]byte, st
 		return nil, "", err
 	}
 	return rewritten, contentType, nil
+}
+
+func (r GrokMediaRequestInfo) HasInputImage() bool {
+	return len(r.InputImageURLs) > 0 || len(r.Uploads) > 0
+}
+
+func normalizeGrokMediaModelForEndpoint(endpoint GrokMediaEndpoint, model string, hasInputImage bool) string {
+	model = strings.TrimSpace(model)
+	switch endpoint {
+	case GrokMediaEndpointImagesGenerations, GrokMediaEndpointImagesEdits:
+		return normalizeGrokMediaModelAlias(model)
+	case GrokMediaEndpointVideosGenerations:
+		if model == "grok-imagine-video-1.5" && !hasInputImage {
+			return "grok-imagine-video"
+		}
+	}
+	return model
 }
 
 func sjsonSetBytes(body []byte, path, value string) ([]byte, error) {

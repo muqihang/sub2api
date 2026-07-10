@@ -5128,12 +5128,19 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		if err := replaceBody(StripEmptyTextBlocks(body)); err != nil {
 			return nil, err
 		}
+		// Strip web-search history blocks the upstream cannot accept. Strict
+		// Claude Code requests preserve their original transcript above this guard.
+		if err := replaceBody(FilterWebSearchHistoryBlocks(body, reqModel)); err != nil {
+			return nil, err
+		}
 		if err := replaceBody(FilterThinkingBlocks(body, reqModel)); err != nil {
 			return nil, err
 		}
-		if rewritten, applied := NormalizeChineseLLMThinking(body, reqModel); applied {
-			if err := replaceBody(rewritten); err != nil {
-				return nil, err
+		if ResolveThinkingProtocol(reqModel) == ThinkingProtocolPassbackRequired {
+			if rewritten, applied := NormalizeChineseLLMThinking(body, reqModel); applied {
+				if err := replaceBody(rewritten); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -5804,6 +5811,11 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	}
 	// Pre-filter: strip empty text blocks (including nested in tool_result) to prevent upstream 400.
 	input.Body = StripEmptyTextBlocks(input.Body)
+	// Pre-filter: strip web-search history blocks the upstream cannot accept
+	// (emulation-synthesized ones always; genuine ones additionally for
+	// passback-required third-party upstreams such as GLM/Kimi/DeepSeek,
+	// which reject server_tool_use with 400). input.RequestModel 已是映射后的模型 ID。
+	input.Body = FilterWebSearchHistoryBlocks(input.Body, input.RequestModel)
 	if input.Parsed != nil {
 		// 透传分支也会改写实际 wire body，成功 usage hash 依赖这里同步当前 body。
 		if err := input.Parsed.ReplaceBody(input.Body); err != nil {

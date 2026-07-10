@@ -56,6 +56,26 @@ func TestPrepareGrokMediaForwardBody_NormalizesImagineAliasAndConvertsEditMultip
 	require.True(t, strings.HasPrefix(imageURL, "data:image/"), "image upload should be converted to a data URL, got %q", imageURL)
 }
 
+func TestPrepareGrokMediaForwardBody_FallsBackForTextOnlyVideo(t *testing.T) {
+	body := []byte(`{"model":"grok-imagine-video-1.5","prompt":"waves"}`)
+
+	out, contentType, err := prepareGrokMediaForwardBody(GrokMediaEndpointVideosGenerations, body, "application/json")
+
+	require.NoError(t, err)
+	require.Equal(t, "application/json", contentType)
+	require.JSONEq(t, `{"model":"grok-imagine-video","prompt":"waves"}`, string(out))
+}
+
+func TestPrepareGrokMediaForwardBody_PreservesImageToVideoModel(t *testing.T) {
+	body := []byte(`{"model":"grok-imagine-video-1.5","prompt":"animate","image":{"image_url":"data:image/png;base64,aW1n"}}`)
+
+	out, contentType, err := prepareGrokMediaForwardBody(GrokMediaEndpointVideosGenerations, body, "application/json")
+
+	require.NoError(t, err)
+	require.Equal(t, "application/json", contentType)
+	require.JSONEq(t, string(body), string(out))
+}
+
 func TestForwardGrokMedia_SendsImagesGenerationsToXAIAndRecordsUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := &grokMediaHTTPUpstreamStub{
