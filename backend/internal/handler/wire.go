@@ -47,7 +47,12 @@ func ProvideAdminHandlers(
 	codexGatewayHandler *admin.CodexGatewayHandler,
 	formalPoolOnboardingHandler *admin.FormalPoolOnboardingHandler,
 	formalPoolOperationsHandler *admin.FormalPoolOperationsHandler,
+	complianceHandlers ...*admin.ComplianceHandler,
 ) *AdminHandlers {
+	var complianceHandler *admin.ComplianceHandler
+	if len(complianceHandlers) > 0 {
+		complianceHandler = complianceHandlers[0]
+	}
 	return &AdminHandlers{
 		Dashboard:              dashboardHandler,
 		User:                   userHandler,
@@ -86,6 +91,7 @@ func ProvideAdminHandlers(
 		CodexGateway:           codexGatewayHandler,
 		FormalPoolOnboarding:   formalPoolOnboardingHandler,
 		FormalPoolOperations:   formalPoolOperationsHandler,
+		Compliance:             complianceHandler,
 	}
 }
 
@@ -295,6 +301,7 @@ var ProviderSet = wire.NewSet(
 	ProvideCodexGatewayAdminHandler,
 	ProvideFormalPoolOnboardingHandler,
 	admin.NewFormalPoolOperationsHandler,
+	admin.NewComplianceHandler,
 
 	// AdminHandlers and Handlers constructors
 	ProvideAdminHandlers,

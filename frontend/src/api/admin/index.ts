@@ -35,6 +35,7 @@ import augmentGatewayAPI from './augmentGateway'
 import claudeOnboardingAPI from './claudeOnboarding'
 import formalPoolOperationsAPI from './formalPoolOperations'
 import riskControlAPI from './riskControl'
+import adminComplianceAPI from './compliance'
 
 /**
  * Unified admin API object for convenient access
@@ -71,7 +72,8 @@ export const adminAPI = {
   augmentGateway: augmentGatewayAPI,
   claudeOnboarding: claudeOnboardingAPI,
   formalPoolOperations: formalPoolOperationsAPI,
-  riskControl: riskControlAPI
+  riskControl: riskControlAPI,
+  compliance: adminComplianceAPI,
 }
 
 export {
@@ -106,7 +108,8 @@ export {
   augmentGatewayAPI,
   claudeOnboardingAPI,
   formalPoolOperationsAPI,
-  riskControlAPI
+  riskControlAPI,
+  adminComplianceAPI,
 }
 
 export default adminAPI

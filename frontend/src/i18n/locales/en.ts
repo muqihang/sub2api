@@ -349,6 +349,51 @@ export default {
     }
   },
 
+  adminCompliance: {
+    title: 'Deployment and Operation Compliance Acknowledgment',
+    blockingNotice: 'Deployment and operation compliance acknowledgment is required before continuing to use the console.',
+    riskNotice: 'This acknowledgment provides clear, conspicuous, and reproducible notice of compliance obligations and operation risks for self-hosted instances.',
+    version: 'Document Version',
+    openDocument: 'Open the GitHub document',
+    documentSource: 'The agreement text comes from Markdown files in this project repository. When the agreement content changes, the document version must be incremented; acknowledgments of older versions become invalid and console users must acknowledge again.',
+    inputLabel: 'Type the following confirmation phrase exactly',
+    inputPlaceholder: 'Type the confirmation phrase to continue',
+    inputMismatch: 'The confirmation phrase does not match. Type the displayed text exactly.',
+    legalNote: 'This acknowledgment defines the no-affiliation relationship and responsibility boundary between self-hosted instances and the open-source project, copyright holders, contributors, and maintainers. The party that deploys, operates, or controls the relevant instance remains independently responsible for its applicable obligations.',
+    logout: 'Log out',
+    accept: 'Acknowledge and Continue',
+    accepted: 'Compliance acknowledgment recorded',
+    acceptFailed: 'Failed to submit acknowledgment'
+  },
+
+  legal: {
+    loadFailed: 'Failed to load document',
+    retryLater: 'Refresh the page and try again later.',
+    notFound: 'Document not found',
+    notFoundDescription: 'This legal document does not exist or has been removed by an administrator.',
+    updatedAt: 'Updated: {date}',
+    empty: 'No content',
+    loginAgreement: 'Login Agreement',
+    adminCompliance: 'Deployment and Operation Compliance Commitment',
+    loginAgreementPrompt: {
+      checkboxPrefix: 'I have read and agree to',
+      documentSeparator: ', ',
+      noticeTitle: 'Please agree to the latest terms before continuing.',
+      noticeDescription: 'Username/password input and quick sign-in stay disabled until you agree.',
+      viewTerms: 'View terms',
+      dialogTitle: 'Terms Update Notice',
+      dialogDescription: 'Our service terms were updated on {date}. Please read and agree to the following terms before continuing.',
+      recently: 'recently',
+      relatedDocuments: 'Related documents',
+      reject: 'Reject',
+      accept: 'Agree and continue',
+      loginRejectedWarning: 'You cannot enter credentials or use quick sign-in until you agree to the latest terms.',
+      loginRequiredWarning: 'Please read and agree to the latest terms before signing in.',
+      registerRejectedWarning: 'You cannot register or use quick sign-in until you agree to the latest terms.',
+      registerRequiredWarning: 'Please read and agree to the latest terms before registering.',
+    },
+  },
+
   // Navigation
   nav: {
     dashboard: 'Dashboard',
@@ -615,26 +660,6 @@ export default {
     invalidResetLinkHint: 'This password reset link is invalid or has expired. Please request a new one.',
     requestNewResetLink: 'Request New Reset Link',
     invalidOrExpiredToken: 'The password reset link is invalid or has expired. Please request a new one.'
-  },
-
-  legal: {
-    loginAgreementPrompt: {
-      checkboxPrefix: 'I have read and agree to',
-      documentSeparator: ', ',
-      noticeTitle: 'Please agree to the latest terms before continuing.',
-      noticeDescription: 'Username/password input and quick sign-in stay disabled until you agree.',
-      viewTerms: 'View terms',
-      dialogTitle: 'Terms Update Notice',
-      dialogDescription: 'Our service terms were updated on {date}. Please read and agree to the following terms before continuing.',
-      recently: 'recently',
-      relatedDocuments: 'Related documents',
-      reject: 'Reject',
-      accept: 'Agree and continue',
-      loginRejectedWarning: 'You cannot enter credentials or use quick sign-in until you agree to the latest terms.',
-      loginRequiredWarning: 'Please read and agree to the latest terms before signing in.',
-      registerRejectedWarning: 'You cannot register or use quick sign-in until you agree to the latest terms.',
-      registerRequiredWarning: 'Please read and agree to the latest terms before registering.',
-    },
   },
 
   // Dashboard

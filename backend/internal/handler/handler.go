@@ -43,6 +43,7 @@ type AdminHandlers struct {
 	CodexGateway           *admin.CodexGatewayHandler
 	FormalPoolOnboarding   *admin.FormalPoolOnboardingHandler
 	FormalPoolOperations   *admin.FormalPoolOperationsHandler
+	Compliance             *admin.ComplianceHandler
 }
 
 // Handlers contains all HTTP handlers

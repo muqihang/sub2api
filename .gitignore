@@ -170,6 +170,8 @@ docs/anti-ban/captures/real-baseline/2026-06-14-sub2api-cc-gateway-joint-local-c
 !docs/anti-ban/captures/real-baseline/2026-06-14-sub2api-cc-gateway-joint-local-capture/safe-deliverable/**
 !docs/brand/
 !docs/brand/zhumeng-intent-brief.md
+!docs/legal/
+!docs/legal/*.md
 .serena/
 .codex/
 frontend/coverage/

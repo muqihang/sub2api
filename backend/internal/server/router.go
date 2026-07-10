@@ -113,7 +113,7 @@ func registerRoutes(
 	routes.RegisterUserRoutes(v1, h, jwtAuth, settingService)
 	routes.RegisterCodexAgentRoutes(v1, h, jwtAuth, settingService)
 	routes.RegisterFormalPoolOnboardingPublicRoutes(v1, h)
-	routes.RegisterAdminRoutes(v1, h, adminAuth)
+	routes.RegisterAdminRoutes(v1, h, adminAuth, settingService)
 	codexGatewayAPIKeyAuth := middleware2.NewCodexGatewayAPIKeyAuthMiddleware(apiKeyService, subscriptionService, cfg)
 	codexGatewayAuth := middleware2.APIKeyAuthMiddleware(middleware2.ManagedDeviceOrAPIKeyAuth(codexAgentService, codexGatewayAPIKeyAuth, apiKeyService, subscriptionService, cfg))
 	routes.RegisterGatewayRoutesWithClaudeCodeNativeAuth(r, h, apiKeyAuth, codexGatewayAuth, apiKeyService, subscriptionService, opsService, settingService, cfg)

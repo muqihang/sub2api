@@ -7,6 +7,7 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
 import { useAdminSettingsStore } from '@/stores/adminSettings'
+import { useAdminComplianceStore } from '@/stores/adminCompliance'
 import { useNavigationLoadingState } from '@/composables/useNavigationLoading'
 import { useRoutePrefetch } from '@/composables/useRoutePrefetch'
 import { getSetupStatus } from '@/api/setup'
@@ -62,7 +63,7 @@ export const routes: RouteRecordRaw[] = [
     meta: {
       requiresAuth: false,
       title: 'Login',
-      titleKey: 'common.login'
+      titleKey: 'home.login'
     }
   },
   {
@@ -906,6 +907,20 @@ router.beforeEach(async (to, _from, next) => {
     return
   }
 
+  if (requiresAdmin && authStore.isAdmin) {
+    const adminComplianceStore = useAdminComplianceStore()
+    if (!adminComplianceStore.initialized) {
+      try {
+        await adminComplianceStore.fetchStatus()
+      } catch (error) {
+        const err = error as { status?: number; code?: string; metadata?: Record<string, string> }
+        if (err.status === 423 && err.code === 'ADMIN_COMPLIANCE_ACK_REQUIRED') {
+          adminComplianceStore.requireAcknowledgement(err.metadata)
+        }
+      }
+    }
+  }
+
   if ((to.meta.requiresPayment || to.meta.requiresRiskControl) && !appStore.publicSettingsLoaded) {
     try {
       await appStore.fetchPublicSettings()
@@ -913,7 +928,6 @@ router.beforeEach(async (to, _from, next) => {
       console.warn('Failed to load public settings in route guard')
     }
   }
-
 
   // Only an explicit value from successfully loaded settings can disable a route.
   // A transient settings failure is unknown state, not a confirmed feature toggle.
