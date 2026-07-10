@@ -1192,11 +1192,17 @@ func copyOpenAIUsageFromResponsesUsage(usage *apicompat.ResponsesUsage) OpenAIUs
 		return OpenAIUsage{}
 	}
 	result := OpenAIUsage{
-		InputTokens:  usage.InputTokens,
-		OutputTokens: usage.OutputTokens,
+		InputTokens:              usage.InputTokens,
+		OutputTokens:             usage.OutputTokens,
+		CacheCreationInputTokens: usage.CacheCreationInputTokens,
 	}
 	if usage.InputTokensDetails != nil {
 		result.CacheReadInputTokens = usage.InputTokensDetails.CachedTokens
+		if usage.InputTokensDetails.CacheWriteTokens > 0 {
+			result.CacheCreationInputTokens = usage.InputTokensDetails.CacheWriteTokens
+		} else if usage.InputTokensDetails.CacheCreationTokens > 0 {
+			result.CacheCreationInputTokens = usage.InputTokensDetails.CacheCreationTokens
+		}
 	}
 	return result
 }

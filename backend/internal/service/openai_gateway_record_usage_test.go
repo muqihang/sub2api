@@ -246,7 +246,7 @@ func expectedOpenAICost(t *testing.T, svc *OpenAIGatewayService, model string, u
 	t.Helper()
 
 	cost, err := svc.billingService.CalculateCost(model, UsageTokens{
-		InputTokens:           max(usage.InputTokens-usage.CacheReadInputTokens, 0),
+		InputTokens:           max(usage.InputTokens-usage.CacheReadInputTokens-usage.CacheCreationInputTokens, 0),
 		ImageInputTokens:      usage.ImageInputTokens,
 		OutputTokens:          usage.OutputTokens,
 		CacheCreationTokens:   usage.CacheCreationInputTokens,
@@ -581,7 +581,7 @@ func TestOpenAIGatewayServiceRecordUsage_ReconcilesEntityQuotaFromPropagatedCont
 	require.NoError(t, err)
 	require.Equal(t, 1, quotaCache.tpmCalls)
 	require.Equal(t, int64(123), quotaCache.lastTPMEntityID)
-	require.Equal(t, 130, quotaCache.lastTPMTokens)
+	require.Equal(t, 125, quotaCache.lastTPMTokens)
 	require.Equal(t, 1, quotaCache.costCalls)
 	require.Equal(t, int64(123), quotaCache.lastCostEntityID)
 	require.Positive(t, quotaCache.lastCostAmount)

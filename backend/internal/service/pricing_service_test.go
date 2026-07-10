@@ -18,6 +18,7 @@ func TestParsePricingData_ParsesPriorityAndServiceTierFields(t *testing.T) {
 			"output_cost_per_token": 0.000015,
 			"output_cost_per_token_priority": 0.00003,
 			"cache_creation_input_token_cost": 0.0000025,
+			"cache_creation_input_token_cost_priority": 0.000005,
 			"cache_read_input_token_cost": 0.00000025,
 			"cache_read_input_token_cost_priority": 0.0000005,
 			"supports_service_tier": true,
@@ -33,6 +34,7 @@ func TestParsePricingData_ParsesPriorityAndServiceTierFields(t *testing.T) {
 	require.NotNil(t, pricing)
 	require.InDelta(t, 5e-6, pricing.InputCostPerTokenPriority, 1e-12)
 	require.InDelta(t, 3e-5, pricing.OutputCostPerTokenPriority, 1e-12)
+	require.InDelta(t, 5e-6, pricing.CacheCreationInputTokenCostPriority, 1e-12)
 	require.InDelta(t, 5e-7, pricing.CacheReadInputTokenCostPriority, 1e-12)
 	require.True(t, pricing.SupportsServiceTier)
 }
@@ -113,21 +115,30 @@ func TestGetModelPricing_OpenAICompactAliasUsesStaticFallback(t *testing.T) {
 	require.InDelta(t, 1.5e-5, got.OutputCostPerToken, 1e-12)
 }
 
-func TestGetModelPricing_Gpt56UsesStaticFallbackWhenRemoteMissing(t *testing.T) {
+func TestGetModelPricing_GPT56UsesOfficialStaticFallbackWhenRemoteMissing(t *testing.T) {
 	svc := &PricingService{
 		pricingData: map[string]*LiteLLMModelPricing{
 			"gpt-5.1-codex": {InputCostPerToken: 1.25e-6},
 		},
 	}
 
-	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
-		t.Run(model, func(t *testing.T) {
-			got := svc.GetModelPricing(model)
+	tests := []struct {
+		model                      string
+		input, output, read, write float64
+	}{
+		{model: "gpt-5.6-sol", input: 5e-6, output: 30e-6, read: 0.5e-6, write: 6.25e-6},
+		{model: "gpt-5.6-terra", input: 2.5e-6, output: 15e-6, read: 0.25e-6, write: 3.125e-6},
+		{model: "gpt-5.6-luna", input: 1e-6, output: 6e-6, read: 0.1e-6, write: 1.25e-6},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			got := svc.GetModelPricing(tt.model)
 			require.NotNil(t, got)
-			require.InDelta(t, 2.5e-6, got.InputCostPerToken, 1e-12)
-			require.InDelta(t, 1.5e-5, got.OutputCostPerToken, 1e-12)
-			require.InDelta(t, 2.5e-7, got.CacheReadInputTokenCost, 1e-12)
-			require.Equal(t, 272000, got.LongContextInputTokenThreshold)
+			require.InDelta(t, tt.input, got.InputCostPerToken, 1e-12)
+			require.InDelta(t, tt.output, got.OutputCostPerToken, 1e-12)
+			require.InDelta(t, tt.read, got.CacheReadInputTokenCost, 1e-12)
+			require.InDelta(t, tt.write, got.CacheCreationInputTokenCost, 1e-12)
+			require.Zero(t, got.LongContextInputTokenThreshold)
 		})
 	}
 }
@@ -140,13 +151,23 @@ func TestDefaultPricingIncludesGPT56Tiers(t *testing.T) {
 	pricingData, err := svc.parsePricingData(data)
 	require.NoError(t, err)
 
-	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
-		t.Run(model, func(t *testing.T) {
-			got := pricingData[model]
+	tests := []struct {
+		model                                     string
+		input, output, read, write, writePriority float64
+	}{
+		{model: "gpt-5.6-sol", input: 5e-6, output: 30e-6, read: 0.5e-6, write: 6.25e-6, writePriority: 12.5e-6},
+		{model: "gpt-5.6-terra", input: 2.5e-6, output: 15e-6, read: 0.25e-6, write: 3.125e-6, writePriority: 6.25e-6},
+		{model: "gpt-5.6-luna", input: 1e-6, output: 6e-6, read: 0.1e-6, write: 1.25e-6, writePriority: 2.5e-6},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			got := pricingData[tt.model]
 			require.NotNil(t, got)
-			require.InDelta(t, 5e-6, got.InputCostPerToken, 1e-12)
-			require.InDelta(t, 3e-5, got.OutputCostPerToken, 1e-12)
-			require.InDelta(t, 5e-7, got.CacheReadInputTokenCost, 1e-12)
+			require.InDelta(t, tt.input, got.InputCostPerToken, 1e-12)
+			require.InDelta(t, tt.output, got.OutputCostPerToken, 1e-12)
+			require.InDelta(t, tt.read, got.CacheReadInputTokenCost, 1e-12)
+			require.InDelta(t, tt.write, got.CacheCreationInputTokenCost, 1e-12)
+			require.InDelta(t, tt.writePriority, got.CacheCreationInputTokenCostPriority, 1e-12)
 			require.True(t, got.SupportsServiceTier)
 		})
 	}
