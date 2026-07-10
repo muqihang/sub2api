@@ -60,6 +60,9 @@ func TestNormalizeOpenAIResponsesCompactRequest_BodySignalPromoted(t *testing.T)
 	seed, exists := c.Get(service.OpenAICompactSessionSeedKeyForTest())
 	require.True(t, exists)
 	require.Equal(t, "pck-signal-1", seed)
+	clientStream, exists := c.Get("openai_compact_client_stream")
+	require.True(t, exists)
+	require.Equal(t, true, clientStream)
 }
 
 func TestNormalizeOpenAIResponsesCompactRequest_BodySignalTrailingSlash(t *testing.T) {
