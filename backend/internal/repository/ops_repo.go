@@ -975,9 +975,10 @@ func buildOpsErrorLogsWhere(filter *service.OpsErrorLogFilter) (string, []any) {
 	}
 	// Keep list endpoints scoped to client errors unless the caller explicitly opts
 	// into recovered upstream rows (Phase=="upstream" + IncludeRecoveredUpstream,
-	// ops 专用上游列表)。请求错误语义的端点即便过滤 phase=upstream 也保留该守卫。
+	// ops 专用上游列表)。cyber_policy is exempt because streaming cyber hits
+	// can arrive after a successful 200 SSE handshake.
 	if phaseFilter != "upstream" || filter == nil || !filter.IncludeRecoveredUpstream {
-		clauses = append(clauses, "COALESCE(e.status_code, 0) >= 400")
+		clauses = append(clauses, "(COALESCE(e.status_code, 0) >= 400 OR e.error_type = 'cyber_policy')")
 	}
 
 	if filter.StartTime != nil && !filter.StartTime.IsZero() {

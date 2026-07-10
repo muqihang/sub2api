@@ -70,6 +70,37 @@ func TestBuildOpsErrorLogsWhere_ModelFuzzy(t *testing.T) {
 	}
 }
 
+// TestBuildOpsErrorLogsWhere_CyberPolicyStatusExemption verifies that streaming
+// cyber_policy hits (status_code=200) remain visible in admin + user error-request
+// lists.  The repository filter must emit an OR exemption for error_type='cyber_policy'
+// so that stream-path cyber rows (upstream delivers 200 with a failed SSE event) are
+// not silently excluded by the COALESCE(status_code,0) >= 400 guard.
+func TestBuildOpsErrorLogsWhere_CyberPolicyStatusExemption(t *testing.T) {
+	// Default filter (no phase) must include the cyber_policy exemption.
+	where, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{})
+	if !strings.Contains(where, "e.error_type = 'cyber_policy'") {
+		t.Fatalf("default filter must exempt cyber_policy from status >= 400 guard\nfull: %s", where)
+	}
+	if !strings.Contains(where, "COALESCE(e.status_code, 0) >= 400") {
+		t.Fatalf("default filter must still include the status >= 400 guard for non-cyber rows\nfull: %s", where)
+	}
+
+	// The local upstream view requires an explicit recovered-row opt-in. Without
+	// it, the request-list guard remains active while still admitting cyber rows.
+	whereUpstream, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{Phase: "upstream"})
+	if !strings.Contains(whereUpstream, "e.error_type = 'cyber_policy'") {
+		t.Fatalf("non-opted-in upstream filter must still admit cyber rows\nfull: %s", whereUpstream)
+	}
+
+	whereRecovered, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{
+		Phase:                    "upstream",
+		IncludeRecoveredUpstream: true,
+	})
+	if strings.Contains(whereRecovered, "status_code") {
+		t.Fatalf("explicit recovered-upstream filter must not add a status_code clause\nfull: %s", whereRecovered)
+	}
+}
+
 func TestBuildOpsErrorLogsWhere_MatchDeletedKeyOwner(t *testing.T) {
 	uid := int64(42)
 
