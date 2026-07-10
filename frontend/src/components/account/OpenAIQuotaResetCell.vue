@@ -138,6 +138,10 @@ const resetMessage = ref<string | null>(null)
 const showResetConfirm = ref(false)
 const showResetCreditDetails = ref(false)
 
+// 影子账号的额度查询会 resolve 到母账号,但影子本身不支持重置(后端返回 409);
+// 重置必须在母账号上进行。前端据此禁用影子的重置入口(外审 F6)。
+const isShadow = computed(() => props.account.parent_account_id != null)
+
 const availableResetCount = computed(() => data.value?.rate_limit_reset_credits?.available_count ?? 0)
 const resetCreditExpirations = computed(() =>
   (data.value?.rate_limit_reset_credits?.credits ?? [])
@@ -146,7 +150,7 @@ const resetCreditExpirations = computed(() =>
 )
 const primaryResetCreditExpiry = computed(() => resetCreditExpirations.value[0] ?? '')
 const hiddenResetCreditCount = computed(() => Math.max(resetCreditExpirations.value.length - 1, 0))
-const canReset = computed(() => availableResetCount.value > 0)
+const canReset = computed(() => availableResetCount.value > 0 && !isShadow.value)
 
 const resetCreditDetailsTitle = computed(() =>
   resetCreditExpirations.value.map((expiresAt) => formatResetCreditExpiry(expiresAt, 'full')).join('\n')
@@ -158,6 +162,7 @@ const resetCreditDetailsToggleLabel = computed(() => {
 })
 
 const resetButtonTitle = computed(() => {
+  if (isShadow.value) return t('admin.accounts.openaiQuotaReset.resetTooltipShadow')
   if (!data.value) return t('admin.accounts.openaiQuotaReset.resetTooltipNeedQuery')
   if (!canReset.value) return t('admin.accounts.openaiQuotaReset.resetTooltipNoCredits')
   return t('admin.accounts.openaiQuotaReset.resetTooltipReady')

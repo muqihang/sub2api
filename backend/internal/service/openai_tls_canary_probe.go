@@ -140,7 +140,7 @@ func (s *OpenAIGatewayService) runOpenAITLSCanaryWSProbe(ctx context.Context, in
 		markOpenAITLSCanaryProbeFailure(snapshot, "build_ws_url_failed", err.Error())
 		return snapshot, nil
 	}
-	headers, _, err := s.buildOpenAIWSHeaders(nil, account, token, OpenAIWSProtocolDecision{}, false, "", "", "")
+	headers, _, err := s.buildOpenAIWSHeaders(ctx, nil, account, token, OpenAIWSProtocolDecision{}, false, "", "", "")
 	if err != nil {
 		markOpenAITLSCanaryProbeFailure(snapshot, "build_ws_headers_failed", err.Error())
 		return snapshot, nil

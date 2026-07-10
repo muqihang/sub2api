@@ -1188,6 +1188,7 @@ func (s *OpenAIGatewayService) buildOpenAIResponsesWSURL(account *Account) (stri
 }
 
 func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
+	ctx context.Context,
 	c *gin.Context,
 	account *Account,
 	token string,
@@ -1239,7 +1240,10 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 	}
 
 	if account != nil && account.Type == AccountTypeOAuth {
-		setOpenAIChatGPTAccountHeaders(headers, account)
+		if err := resolveAndSetOpenAIChatGPTAccountHeaders(ctx, s.accountRepo, headers, account); err != nil {
+			return nil, sessionResolution, fmt.Errorf("resolve chatgpt account headers: %w", err)
+		}
+		headers.Set("originator", resolveOpenAIUpstreamOriginator(c, isCodexCLI))
 	}
 
 	customUA := ""
@@ -1283,7 +1287,9 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 		}
 	}
 
-	account.ApplyHeaderOverrides(headers)
+	if account != nil {
+		account.ApplyHeaderOverrides(headers)
+	}
 
 	return headers, sessionResolution, nil
 }
@@ -2045,9 +2051,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	storeDisabledConnMode := s.openAIWSStoreDisabledConnMode()
 	forceNewConnByPolicy := shouldForceNewConnOnStoreDisabled(storeDisabledConnMode, lastFailureReason)
 	forceNewConn := forceNewConnByPolicy && storeDisabled && previousResponseID == "" && sessionHash != "" && preferredConnID == ""
-	wsHeaders, sessionResolution, headerErr := s.buildOpenAIWSHeaders(c, account, token, decision, isCodexCLI, turnState, turnMetadata, promptCacheKey)
-	if headerErr != nil {
-		return nil, headerErr
+	wsHeaders, sessionResolution, buildHdrErr := s.buildOpenAIWSHeaders(ctx, c, account, token, decision, isCodexCLI, turnState, turnMetadata, promptCacheKey)
+	if buildHdrErr != nil {
+		return nil, fmt.Errorf("build ws headers: %w", buildHdrErr)
 	}
 	egress, egressErr := s.resolveOpenAIEgress(ctx, account)
 	if egressErr != nil {
@@ -3198,9 +3204,9 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 	}
 
-	wsHeaders, _, headerErr := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), firstPayload.promptCacheKey)
-	if headerErr != nil {
-		return headerErr
+	wsHeaders, _, buildHdrErr := s.buildOpenAIWSHeaders(ctx, c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), firstPayload.promptCacheKey)
+	if buildHdrErr != nil {
+		return fmt.Errorf("build ws headers: %w", buildHdrErr)
 	}
 	egress, egressErr := s.resolveOpenAIEgress(ctx, account)
 	if egressErr != nil {
@@ -4235,11 +4241,12 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		if nextPayload.promptCacheKey != "" {
 			// ingress 会话在整个客户端 WS 生命周期内复用同一上游连接；
 			// prompt_cache_key 对握手头的更新仅在未来需要重新建连时生效。
-			updatedHeaders, _, headerErr := s.buildOpenAIWSHeaders(c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), nextPayload.promptCacheKey)
-			if headerErr != nil {
-				return headerErr
+			updatedHeaders, _, updHdrErr := s.buildOpenAIWSHeaders(ctx, c, account, token, wsDecision, isCodexCLI, turnState, strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)), nextPayload.promptCacheKey)
+			if updHdrErr != nil {
+				logOpenAIWSModeInfo("ingress_ws_update_headers_failed account_id=%d err=%v", account.ID, updHdrErr)
+			} else {
+				baseAcquireReq.Headers = updatedHeaders
 			}
-			baseAcquireReq.Headers = updatedHeaders
 		}
 		if nextPayload.previousResponseID != "" {
 			expectedPrev := strings.TrimSpace(lastTurnResponseID)
@@ -4637,6 +4644,10 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 		account = latest
 	}
 	if !account.IsOpenAI() || !account.IsSchedulable() {
+		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), lookupResponseID)
+		return nil, nil
+	}
+	if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), lookupResponseID)
 		return nil, nil
 	}

@@ -23,23 +23,27 @@ type rateLimitAccountRepoStub struct {
 	lastErrorMsg           string
 	lastExtra              map[string]any
 	lastTempReason         string
+	lastErrorID            int64
+	lastTempID             int64
 }
 
 func (r *rateLimitAccountRepoStub) SetError(ctx context.Context, id int64, errorMsg string) error {
 	r.setErrorCalls++
+	r.lastErrorID = id
 	r.lastErrorMsg = errorMsg
 	return nil
 }
 
 func (r *rateLimitAccountRepoStub) SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
 	r.tempCalls++
+	r.lastTempID = id
 	r.lastTempReason = reason
 	return nil
 }
 
 func (r *rateLimitAccountRepoStub) UpdateCredentials(ctx context.Context, id int64, credentials map[string]any) error {
 	r.updateCredentialsCalls++
-	r.lastCredentials = cloneCredentials(credentials)
+	r.lastCredentials = shallowCopyMap(credentials)
 	return nil
 }
 
@@ -215,6 +219,41 @@ func TestRateLimitService_CheckErrorPolicy_Antigravity401TempUnschedMarksForceRe
 	require.Equal(t, true, repo.lastExtra[antigravityForceTokenRefreshExtraKey])
 	require.Equal(t, "401_invalid", repo.lastExtra[antigravityForceTokenRefreshReasonExtraKey])
 	require.Equal(t, true, account.Extra[antigravityForceTokenRefreshExtraKey])
+}
+
+func TestRateLimitService_HandleUpstreamError_SparkShadow401RedirectsToParent(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	repo.accountsByID = map[int64]*Account{}
+	invalidator := &tokenCacheInvalidatorRecorder{}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	service.SetTokenCacheInvalidator(invalidator)
+
+	const parentID = int64(500)
+	parent := &Account{
+		ID:          parentID,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Credentials: map[string]any{"refresh_token": "rt-parent"},
+	}
+	repo.accountsByID[parentID] = parent
+
+	shadowParent := parentID
+	shadow := &Account{
+		ID:              501,
+		Platform:        PlatformOpenAI,
+		Type:            AccountTypeOAuth,
+		ParentAccountID: &shadowParent,
+		QuotaDimension:  QuotaDimensionSpark,
+	}
+
+	shouldDisable := service.HandleUpstreamError(context.Background(), shadow, 401, http.Header{}, []byte("unauthorized"))
+
+	require.True(t, shouldDisable)
+	require.Equal(t, 0, repo.setErrorCalls, "spark shadow must not be permanently disabled on a parent-token 401")
+	require.Equal(t, 1, repo.tempCalls)
+	require.Equal(t, parentID, repo.lastTempID, "temp-unschedulable must target the credential owner (parent)")
+	require.Len(t, invalidator.accounts, 1)
+	require.Equal(t, parentID, invalidator.accounts[0].ID, "token cache invalidation must target the parent")
 }
 
 // TestRateLimitService_HandleUpstreamError_OAuth401InvalidatorError

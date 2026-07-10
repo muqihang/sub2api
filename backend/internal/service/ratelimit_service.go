@@ -261,41 +261,50 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		}
 		// 其他 400 错误（如参数问题）不处理，不禁用账号
 	case 401:
+		// Spark shadows do not hold credentials. Treat upstream auth failures as
+		// credential-owner failures so token cache/lifecycle/cooldown state lands
+		// on the parent account, while preserving local OpenAI lifecycle behavior.
+		authAccount := account
+		if account != nil && account.IsCredentialShadow() {
+			if resolved, rerr := resolveCredentialAccount(ctx, s.accountRepo, account); rerr == nil && resolved != nil {
+				authAccount = resolved
+			}
+		}
 		openai401Code := classifyOpenAIUpstreamAuth401ErrorCode(responseBody)
-		if account.Platform == PlatformOpenAI && isTerminalOpenAIAuthErrorCode(openai401Code) {
+		if authAccount.Platform == PlatformOpenAI && isTerminalOpenAIAuthErrorCode(openai401Code) {
 			msg := "Token revoked (401): account authentication permanently revoked"
 			if upstreamMsg != "" {
 				msg = "Token revoked (401): " + upstreamMsg
 			}
-			s.updateOpenAIAuthLifecycle(ctx, account, OpenAIAuthStateTerminal, OpenAIValidationOutcomeRTValidationTerminalFailure, openai401Code, "")
-			s.handleAuthError(ctx, account, msg)
+			s.updateOpenAIAuthLifecycle(ctx, authAccount, OpenAIAuthStateTerminal, OpenAIValidationOutcomeRTValidationTerminalFailure, openai401Code, "")
+			s.handleAuthError(ctx, authAccount, msg)
 			shouldDisable = true
 			break
 		}
 		// OAuth 账号在 401 错误时临时不可调度（给 token 刷新窗口）；非 OAuth 账号保持原有 SetError 行为。
-		if account.Type == AccountTypeOAuth {
+		if authAccount.Type == AccountTypeOAuth {
 			// 1. 失效缓存
 			if s.tokenCacheInvalidator != nil {
-				if err := s.tokenCacheInvalidator.InvalidateToken(ctx, account); err != nil {
-					slog.Warn("oauth_401_invalidate_cache_failed", "account_id", account.ID, "error", err)
+				if err := s.tokenCacheInvalidator.InvalidateToken(ctx, authAccount); err != nil {
+					slog.Warn("oauth_401_invalidate_cache_failed", "error_class", fmt.Sprintf("%T", err))
 				}
 			}
 			// 缺少 refresh_token 的 OAuth 账号无法在冷却期内自愈（后台刷新服务也会跳过），
 			// 直接走 SetError 永久禁用，避免冷却结束后再被选中产生一发无意义的 502。
-			if strings.TrimSpace(account.GetCredential("refresh_token")) == "" {
+			if strings.TrimSpace(authAccount.GetCredential("refresh_token")) == "" {
 				msg := "Authentication failed (401): refresh_token missing, cannot recover"
 				if upstreamMsg != "" {
 					msg = "OAuth 401 (no refresh_token): " + upstreamMsg
 				}
-				s.handleAuthError(ctx, account, msg)
+				s.handleAuthError(ctx, authAccount, msg)
 				shouldDisable = true
 				break
 			}
-			if account.Platform == PlatformOpenAI {
-				recovered, terminalFailure, refreshErrorCode := s.tryRecoverOpenAIAuth401(ctx, account)
+			if authAccount.Platform == PlatformOpenAI {
+				recovered, terminalFailure, refreshErrorCode := s.tryRecoverOpenAIAuth401(ctx, authAccount)
 				switch {
 				case recovered:
-					s.updateOpenAIAuthLifecycle(ctx, account, OpenAIAuthStateHealthy, OpenAIValidationOutcomeRTValidated, "", time.Now().UTC().Format(time.RFC3339))
+					s.updateOpenAIAuthLifecycle(ctx, authAccount, OpenAIAuthStateHealthy, OpenAIValidationOutcomeRTValidated, "", time.Now().UTC().Format(time.RFC3339))
 					shouldDisable = true
 					break
 				case terminalFailure:
@@ -303,12 +312,12 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 					if upstreamMsg != "" {
 						msg = "Authentication failed (401): " + upstreamMsg
 					}
-					s.updateOpenAIAuthLifecycle(ctx, account, OpenAIAuthStateTerminal, OpenAIValidationOutcomeRTValidationTerminalFailure, refreshErrorCode, "")
-					s.handleAuthError(ctx, account, msg)
+					s.updateOpenAIAuthLifecycle(ctx, authAccount, OpenAIAuthStateTerminal, OpenAIValidationOutcomeRTValidationTerminalFailure, refreshErrorCode, "")
+					s.handleAuthError(ctx, authAccount, msg)
 					shouldDisable = true
 					break
 				default:
-					s.updateOpenAIAuthLifecycle(ctx, account, OpenAIAuthStateCooling, OpenAIValidationOutcomeRTValidationRetryableFailure, refreshErrorCode, "")
+					s.updateOpenAIAuthLifecycle(ctx, authAccount, OpenAIAuthStateCooling, OpenAIValidationOutcomeRTValidationRetryableFailure, refreshErrorCode, "")
 				}
 				if shouldDisable {
 					break
@@ -325,9 +334,9 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 				cooldownMinutes = 10
 			}
 			until := time.Now().Add(time.Duration(cooldownMinutes) * time.Minute)
-			s.notifyAccountSchedulingBlocked(account, until, "oauth_401")
-			if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, msg); err != nil {
-				slog.Warn("oauth_401_set_temp_unschedulable_failed", "account_id", account.ID, "error", err)
+			s.notifyAccountSchedulingBlocked(authAccount, until, "oauth_401")
+			if err := s.accountRepo.SetTempUnschedulable(ctx, authAccount.ID, until, msg); err != nil {
+				slog.Warn("oauth_401_set_temp_unschedulable_failed", "error_class", fmt.Sprintf("%T", err))
 			}
 			shouldDisable = true
 		} else {
@@ -336,7 +345,7 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			if upstreamMsg != "" {
 				msg = "Authentication failed (401): " + upstreamMsg
 			}
-			s.handleAuthError(ctx, account, msg)
+			s.handleAuthError(ctx, authAccount, msg)
 			shouldDisable = true
 		}
 	case 402:
@@ -1040,6 +1049,14 @@ func (s *RateLimitService) handleCustomErrorCode(ctx context.Context, account *A
 // handle429 处理429限流错误
 // 解析响应头获取重置时间，标记账号为限流状态
 func (s *RateLimitService) handle429(ctx context.Context, account *Account, headers http.Header, responseBody []byte) {
+	// Spark 影子：限流/熔断状态 100% 由 QueryUsage(/wham/usage body 的 codex_bengalfox)驱动。
+	// /responses 的 429 携带的 x-codex-*/usage_limit_reached 是 global codex 道(plan/spec §8),
+	// 套到影子会把 spark 误耦合到 global 窗口——即便 spark 仍有配额也会被冷却到 global reset,
+	// 单影子场景直接变成无可用账号(外审第8轮 P1)。整段跳过;影子的 codex_* 仅由 account_usage 的
+	// QueryUsage→persistOpenAICodexProbeSnapshot 维护,枯竭由调度守卫处理。
+	if account.IsShadow() {
+		return
+	}
 	// 1. OpenAI 平台：优先尝试解析 x-codex-* 响应头（用于 rate_limit_exceeded）
 	if account.Platform == PlatformOpenAI {
 		persistOpenAI429PlanType(ctx, s.accountRepo, account, responseBody)
@@ -1518,6 +1535,11 @@ func (s *RateLimitService) persistOpenAICodexSnapshot(ctx context.Context, accou
 	if s == nil || s.accountRepo == nil || account == nil || headers == nil {
 		return
 	}
+	// spark 影子的 codex_* 仅由 QueryUsage(/wham/usage bengalfox 道)更新,不能被 /responses 的
+	// x-codex-* 全局头快照污染(外审第7轮 P1,与 updateCodexUsageSnapshot 同口径)。
+	if account.IsShadow() {
+		return
+	}
 	snapshot := ParseCodexRateLimitHeaders(headers)
 	if snapshot == nil {
 		return
@@ -1658,6 +1680,12 @@ func parseOpenAIRateLimitPlanType(body []byte) string {
 
 func persistOpenAI429PlanType(ctx context.Context, repo AccountRepository, account *Account, body []byte) {
 	if repo == nil || account == nil || account.Platform != PlatformOpenAI {
+		return
+	}
+	// spark 影子账号恒不持凭据:即便收到带 plan_type 的 429,也不能把 plan_type 写进影子 credentials
+	// ——该路径走 repo.BulkUpdate 直写、不经 persistAccountCredentials 守卫(外审第7轮 P1)。
+	// plan_type 由母账号在自己的请求上维护,影子跳过。
+	if account.IsCredentialShadow() {
 		return
 	}
 

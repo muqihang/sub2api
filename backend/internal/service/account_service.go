@@ -83,6 +83,15 @@ type AccountRepository interface {
 	RevertProxyFallback(ctx context.Context, accountID int64) error
 }
 
+// AccountShadowRepository is the optional repository extension used by linked
+// Spark shadow account management. Keeping it outside AccountRepository avoids
+// forcing unrelated protected-path tests/stubs to implement shadow-only methods.
+type AccountShadowRepository interface {
+	// ListShadowsByParent 返回指定父账号的影子账号；当前实现仅查 quota_dimension='spark'（唯一预设）。
+	// ⚠️ 新增影子维度时：须更新此函数（或新增维度专用列举），并检查所有调用点（级联删除/一母一影校验/type 守卫），否则会静默漏掉新维度。
+	ListShadowsByParent(ctx context.Context, parentID int64) ([]*Account, error)
+}
+
 // AccountBulkUpdate describes the fields that can be updated in a bulk operation.
 // Nil pointers mean "do not change".
 type AccountBulkUpdate struct {
@@ -333,6 +342,9 @@ func (s *AccountService) Delete(ctx context.Context, id int64) error {
 		return ErrAccountNotFound
 	}
 
+	// 注意:此处不级联删除 spark 影子账号。当前唯一的后台删除入口走 AdminService.DeleteAccount
+	// (已 ListShadowsByParent 先删影子再删母)。本方法目前无删除调用方;若未来有调用方经此
+	// 删除母账号,需在此补级联,否则会留下孤儿影子(外审第6轮 P3:当前不可达,记为残留)。
 	if err := s.accountRepo.Delete(ctx, id); err != nil {
 		return fmt.Errorf("delete account: %w", err)
 	}
