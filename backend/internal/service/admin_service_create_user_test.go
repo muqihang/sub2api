@@ -8,8 +8,18 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/stretchr/testify/require"
 )
+
+type roleGuardUserRepoStub struct {
+	*userRepoStub
+	adminTotal int64
+}
+
+func (s *roleGuardUserRepoStub) ListWithFilters(_ context.Context, _ pagination.PaginationParams, _ UserListFilters) ([]User, *pagination.PaginationResult, error) {
+	return nil, &pagination.PaginationResult{Total: s.adminTotal}, nil
+}
 
 func TestAdminService_CreateUser_Success(t *testing.T) {
 	repo := &userRepoStub{nextID: 10}
@@ -41,6 +51,47 @@ func TestAdminService_CreateUser_Success(t *testing.T) {
 	require.True(t, user.CheckPassword(input.Password))
 	require.Len(t, repo.created, 1)
 	require.Equal(t, user, repo.created[0])
+}
+
+func TestAdminService_CreateUser_AllowsAdminRole(t *testing.T) {
+	repo := &userRepoStub{nextID: 13}
+	svc := &adminServiceImpl{userRepo: repo}
+
+	user, err := svc.CreateUser(context.Background(), &CreateUserInput{
+		Email:    "admin@test.com",
+		Password: "strong-pass",
+		Role:     RoleAdmin,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, RoleAdmin, user.Role)
+}
+
+func TestAdminService_CreateUser_RejectsInvalidRole(t *testing.T) {
+	repo := &userRepoStub{nextID: 14}
+	svc := &adminServiceImpl{userRepo: repo}
+
+	_, err := svc.CreateUser(context.Background(), &CreateUserInput{
+		Email:    "invalid-role@test.com",
+		Password: "strong-pass",
+		Role:     "superuser",
+	})
+
+	require.Error(t, err)
+	require.Empty(t, repo.created)
+}
+
+func TestAdminService_UpdateUser_RejectsDemotingLastAdmin(t *testing.T) {
+	repo := &roleGuardUserRepoStub{
+		userRepoStub: &userRepoStub{user: &User{ID: 42, Email: "admin@test.com", Role: RoleAdmin}},
+		adminTotal:   1,
+	}
+	svc := &adminServiceImpl{userRepo: repo}
+
+	_, err := svc.UpdateUser(context.Background(), 42, &UpdateUserInput{Role: RoleUser})
+
+	require.EqualError(t, err, "cannot demote the last admin user")
+	require.Empty(t, repo.updated)
 }
 
 func TestAdminService_CreateUser_UsesDefaultBalanceWhenBalanceOmitted(t *testing.T) {

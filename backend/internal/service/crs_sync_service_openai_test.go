@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -82,6 +83,16 @@ func (r *crsSyncProxyRepoStub) CountAccountsByProxyID(ctx context.Context, proxy
 }
 func (r *crsSyncProxyRepoStub) ListAccountSummariesByProxyID(ctx context.Context, proxyID int64) ([]ProxyAccountSummary, error) {
 	return nil, nil
+}
+func (r *crsSyncProxyRepoStub) SweepExpiredProxies(ctx context.Context, now time.Time) (int64, error) {
+	return 0, nil
+}
+func (r *crsSyncProxyRepoStub) ListAllForFallback(ctx context.Context) ([]Proxy, error) {
+	return nil, nil
+}
+func (r *crsSyncProxyRepoStub) CountExpired(ctx context.Context) (int64, error) { return 0, nil }
+func (r *crsSyncProxyRepoStub) CountExpiringSoon(ctx context.Context, now time.Time) (int64, error) {
+	return 0, nil
 }
 
 type crsSyncOpenAIClientStub struct {

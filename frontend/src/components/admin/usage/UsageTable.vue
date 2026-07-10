@@ -192,13 +192,16 @@
           </div>
         </template>
 
-        <template #cell-first_token="{ row }">
-          <span v-if="row.first_token_ms != null" class="text-sm text-gray-600 dark:text-gray-400">{{ formatDuration(row.first_token_ms) }}</span>
-          <span v-else class="text-sm text-gray-400 dark:text-gray-500">-</span>
-        </template>
-
-        <template #cell-duration="{ row }">
-          <span class="text-sm text-gray-600 dark:text-gray-400">{{ formatDuration(row.duration_ms) }}</span>
+        <template #cell-latency="{ row }">
+          <div class="flex items-center gap-2 text-xs tabular-nums">
+            <span class="h-8 w-1 rounded-full" :class="LATENCY_BAR_CLASSES[durationSeverity(row.duration_ms ?? 0)]"></span>
+            <div class="grid grid-cols-[max-content_max-content] gap-x-2 gap-y-0.5">
+              <span class="text-gray-400">{{ t('usage.firstToken') }}</span>
+              <span :class="row.first_token_ms == null ? 'text-gray-400' : LATENCY_TEXT_CLASSES[firstTokenSeverity(row.first_token_ms)]">{{ row.first_token_ms == null ? '-' : formatDuration(row.first_token_ms) }}</span>
+              <span class="text-gray-400">{{ t('usage.duration') }}</span>
+              <span :class="LATENCY_TEXT_CLASSES[durationSeverity(row.duration_ms ?? 0)]">{{ formatDuration(row.duration_ms) }}</span>
+            </div>
+          </div>
         </template>
 
         <template #cell-created_at="{ value }">
@@ -439,6 +442,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { durationSeverity, firstTokenSeverity, LATENCY_BAR_CLASSES, LATENCY_TEXT_CLASSES } from '@/utils/latencyHealth'
 import { formatDateTime, formatReasoningEffort } from '@/utils/format'
 import { formatCacheTokens, formatMultiplier } from '@/utils/formatters'
 import { formatTokenPricePerMillion } from '@/utils/usagePricing'

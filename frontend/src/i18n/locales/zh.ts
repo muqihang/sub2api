@@ -800,6 +800,7 @@ export default {
     quota: '额度',
     currentConcurrency: '当前并发',
     lastUsedAt: '上次使用时间',
+    lastUsedIP: '最近使用 IP',
     useKey: '使用密钥',
     useKeyModal: {
       title: '使用 API 密钥',
@@ -5395,6 +5396,15 @@ export default {
       clickToViewBalance: '点击查看充值记录',
       failedToLoadUser: '加载用户信息失败',
       userDeletedBadge: '已删除',
+      tokenRanking: {
+        title: '用户 Token 排行',
+        subtitle: '按当前筛选条件和时间范围排序',
+        user: '用户',
+        requests: '请求数',
+        cacheTokens: '缓存 Token',
+        totalTokens: '总 Token',
+        actualCost: '实际费用'
+      },
       cleanup: {
         button: '清理',
         title: '清理使用记录',

@@ -16,20 +16,21 @@ import (
 
 // stubConcurrencyCacheForTest 用于并发服务单元测试的缓存桩
 type stubConcurrencyCacheForTest struct {
-	acquireResult  bool
-	acquireErr     error
-	releaseErr     error
-	concurrency    int
-	concurrencyErr error
-	waitAllowed    bool
-	waitErr        error
-	waitCount      int
-	waitCountErr   error
-	loadBatch      map[int64]*AccountLoadInfo
-	loadBatchErr   error
-	usersLoadBatch map[int64]*UserLoadInfo
-	usersLoadErr   error
-	cleanupErr     error
+	acquireResult     bool
+	acquireErr        error
+	releaseErr        error
+	concurrency       int
+	concurrencyErr    error
+	waitAllowed       bool
+	waitErr           error
+	waitCount         int
+	waitCountErr      error
+	loadBatch         map[int64]*AccountLoadInfo
+	loadBatchErr      error
+	usersLoadBatch    map[int64]*UserLoadInfo
+	usersLoadErr      error
+	cleanupErr        error
+	apiKeyConcurrency map[int64]int
 
 	// 记录调用
 	releasedAccountIDs []int64
@@ -101,6 +102,22 @@ func (c *stubConcurrencyCacheForTest) CleanupExpiredAccountSlotKeys(_ context.Co
 
 func (c *stubConcurrencyCacheForTest) CleanupStaleProcessSlots(_ context.Context, _ string) error {
 	return c.cleanupErr
+}
+
+func (c *stubConcurrencyCacheForTest) TrackAPIKeySlot(_ context.Context, _ int64, _ string) error {
+	return nil
+}
+
+func (c *stubConcurrencyCacheForTest) ReleaseAPIKeySlot(_ context.Context, _ int64, _ string) error {
+	return nil
+}
+
+func (c *stubConcurrencyCacheForTest) GetAPIKeyConcurrencyBatch(_ context.Context, apiKeyIDs []int64) (map[int64]int, error) {
+	result := make(map[int64]int, len(apiKeyIDs))
+	for _, apiKeyID := range apiKeyIDs {
+		result[apiKeyID] = c.apiKeyConcurrency[apiKeyID]
+	}
+	return result, nil
 }
 
 type trackingConcurrencyCache struct {

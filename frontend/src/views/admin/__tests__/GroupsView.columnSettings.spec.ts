@@ -221,8 +221,8 @@ describe('admin GroupsView column settings', () => {
     expect(visibleColumns(remounted)).toContain('actions')
   })
 
-  it('skips hidden group usage and capacity summary fetches', async () => {
-    localStorage.setItem('group-hidden-columns', JSON.stringify(['usage', 'capacity']))
+  it('skips usage and capacity summary fetches without visible consumers', async () => {
+    localStorage.setItem('group-hidden-columns', JSON.stringify(['billing_type', 'usage', 'capacity']))
 
     const wrapper = await mountView()
 
@@ -230,5 +230,13 @@ describe('admin GroupsView column settings', () => {
     expect(visibleColumns(wrapper)).not.toContain('capacity')
     expect(getUsageSummary).not.toHaveBeenCalled()
     expect(getCapacitySummary).not.toHaveBeenCalled()
+  })
+
+  it('loads usage when subscription quota cells remain visible', async () => {
+    localStorage.setItem('group-hidden-columns', JSON.stringify(['usage']))
+
+    await mountView()
+
+    expect(getUsageSummary).toHaveBeenCalledTimes(1)
   })
 })

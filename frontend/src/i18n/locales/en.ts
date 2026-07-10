@@ -801,6 +801,7 @@ export default {
     quota: 'Quota',
     currentConcurrency: 'Current Concurrency',
     lastUsedAt: 'Last Used',
+    lastUsedIP: 'Last Used IP',
     useKey: 'Use Key',
     useKeyModal: {
       title: 'Use API Key',
@@ -2045,6 +2046,7 @@ export default {
         notesHint: 'This note is only visible to administrators',
         passwordLabel: 'Password',
         passwordPlaceholder: 'Enter password (leave empty to keep unchanged)',
+        roleLabel: 'Role',
         selectRole: 'Select role',
         balanceLabel: 'Balance',
         concurrencyLabel: 'Concurrency',
@@ -5398,6 +5400,15 @@ export default {
       clickToViewBalance: 'Click to view balance history',
       failedToLoadUser: 'Failed to load user info',
       userDeletedBadge: 'Deleted',
+      tokenRanking: {
+        title: 'User Token Ranking',
+        subtitle: 'Ranked within the selected filters and time range',
+        user: 'User',
+        requests: 'Requests',
+        cacheTokens: 'Cache Tokens',
+        totalTokens: 'Total Tokens',
+        actualCost: 'Actual Cost'
+      },
       cleanup: {
         button: 'Cleanup',
         title: 'Cleanup Usage Records',

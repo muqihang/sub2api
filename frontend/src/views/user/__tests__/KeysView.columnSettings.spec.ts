@@ -44,6 +44,7 @@ const messages: Record<string, string> = {
   'keys.group': 'Group',
   'keys.currentConcurrency': 'Current Concurrency',
   'keys.lastUsedAt': 'Last Used',
+  'keys.lastUsedIP': 'Last Used IP',
   'keys.rateLimitColumn': 'Rate Limit',
   'keys.searchPlaceholder': 'Search keys',
   'keys.status.active': 'Active',
@@ -102,6 +103,7 @@ const createApiKey = (): ApiKey => ({
   ip_whitelist: [],
   ip_blacklist: [],
   last_used_at: null,
+  last_used_ip: null,
   quota: 0,
   quota_used: 0,
   expires_at: null,
@@ -125,7 +127,7 @@ const createApiKey = (): ApiKey => ({
 const DataTableStub = {
   props: ['columns', 'data'],
   emits: ['sort'],
-  template: '<div><div data-test="columns">{{ columns.map((col) => col.key).join(",") }}</div><div v-for="row in data" :key="row.id"><slot name="cell-name" :value="row.name" :row="row" /><div data-test="current-concurrency"><slot name="cell-current_concurrency" :value="row.current_concurrency" :row="row" /></div></div></div>',
+  template: '<div><div data-test="columns">{{ columns.map((col) => col.key).join(",") }}</div><div data-test="sortable-columns">{{ columns.filter((col) => col.sortable).map((col) => col.key).join(",") }}</div><div v-for="row in data" :key="row.id"><slot name="cell-name" :value="row.name" :row="row" /><div data-test="current-concurrency"><slot name="cell-current_concurrency" :value="row.current_concurrency" :row="row" /></div></div></div>',
 }
 
 const mountView = async () => {
@@ -201,8 +203,18 @@ describe('user KeysView column settings', () => {
     await clickButtonContaining(wrapper, 'Rate Limit')
 
     expect(visibleColumns(wrapper)).toContain('rate_limit')
-    expect(JSON.parse(localStorage.getItem('api-key-hidden-columns') || '[]')).toEqual(['last_used_at'])
-    expect(localStorage.getItem('api-key-column-settings-version')).toBe('1')
+    expect(JSON.parse(localStorage.getItem('api-key-hidden-columns') || '[]')).toEqual(['last_used_at', 'last_used_ip'])
+    expect(localStorage.getItem('api-key-column-settings-version')).toBe('2')
+  })
+
+  it('hides the new last-used IP column for saved column preferences', async () => {
+    localStorage.setItem('api-key-hidden-columns', JSON.stringify(['last_used_at']))
+    localStorage.setItem('api-key-column-settings-version', '1')
+
+    await mountView()
+
+    expect(JSON.parse(localStorage.getItem('api-key-hidden-columns') || '[]')).toEqual(['last_used_at', 'last_used_ip'])
+    expect(localStorage.getItem('api-key-column-settings-version')).toBe('2')
   })
 
   it('renders current concurrency for each API key', async () => {
@@ -210,5 +222,11 @@ describe('user KeysView column settings', () => {
 
     expect(visibleColumns(wrapper)).toContain('current_concurrency')
     expect(wrapper.get('[data-test="current-concurrency"]').text()).toContain('3')
+  })
+
+  it('allows sorting API keys by current concurrency', async () => {
+    const wrapper = await mountView()
+
+    expect(wrapper.get('[data-test="sortable-columns"]').text().split(',')).toContain('current_concurrency')
   })
 })

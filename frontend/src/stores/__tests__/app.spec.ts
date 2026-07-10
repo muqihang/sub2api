@@ -205,6 +205,14 @@ describe('useAppStore', () => {
       expect(store.sidebarCollapsed).toBe(false)
     })
 
+    it('sidebarScrollTop defaults to 0 and remains writable', () => {
+      const store = useAppStore()
+      expect(store.sidebarScrollTop).toBe(0)
+
+      store.sidebarScrollTop = 256
+      expect(store.sidebarScrollTop).toBe(256)
+    })
+
     it('toggleMobileSidebar 切换移动端状态', () => {
       const store = useAppStore()
       expect(store.mobileOpen).toBe(false)
