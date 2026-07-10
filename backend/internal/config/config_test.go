@@ -1812,6 +1812,13 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 		require.Equal(t, 7200, cfg.Gateway.OpenAIWS.StickyResponseIDTTLSeconds)
 	})
 
+	t.Run("http_bridge ingress mode is valid", func(t *testing.T) {
+		cfg := buildValid(t)
+		cfg.Gateway.OpenAIWS.IngressModeDefault = "http_bridge"
+
+		require.NoError(t, cfg.Validate())
+	})
+
 	cases := []struct {
 		name    string
 		mutate  func(*Config)
