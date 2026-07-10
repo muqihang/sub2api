@@ -6796,15 +6796,23 @@ func ccGatewayUpstreamFailClosedError(status int) error {
 }
 
 // ApplyBedrockCCCompat 应用 Bedrock CC 兼容转换（渠道级模型映射后调用）
-// 清理 Anthropic API 专有字段、注入 Bedrock 必需字段、修复 thinking/tool_use ID
-func (s *GatewayService) ApplyBedrockCCCompat(ctx context.Context, body []byte, model string, account *Account, groupID *int64) []byte {
-	if !s.isBedrockCCCompatEnabled(ctx, account, groupID) {
+// 清理 Anthropic API 专有字段、修复 thinking/tool_use ID，并过滤非 Bedrock 转发的 beta header。
+func (s *GatewayService) ApplyBedrockCCCompat(c *gin.Context, body []byte, model string, account *Account, groupID *int64) []byte {
+	if c == nil || c.Request == nil || !s.isBedrockCCCompatEnabled(c.Request.Context(), account, groupID) {
 		return body
 	}
 	body = sanitizeBedrockCCFields(body)
 	body = sanitizeBedrockThinking(body, model)
 	body = sanitizeBedrockToolUseIDs(body)
 	body = sanitizeBedrockCCBetaTokens(body, model)
+	if !account.IsBedrock() {
+		if betaHeader := getHeaderRaw(c.Request.Header, "anthropic-beta"); betaHeader != "" {
+			deleteHeaderAllForms(c.Request.Header, "anthropic-beta")
+			if betaTokens := ResolveBedrockBetaTokens(betaHeader, body, model); len(betaTokens) > 0 {
+				setHeaderRaw(c.Request.Header, "anthropic-beta", strings.Join(betaTokens, ", "))
+			}
+		}
+	}
 	return body
 }
 

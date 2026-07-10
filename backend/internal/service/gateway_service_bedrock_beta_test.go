@@ -3,13 +3,107 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/gin-gonic/gin"
 )
 
 type betaPolicySettingRepoStub struct {
 	values map[string]string
+}
+
+func newBedrockCCCompatServiceForTest(groupID int64) *GatewayService {
+	channel := &Channel{
+		ID:     1,
+		Status: StatusActive,
+		FeaturesConfig: map[string]any{
+			featureKeyBedrockCCCompat: true,
+		},
+	}
+	channelService := &ChannelService{}
+	channelService.cache.Store(&channelCache{
+		channelByGroupID: map[int64]*Channel{groupID: channel},
+		byID:             map[int64]*Channel{channel.ID: channel},
+		groupPlatform:    map[int64]string{groupID: PlatformAnthropic},
+		loadedAt:         time.Now(),
+	})
+	return &GatewayService{channelService: channelService}
+}
+
+func TestApplyBedrockCCCompatFiltersBetaHeaderForPassthroughPaths(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(42)
+	service := newBedrockCCCompatServiceForTest(groupID)
+	body := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
+
+	for _, testCase := range []struct {
+		name    string
+		account *Account
+	}{
+		{
+			name:    "API key passthrough",
+			account: &Account{Platform: PlatformAnthropic, Type: AccountTypeAPIKey},
+		},
+		{
+			name:    "OAuth passthrough",
+			account: &Account{Platform: PlatformAnthropic, Type: AccountTypeOAuth},
+		},
+		{
+			name: "formal pool CC Gateway passthrough",
+			account: &Account{
+				Platform: PlatformAnthropic,
+				Type:     AccountTypeOAuth,
+				Extra:    map[string]any{"cc_gateway_enabled": "true"},
+			},
+		},
+		{
+			name: "CCH passthrough",
+			account: &Account{
+				Platform: PlatformAnthropic,
+				Type:     AccountTypeOAuth,
+				Extra:    map[string]any{"enable_cch_signing": true},
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			context, _ := gin.CreateTestContext(response)
+			context.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+			context.Request.Header.Set("anthropic-beta", "context-1m-2025-08-07,files-api-2025-04-14")
+
+			service.ApplyBedrockCCCompat(context, body, "us.anthropic.claude-opus-4-6-v1", testCase.account, &groupID)
+
+			if got := getHeaderRaw(context.Request.Header, "anthropic-beta"); got != "context-1m-2025-08-07" {
+				t.Fatalf("anthropic-beta = %q, want only Bedrock-supported token", got)
+			}
+		})
+	}
+}
+
+func TestApplyBedrockCCCompatPreservesTrueBedrockHeaderForBetaPolicy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(42)
+	service := newBedrockCCCompatServiceForTest(groupID)
+	response := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(response)
+	context.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	context.Request.Header.Set("anthropic-beta", "advanced-tool-use-2025-11-20")
+
+	service.ApplyBedrockCCCompat(
+		context,
+		[]byte(`{"messages":[{"role":"user","content":"hi"}]}`),
+		"us.anthropic.claude-opus-4-6-v1",
+		&Account{Platform: PlatformAnthropic, Type: AccountTypeBedrock},
+		&groupID,
+	)
+
+	if got := getHeaderRaw(context.Request.Header, "anthropic-beta"); got != "advanced-tool-use-2025-11-20" {
+		t.Fatalf("anthropic-beta = %q, want unmodified header for true Bedrock policy evaluation", got)
+	}
 }
 
 func (s *betaPolicySettingRepoStub) Get(ctx context.Context, key string) (*Setting, error) {

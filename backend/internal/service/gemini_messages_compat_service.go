@@ -1453,6 +1453,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 					contentType = "application/json"
 				}
 				c.Data(http.StatusInternalServerError, contentType, respBody)
+				MarkResponseCommitted(c)
 				return nil, fmt.Errorf("gemini upstream error: %d (skipped by error policy)", resp.StatusCode)
 			case ErrorPolicyMatched, ErrorPolicyTempUnscheduled:
 				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
@@ -1565,6 +1566,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 			contentType = "application/json"
 		}
 		c.Data(resp.StatusCode, contentType, respBody)
+		MarkResponseCommitted(c)
 		if upstreamMsg == "" {
 			return nil, fmt.Errorf("gemini upstream error: %d", resp.StatusCode)
 		}

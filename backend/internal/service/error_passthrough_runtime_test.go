@@ -169,6 +169,70 @@ func TestOpenAIHandleErrorResponse_AppliesRuleFor422(t *testing.T) {
 	assert.Equal(t, "OpenAI上游失败", errField["message"])
 }
 
+func TestOpenAIHandleCompatErrorResponseMarksEarlyResponsesCommitted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	for _, testCase := range []struct {
+		name        string
+		configure   func(*gin.Context)
+		credentials map[string]any
+		wantStatus  int
+	}{
+		{
+			name: "passthrough rule",
+			configure: func(c *gin.Context) {
+				ruleSvc := &ErrorPassthroughService{}
+				ruleSvc.setLocalCache([]*model.ErrorPassthroughRule{
+					newNonFailoverPassthroughRule(http.StatusUnprocessableEntity, "invalid schema", http.StatusTeapot, "compat upstream failure"),
+				})
+				BindErrorPassthroughService(c, ruleSvc)
+			},
+			wantStatus: http.StatusTeapot,
+		},
+		{
+			name: "custom error code skipped",
+			credentials: map[string]any{
+				"custom_error_codes_enabled": true,
+				"custom_error_codes":         []any{float64(599)},
+			},
+			wantStatus: http.StatusInternalServerError,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			if testCase.configure != nil {
+				testCase.configure(c)
+			}
+
+			resp := &http.Response{
+				StatusCode: http.StatusUnprocessableEntity,
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":{"message":"Invalid schema for field messages"}}`))),
+				Header:     http.Header{},
+			}
+			account := &Account{
+				ID:          3,
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeAPIKey,
+				Credentials: testCase.credentials,
+			}
+
+			var gotStatus int
+			_, err := (&OpenAIGatewayService{}).handleCompatErrorResponse(
+				resp,
+				c,
+				account,
+				func(_ *gin.Context, statusCode int, _, _ string) { gotStatus = statusCode },
+			)
+
+			require.Error(t, err)
+			require.Equal(t, testCase.wantStatus, gotStatus)
+			require.True(t, IsResponseCommitted(c))
+		})
+	}
+}
+
 func TestGeminiWriteGeminiMappedError_AppliesRuleFor422(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

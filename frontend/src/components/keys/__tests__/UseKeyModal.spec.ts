@@ -291,6 +291,44 @@ describe('UseKeyModal', () => {
     expect(fable.options.thinking).toEqual({ type: 'adaptive' })
   })
 
+  it('includes the attribution opt-out in every Claude Code terminal template', async () => {
+    const wrapper = mount(UseKeyModal, {
+      props: {
+        show: true,
+        apiKeyId: 42,
+        apiKey: 'sk-test',
+        baseUrl: 'https://example.com/v1',
+        platform: 'anthropic'
+      },
+      global: {
+        stubs: {
+          BaseDialog: {
+            template: '<div><slot /><slot name="footer" /></div>'
+          },
+          Icon: {
+            template: '<span />'
+          }
+        }
+      }
+    })
+
+    const terminalContent = () => wrapper.findAll('pre code')[0].text()
+
+    expect(terminalContent()).toContain('export CLAUDE_CODE_ATTRIBUTION_HEADER=0')
+
+    const commandPromptTab = wrapper.findAll('button').find((button) => button.text().includes('Windows CMD'))
+    expect(commandPromptTab).toBeDefined()
+    await commandPromptTab!.trigger('click')
+    await nextTick()
+    expect(terminalContent()).toContain('set CLAUDE_CODE_ATTRIBUTION_HEADER=0')
+
+    const powerShellTab = wrapper.findAll('button').find((button) => button.text().includes('PowerShell'))
+    expect(powerShellTab).toBeDefined()
+    await powerShellTab!.trigger('click')
+    await nextTick()
+    expect(terminalContent()).toContain('$env:CLAUDE_CODE_ATTRIBUTION_HEADER=0')
+  })
+
   it('shows augment-only guidance instead of generic client snippets', async () => {
     const wrapper = mount(UseKeyModal, {
       props: {
