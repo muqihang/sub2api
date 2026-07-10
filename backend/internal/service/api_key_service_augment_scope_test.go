@@ -326,13 +326,16 @@ func (apiKeyAugmentUserSubRepoStub) UpdateNotes(ctx context.Context, subscriptio
 func (apiKeyAugmentUserSubRepoStub) ActivateWindows(ctx context.Context, id int64, start time.Time) error {
 	panic("unexpected ActivateWindows call")
 }
-func (apiKeyAugmentUserSubRepoStub) ResetDailyUsage(ctx context.Context, id int64, newWindowStart time.Time) error {
+func (apiKeyAugmentUserSubRepoStub) ResetUsageWindows(ctx context.Context, id int64, resetDaily, resetWeekly, resetMonthly bool, newWindowStart time.Time) error {
+	panic("unexpected ResetUsageWindows call")
+}
+func (apiKeyAugmentUserSubRepoStub) ResetDailyUsage(ctx context.Context, id int64, expectedWindowStart *time.Time, newWindowStart time.Time) error {
 	panic("unexpected ResetDailyUsage call")
 }
-func (apiKeyAugmentUserSubRepoStub) ResetWeeklyUsage(ctx context.Context, id int64, newWindowStart time.Time) error {
+func (apiKeyAugmentUserSubRepoStub) ResetWeeklyUsage(ctx context.Context, id int64, expectedWindowStart *time.Time, newWindowStart time.Time) error {
 	panic("unexpected ResetWeeklyUsage call")
 }
-func (apiKeyAugmentUserSubRepoStub) ResetMonthlyUsage(ctx context.Context, id int64, newWindowStart time.Time) error {
+func (apiKeyAugmentUserSubRepoStub) ResetMonthlyUsage(ctx context.Context, id int64, expectedWindowStart *time.Time, newWindowStart time.Time) error {
 	panic("unexpected ResetMonthlyUsage call")
 }
 func (apiKeyAugmentUserSubRepoStub) IncrementUsage(ctx context.Context, id int64, costUSD float64) error {

@@ -247,6 +247,15 @@ func validateAndSetAPIKeyContext(
 
 		if subscription != nil {
 			needsMaintenance, validateErr := subscriptionService.ValidateAndCheckLimits(subscription, apiKey.Group)
+			if needsMaintenance {
+				refreshed, maintenanceErr := subscriptionService.EnsureWindowMaintenance(c.Request.Context(), subscription)
+				if maintenanceErr != nil {
+					writeError(c, 500, "SUBSCRIPTION_MAINTENANCE_FAILED", "Failed to maintain subscription usage windows")
+					return false
+				}
+				subscription = refreshed
+				_, validateErr = subscriptionService.ValidateAndCheckLimits(subscription, apiKey.Group)
+			}
 			if validateErr != nil {
 				code := "SUBSCRIPTION_INVALID"
 				status := 403
@@ -259,11 +268,7 @@ func validateAndSetAPIKeyContext(
 				writeError(c, status, code, validateErr.Error())
 				return false
 			}
-			if needsMaintenance {
-				maintenanceCopy := *subscription
-				subscriptionService.DoWindowMaintenance(&maintenanceCopy)
-			}
-		} else if apiKey.User.Balance <= 0 {
+		} else if apiKeyBalanceBelowAuthThreshold(apiKey.User.Balance, cfg) {
 			writeError(c, 403, "INSUFFICIENT_BALANCE", "Insufficient account balance")
 			return false
 		}
@@ -370,6 +375,12 @@ func setGroupContext(c *gin.Context, group *service.Group) {
 	}
 	ctx := context.WithValue(c.Request.Context(), ctxkey.Group, group)
 	c.Request = c.Request.WithContext(ctx)
+}
+
+// apiKeyBalanceBelowAuthThreshold preserves the historical auth behavior: only
+// an exhausted balance is rejected here. The billing cache owns reserve checks.
+func apiKeyBalanceBelowAuthThreshold(balance float64, _ *config.Config) bool {
+	return balance <= 0
 }
 
 func abortIfAPIKeyGroupUnavailable(c *gin.Context, apiKey *service.APIKey) bool {
