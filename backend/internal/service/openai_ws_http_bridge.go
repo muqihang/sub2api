@@ -263,7 +263,7 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 			Model:           originalModel,
 			UpstreamModel:   mappedModel,
 			ServiceTier:     extractOpenAIServiceTierFromBody(body),
-			ReasoningEffort: ApplyChineseThinkingEffortFallback(extractOpenAIReasoningEffortFromBody(body, originalModel), body, mappedModel),
+			ReasoningEffort: ApplyChineseThinkingEffortFallback(extractOpenAIReasoningEffortFromBody(body, mappedModel, originalModel), body, mappedModel),
 			Stream:          reqStream,
 			OpenAIWSMode:    true,
 			ResponseHeaders: cloneHeader(resp.Header),

@@ -3257,10 +3257,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 	passthroughEnabled := account.IsOpenAIPassthroughEnabled()
 	if passthroughEnabled {
-		// 透传分支只需要轻量提取字段，避免热路径全量 Unmarshal。
-		reasoningEffort := extractOpenAIReasoningEffortFromBody(body, reqModel)
-		reasoningEffort = ApplyChineseThinkingEffortFallback(reasoningEffort, body, account.GetMappedModel(reqModel))
-		return s.forwardOpenAIPassthrough(ctx, c, account, originalBody, reqModel, reasoningEffort, reqStream, startTime)
+		return s.forwardOpenAIPassthrough(ctx, c, account, originalBody, reqModel, reqStream, startTime)
 	}
 
 	bodyModified := false
@@ -3436,6 +3433,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			reqModel = upstreamModel
 			markPatchSet("model", upstreamModel)
 		}
+	}
+	if shouldNormalizeOpenAICodexCompactReasoningEffort(c, account, upstreamModel, body) {
+		markPatchSet("reasoning.effort", "xhigh")
 	}
 	if strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String()) == "minimal" {
 		markPatchSet("reasoning.effort", "none")
@@ -4026,7 +4026,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 		defer func() { _ = resp.Body.Close() }()
 
-		reasoningEffort := extractOpenAIReasoningEffortFromBody(body, originalModel)
+		reasoningEffort := extractOpenAIReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
 		reasoningEffort = ApplyChineseThinkingEffortFallback(reasoningEffort, body, upstreamModel)
 		serviceTier := extractOpenAIServiceTierFromBody(body)
 		// 上游接受后只保留计费需要的标量，避免响应处理期间继续保活完整 input/tools map。
@@ -4102,7 +4102,6 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	account *Account,
 	body []byte,
 	reqModel string,
-	reasoningEffort *string,
 	reqStream bool,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
@@ -4129,6 +4128,19 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			upstreamPassthroughModel = compactMappedModel
 		}
 	}
+	compactReasoningBody, compactReasoningChanged, compactReasoningErr := normalizeOpenAICodexCompactReasoningEffortForAccount(c, account, body)
+	if compactReasoningErr != nil {
+		return nil, compactReasoningErr
+	}
+	if compactReasoningChanged {
+		body = compactReasoningBody
+	}
+	billingModel := reqModel
+	if account != nil {
+		billingModel = account.GetMappedModel(reqModel)
+	}
+	reasoningEffort := extractOpenAIReasoningEffortFromBody(body, upstreamPassthroughModel, billingModel, reqModel)
+	reasoningEffort = ApplyChineseThinkingEffortFallback(reasoningEffort, body, upstreamPassthroughModel)
 
 	if account != nil && account.Type == AccountTypeOAuth {
 		if rejectReason := detectOpenAIPassthroughInstructionsRejectReason(reqModel, body); rejectReason != "" {
@@ -7107,6 +7119,31 @@ func normalizeOpenAICompactRequestBody(body []byte) ([]byte, bool, error) {
 	return normalized, true, nil
 }
 
+func shouldNormalizeOpenAICodexCompactReasoningEffort(c *gin.Context, account *Account, effectiveModel string, body []byte) bool {
+	return account != nil && account.IsOpenAIOAuth() &&
+		isOpenAIResponsesCompactPath(c) &&
+		isOpenAIGPT56Model(effectiveModel) &&
+		strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String()), "max")
+}
+
+func normalizeOpenAICodexCompactReasoningEffortForAccount(c *gin.Context, account *Account, body []byte) ([]byte, bool, error) {
+	if account == nil || !account.IsOpenAIOAuth() || !isOpenAIResponsesCompactPath(c) {
+		return body, false, nil
+	}
+
+	requestedModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	effectiveModel := account.GetMappedModel(requestedModel)
+	if !shouldNormalizeOpenAICodexCompactReasoningEffort(c, account, effectiveModel, body) {
+		return body, false, nil
+	}
+
+	normalized, err := sjson.SetBytes(body, "reasoning.effort", "xhigh")
+	if err != nil {
+		return body, false, fmt.Errorf("normalize codex compact reasoning effort: %w", err)
+	}
+	return normalized, true, nil
+}
+
 func resolveOpenAICompactSessionID(c *gin.Context) string {
 	if c != nil {
 		if sessionID := strings.TrimSpace(c.GetHeader("session_id")); sessionID != "" {
@@ -7903,7 +7940,7 @@ func (s *OpenAIGatewayService) UpdateCodexUsageSnapshotFromHeaders(ctx context.C
 	}
 }
 
-func getOpenAIReasoningEffortFromReqBody(reqBody map[string]any) (value string, present bool) {
+func getOpenAIReasoningEffortFromReqBody(reqBody map[string]any, requestedModel string) (value string, present bool) {
 	if reqBody == nil {
 		return "", false
 	}
@@ -7911,13 +7948,13 @@ func getOpenAIReasoningEffortFromReqBody(reqBody map[string]any) (value string, 
 	// Primary: reasoning.effort
 	if reasoning, ok := reqBody["reasoning"].(map[string]any); ok {
 		if effort, ok := reasoning["effort"].(string); ok {
-			return normalizeOpenAIReasoningEffort(effort), true
+			return normalizeOpenAIReasoningEffortForModel(effort, requestedModel), true
 		}
 	}
 
 	// Fallback: some clients may use a flat field.
 	if effort, ok := reqBody["reasoning_effort"].(string); ok {
-		return normalizeOpenAIReasoningEffort(effort), true
+		return normalizeOpenAIReasoningEffortForModel(effort, requestedModel), true
 	}
 
 	return "", false
@@ -7946,7 +7983,16 @@ func deriveOpenAIReasoningEffortFromModel(model string) string {
 		return ""
 	}
 
-	return normalizeOpenAIReasoningEffort(parts[len(parts)-1])
+	return normalizeOpenAIReasoningEffortForModel(parts[len(parts)-1], modelID)
+}
+
+func deriveOpenAIReasoningEffortFromModelCandidates(models []string) string {
+	for _, model := range models {
+		if value := deriveOpenAIReasoningEffortFromModel(model); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 type openAIRequestView struct {
@@ -8189,25 +8235,25 @@ func detectOpenAIPassthroughInstructionsRejectReason(reqModel string, body []byt
 	return ""
 }
 
-func extractOpenAIReasoningEffortFromBody(body []byte, requestedModel string) *string {
+func extractOpenAIReasoningEffortFromBody(body []byte, modelCandidates ...string) *string {
 	reasoningEffort := strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String())
 	if reasoningEffort == "" {
 		reasoningEffort = strings.TrimSpace(gjson.GetBytes(body, "reasoning_effort").String())
 	}
 	if reasoningEffort != "" {
-		normalized := normalizeOpenAIReasoningEffort(reasoningEffort)
+		normalized := normalizeOpenAIReasoningEffortForModel(reasoningEffort, firstNonEmpty(modelCandidates...))
 		if normalized == "" {
 			return nil
 		}
 		return &normalized
 	}
 
-	value := deriveOpenAIReasoningEffortFromModel(requestedModel)
+	value := deriveOpenAIReasoningEffortFromModelCandidates(modelCandidates)
 	if value != "" {
 		return &value
 	}
 
-	return ApplyChineseThinkingEffortFallback(nil, body, requestedModel)
+	return ApplyChineseThinkingEffortFallback(nil, body, firstNonEmpty(modelCandidates...))
 }
 
 func extractOpenAIServiceTier(reqBody map[string]any) *string {
@@ -8790,22 +8836,22 @@ func openAIRequestMapHasThinkingEnabled(reqBody map[string]any) bool {
 	return value == "enabled" || value == "adaptive"
 }
 
-func extractOpenAIReasoningEffort(reqBody map[string]any, requestedModel string) *string {
-	if value, present := getOpenAIReasoningEffortFromReqBody(reqBody); present {
+func extractOpenAIReasoningEffort(reqBody map[string]any, modelCandidates ...string) *string {
+	if value, present := getOpenAIReasoningEffortFromReqBody(reqBody, firstNonEmpty(modelCandidates...)); present {
 		if value == "" {
 			return nil
 		}
 		return &value
 	}
 
-	value := deriveOpenAIReasoningEffortFromModel(requestedModel)
+	value := deriveOpenAIReasoningEffortFromModelCandidates(modelCandidates)
 	if value != "" {
 		return &value
 	}
 	if !openAIRequestMapHasThinkingEnabled(reqBody) {
 		return nil
 	}
-	return DefaultEffortForChineseThinkingEnabled(requestedModel)
+	return DefaultEffortForChineseThinkingEnabled(firstNonEmpty(modelCandidates...))
 }
 
 func normalizeOpenAIReasoningEffort(raw string) string {
@@ -8830,4 +8876,11 @@ func normalizeOpenAIReasoningEffort(raw string) string {
 		// Only store known effort levels for now to keep UI consistent.
 		return ""
 	}
+}
+
+func normalizeOpenAIReasoningEffortForModel(raw, model string) string {
+	if strings.EqualFold(strings.TrimSpace(raw), "max") && isOpenAIGPT56Model(model) {
+		return "max"
+	}
+	return normalizeOpenAIReasoningEffort(raw)
 }
