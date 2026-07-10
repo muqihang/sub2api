@@ -42,26 +42,26 @@ func (Group) Fields() []ent.Field {
 			Optional().
 			Nillable().
 			SchemaType(map[string]string{dialect.Postgres: "text"}),
-			field.Float("rate_multiplier").
-				SchemaType(map[string]string{dialect.Postgres: "decimal(10,4)"}).
-				Default(1.0),
-			field.Bool("peak_rate_enabled").
-				Default(false).
-				Comment("是否启用高峰时段倍率"),
-			field.String("peak_start").
-				MaxLen(5).
-				Default("").
-				Comment("高峰开始时间 HH:MM（含）；空表示未配置；不支持跨天"),
-			field.String("peak_end").
-				MaxLen(5).
-				Default("").
-				Comment("高峰结束时间 HH:MM（不含）；必须大于 peak_start；不支持跨天"),
-			field.Float("peak_rate_multiplier").
-				SchemaType(map[string]string{dialect.Postgres: "decimal(10,4)"}).
-				Default(1.0).
-				Comment("高峰时段叠加倍率，仅作用于文本 token 倍率"),
-			field.Bool("is_exclusive").
-				Default(false),
+		field.Float("rate_multiplier").
+			SchemaType(map[string]string{dialect.Postgres: "decimal(10,4)"}).
+			Default(1.0),
+		field.Bool("peak_rate_enabled").
+			Default(false).
+			Comment("是否启用高峰时段倍率"),
+		field.String("peak_start").
+			MaxLen(5).
+			Default("").
+			Comment("高峰开始时间 HH:MM（含）；空表示未配置；不支持跨天"),
+		field.String("peak_end").
+			MaxLen(5).
+			Default("").
+			Comment("高峰结束时间 HH:MM（不含）；必须大于 peak_start；不支持跨天"),
+		field.Float("peak_rate_multiplier").
+			SchemaType(map[string]string{dialect.Postgres: "decimal(10,4)"}).
+			Default(1.0).
+			Comment("高峰时段叠加倍率，仅作用于文本 token 倍率"),
+		field.Bool("is_exclusive").
+			Default(false),
 		field.String("status").
 			MaxLen(20).
 			Default(domain.StatusActive),
@@ -128,6 +128,25 @@ func (Group) Fields() []ent.Field {
 			SchemaType(map[string]string{dialect.Postgres: "decimal(10,4)"}).
 			Default(0.6).
 			Comment("批量图片生成冻结价格比例，按普通生图原价乘以该比例冻结，结算后释放差额"),
+		field.Bool("video_rate_independent").
+			Default(false).
+			Comment("视频生成是否使用独立倍率；false 表示共享分组有效倍率"),
+		field.Float("video_rate_multiplier").
+			SchemaType(map[string]string{dialect.Postgres: "decimal(10,4)"}).
+			Default(1.0).
+			Comment("视频生成独立倍率，仅 video_rate_independent=true 时生效"),
+		field.Float("video_price_480p").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
+		field.Float("video_price_720p").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
+		field.Float("video_price_1080p").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
 
 		// Claude Code 客户端限制 (added by migration 029)
 		field.Bool("claude_code_only").

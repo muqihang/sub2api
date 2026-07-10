@@ -75,6 +75,11 @@ func (h *UsageHandler) List(c *gin.Context) {
 
 	// Parse additional filters
 	model := c.Query("model")
+	billingMode := strings.TrimSpace(c.Query("billing_mode"))
+	if billingMode != "" && !service.BillingMode(billingMode).IsValidUsageFilter() {
+		response.BadRequest(c, "Invalid billing_mode")
+		return
+	}
 	var entityID int64
 	if entityIDStr := strings.TrimSpace(c.Query("entity_id")); entityIDStr != "" {
 		id, err := strconv.ParseInt(entityIDStr, 10, 64)
@@ -156,6 +161,7 @@ func (h *UsageHandler) List(c *gin.Context) {
 		RequestType:     requestType,
 		Stream:          stream,
 		BillingType:     billingType,
+		BillingMode:     billingMode,
 		StartTime:       startTime,
 		EndTime:         endTime,
 	}

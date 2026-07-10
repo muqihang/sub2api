@@ -23,6 +23,7 @@ const (
 
 type GrokQuotaProbeResult struct {
 	Source          string             `json:"source"`
+	Model           string             `json:"model"`
 	Snapshot        *xai.QuotaSnapshot `json:"snapshot,omitempty"`
 	StatusCode      int                `json:"status_code,omitempty"`
 	HeadersObserved bool               `json:"headers_observed"`
@@ -52,7 +53,8 @@ func (s *GrokQuotaService) ProbeUsage(ctx context.Context, accountID int64) (*Gr
 	if err != nil {
 		return nil, err
 	}
-	body, err := buildGrokQuotaProbeBody(account)
+	probeModel := grokQuotaProbeModel()
+	body, err := buildGrokQuotaProbeBody(probeModel)
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadRequest, "GROK_QUOTA_PROBE_BODY_ERROR", "failed to build probe body: %v", err)
 	}
@@ -84,7 +86,7 @@ func (s *GrokQuotaService) ProbeUsage(ctx context.Context, accountID int64) (*Gr
 	snapshot := xai.ObserveQuotaHeaders(resp.Header, resp.StatusCode, "active_probe")
 	_ = s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{grokQuotaSnapshotExtraKey: snapshot})
 
-	result := &GrokQuotaProbeResult{Source: "active_probe", Snapshot: snapshot, StatusCode: resp.StatusCode, HeadersObserved: snapshot != nil && snapshot.HeadersObserved, ResetSupported: false, FetchedAt: time.Now().Unix()}
+	result := &GrokQuotaProbeResult{Source: "active_probe", Model: probeModel, Snapshot: snapshot, StatusCode: resp.StatusCode, HeadersObserved: snapshot != nil && snapshot.HeadersObserved, ResetSupported: false, FetchedAt: time.Now().Unix()}
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return result, nil
 	}
@@ -156,12 +158,14 @@ func (s *GrokQuotaService) loadGrokOAuthAccount(ctx context.Context, accountID i
 	return account, nil
 }
 
-func buildGrokQuotaProbeBody(account *Account) ([]byte, error) {
-	model := grokQuotaDefaultModel
-	if account != nil {
-		if mapped := strings.TrimSpace(account.GetMappedModel("grok")); mapped != "" {
-			model = mapped
-		}
+func grokQuotaProbeModel() string {
+	return grokQuotaDefaultModel
+}
+
+func buildGrokQuotaProbeBody(model string) ([]byte, error) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = grokQuotaDefaultModel
 	}
 	return json.Marshal(map[string]any{"model": model, "input": grokQuotaProbeInput, "max_output_tokens": 1, "store": false})
 }

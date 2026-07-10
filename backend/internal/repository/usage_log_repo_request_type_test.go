@@ -187,6 +187,9 @@ func TestScanUsageLog_AllowsLegacyNullEntityAuditFields(t *testing.T) {
 			nil,       // image_output_size
 			nil,       // image_size_source
 			nil,       // image_size_breakdown
+			0,         // video_count
+			nil,       // video_resolution
+			nil,       // video_duration_seconds
 			nil,       // service_tier
 			nil,       // reasoning_effort
 			nil,       // inbound_endpoint
@@ -266,6 +269,27 @@ func TestPrepareUsageLogInsert_PersistsImageSizeMetadata(t *testing.T) {
 	require.JSONEq(t, `{"1K":1,"4K":1}`, breakdownJSON)
 }
 
+func TestPrepareUsageLogInsert_PersistsVideoMetadata(t *testing.T) {
+	resolution := "720p"
+	durationSeconds := 8
+	prepared := prepareUsageLogInsert(&service.UsageLog{
+		UserID:               1,
+		APIKeyID:             2,
+		AccountID:            3,
+		RequestID:            "req-video-metadata",
+		Model:                "grok-imagine-video",
+		RequestedModel:       "grok-imagine-video",
+		VideoCount:           1,
+		VideoResolution:      &resolution,
+		VideoDurationSeconds: &durationSeconds,
+		CreatedAt:            time.Date(2025, 1, 6, 12, 0, 0, 0, time.UTC),
+	})
+
+	require.Equal(t, 1, prepared.args[42])
+	require.Equal(t, sql.NullString{String: resolution, Valid: true}, prepared.args[43])
+	require.Equal(t, sql.NullInt64{Int64: int64(durationSeconds), Valid: true}, prepared.args[44])
+}
+
 func TestCoalesceTrimmedString(t *testing.T) {
 	require.Equal(t, "fallback", coalesceTrimmedString(sql.NullString{}, "fallback"))
 	require.Equal(t, "fallback", coalesceTrimmedString(sql.NullString{Valid: true, String: "   "}, "fallback"))
@@ -316,16 +340,16 @@ func TestUsageLogInsertStoresAugmentScopeFields(t *testing.T) {
 	}
 	prepared := prepareUsageLogInsert(log)
 
-	require.Equal(t, clientProduct, prepared.args[52].(sql.NullString).String)
-	require.Equal(t, requestScope, prepared.args[53].(sql.NullString).String)
-	require.Equal(t, featureScope, prepared.args[54].(sql.NullString).String)
-	require.Equal(t, augmentSessionID, prepared.args[55].(sql.NullString).String)
-	require.Equal(t, routePolicyVersion, prepared.args[56].(sql.NullString).String)
-	require.Equal(t, pricingVersion, prepared.args[57].(sql.NullString).String)
-	require.Equal(t, billable, prepared.args[58].(sql.NullBool).Bool)
-	require.Equal(t, upstreamAttemptID, prepared.args[61].(sql.NullString).String)
-	require.Equal(t, estimatedCost, prepared.args[68].(sql.NullFloat64).Float64)
-	require.Equal(t, settledCost, prepared.args[69].(sql.NullFloat64).Float64)
+	require.Equal(t, clientProduct, prepared.args[55].(sql.NullString).String)
+	require.Equal(t, requestScope, prepared.args[56].(sql.NullString).String)
+	require.Equal(t, featureScope, prepared.args[57].(sql.NullString).String)
+	require.Equal(t, augmentSessionID, prepared.args[58].(sql.NullString).String)
+	require.Equal(t, routePolicyVersion, prepared.args[59].(sql.NullString).String)
+	require.Equal(t, pricingVersion, prepared.args[60].(sql.NullString).String)
+	require.Equal(t, billable, prepared.args[61].(sql.NullBool).Bool)
+	require.Equal(t, upstreamAttemptID, prepared.args[64].(sql.NullString).String)
+	require.Equal(t, estimatedCost, prepared.args[71].(sql.NullFloat64).Float64)
+	require.Equal(t, settledCost, prepared.args[72].(sql.NullFloat64).Float64)
 
 	mock.ExpectQuery("INSERT INTO usage_logs").
 		WithArgs(anySliceToDriverValues(prepared.args)...).
@@ -365,9 +389,9 @@ func TestPrepareUsageLogInsert_PreservesEntityAndAugmentColumnOrder(t *testing.T
 	require.Equal(t, int64(99), prepared.args[7].(sql.NullInt64).Int64)
 	require.Equal(t, entityType, prepared.args[8].(sql.NullString).String)
 	require.Equal(t, claimedEntityID, prepared.args[9].(sql.NullString).String)
-	require.Equal(t, clientProduct, prepared.args[52].(sql.NullString).String)
-	require.Equal(t, requestScope, prepared.args[53].(sql.NullString).String)
-	require.Equal(t, featureScope, prepared.args[54].(sql.NullString).String)
+	require.Equal(t, clientProduct, prepared.args[55].(sql.NullString).String)
+	require.Equal(t, requestScope, prepared.args[56].(sql.NullString).String)
+	require.Equal(t, featureScope, prepared.args[57].(sql.NullString).String)
 
 	query, _ := buildUsageLogBestEffortInsertQuery([]usageLogInsertPrepared{prepared})
 	require.Contains(t, query, "upstream_model,\n\t\t\tentity_id,\n\t\t\tentity_type,\n\t\t\tclaimed_entity_id,\n\t\t\tgroup_id,")
@@ -417,7 +441,7 @@ func TestUsageLogPricingVersionDoesNotChangeHistoricalCost(t *testing.T) {
 	prepared := prepareUsageLogInsert(log)
 	require.Equal(t, 2.5, prepared.args[24])
 	require.Equal(t, 2.0, prepared.args[25])
-	require.Equal(t, pricingVersion, prepared.args[57].(sql.NullString).String)
+	require.Equal(t, pricingVersion, prepared.args[60].(sql.NullString).String)
 }
 
 func TestUsageLogProviderRetryDedupUsesRequestIDAndAttempt(t *testing.T) {
@@ -438,7 +462,7 @@ func TestUsageLogProviderRetryDedupUsesRequestIDAndAttempt(t *testing.T) {
 	}
 	prepared := prepareUsageLogInsert(log)
 	require.Equal(t, "req-provider-retry", prepared.requestID)
-	require.Equal(t, upstreamAttemptID, prepared.args[61].(sql.NullString).String)
+	require.Equal(t, upstreamAttemptID, prepared.args[64].(sql.NullString).String)
 }
 
 func TestUsageLogStoresPriceSnapshotForAugmentBilling(t *testing.T) {
@@ -466,11 +490,11 @@ func TestUsageLogStoresPriceSnapshotForAugmentBilling(t *testing.T) {
 		},
 	}
 	prepared := prepareUsageLogInsert(log)
-	require.Equal(t, inputUnitPrice, prepared.args[63].(sql.NullFloat64).Float64)
-	require.Equal(t, outputUnitPrice, prepared.args[64].(sql.NullFloat64).Float64)
-	require.Equal(t, cacheReadUnitPrice, prepared.args[65].(sql.NullFloat64).Float64)
-	require.Equal(t, cacheCreationUnitPrice, prepared.args[66].(sql.NullFloat64).Float64)
-	require.Equal(t, reasoningUnitPrice, prepared.args[67].(sql.NullFloat64).Float64)
+	require.Equal(t, inputUnitPrice, prepared.args[66].(sql.NullFloat64).Float64)
+	require.Equal(t, outputUnitPrice, prepared.args[67].(sql.NullFloat64).Float64)
+	require.Equal(t, cacheReadUnitPrice, prepared.args[68].(sql.NullFloat64).Float64)
+	require.Equal(t, cacheCreationUnitPrice, prepared.args[69].(sql.NullFloat64).Float64)
+	require.Equal(t, reasoningUnitPrice, prepared.args[70].(sql.NullFloat64).Float64)
 }
 
 func TestUsageLogBillingRulesForFailuresPartialStreamsCacheAndReasoning(t *testing.T) {
@@ -498,10 +522,10 @@ func TestUsageLogBillingRulesForFailuresPartialStreamsCacheAndReasoning(t *testi
 		},
 	}
 	prepared := prepareUsageLogInsert(log)
-	require.Equal(t, false, prepared.args[58].(sql.NullBool).Bool)
-	require.Equal(t, settlementStatus, prepared.args[62].(sql.NullString).String)
-	require.Equal(t, estimatedCost, prepared.args[68].(sql.NullFloat64).Float64)
-	require.Equal(t, settledCost, prepared.args[69].(sql.NullFloat64).Float64)
+	require.Equal(t, false, prepared.args[61].(sql.NullBool).Bool)
+	require.Equal(t, settlementStatus, prepared.args[65].(sql.NullString).String)
+	require.Equal(t, estimatedCost, prepared.args[71].(sql.NullFloat64).Float64)
+	require.Equal(t, settledCost, prepared.args[72].(sql.NullFloat64).Float64)
 }
 
 func TestAppendUsageLogBillingModeWhereCondition(t *testing.T) {
@@ -922,6 +946,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{Valid: true, String: "3840x2160"},
 			sql.NullString{Valid: true, String: "output"},
 			sql.NullString{Valid: true, String: `{"4K":2}`},
+			0,
+			sql.NullString{},
+			sql.NullInt64{},
 			sql.NullString{},
 			sql.NullString{},
 			sql.NullString{},
@@ -994,6 +1021,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{}, // image_output_size
 			sql.NullString{}, // image_size_source
 			sql.NullString{}, // image_size_breakdown
+			0,                // video_count
+			sql.NullString{}, // video_resolution
+			sql.NullInt64{},  // video_duration_seconds
 			sql.NullString{Valid: true, String: "priority"},
 			sql.NullString{},
 			sql.NullString{},
@@ -1050,6 +1080,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{}, // image_output_size
 			sql.NullString{}, // image_size_source
 			sql.NullString{}, // image_size_breakdown
+			0,                // video_count
+			sql.NullString{}, // video_resolution
+			sql.NullInt64{},  // video_duration_seconds
 			sql.NullString{Valid: true, String: "flex"},
 			sql.NullString{},
 			sql.NullString{},
@@ -1106,6 +1139,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{}, // image_output_size
 			sql.NullString{}, // image_size_source
 			sql.NullString{}, // image_size_breakdown
+			0,                // video_count
+			sql.NullString{}, // video_resolution
+			sql.NullInt64{},  // video_duration_seconds
 			sql.NullString{Valid: true, String: "priority"},
 			sql.NullString{},
 			sql.NullString{},

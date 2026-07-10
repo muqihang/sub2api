@@ -30,7 +30,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-const usageLogSelectColumns = "id, user_id, api_key_id, account_id, request_id, model, requested_model, upstream_model, entity_id, entity_type, claimed_entity_id, group_id, subscription_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cache_creation_5m_tokens, cache_creation_1h_tokens, image_output_tokens, image_output_cost, input_cost, output_cost, cache_creation_cost, cache_read_cost, total_cost, actual_cost, rate_multiplier, account_rate_multiplier, billing_type, request_type, stream, openai_ws_mode, duration_ms, first_token_ms, user_agent, ip_address, image_count, image_size, image_input_size, image_output_size, image_size_source, image_size_breakdown, service_tier, reasoning_effort, inbound_endpoint, upstream_endpoint, cache_ttl_overridden, channel_id, model_mapping_chain, billing_tier, billing_mode, account_stats_cost, client_product, request_scope, feature_scope, augment_session_id, route_policy_version, pricing_version, billable, cost_source, currency, upstream_attempt_id, settlement_status, input_unit_price, output_unit_price, cache_read_unit_price, cache_creation_unit_price, reasoning_unit_price, estimated_cost, settled_cost, free_quota_applied, paid_balance_applied, created_at"
+const usageLogSelectColumns = "id, user_id, api_key_id, account_id, request_id, model, requested_model, upstream_model, entity_id, entity_type, claimed_entity_id, group_id, subscription_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, cache_creation_5m_tokens, cache_creation_1h_tokens, image_output_tokens, image_output_cost, input_cost, output_cost, cache_creation_cost, cache_read_cost, total_cost, actual_cost, rate_multiplier, account_rate_multiplier, billing_type, request_type, stream, openai_ws_mode, duration_ms, first_token_ms, user_agent, ip_address, image_count, image_size, image_input_size, image_output_size, image_size_source, image_size_breakdown, video_count, video_resolution, video_duration_seconds, service_tier, reasoning_effort, inbound_endpoint, upstream_endpoint, cache_ttl_overridden, channel_id, model_mapping_chain, billing_tier, billing_mode, account_stats_cost, client_product, request_scope, feature_scope, augment_session_id, route_policy_version, pricing_version, billable, cost_source, currency, upstream_attempt_id, settlement_status, input_unit_price, output_unit_price, cache_read_unit_price, cache_creation_unit_price, reasoning_unit_price, estimated_cost, settled_cost, free_quota_applied, paid_balance_applied, created_at"
 
 // usageLogInsertArgTypes must stay in the same order as:
 //  1. prepareUsageLogInsert().args
@@ -82,6 +82,9 @@ var usageLogInsertArgTypes = [...]string{
 	"text",        // image_output_size
 	"text",        // image_size_source
 	"jsonb",       // image_size_breakdown
+	"integer",     // video_count
+	"text",        // video_resolution
+	"integer",     // video_duration_seconds
 	"text",        // service_tier
 	"text",        // reasoning_effort
 	"text",        // inbound_endpoint
@@ -452,6 +455,9 @@ func (r *usageLogRepository) createSingle(ctx context.Context, sqlq sqlExecutor,
 			image_output_size,
 			image_size_source,
 			image_size_breakdown,
+			video_count,
+			video_resolution,
+			video_duration_seconds,
 			service_tier,
 			reasoning_effort,
 			inbound_endpoint,
@@ -491,7 +497,7 @@ func (r *usageLogRepository) createSingle(ctx context.Context, sqlq sqlExecutor,
 			$41, $42, $43, $44, $45, $46, $47, $48, $49, $50,
 			$51, $52, $53, $54, $55, $56, $57, $58, $59, $60,
 			$61, $62, $63, $64, $65, $66, $67, $68, $69, $70,
-			$71, $72, $73
+			$71, $72, $73, $74, $75, $76
 		)
 		ON CONFLICT (request_id, api_key_id) DO NOTHING
 		RETURNING id, created_at
@@ -921,6 +927,9 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 			image_output_size,
 			image_size_source,
 			image_size_breakdown,
+			video_count,
+			video_resolution,
+			video_duration_seconds,
 			service_tier,
 			reasoning_effort,
 			inbound_endpoint,
@@ -1025,6 +1034,9 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 				image_output_size,
 				image_size_source,
 				image_size_breakdown,
+				video_count,
+				video_resolution,
+				video_duration_seconds,
 				service_tier,
 				reasoning_effort,
 				inbound_endpoint,
@@ -1100,6 +1112,9 @@ func buildUsageLogBatchInsertQuery(keys []string, preparedByKey map[string]usage
 				image_output_size,
 				image_size_source,
 				image_size_breakdown,
+				video_count,
+				video_resolution,
+				video_duration_seconds,
 				service_tier,
 				reasoning_effort,
 				inbound_endpoint,
@@ -1215,6 +1230,9 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 			image_output_size,
 			image_size_source,
 			image_size_breakdown,
+			video_count,
+			video_resolution,
+			video_duration_seconds,
 			service_tier,
 			reasoning_effort,
 			inbound_endpoint,
@@ -1316,6 +1334,9 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 			image_output_size,
 			image_size_source,
 			image_size_breakdown,
+			video_count,
+			video_resolution,
+			video_duration_seconds,
 			service_tier,
 			reasoning_effort,
 			inbound_endpoint,
@@ -1391,6 +1412,9 @@ func buildUsageLogBestEffortInsertQuery(preparedList []usageLogInsertPrepared) (
 			image_output_size,
 			image_size_source,
 			image_size_breakdown,
+			video_count,
+			video_resolution,
+			video_duration_seconds,
 			service_tier,
 			reasoning_effort,
 			inbound_endpoint,
@@ -1474,6 +1498,9 @@ func execUsageLogInsertNoResult(ctx context.Context, sqlq sqlExecutor, prepared 
 			image_output_size,
 			image_size_source,
 			image_size_breakdown,
+			video_count,
+			video_resolution,
+			video_duration_seconds,
 			service_tier,
 			reasoning_effort,
 			inbound_endpoint,
@@ -1513,7 +1540,7 @@ func execUsageLogInsertNoResult(ctx context.Context, sqlq sqlExecutor, prepared 
 			$41, $42, $43, $44, $45, $46, $47, $48, $49, $50,
 			$51, $52, $53, $54, $55, $56, $57, $58, $59, $60,
 			$61, $62, $63, $64, $65, $66, $67, $68, $69, $70,
-			$71, $72, $73
+			$71, $72, $73, $74, $75, $76
 		)
 		ON CONFLICT (request_id, api_key_id) DO NOTHING
 	`, prepared.args...)
@@ -1544,6 +1571,8 @@ func prepareUsageLogInsert(log *service.UsageLog) usageLogInsertPrepared {
 	imageOutputSize := nullString(log.ImageOutputSize)
 	imageSizeSource := nullString(log.ImageSizeSource)
 	imageSizeBreakdown := nullStringIntMapJSON(log.ImageSizeBreakdown)
+	videoResolution := nullString(log.VideoResolution)
+	videoDurationSeconds := nullInt(log.VideoDurationSeconds)
 	serviceTier := nullString(log.ServiceTier)
 	reasoningEffort := nullString(log.ReasoningEffort)
 	inboundEndpoint := nullString(log.InboundEndpoint)
@@ -1634,6 +1663,9 @@ func prepareUsageLogInsert(log *service.UsageLog) usageLogInsertPrepared {
 			imageOutputSize,
 			imageSizeSource,
 			imageSizeBreakdown,
+			log.VideoCount,
+			videoResolution,
+			videoDurationSeconds,
 			serviceTier,
 			reasoningEffort,
 			inboundEndpoint,
@@ -4635,6 +4667,9 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 		imageOutputSize        sql.NullString
 		imageSizeSource        sql.NullString
 		imageSizeBreakdown     sql.NullString
+		videoCount             int
+		videoResolution        sql.NullString
+		videoDurationSeconds   sql.NullInt64
 		serviceTier            sql.NullString
 		reasoningEffort        sql.NullString
 		inboundEndpoint        sql.NullString
@@ -4712,6 +4747,9 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 		&imageOutputSize,
 		&imageSizeSource,
 		&imageSizeBreakdown,
+		&videoCount,
+		&videoResolution,
+		&videoDurationSeconds,
 		&serviceTier,
 		&reasoningEffort,
 		&inboundEndpoint,
@@ -4776,6 +4814,7 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 		BillingType:           int8(billingType),
 		RequestType:           service.RequestTypeFromInt16(requestTypeRaw),
 		ImageCount:            imageCount,
+		VideoCount:            videoCount,
 		CacheTTLOverridden:    cacheTTLOverridden,
 		CreatedAt:             createdAt,
 	}
@@ -4823,6 +4862,13 @@ func scanUsageLog(scanner interface{ Scan(...any) error }) (*service.UsageLog, e
 		log.ImageSizeSource = &imageSizeSource.String
 	}
 	log.ImageSizeBreakdown = stringIntMapFromNullJSON(imageSizeBreakdown)
+	if videoResolution.Valid {
+		log.VideoResolution = &videoResolution.String
+	}
+	if videoDurationSeconds.Valid {
+		value := int(videoDurationSeconds.Int64)
+		log.VideoDurationSeconds = &value
+	}
 	if serviceTier.Valid {
 		log.ServiceTier = &serviceTier.String
 	}

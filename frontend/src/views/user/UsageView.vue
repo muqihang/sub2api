@@ -141,6 +141,14 @@
                     @change="applyFilters"
                   />
                 </div>
+                <div class="min-w-[180px]">
+                  <label class="input-label">{{ t('admin.usage.billingMode') }}</label>
+                  <Select
+                    v-model="filters.billing_mode"
+                    :options="billingModeOptions"
+                    @change="applyFilters"
+                  />
+                </div>
               </template>
 
               <div>
@@ -750,6 +758,14 @@ const apiKeyOptions = computed(() => {
     }))
   ]
 })
+
+const billingModeOptions = computed<SelectOption[]>(() => [
+  { value: null, label: t('admin.usage.allBillingModes') },
+  { value: 'token', label: t('admin.usage.billingModeToken') },
+  { value: 'per_request', label: t('admin.usage.billingModePerRequest') },
+  { value: 'image', label: t('admin.usage.billingModeImage') },
+  { value: 'video', label: t('admin.usage.billingModeVideo') },
+])
 
 // Helper function to format date in local timezone
 const formatLocalDate = (date: Date): string => {

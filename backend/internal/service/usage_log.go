@@ -217,13 +217,16 @@ type UsageLog struct {
 	AugmentUsageFields
 
 	// 图片生成字段
-	ImageCount         int
-	ImageSize          *string
-	ImageInputSize     *string
-	ImageOutputSize    *string
-	ImageSizeSource    *string
-	ImageSizeBreakdown map[string]int
-	MediaType          *string
+	ImageCount           int
+	ImageSize            *string
+	ImageInputSize       *string
+	ImageOutputSize      *string
+	ImageSizeSource      *string
+	ImageSizeBreakdown   map[string]int
+	MediaType            *string
+	VideoCount           int
+	VideoResolution      *string
+	VideoDurationSeconds *int
 
 	CreatedAt time.Time
 

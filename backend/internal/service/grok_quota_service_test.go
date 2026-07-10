@@ -12,6 +12,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 type grokQuotaAccountRepo struct {
@@ -91,6 +92,7 @@ func TestGrokQuotaServiceProbeUsageStoresHeaders(t *testing.T) {
 
 	result, err := svc.ProbeUsage(context.Background(), 42)
 	require.NoError(t, err)
+	require.Equal(t, grokQuotaDefaultModel, result.Model)
 	require.Equal(t, http.StatusOK, result.StatusCode)
 	require.True(t, result.HeadersObserved)
 	require.NotNil(t, result.Snapshot)
@@ -106,6 +108,26 @@ func TestGrokQuotaServiceProbeUsageStoresHeaders(t *testing.T) {
 	require.Contains(t, string(upstream.lastBody), `"max_output_tokens":1`)
 	require.Contains(t, string(upstream.lastBody), `"store":false`)
 	require.NotNil(t, repo.updates[42][grokQuotaSnapshotExtraKey])
+}
+
+func TestGrokQuotaServiceProbeUsageUsesStableDefaultModel(t *testing.T) {
+	t.Parallel()
+
+	account := &Account{ID: 47, Platform: PlatformGrok, Type: AccountTypeOAuth, Concurrency: 1, Credentials: map[string]any{
+		"access_token": "access-token",
+		"expires_at":   time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		"model_mapping": map[string]any{
+			"grok": "grok-composer-2.5-fast",
+		},
+	}}
+	repo := &grokQuotaAccountRepo{accounts: map[int64]*Account{47: account}}
+	upstream := &grokQuotaHTTPUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"id":"resp_probe"}`))}}
+	svc := NewGrokQuotaService(repo, nil, NewGrokTokenProvider(repo, nil), upstream)
+
+	_, err := svc.ProbeUsage(context.Background(), 47)
+
+	require.NoError(t, err)
+	require.Equal(t, grokQuotaDefaultModel, gjson.GetBytes(upstream.lastBody, "model").String())
 }
 
 func TestGrokQuotaServiceProbeUsageLoadsProxyWhenAccountEdgeMissing(t *testing.T) {
