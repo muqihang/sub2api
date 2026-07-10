@@ -21,6 +21,22 @@ type CodexModelsManifest struct {
 	NotModified bool
 }
 
+// SelectCodexModelsAccount selects a schedulable OpenAI OAuth account whose credentials can fetch a manifest.
+func (s *OpenAIGatewayService) SelectCodexModelsAccount(ctx context.Context, groupID *int64) (*Account, error) {
+	excludedIDs := make(map[int64]struct{})
+	for {
+		account, err := s.SelectAccountForModelWithExclusions(ctx, groupID, "", "", excludedIDs)
+		if err != nil {
+			return nil, err
+		}
+		credentialAccount, credentialErr := resolveCredentialAccount(ctx, s.accountRepo, account)
+		if account.IsOpenAIOAuth() && credentialErr == nil && credentialAccount.IsOpenAIOAuth() && strings.TrimSpace(credentialAccount.GetOpenAIAccessToken()) != "" {
+			return account, nil
+		}
+		excludedIDs[account.ID] = struct{}{}
+	}
+}
+
 func (s *OpenAIGatewayService) FetchCodexModelsManifest(ctx context.Context, account *Account, clientVersion, ifNoneMatch string) (*CodexModelsManifest, error) {
 	if account == nil {
 		return nil, infraerrors.New(http.StatusInternalServerError, "OPENAI_CODEX_MODELS_ACCOUNT_REQUIRED", "account is required")

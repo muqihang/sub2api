@@ -106,6 +106,36 @@ func TestApplyBedrockCCCompatPreservesTrueBedrockHeaderForBetaPolicy(t *testing.
 	}
 }
 
+func TestApplyBedrockCCCompatRestoresCanonicalHeaderAfterCCGatewayAttempt(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(42)
+	svc := newBedrockCCCompatServiceForTest(groupID)
+	response := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(response)
+	context.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	context.Request.Header.Set("anthropic-beta", "context-1m-2025-08-07,files-api-2025-04-14")
+	body := []byte(`{"messages":[{"role":"user","content":"hi"}]}`)
+
+	// The CC Gateway OAuth attempt fails before a true Bedrock account is selected.
+	svc.ApplyBedrockCCCompat(context, body, "us.anthropic.claude-opus-4-6-v1", &Account{
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeOAuth,
+		Extra:    map[string]any{"cc_gateway_enabled": "true"},
+	}, &groupID)
+	if got := getHeaderRaw(context.Request.Header, "anthropic-beta"); got != "context-1m-2025-08-07" {
+		t.Fatalf("CC Gateway anthropic-beta = %q, want filtered value", got)
+	}
+
+	// A later Bedrock attempt must see the original inbound header for policy evaluation.
+	svc.ApplyBedrockCCCompat(context, body, "us.anthropic.claude-opus-4-6-v1", &Account{
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeBedrock,
+	}, &groupID)
+	if got := getHeaderRaw(context.Request.Header, "anthropic-beta"); got != "context-1m-2025-08-07,files-api-2025-04-14" {
+		t.Fatalf("Bedrock anthropic-beta = %q, want canonical inbound header", got)
+	}
+}
+
 func (s *betaPolicySettingRepoStub) Get(ctx context.Context, key string) (*Setting, error) {
 	panic("unexpected Get call")
 }

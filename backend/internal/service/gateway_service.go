@@ -6800,6 +6800,7 @@ func (s *GatewayService) ApplyBedrockCCCompat(c *gin.Context, body []byte, model
 	if c == nil || c.Request == nil || !s.isBedrockCCCompatEnabled(c.Request.Context(), account, groupID) {
 		return body
 	}
+	resetBedrockCCCompatAttemptHeaders(c)
 	body = sanitizeBedrockCCFields(body)
 	body = sanitizeBedrockThinking(body, model)
 	body = sanitizeBedrockToolUseIDs(body)
@@ -6813,6 +6814,22 @@ func (s *GatewayService) ApplyBedrockCCCompat(c *gin.Context, body []byte, model
 		}
 	}
 	return body
+}
+
+const bedrockCCCompatCanonicalHeadersContextKey = "bedrock_cc_compat_canonical_headers"
+
+func resetBedrockCCCompatAttemptHeaders(c *gin.Context) {
+	if c == nil || c.Request == nil {
+		return
+	}
+	canonicalHeaders, ok := c.Get(bedrockCCCompatCanonicalHeadersContextKey)
+	if !ok {
+		canonicalHeaders = c.Request.Header.Clone()
+		c.Set(bedrockCCCompatCanonicalHeadersContextKey, canonicalHeaders)
+	}
+	if headers, ok := canonicalHeaders.(http.Header); ok {
+		c.Request.Header = headers.Clone()
+	}
 }
 
 // isBedrockCCCompatEnabled 检查渠道是否启用了 Bedrock CC 兼容模式
