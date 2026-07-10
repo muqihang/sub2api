@@ -4586,6 +4586,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		}
 	} else if account.Type == AccountTypeAPIKey {
 		applyOpenAIAPIKeyPromptCacheSessionHeader(c, req, gjson.GetBytes(body, "prompt_cache_key").String())
+		if isOpenAIResponsesCompactPath(c) {
+			req.Header.Set("accept", "application/json")
+		}
 	}
 
 	// 浏览器型 UA 兜底：仅 OAuth（ChatGPT 内部接口）账号生效，若最终 user-agent 仍为浏览器
@@ -5464,6 +5467,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 			promptCacheKey = gjson.GetBytes(body, "prompt_cache_key").String()
 		}
 		applyOpenAIAPIKeyPromptCacheSessionHeader(c, req, promptCacheKey)
+		if isOpenAIResponsesCompactPath(c) {
+			req.Header.Set("accept", "application/json")
+		}
 	}
 
 	if gatewayRuntime != nil && gatewayRuntime.Profile != nil && account.Type != AccountTypeOAuth {
@@ -6776,6 +6782,10 @@ func (s *OpenAIGatewayService) writeOpenAINonStreamingProtocolError(resp *http.R
 		message = "Upstream returned an invalid non-streaming response"
 	}
 	setOpsUpstreamError(c, http.StatusBadGateway, message, "")
+	if openAICompactClientWantsStream(c) && StopOpenAICompactSSEKeepaliveCommitted(c) {
+		writeOpenAICompactSSEFailureMessage(c, http.StatusBadGateway, "upstream_error", message)
+		return fmt.Errorf("non-streaming openai protocol error: %s", message)
+	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	c.JSON(http.StatusBadGateway, gin.H{
@@ -8584,6 +8594,10 @@ func writeOpenAIFastPolicyBlockedResponse(c *gin.Context, err *OpenAIFastBlocked
 		return
 	}
 	MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+	if StopOpenAICompactSSEKeepaliveCommitted(c) {
+		writeOpenAICompactSSEFailureMessage(c, http.StatusForbidden, "permission_error", err.Message)
+		return
+	}
 	c.JSON(http.StatusForbidden, gin.H{
 		"error": gin.H{
 			"type":     "permission_error",
