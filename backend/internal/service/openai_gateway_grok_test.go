@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/gin-gonic/gin"
@@ -58,6 +59,26 @@ func TestPatchGrokResponsesBodyKeepsValidFunctionToolChoice(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, "allowed", gjson.GetBytes(patched, "tool_choice.name").String())
+}
+
+func TestPatchGrokResponsesBodyDropsGrok45UnsupportedFields(t *testing.T) {
+	body := []byte(`{
+		"model":"grok-latest",
+		"input":"hello",
+		"presence_penalty":0.1,
+		"presencePenalty":0.2,
+		"frequency_penalty":0.3,
+		"frequencyPenalty":0.4,
+		"stop":["done"]
+	}`)
+
+	patched, err := patchGrokResponsesBody(body, "grok-4.5")
+
+	require.NoError(t, err)
+	require.Equal(t, "grok-4.5", gjson.GetBytes(patched, "model").String())
+	for _, field := range []string{"presence_penalty", "presencePenalty", "frequency_penalty", "frequencyPenalty", "stop"} {
+		require.False(t, gjson.GetBytes(patched, field).Exists(), field)
+	}
 }
 
 func TestOpenAIGatewayService_ForwardGrokResponsesUsesXAIEndpointAndSanitizedBody(t *testing.T) {
@@ -260,6 +281,56 @@ func TestOpenAIGatewayService_ForwardAsChatCompletionsGrokOAuthUsesXAIChatComple
 	require.Equal(t, "grok-4.3", result.UpstreamModel)
 	require.Equal(t, 2, result.Usage.InputTokens)
 	require.Equal(t, 3, result.Usage.OutputTokens)
+}
+
+func TestOpenAIGatewayService_ForwardAsChatCompletionsGrokComposerBridgesImageInput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"grok-composer-2.5-fast","stream":false,"messages":[{"role":"user","content":[{"type":"text","text":"What is shown?"},{"type":"image_url","image_url":{"url":"data:image/png;base64,QUJD"}}]}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"resp_vision","object":"response","model":"grok-build-0.1","output":[{"type":"message","content":[{"type":"output_text","text":"A small diagram with ABC letters."}]}],"usage":{"input_tokens":11,"output_tokens":7}}`)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"chatcmpl_composer","object":"chat.completion","model":"grok-composer-2.5-fast","choices":[{"index":0,"message":{"role":"assistant","content":"It shows ABC."},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`)),
+		},
+	}}
+	account := &Account{
+		ID:          905,
+		Platform:    PlatformGrok,
+		Type:        AccountTypeOAuth,
+		Concurrency: 1,
+		Credentials: map[string]any{"access_token": "grok-access-token", "base_url": xai.DefaultCLIBaseURL},
+	}
+	svc := &OpenAIGatewayService{cfg: grokComposerBridgeTestConfig(), httpUpstream: upstream}
+
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+
+	require.NoError(t, err)
+	require.Len(t, upstream.requests, 2)
+	require.Equal(t, xai.DefaultCLIBaseURL+"/responses", upstream.requests[0].URL.String())
+	require.Equal(t, "grok-build-0.1", gjson.GetBytes(upstream.bodies[0], "model").String())
+	require.Equal(t, "input_image", gjson.GetBytes(upstream.bodies[0], "input.0.content.1.type").String())
+	require.False(t, strings.Contains(string(upstream.bodies[1]), "image_url"))
+	require.Contains(t, gjson.GetBytes(upstream.bodies[1], "messages.0.content").String(), "Image 1 description")
+	require.Equal(t, 14, result.Usage.InputTokens)
+	require.Equal(t, 12, result.Usage.OutputTokens)
+}
+
+func grokComposerBridgeTestConfig() *config.Config {
+	return &config.Config{
+		Security: config.SecurityConfig{
+			URLAllowlist: config.URLAllowlistConfig{Enabled: false, AllowInsecureHTTP: true},
+		},
+	}
 }
 
 type grokResponsesAccountRepoStub struct {

@@ -156,3 +156,15 @@ func TestObserveQuotaHeadersRecordsNoHeaderProbe(t *testing.T) {
 	require.Nil(t, snapshot.Requests)
 	require.Nil(t, snapshot.Tokens)
 }
+
+func TestDefaultModelMappingIncludesOfficialGrok45AndComposerAliases(t *testing.T) {
+	t.Parallel()
+
+	mapping := DefaultModelMapping()
+	require.Equal(t, "grok-4.5", mapping["grok"])
+	require.Equal(t, "grok-4.5", mapping["grok-latest"])
+	require.Equal(t, "grok-4.5", mapping["grok-4.5-latest"])
+	require.Equal(t, "grok-4.5", mapping["grok-build-latest"])
+	require.Equal(t, "grok-composer-2.5-fast", mapping["grok-composer"])
+	require.Equal(t, "grok-composer-2.5-fast", mapping["composer-2.5"])
+}

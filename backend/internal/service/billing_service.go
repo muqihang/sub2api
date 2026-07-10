@@ -300,6 +300,16 @@ func (s *BillingService) initFallbackPricing() {
 		SupportsCacheBreakdown: false,
 	}
 
+	s.fallbackPrices["grok-4.5"] = newTextFallbackPricing(2e-6, 6e-6, 0.5e-6)
+	s.fallbackPrices["grok-4.3"] = &ModelPricing{
+		InputPricePerToken:         1.25e-6,
+		OutputPricePerToken:        2.5e-6,
+		SupportsCacheBreakdown:     false,
+		LongContextInputThreshold:  1000000,
+		LongContextInputMultiplier: 1,
+	}
+	s.fallbackPrices["grok-build-0.1"] = newTextFallbackPricing(1e-6, 2e-6, 0)
+
 	// Chinese LLM fallback pricing uses explicit whitelist entries only, so
 	// unlisted domestic-provider aliases do not get silently mispriced.
 	s.fallbackPrices["glm-5.1"] = newTextFallbackPricing(1.4e-6, 4.4e-6, 0.26e-6)
@@ -593,6 +603,15 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 		case "gpt-5.3-codex", "gpt-5.3-codex-spark":
 			return s.fallbackPrices["gpt-5.3-codex"]
 		}
+	}
+
+	switch modelLower {
+	case "grok", "grok-latest", "grok-4.5", "grok-4.5-latest", "grok-build-latest":
+		return s.fallbackPrices["grok-4.5"]
+	case "grok-4.3":
+		return s.fallbackPrices["grok-4.3"]
+	case "grok-build", "grok-build-0.1":
+		return s.fallbackPrices["grok-build-0.1"]
 	}
 
 	return nil

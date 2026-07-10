@@ -46,6 +46,24 @@ describe('useModelWhitelist', () => {
     expect(getModelsByPlatform('antigravity')).toContain('claude-fable-5')
   })
 
+  it('xAI 模型列表和预设映射包含 Grok 4.5 与 Composer 兼容别名', () => {
+    const models = getModelsByPlatform('grok')
+
+    expect(models).toEqual(expect.arrayContaining([
+      'grok-4.5',
+      'grok-latest',
+      'grok-4.5-latest',
+      'grok-build-latest',
+      'grok-composer-2.5-fast',
+      'grok-composer',
+      'composer-2.5'
+    ]))
+    expect(getPresetMappingsByPlatform('grok')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: 'grok-latest', to: 'grok-4.5' }),
+      expect.objectContaining({ from: 'composer-2.5', to: 'grok-composer-2.5-fast' })
+    ]))
+  })
+
   it('Claude/Bedrock 预设映射包含 Sonnet 5', () => {
     expect(getPresetMappingsByPlatform('claude')).toEqual(
       expect.arrayContaining([

@@ -103,6 +103,32 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		return nil, policyErr
 	}
 	upstreamBody = updatedBody
+
+	var bridgeUsage OpenAIUsage
+	grokAccessToken := ""
+	if account.Platform == PlatformGrok {
+		token, tokenErr := s.getGrokAccessToken(ctx, account)
+		if tokenErr != nil {
+			return nil, fmt.Errorf("get grok access token: %w", tokenErr)
+		}
+		if strings.TrimSpace(token) == "" {
+			return nil, fmt.Errorf("account %d missing grok access token", account.ID)
+		}
+		grokAccessToken = token
+
+		bridgedBody, usage, bridged, bridgeErr := s.bridgeGrokComposerImageInputs(ctx, c, account, upstreamBody, token)
+		if bridgeErr != nil {
+			var failoverErr *UpstreamFailoverError
+			if !errors.As(bridgeErr, &failoverErr) && c != nil && c.Writer != nil && !c.Writer.Written() {
+				writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", bridgeErr.Error())
+			}
+			return nil, bridgeErr
+		}
+		if bridged {
+			upstreamBody = bridgedBody
+			addOpenAIUsage(&bridgeUsage, usage)
+		}
+	}
 	if clientStream {
 		var usageErr error
 		upstreamBody, usageErr = ensureOpenAIChatStreamUsage(upstreamBody)
@@ -124,10 +150,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	targetURL := ""
 	var err error
 	if account.Platform == PlatformGrok {
-		authToken, err = s.getGrokAccessToken(ctx, account)
-		if err != nil {
-			return nil, fmt.Errorf("get grok access token: %w", err)
-		}
+		authToken = grokAccessToken
 		targetURL, err = xai.BuildChatCompletionsURL(account.GetGrokBaseURL())
 		if err != nil {
 			return nil, err
@@ -243,10 +266,17 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	}
 
 	// 8. Forward response
+	var result *OpenAIForwardResult
+	var forwardErr error
 	if clientStream {
-		return s.streamRawChatCompletions(c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, len(body))
+		result, forwardErr = s.streamRawChatCompletions(c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, len(body))
+	} else {
+		result, forwardErr = s.bufferRawChatCompletions(c, resp, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 	}
-	return s.bufferRawChatCompletions(c, resp, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+	if result != nil {
+		addOpenAIUsage(&result.Usage, bridgeUsage)
+	}
+	return result, forwardErr
 }
 
 // streamRawChatCompletions 透传上游 CC SSE 流到客户端，并提取 usage（包括
