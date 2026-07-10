@@ -50,6 +50,16 @@ func ProvideOAuthRefreshAPI(accountRepo AccountRepository, tokenCache GeminiToke
 	return NewOAuthRefreshAPI(accountRepo, tokenCache)
 }
 
+func ProvideBatchImageModelPricingResolver(resolver *ModelPricingResolver) *BatchImageModelPricingResolver {
+	return &BatchImageModelPricingResolver{Resolver: resolver}
+}
+
+func ProvideBatchImageCleanupService(repo BatchImageRepository, accountRepo AccountRepository, cfg *config.Config) *BatchImageCleanupService {
+	svc := NewBatchImageCleanupService(repo, accountRepo, cfg)
+	svc.Start()
+	return svc
+}
+
 func ProvideCodexEntryCenterConfig(cfg *config.Config) *CodexEntryCenterConfig {
 	frontendURL := ""
 	if cfg != nil {
@@ -1065,6 +1075,11 @@ var ProviderSet = wire.NewSet(
 	ProvideOpenAIGatewayCoreService,
 	NewEntityRateLimitService,
 	ProvideOpenAIGatewayService,
+	ProvideBatchImageModelPricingResolver,
+	NewBatchImagePublicService,
+	NewBatchImageDownloadService,
+	ProvideBatchImageCleanupService,
+	ProvideBatchImageWorkerRuntime,
 	wire.Bind(new(AccountRuntimeBlocker), new(*OpenAIGatewayService)),
 	NewOAuthService,
 	ProvideFormalPoolConfig,

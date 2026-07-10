@@ -232,6 +232,19 @@ export const routes: RouteRecordRaw[] = [
       title: 'Codex',
       titleKey: 'codex.title',
       descriptionKey: 'codex.description'
+	}
+  },
+  {
+    path: '/batch-image',
+    name: 'BatchImageGuide',
+    alias: '/docs/batch-image',
+    component: () => import('@/views/user/BatchImageGuideView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Batch Image Guide',
+      titleKey: 'batchImageGuide.title',
+      descriptionKey: 'batchImageGuide.description'
     }
   },
   {

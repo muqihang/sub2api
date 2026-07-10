@@ -86,6 +86,7 @@ export interface User {
   wechat_bound?: boolean
   role: 'admin' | 'user' // User role for authorization
   balance: number // User balance for API usage
+  frozen_balance?: number // Balance currently held by async batch jobs
   concurrency: number // Allowed concurrent requests
   rpm_limit?: number // User-level RPM cap (0 = unlimited); effective as fallback when group has no rpm_limit
   status: 'active' | 'disabled' // Account status
@@ -527,12 +528,15 @@ export interface Group {
   augment_gateway_entitled: boolean
   // 图片生成计费配置
   allow_image_generation: boolean
+  allow_batch_image_generation: boolean
   image_rate_independent: boolean
   image_rate_multiplier: number
   peak_rate_enabled?: boolean
   peak_start?: string
   peak_end?: string
   peak_rate_multiplier?: number
+  batch_image_discount_multiplier: number
+  batch_image_hold_multiplier: number
   image_price_1k: number | null
   image_price_2k: number | null
   image_price_4k: number | null
@@ -677,8 +681,11 @@ export interface CreateGroupRequest {
   monthly_limit_usd?: number | null
   augment_gateway_entitled?: boolean
   allow_image_generation?: boolean
+  allow_batch_image_generation?: boolean
   image_rate_independent?: boolean
   image_rate_multiplier?: number
+  batch_image_discount_multiplier?: number
+  batch_image_hold_multiplier?: number
   image_price_1k?: number | null
   image_price_2k?: number | null
   image_price_4k?: number | null
@@ -713,8 +720,11 @@ export interface UpdateGroupRequest {
   monthly_limit_usd?: number | null
   augment_gateway_entitled?: boolean
   allow_image_generation?: boolean
+  allow_batch_image_generation?: boolean
   image_rate_independent?: boolean
   image_rate_multiplier?: number
+  batch_image_discount_multiplier?: number
+  batch_image_hold_multiplier?: number
   image_price_1k?: number | null
   image_price_2k?: number | null
   image_price_4k?: number | null
