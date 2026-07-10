@@ -7447,7 +7447,24 @@ export default {
     restartRequired: '请重启服务以应用更新',
     restartNow: '立即重启',
     restarting: '正在重启...',
-    retry: '重试'
+    retry: '重试',
+    rollback: '版本回退',
+    rollbackSelectVersion: '选择要回退的版本（最近 3 个版本）',
+    rollbackConfirm: '回退到 {version}',
+    rollbackWarning: '回退会下载所选版本并替换当前二进制文件，之后需要重启服务。',
+    rollingBack: '正在回退...',
+    rollbackComplete: '回退完成',
+    rollbackFailed: '回退失败',
+    manualRollbackCommand: '手动回退',
+    copyCommand: '复制',
+    copied: '已复制',
+    noRollbackVersions: '没有可回退的版本',
+    loadVersionsFailed: '加载版本失败',
+    rollbackSourceHint: '源码构建不支持在线回退',
+    deployScript: '脚本部署',
+    deployDocker: 'Docker',
+    dockerEditCompose: '在 docker-compose.yml 中修改镜像 tag',
+    dockerRecreate: '重新创建容器'
   },
 
   // Recharge / Subscription Page
