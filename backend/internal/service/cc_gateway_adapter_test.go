@@ -2314,3 +2314,15 @@ func TestGatewayService_SelectCCGatewayAnthropicRouteUsesEffectiveFormalPoolSche
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "lifecycle ineligible")
 }
+
+func TestCCGatewayObservedCLIVersionBucketReadsClaudeCodeVersionHeaders(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("User-Agent", "Claude VSCode title generator")
+	headers.Set("X-Claude-Code-Version", "2.1.201")
+	require.Equal(t, "2.1.201", ccGatewayObservedCLIVersionBucketFromHeaders(headers))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Set("User-Agent", "Claude VSCode title generator")
+	req.Header.Set("X-Claude-Client-Version", "2.1.202")
+	require.Equal(t, "2.1.202", ccGatewayObservedCLIVersionBucketWithBillingHeaders(req, nil))
+}

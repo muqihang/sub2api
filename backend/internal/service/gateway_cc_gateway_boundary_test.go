@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 type ccGatewayBoundaryUpstreamRecorder struct {
@@ -380,7 +381,7 @@ func TestCCGatewayBoundary_FormalPoolResponsesFailClosedBeforeUpstream(t *testin
 
 func TestCCGatewayBoundary_FormalPoolGatewayOnlyNativeCLIWithoutLocalGuardReachesCCGateway(t *testing.T) {
 	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
-	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newAnthropicSuccessResponse()}
+	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newCCGatewayFormalPoolSyncBridgeSSE()}
 	svc := newCCGatewayBoundaryService(upstream)
 	account := newCCGatewayBoundaryAccount()
 	formalPoolApplyCompleteSchedulingEvidenceForTest(account)
@@ -511,7 +512,7 @@ func TestCCGatewayBoundary_ForwardNativeRichShapeWithoutDowngradingBodyFields(t 
 
 func TestCCGatewayBoundary_FormalPoolNativeAttestedPathBuildsCCGatewayAttestationAfterWireRestore(t *testing.T) {
 	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
-	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newAnthropicSuccessResponse()}
+	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newCCGatewayFormalPoolSyncBridgeSSE()}
 	svc := newCCGatewayBoundaryService(upstream)
 	account := newCCGatewayBoundaryAccount()
 	formalPoolApplyCompleteSchedulingEvidenceForTest(account)
@@ -536,7 +537,9 @@ func TestCCGatewayBoundary_FormalPoolNativeAttestedPathBuildsCCGatewayAttestatio
 
 	require.NoError(t, err)
 	require.Equal(t, 1, upstream.requests)
-	require.True(t, bytes.Equal(body, upstream.lastBody), "native attested body must remain wire-equivalent while server session authority is retained for attestation")
+	expectedBody, setErr := sjson.SetBytes(body, "stream", true)
+	require.NoError(t, setErr)
+	require.True(t, bytes.Equal(expectedBody, upstream.lastBody), "formal-pool non-stream clients must be promoted to upstream streaming while preserving the rest of the native body")
 	require.NotEmpty(t, getHeaderRaw(upstream.lastReq.Header, ccGatewayFormalPoolContextHeader))
 	require.NotEmpty(t, getHeaderRaw(upstream.lastReq.Header, ccGatewayFormalPoolSignatureHeader))
 	require.NotEmpty(t, getHeaderRaw(upstream.lastReq.Header, "X-Claude-Code-Session-Id"))
@@ -544,7 +547,7 @@ func TestCCGatewayBoundary_FormalPoolNativeAttestedPathBuildsCCGatewayAttestatio
 
 func TestCCGatewayBoundary_FormalPoolSessionBoundarySwapFailsBeforeUpstream(t *testing.T) {
 	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
-	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newAnthropicSuccessResponse()}
+	upstream := &ccGatewayBoundaryUpstreamRecorder{resp: newCCGatewayFormalPoolSyncBridgeSSE()}
 	svc := newCCGatewayBoundaryService(upstream)
 	accountA := newCCGatewayBoundaryAccount()
 	formalPoolApplyCompleteSchedulingEvidenceForTest(accountA)
