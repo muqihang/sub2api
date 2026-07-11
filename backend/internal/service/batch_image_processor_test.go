@@ -380,13 +380,15 @@ func (p *fakeProcessorProvider) Cleanup(context.Context, *BatchImageJob, *Accoun
 }
 
 type fakeBatchImageRepository struct {
-	jobs          map[string]*BatchImageJob
-	items         map[string][]CreateBatchImageItemParams
-	counts        map[string]BatchImageCounts
-	transitions   map[string][]string
-	events        map[string][]string
-	transitionErr error
-	replaceCalls  int
+	jobs                    map[string]*BatchImageJob
+	items                   map[string][]CreateBatchImageItemParams
+	counts                  map[string]BatchImageCounts
+	transitions             map[string][]string
+	events                  map[string][]string
+	createErr               error
+	idempotencyLookupMisses int
+	transitionErr           error
+	replaceCalls            int
 }
 
 func newFakeBatchImageRepository() *fakeBatchImageRepository {
@@ -400,6 +402,9 @@ func newFakeBatchImageRepository() *fakeBatchImageRepository {
 }
 
 func (r *fakeBatchImageRepository) CreateBatchImageJob(_ context.Context, params CreateBatchImageJobParams) (*BatchImageJob, error) {
+	if r.createErr != nil {
+		return nil, r.createErr
+	}
 	job := &BatchImageJob{
 		BatchID:                 params.BatchID,
 		UserID:                  params.UserID,
@@ -440,6 +445,10 @@ func (r *fakeBatchImageRepository) GetBatchImageJobByBatchID(_ context.Context, 
 }
 
 func (r *fakeBatchImageRepository) GetBatchImageJobByIdempotencyKey(_ context.Context, userID, apiKeyID int64, key string) (*BatchImageJob, error) {
+	if r.idempotencyLookupMisses > 0 {
+		r.idempotencyLookupMisses--
+		return nil, ErrBatchImageJobNotFound
+	}
 	for _, job := range r.jobs {
 		if job.UserID == userID && job.APIKeyID != nil && *job.APIKeyID == apiKeyID && batchImageDerefString(job.IdempotencyKey) == key {
 			return job, nil

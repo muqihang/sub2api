@@ -211,19 +211,22 @@ func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOw
 	}
 	requestHash := HashBatchImageSubmitRequest(normalized)
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	reuseIdempotentJob := func(existing *BatchImageJob) (*BatchImagePublicBatch, error) {
+		if batchImageDerefString(existing.RequestHash) != requestHash {
+			return nil, ErrBatchImageIdempotencyConflict
+		}
+		if existing.Status == BatchImageJobStatusSubmitted && s.Queue != nil {
+			if enqueueErr := s.Queue.Enqueue(ctx, existing.BatchID); enqueueErr != nil && !errors.Is(enqueueErr, ErrBatchImageAlreadyQueued) {
+				_ = s.Repo.RecordBatchImageJobSubmitFailure(ctx, existing.BatchID, "QUEUE_FAILED", sanitizeBatchImagePublicMessage(enqueueErr.Error()), false)
+				return nil, ErrBatchImageQueueFailed
+			}
+		}
+		return BatchImageJobToPublic(existing), nil
+	}
 	if idempotencyKey != "" {
 		existing, err := s.Repo.GetBatchImageJobByIdempotencyKey(ctx, owner.UserID, owner.APIKeyID, idempotencyKey)
 		if err == nil {
-			if batchImageDerefString(existing.RequestHash) != requestHash {
-				return nil, ErrBatchImageIdempotencyConflict
-			}
-			if existing.Status == BatchImageJobStatusSubmitted && s.Queue != nil {
-				if enqueueErr := s.Queue.Enqueue(ctx, existing.BatchID); enqueueErr != nil && !errors.Is(enqueueErr, ErrBatchImageAlreadyQueued) {
-					_ = s.Repo.RecordBatchImageJobSubmitFailure(ctx, existing.BatchID, "QUEUE_FAILED", sanitizeBatchImagePublicMessage(enqueueErr.Error()), false)
-					return nil, ErrBatchImageQueueFailed
-				}
-			}
-			return BatchImageJobToPublic(existing), nil
+			return reuseIdempotentJob(existing)
 		}
 		if !errors.Is(err, ErrBatchImageJobNotFound) {
 			return nil, err
@@ -283,6 +286,15 @@ func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOw
 		RequestHash:             batchImageStringPtr(requestHash),
 	})
 	if err != nil {
+		if idempotencyKey != "" && errors.Is(err, ErrBatchImageJobExists) {
+			existing, lookupErr := s.Repo.GetBatchImageJobByIdempotencyKey(ctx, owner.UserID, owner.APIKeyID, idempotencyKey)
+			if lookupErr == nil {
+				return reuseIdempotentJob(existing)
+			}
+			if !errors.Is(lookupErr, ErrBatchImageJobNotFound) {
+				return nil, lookupErr
+			}
+		}
 		return nil, err
 	}
 	if err := reserveBatchImageBalanceHold(ctx, s.BillingRepo, job, requestHash); err != nil {

@@ -212,3 +212,14 @@ func TestMigration154aAddsSparkShadowIndexesConcurrently(t *testing.T) {
 	require.Contains(t, sql, "quota_dimension = 'spark'")
 	require.Contains(t, sql, "deleted_at IS NULL")
 }
+
+func TestMigration174AddsScopedBatchImageIdempotencyIndex(t *testing.T) {
+	content, err := FS.ReadFile("174_batch_image_idempotency_scope_index_notx.sql")
+	require.NoError(t, err)
+
+	sql := string(content)
+	require.Contains(t, sql, "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS")
+	require.Contains(t, sql, "ON batch_image_jobs (user_id, api_key_id, idempotency_key)")
+	require.Contains(t, sql, "idempotency_key IS NOT NULL")
+	require.Contains(t, sql, "idempotency_key <> ''")
+}
