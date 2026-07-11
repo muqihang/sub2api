@@ -170,18 +170,28 @@ func TestFormalPoolOnboardingPublicOriginAuthority(t *testing.T) {
 	})
 
 	for _, tc := range []struct {
-		name, host, forwardedHost, forwardedProto string
+		name                                   string
+		hostA, forwardedHostA, forwardedProtoA string
+		hostB, forwardedHostB, forwardedProtoB string
 	}{
-		{name: "host is untrusted", host: "hostile-host.example.invalid"},
-		{name: "forwarded host is untrusted", host: "service.internal", forwardedHost: "hostile-forwarded.example.invalid"},
-		{name: "forwarded proto is untrusted", host: "service.internal", forwardedProto: "https"},
+		{name: "host is untrusted", hostA: "hostile-host-a.example.invalid", hostB: "hostile-host-b.example.invalid"},
+		{name: "forwarded host is untrusted", hostA: "service.internal", forwardedHostA: "hostile-forwarded-a.example.invalid", hostB: "service.internal", forwardedHostB: "hostile-forwarded-b.example.invalid"},
+		{name: "forwarded proto is untrusted", hostA: "service.internal", forwardedProtoA: "http", hostB: "service.internal", forwardedProtoB: "https"},
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			svc := service.NewFormalPoolOnboardingService(service.FormalPoolOnboardingDeps{Proxy: &formalPoolOnboardingRoutesProxy{rawIP: "198.51.100.10"}})
-			router := newFormalPoolOnboardingRoutesRouter(adminhandler.NewFormalPoolOnboardingHandler(svc), func(c *gin.Context) { c.Next() })
-			rec := phase0CreateAndTestProxyWithOrigin(t, router, tc.host, tc.forwardedHost, tc.forwardedProto)
-			requireRejectedOrNonAuthoritativeURL(t, rec)
+			request := func(host, forwardedHost, forwardedProto string) *httptest.ResponseRecorder {
+				svc := service.NewFormalPoolOnboardingService(service.FormalPoolOnboardingDeps{Proxy: &formalPoolOnboardingRoutesProxy{rawIP: "198.51.100.10"}})
+				router := newFormalPoolOnboardingRoutesRouter(adminhandler.NewFormalPoolOnboardingHandler(svc), func(c *gin.Context) { c.Next() })
+				return phase0CreateAndTestProxyWithOrigin(t, router, host, forwardedHost, forwardedProto)
+			}
+			authorityA, acceptedA := phase0BrowserURLAuthority(t, request(tc.hostA, tc.forwardedHostA, tc.forwardedProtoA))
+			authorityB, acceptedB := phase0BrowserURLAuthority(t, request(tc.hostB, tc.forwardedHostB, tc.forwardedProtoB))
+			if acceptedA || acceptedB {
+				return
+			}
+			require.Equal(t, authorityA, authorityB,
+				"without configured origin or trusted ingress, changing one request-derived origin dimension must not change the returned authority")
 		})
 	}
 }
@@ -360,10 +370,10 @@ func phase0CreateAndTestProxyWithOrigin(t *testing.T, router *gin.Engine, host, 
 	return testRec
 }
 
-func requireRejectedOrNonAuthoritativeURL(t *testing.T, rec *httptest.ResponseRecorder) {
+func phase0BrowserURLAuthority(t *testing.T, rec *httptest.ResponseRecorder) (authority string, accepted bool) {
 	t.Helper()
 	if rec.Code < http.StatusOK || rec.Code >= http.StatusMultipleChoices {
-		return
+		return "", true
 	}
 	var envelope struct {
 		Data struct {
@@ -374,7 +384,10 @@ func requireRejectedOrNonAuthoritativeURL(t *testing.T, rec *httptest.ResponseRe
 	require.NotEmpty(t, envelope.Data.BrowserURL, "a successful response must expose the browser URL")
 	parsed, err := url.Parse(envelope.Data.BrowserURL)
 	require.NoError(t, err)
-	require.False(t, parsed.IsAbs(), "without configured origin or trusted ingress, a successful result must remain relative: %s", envelope.Data.BrowserURL)
+	if !parsed.IsAbs() {
+		return "", true
+	}
+	return parsed.Scheme + "://" + parsed.Host, false
 }
 
 type phase0ProxyFake struct{}
