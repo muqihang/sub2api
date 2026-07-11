@@ -52,6 +52,17 @@ describe('API Client', () => {
       )
     })
 
+    it('preserves the proxy path before /api/v1 when building gateway URLs', async () => {
+      vi.resetModules()
+      vi.stubEnv('VITE_API_BASE_URL', 'https://api.example.com/sub2api/api/v1/')
+
+      const mod = await import('@/api/client')
+
+      expect((mod as any).buildGatewayUrl('/v1/usage?days=30')).toBe(
+        'https://api.example.com/sub2api/v1/usage?days=30'
+      )
+    })
+
     it('自动附加 Authorization 头', async () => {
       localStorage.setItem('auth_token', 'my-jwt-token')
 
