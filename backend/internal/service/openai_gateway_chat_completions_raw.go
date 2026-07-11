@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
@@ -491,22 +489,9 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 		return nil, fmt.Errorf("read upstream body: %w", err)
 	}
 
-	var ccResp apicompat.ChatCompletionsResponse
 	var usage OpenAIUsage
-	if err := json.Unmarshal(respBody, &ccResp); err == nil && ccResp.Usage != nil {
-		usage = OpenAIUsage{
-			InputTokens:  ccResp.Usage.PromptTokens,
-			OutputTokens: ccResp.Usage.CompletionTokens,
-		}
-		if ccResp.Usage.PromptTokensDetails != nil {
-			details := ccResp.Usage.PromptTokensDetails
-			usage.CacheReadInputTokens = details.CachedTokens
-			if details.CacheWriteTokens > 0 {
-				usage.CacheCreationInputTokens = details.CacheWriteTokens
-			} else {
-				usage.CacheCreationInputTokens = details.CacheCreationTokens
-			}
-		}
+	if parsedUsage, ok := extractOpenAIUsageFromJSONBytes(respBody); ok {
+		usage = parsedUsage
 	}
 
 	if s.responseHeaderFilter != nil {

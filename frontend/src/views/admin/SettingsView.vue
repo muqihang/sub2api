@@ -1189,6 +1189,43 @@
                   </div>
                 </div>
 
+                <div class="mt-3">
+                  <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
+                    {{ t("admin.settings.openaiFastPolicy.userIds") }}
+                  </label>
+                  <p class="mb-2 text-xs text-gray-400 dark:text-gray-500">
+                    {{ t("admin.settings.openaiFastPolicy.userIdsHint") }}
+                  </p>
+                  <div
+                    v-for="(_, userIDIndex) in rule.user_ids || []"
+                    :key="userIDIndex"
+                    class="mb-1.5 flex items-center gap-2"
+                  >
+                    <input
+                      v-model.number="rule.user_ids![userIDIndex]"
+                      type="number"
+                      min="1"
+                      step="1"
+                      class="input input-sm flex-1"
+                      :placeholder="t('admin.settings.openaiFastPolicy.userIdPlaceholder')"
+                    />
+                    <button
+                      type="button"
+                      class="btn btn-ghost btn-sm"
+                      @click="removeOpenAIFastPolicyUserID(rule, userIDIndex)"
+                    >
+                      {{ t("admin.settings.openaiFastPolicy.removeUserId") }}
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    class="btn btn-ghost btn-sm"
+                    @click="addOpenAIFastPolicyUserID(rule)"
+                  >
+                    {{ t("admin.settings.openaiFastPolicy.addUserId") }}
+                  </button>
+                </div>
+
                 <!-- Error Message (only when action=block) -->
                 <div v-if="rule.action === 'block'" class="mt-3">
                   <label
@@ -8116,6 +8153,7 @@ async function loadSettings() {
       openaiFastPolicyForm.rules =
         settings.openai_fast_policy_settings.rules.map((rule) => ({
           ...rule,
+          user_ids: rule.user_ids ? [...rule.user_ids] : [],
           model_whitelist: rule.model_whitelist
             ? [...rule.model_whitelist]
             : [],
@@ -8581,6 +8619,10 @@ async function saveSettings() {
             service_tier: rule.service_tier,
             action: rule.action,
             scope: rule.scope,
+            user_ids:
+              rule.user_ids && rule.user_ids.length > 0
+                ? [...rule.user_ids]
+                : undefined,
             error_message:
               rule.action === "block" ? rule.error_message : undefined,
             model_whitelist: hasWhitelist ? whitelist : undefined,
@@ -8657,6 +8699,7 @@ async function saveSettings() {
       openaiFastPolicyForm.rules =
         updated.openai_fast_policy_settings.rules.map((rule) => ({
           ...rule,
+          user_ids: rule.user_ids ? [...rule.user_ids] : [],
           model_whitelist: rule.model_whitelist
             ? [...rule.model_whitelist]
             : [],
@@ -9072,6 +9115,7 @@ function addOpenAIFastPolicyRule() {
     service_tier: "priority",
     action: "filter",
     scope: "all",
+    user_ids: [],
     error_message: "",
     model_whitelist: [],
     fallback_action: "pass",
@@ -9081,6 +9125,18 @@ function addOpenAIFastPolicyRule() {
 
 function removeOpenAIFastPolicyRule(index: number) {
   openaiFastPolicyForm.rules.splice(index, 1);
+}
+
+function addOpenAIFastPolicyUserID(rule: OpenAIFastPolicyRule) {
+  if (!rule.user_ids) rule.user_ids = [];
+  rule.user_ids.push(0);
+}
+
+function removeOpenAIFastPolicyUserID(
+  rule: OpenAIFastPolicyRule,
+  index: number,
+) {
+  rule.user_ids?.splice(index, 1);
 }
 
 function addOpenAIFastPolicyModelPattern(rule: OpenAIFastPolicyRule) {

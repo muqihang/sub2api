@@ -1290,6 +1290,9 @@ func (s *OpenAIGatewayService) buildOpenAIWSHeaders(
 
 	if account != nil {
 		account.ApplyHeaderOverrides(headers)
+		if account.Type == AccountTypeOAuth {
+			enforceCodexIdentityHeaders(headers)
+		}
 	}
 
 	return headers, sessionResolution, nil

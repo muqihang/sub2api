@@ -28,11 +28,11 @@ func TestGPT56CacheWriteIntake_NestedUsageTakesPrecedence(t *testing.T) {
 	require.Equal(t, 7, usage.CacheCreationInputTokens)
 }
 
-func TestGPT56CacheWriteIntake_TypedResponsesUsagePrefersNestedCacheWrite(t *testing.T) {
+func TestGPT56CacheWriteIntake_TypedResponsesUsageUsesCanonicalCacheWrite(t *testing.T) {
 	usage := copyOpenAIUsageFromResponsesUsage(&apicompat.ResponsesUsage{
 		InputTokens:              20,
 		OutputTokens:             2,
-		CacheCreationInputTokens: 19,
+		CacheCreationInputTokens: 7,
 		InputTokensDetails: &apicompat.ResponsesInputTokensDetails{
 			CachedTokens:        3,
 			CacheCreationTokens: 11,
@@ -41,7 +41,7 @@ func TestGPT56CacheWriteIntake_TypedResponsesUsagePrefersNestedCacheWrite(t *tes
 	})
 
 	require.Equal(t, 3, usage.CacheReadInputTokens)
-	require.Equal(t, 7, usage.CacheCreationInputTokens, "官方嵌套 cache_write_tokens 应优先")
+	require.Equal(t, 7, usage.CacheCreationInputTokens, "typed usage must preserve its canonical cache write value")
 }
 
 func TestGPT56CacheWriteIntake_BufferedChatCompletionsExtractsCacheWrite(t *testing.T) {
@@ -130,7 +130,9 @@ func TestGPT56CacheWriteIntake_UsesOfficialStandardPricing(t *testing.T) {
 	require.NoError(t, err)
 	require.InDelta(t, 6.25e-6, pricing.CacheCreationPricePerToken, 1e-12)
 	require.InDelta(t, 12.5e-6, pricing.CacheCreationPricePerTokenPriority, 1e-12)
-	require.Zero(t, pricing.LongContextInputThreshold)
+	require.Equal(t, 272000, pricing.LongContextInputThreshold)
+	require.InDelta(t, 2.0, pricing.LongContextInputMultiplier, 1e-12)
+	require.InDelta(t, 1.5, pricing.LongContextOutputMultiplier, 1e-12)
 
 	priorityCost, err := billingService.CalculateCostWithServiceTier(
 		"gpt-5.6-sol",

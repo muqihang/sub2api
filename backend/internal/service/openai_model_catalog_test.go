@@ -16,9 +16,9 @@ func TestBillingServiceOpenAINewModelFallbacks(t *testing.T) {
 		longContextThreshold                 int
 	}{
 		{model: "gpt-5.5-pro", input: 2.5e-6, output: 15e-6, cacheRead: 0.25e-6, cacheWrite: 2.5e-6, longContextThreshold: 272000},
-		{model: "gpt-5.6-sol", input: 5e-6, output: 30e-6, cacheRead: 0.5e-6, cacheWrite: 6.25e-6},
-		{model: "gpt-5.6-terra", input: 2.5e-6, output: 15e-6, cacheRead: 0.25e-6, cacheWrite: 3.125e-6},
-		{model: "gpt-5.6-luna", input: 1e-6, output: 6e-6, cacheRead: 0.1e-6, cacheWrite: 1.25e-6},
+		{model: "gpt-5.6-sol", input: 5e-6, output: 30e-6, cacheRead: 0.5e-6, cacheWrite: 6.25e-6, longContextThreshold: 272000},
+		{model: "gpt-5.6-terra", input: 2.5e-6, output: 15e-6, cacheRead: 0.25e-6, cacheWrite: 3.125e-6, longContextThreshold: 272000},
+		{model: "gpt-5.6-luna", input: 1e-6, output: 6e-6, cacheRead: 0.1e-6, cacheWrite: 1.25e-6, longContextThreshold: 272000},
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {

@@ -282,6 +282,9 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 
 	// 6. Build upstream request
+	if account.Type == AccountTypeOAuth && account.Platform != PlatformGrok {
+		setOpenAICompatMessagesBridgeContext(c, true)
+	}
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
 	var upstreamReq *http.Request
 	if account.Platform == PlatformGrok {
@@ -1198,11 +1201,6 @@ func copyOpenAIUsageFromResponsesUsage(usage *apicompat.ResponsesUsage) OpenAIUs
 	}
 	if usage.InputTokensDetails != nil {
 		result.CacheReadInputTokens = usage.InputTokensDetails.CachedTokens
-		if usage.InputTokensDetails.CacheWriteTokens > 0 {
-			result.CacheCreationInputTokens = usage.InputTokensDetails.CacheWriteTokens
-		} else if usage.InputTokensDetails.CacheCreationTokens > 0 {
-			result.CacheCreationInputTokens = usage.InputTokensDetails.CacheCreationTokens
-		}
 	}
 	return result
 }

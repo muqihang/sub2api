@@ -1,6 +1,9 @@
 package openai
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // CodexCLIUserAgentPrefixes matches Codex CLI User-Agent patterns
 // Examples: "codex_vscode/1.0.0", "codex_cli_rs/0.1.2"
@@ -153,3 +156,47 @@ func matchCodexClientHeaderStrictPrefixes(value string, prefixes []string) bool 
 	}
 	return false
 }
+
+const codexOriginatorMaxLen = 64
+
+// PairCodexClientIdentity derives an upstream-compatible originator from the
+// final User-Agent. This keeps the pair coherent after profile and account
+// overrides without accepting arbitrary client-controlled identity values.
+func PairCodexClientIdentity(userAgent string) (originator string, pairedUA string, ok bool) {
+	ua := strings.TrimSpace(userAgent)
+	slash := strings.IndexByte(ua, '/')
+	if slash <= 0 {
+		return "", "", false
+	}
+	if leading := strings.TrimSpace(ua[:slash]); isSaneCodexOriginator(leading) && IsCodexOfficialClientOriginator(leading) {
+		leading = canonicalizeCodexOriginator(leading)
+		return leading, leading + ua[slash:], true
+	}
+	if trailer := codexUATrailerName(ua); trailer != "" && !strings.ContainsRune(trailer, '/') &&
+		isSaneCodexOriginator(trailer) && IsCodexOfficialClientOriginator(trailer) {
+		trailer = canonicalizeCodexOriginator(trailer)
+		return trailer, trailer + ua[slash:], true
+	}
+	return "", "", false
+}
+
+func isSaneCodexOriginator(name string) bool {
+	if name == "" || len(name) > codexOriginatorMaxLen {
+		return false
+	}
+	for index := 0; index < len(name); index++ {
+		if character := name[index]; character < 0x20 || character > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+func canonicalizeCodexOriginator(name string) string {
+	if lower := normalizeCodexClientHeader(name); codexOfficialClientOriginators[lower] {
+		return lower
+	}
+	return name
+}
+
+var codexEngineVersionPattern = regexp.MustCompile(`^(\d+\.\d+\.\d+)`)

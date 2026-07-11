@@ -291,6 +291,7 @@ func setAPIKeyContext(c *gin.Context, apiKey *service.APIKey, subscription *serv
 		Concurrency: apiKey.User.Concurrency,
 	})
 	c.Set(string(ContextKeyUserRole), apiKey.User.Role)
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.UserID, apiKey.User.ID))
 	setGroupContext(c, apiKey.Group)
 }
 
