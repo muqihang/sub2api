@@ -339,6 +339,32 @@ func TestOpenAIGatewayService_ForwardAsChatCompletionsGrokComposerBridgesImageIn
 	require.Equal(t, 12, result.Usage.OutputTokens)
 }
 
+func TestDescribeGrokComposerImageOpsEventOmitsAccountIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	requestContext, _ := gin.CreateTestContext(recorder)
+	requestContext.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusInternalServerError,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"temporary failure"}}`)),
+	}}
+	service := &OpenAIGatewayService{cfg: grokComposerBridgeTestConfig(), httpUpstream: upstream}
+	account := &Account{ID: 987654, Name: "private-account-name", Platform: PlatformGrok, Type: AccountTypeOAuth, Concurrency: 1}
+
+	_, _, err := service.describeGrokComposerImage(context.Background(), requestContext, account, "test-token", "https://example.test/image.png", 1)
+	require.Error(t, err)
+
+	rawEvents, ok := requestContext.Get(OpsUpstreamErrorsKey)
+	require.True(t, ok)
+	events, ok := rawEvents.([]*OpsUpstreamErrorEvent)
+	require.True(t, ok)
+	require.Len(t, events, 1)
+	require.Zero(t, events[0].AccountID)
+	require.Empty(t, events[0].AccountName)
+}
+
 func grokComposerBridgeTestConfig() *config.Config {
 	return &config.Config{
 		Security: config.SecurityConfig{

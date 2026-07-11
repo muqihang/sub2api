@@ -110,7 +110,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 			return nil, fmt.Errorf("get grok access token: %w", tokenErr)
 		}
 		if strings.TrimSpace(token) == "" {
-			return nil, fmt.Errorf("account %d missing grok access token", account.ID)
+			return nil, fmt.Errorf("grok access token is missing")
 		}
 		grokAccessToken = token
 
