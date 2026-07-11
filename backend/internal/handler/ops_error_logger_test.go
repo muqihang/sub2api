@@ -143,6 +143,31 @@ func TestOpsErrorLoggerMiddleware_DoesNotBreakOuterMiddlewares(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, rec.Code)
 }
 
+func TestOpsErrorLoggerMiddleware_CompactKeepaliveDoesNotLeaveReleasedWriter(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Next()
+		_ = c.Writer.Status()
+		_ = c.Writer.Size()
+		_ = c.Writer.Written()
+	})
+	router.GET("/responses", OpsErrorLoggerMiddleware(nil), func(c *gin.Context) {
+		service.MarkOpenAICompactClientStream(c)
+		stop := service.StartOpenAICompactSSEKeepalive(c, time.Hour)
+		defer stop()
+		c.Status(http.StatusNoContent)
+	})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/responses", nil)
+	require.NotPanics(t, func() {
+		router.ServeHTTP(recorder, request)
+	})
+	require.Equal(t, http.StatusNoContent, recorder.Code)
+}
+
 // setupOpsErrorLogTestQueue 阻止 enqueueOpsErrorLog 启动真实 worker，改用可检查的测试队列。
 func setupOpsErrorLogTestQueue(t *testing.T, size int) {
 	t.Helper()

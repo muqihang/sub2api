@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -69,6 +70,47 @@ func TestOpenAICompactSSEKeepalive_CommitsHeadersAndComments(t *testing.T) {
 	require.Contains(t, recorder.Body.String(), ": keepalive\n\n")
 }
 
+func TestOpenAICompactSSEKeepalive_FirstBeatArrivesBeforeFullInterval(t *testing.T) {
+	ctx, recorder := newCompactKeepaliveTestContext(true)
+	interval := 400 * time.Millisecond
+	stop := StartOpenAICompactSSEKeepalive(ctx, interval)
+	time.Sleep(300 * time.Millisecond)
+	stop()
+
+	require.Contains(t, recorder.Body.String(), ": keepalive\n\n")
+}
+
+func TestOpenAICompactSSEKeepalive_StopRestoresInstalledWriter(t *testing.T) {
+	ctx, _ := newCompactKeepaliveTestContext(true)
+	originalWriter := ctx.Writer
+	stop := StartOpenAICompactSSEKeepalive(ctx, time.Hour)
+	require.NotSame(t, originalWriter, ctx.Writer)
+
+	stop()
+	require.Same(t, originalWriter, ctx.Writer)
+	require.NotPanics(t, stop)
+}
+
+func TestOpenAICompactSSEKeepalive_StopBeforeFirstBeatWritesNothing(t *testing.T) {
+	ctx, recorder := newCompactKeepaliveTestContext(true)
+	stop := StartOpenAICompactSSEKeepalive(ctx, 100*time.Millisecond)
+	stop()
+	time.Sleep(150 * time.Millisecond)
+
+	require.Empty(t, recorder.Body.String())
+	require.False(t, StopOpenAICompactSSEKeepaliveCommitted(ctx))
+}
+
+func TestOpenAICompactSSEKeepalive_StopDoesNotClobberLaterWriter(t *testing.T) {
+	ctx, _ := newCompactKeepaliveTestContext(true)
+	stop := StartOpenAICompactSSEKeepalive(ctx, time.Hour)
+	replacement := &openAICompactKeepaliveWriter{}
+	ctx.Writer = replacement
+
+	stop()
+	require.Same(t, replacement, ctx.Writer)
+}
+
 func TestWriteOpenAICompactSSEBridge_AfterKeepaliveCommit(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		ctx, recorder := newCompactKeepaliveTestContext(true)
@@ -113,6 +155,34 @@ func TestOpenAICompactKeepaliveWriter_RequestSideWriteSuspendsBeats(t *testing.T
 	waitForCompactKeepaliveBeat()
 	require.Equal(t, lengthAfterWrite, recorder.Body.Len())
 	require.Contains(t, recorder.Body.String(), `{"error":"local reject"}`)
+}
+
+func TestOpenAICompactKeepaliveWriter_StateReadersAreNilSafe(t *testing.T) {
+	var writer *openAICompactKeepaliveWriter
+	require.NotPanics(t, func() {
+		require.Equal(t, http.StatusOK, writer.Status())
+		require.Equal(t, -1, writer.Size())
+		require.False(t, writer.Written())
+	})
+
+	writer = &openAICompactKeepaliveWriter{}
+	require.NotPanics(t, func() {
+		require.Equal(t, http.StatusOK, writer.Status())
+		require.Equal(t, -1, writer.Size())
+		require.False(t, writer.Written())
+	})
+}
+
+func TestOpenAICompactSSEKeepalive_RequestCancellationStillCleansUpWriter(t *testing.T) {
+	ctx, _ := newCompactKeepaliveTestContext(true)
+	requestContext, cancel := context.WithCancel(ctx.Request.Context())
+	ctx.Request = ctx.Request.WithContext(requestContext)
+	originalWriter := ctx.Writer
+	stop := StartOpenAICompactSSEKeepalive(ctx, 10*time.Millisecond)
+
+	cancel()
+	require.NotPanics(t, stop)
+	require.Same(t, originalWriter, ctx.Writer)
 }
 
 func TestOpenAICompactKeepaliveAdjustedWrittenSize_ExcludesHeartbeatBytes(t *testing.T) {

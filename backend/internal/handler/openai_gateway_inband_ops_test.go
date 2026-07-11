@@ -3,12 +3,43 @@ package handler
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestOpenAISelectionErrorAfterCompactKeepaliveUsesResponsesFailedSSE(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodPost, "/responses/compact", nil)
+	service.MarkOpenAICompactClientStream(context)
+	stop := service.StartOpenAICompactSSEKeepalive(context, 10*time.Millisecond)
+	defer stop()
+	time.Sleep(20 * time.Millisecond)
+
+	handler := &OpenAIGatewayHandler{}
+	handler.handleStreamingAwareErrorWithCodeCategory(
+		context,
+		http.StatusServiceUnavailable,
+		"api_error",
+		"no_accounts",
+		"capacity",
+		"safe selection error",
+		false,
+	)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "event: response.failed")
+	require.NotContains(t, strings.TrimSpace(recorder.Body.String()), `{"error":{"category":`)
+	streamError, ok := service.GetOpsStreamError(context)
+	require.True(t, ok)
+	require.Equal(t, http.StatusServiceUnavailable, streamError.IntendedStatus)
+}
 
 func TestOpenAIStreamingErrorHandlersMarkOpsStreamError(t *testing.T) {
 	gin.SetMode(gin.TestMode)

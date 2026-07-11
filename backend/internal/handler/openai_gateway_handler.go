@@ -2738,6 +2738,12 @@ func (h *OpenAIGatewayHandler) openAICompactKeepaliveInterval() time.Duration {
 }
 
 func (h *OpenAIGatewayHandler) errorResponseWithCodeCategory(c *gin.Context, status int, errType, code, category, message string) {
+	if service.StopOpenAICompactSSEKeepaliveCommitted(c) {
+		service.MarkOpsStreamError(c, errType, message, status)
+		if writeResponsesFailedSSEWithCodeCategory(c, errType, code, category, message) {
+			return
+		}
+	}
 	errorObj := gin.H{
 		"type":    errType,
 		"message": message,

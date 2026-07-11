@@ -23,19 +23,21 @@ func StartOpenAICompactSSEKeepalive(c *gin.Context, interval time.Duration) func
 	if c == nil || c.Writer == nil || interval <= 0 || !openAICompactClientWantsStream(c) {
 		return func() {}
 	}
+	originalWriter := c.Writer
 	keepalive := &openAICompactSSEKeepalive{
-		writer: c.Writer,
+		writer: originalWriter,
 		stop:   make(chan struct{}),
 	}
 	c.Set(openAICompactSSEKeepaliveKey, keepalive)
-	c.Writer = &openAICompactKeepaliveWriter{ResponseWriter: c.Writer, keepalive: keepalive}
+	installedWriter := &openAICompactKeepaliveWriter{ResponseWriter: originalWriter, keepalive: keepalive}
+	c.Writer = installedWriter
 
 	var requestDone <-chan struct{}
 	if c.Request != nil {
 		requestDone = c.Request.Context().Done()
 	}
 	go func() {
-		timer := time.NewTimer(interval)
+		timer := time.NewTimer(openAICompactSSEKeepaliveFirstBeatDelay(interval))
 		defer timer.Stop()
 		for {
 			select {
@@ -51,7 +53,29 @@ func StartOpenAICompactSSEKeepalive(c *gin.Context, interval time.Duration) func
 			timer.Reset(interval)
 		}
 	}()
-	return keepalive.Stop
+	var cleanupOnce sync.Once
+	return func() {
+		cleanupOnce.Do(func() {
+			keepalive.Stop()
+			if c.Writer == installedWriter {
+				c.Writer = originalWriter
+			}
+		})
+	}
+}
+
+func openAICompactSSEKeepaliveFirstBeatDelay(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return 0
+	}
+	delay := interval / 2
+	if delay <= 0 {
+		return interval
+	}
+	if delay > 5*time.Second {
+		return 5 * time.Second
+	}
+	return delay
 }
 
 func (k *openAICompactSSEKeepalive) beat() bool {
@@ -176,18 +200,27 @@ func (w *openAICompactKeepaliveWriter) Flush() {
 }
 
 func (w *openAICompactKeepaliveWriter) Status() int {
+	if w == nil || w.keepalive == nil || w.ResponseWriter == nil {
+		return http.StatusOK
+	}
 	w.keepalive.mu.Lock()
 	defer w.keepalive.mu.Unlock()
 	return w.ResponseWriter.Status()
 }
 
 func (w *openAICompactKeepaliveWriter) Size() int {
+	if w == nil || w.keepalive == nil || w.ResponseWriter == nil {
+		return -1
+	}
 	w.keepalive.mu.Lock()
 	defer w.keepalive.mu.Unlock()
 	return w.ResponseWriter.Size()
 }
 
 func (w *openAICompactKeepaliveWriter) Written() bool {
+	if w == nil || w.keepalive == nil || w.ResponseWriter == nil {
+		return false
+	}
 	w.keepalive.mu.Lock()
 	defer w.keepalive.mu.Unlock()
 	return w.ResponseWriter.Written()
