@@ -92,6 +92,98 @@ func TestRecordCyberPolicyUsageLog_BillsRealUpstreamTokens(t *testing.T) {
 	require.InDelta(t, expected.ActualCost, userRepo.lastAmount, 1e-12)
 }
 
+func TestRecordCyberPolicyUsageLog_PreservesResolvedBillingIdentityAndQuotaPlatform(t *testing.T) {
+	tests := []struct {
+		name               string
+		billingModelSource string
+		channelMappedModel string
+		wantBillingModel   string
+	}{
+		{
+			name:               "requested billing source",
+			billingModelSource: BillingModelSourceRequested,
+			channelMappedModel: "gpt-5.6",
+			wantBillingModel:   "gpt-5.4",
+		},
+		{
+			name:               "upstream billing source",
+			billingModelSource: BillingModelSourceUpstream,
+			channelMappedModel: "gpt-5.6",
+			wantBillingModel:   "gpt-5.5",
+		},
+		{
+			name:               "channel mapped billing source",
+			billingModelSource: BillingModelSourceChannelMapped,
+			channelMappedModel: "gpt-5.6",
+			wantBillingModel:   "gpt-5.6",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+			billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+			quotaRepo := newOpenAIRecordUsagePlatformQuotaRepoStub()
+			userRepo := &openAIRecordUsageUserRepoStub{}
+			subRepo := &openAIRecordUsageSubRepoStub{}
+			cfg := &config.Config{}
+			cfg.Default.RateMultiplier = 1
+			cfg.Database.UserPlatformQuotaFlusherEnabled = false
+			svc := NewOpenAIGatewayService(
+				nil,
+				usageRepo,
+				billingRepo,
+				userRepo,
+				subRepo,
+				nil,
+				nil,
+				cfg,
+				nil,
+				nil,
+				NewBillingService(cfg, nil),
+				nil,
+				&BillingCacheService{cfg: cfg},
+				nil,
+				&DeferredService{},
+				nil,
+				quotaRepo,
+			)
+
+			svc.RecordCyberPolicyUsageLog(context.Background(), CyberPolicyUsageInput{
+				APIKey:        &APIKey{ID: 2, User: &User{ID: 1}, Group: &Group{Platform: PlatformOpenAI, RateMultiplier: 1}},
+				Account:       &Account{ID: 3, Platform: PlatformOpenAI, Type: AccountTypeOAuth},
+				RequestID:     "rid-cyber-billing-identity",
+				Model:         "gpt-5.4",
+				UpstreamModel: "gpt-5.5",
+				BillingModel:  "gpt-5.5",
+				InputTokens:   20,
+				OutputTokens:  10,
+				QuotaPlatform: PlatformAntigravity,
+				ChannelUsageFields: ChannelUsageFields{
+					OriginalModel:      "gpt-5.4",
+					ChannelMappedModel: tt.channelMappedModel,
+					BillingModelSource: tt.billingModelSource,
+				},
+			})
+
+			require.NotNil(t, usageRepo.lastLog)
+			require.Equal(t, "gpt-5.4", usageRepo.lastLog.RequestedModel)
+			require.NotNil(t, usageRepo.lastLog.UpstreamModel)
+			require.Equal(t, "gpt-5.5", *usageRepo.lastLog.UpstreamModel)
+			expected, err := svc.billingService.CalculateCost(tt.wantBillingModel, UsageTokens{InputTokens: 20, OutputTokens: 10}, 1)
+			require.NoError(t, err)
+			require.InDelta(t, expected.ActualCost, usageRepo.lastLog.ActualCost, 1e-12)
+
+			select {
+			case got := <-quotaRepo.increments:
+				require.Equal(t, PlatformAntigravity, got.Platform)
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for platform quota increment")
+			}
+		})
+	}
+}
+
 func TestRecordCyberPolicyUsageLog_NonStreamZeroTokensZeroCost(t *testing.T) {
 	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
 	userRepo := &openAIRecordUsageUserRepoStub{}

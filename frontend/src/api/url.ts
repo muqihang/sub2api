@@ -31,11 +31,12 @@ export function buildApiUrl(path: string): string {
 export function buildGatewayUrl(path: string): string {
   const suffix = normalizePath(path)
   try {
-    const origin =
+    const apiBaseUrl =
       typeof window === 'undefined'
-        ? new URL(getAPIBaseURL()).origin
-        : new URL(getAPIBaseURL(), window.location.origin).origin
-    return `${origin}${suffix}`
+        ? new URL(getAPIBaseURL())
+        : new URL(getAPIBaseURL(), window.location.origin)
+    const gatewayBasePath = apiBaseUrl.pathname.replace(/\/api\/v1$/, '')
+    return `${apiBaseUrl.origin}${gatewayBasePath}${suffix}`
   } catch {
     return suffix
   }

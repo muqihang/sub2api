@@ -866,7 +866,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if service.GetOpsCyberPolicy(c) != nil {
 			cyberBlockKeyHTTP = service.CyberSessionBlockKey(apiKey.ID, c, sessionHashBody)
 		}
-		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyHTTP, channelMapping.ToUsageFields(reqModel, ""), service.HashUsageRequestPayload(body))
+		cyberForwardModel := reqModel
+		if channelMapping.Mapped && strings.TrimSpace(channelMapping.MappedModel) != "" {
+			cyberForwardModel = channelMapping.MappedModel
+		}
+		cyberBillingModel, cyberUpstreamModel := service.ResolveOpenAICyberPolicyUsageModels(account, cyberForwardModel, requireCompact)
+		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyHTTP, channelMapping.ToUsageFields(reqModel, cyberUpstreamModel), service.HashUsageRequestPayload(body), cyberBillingModel, cyberUpstreamModel)
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
@@ -1361,7 +1366,12 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		if service.GetOpsCyberPolicy(c) != nil {
 			cyberBlockKeyMsg = service.CyberSessionBlockKey(apiKey.ID, c, body)
 		}
-		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyMsg, channelMappingMsg.ToUsageFields(reqModel, ""), service.HashUsageRequestPayload(body))
+		cyberForwardModel := reqModel
+		if channelMappingMsg.Mapped && strings.TrimSpace(channelMappingMsg.MappedModel) != "" {
+			cyberForwardModel = channelMappingMsg.MappedModel
+		}
+		cyberBillingModel, cyberUpstreamModel := service.ResolveOpenAICyberPolicyUsageModels(account, cyberForwardModel, false)
+		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyMsg, channelMappingMsg.ToUsageFields(reqModel, cyberUpstreamModel), service.HashUsageRequestPayload(body), cyberBillingModel, cyberUpstreamModel)
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
@@ -2163,7 +2173,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				// 届时 defer 已清除标记）。
 				defer clearCyberPolicyTurnState(c)
 				releaseTurnSlots()
-				h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, turnErr != nil, cyberBlockKey, channelMappingWS.ToUsageFields(reqModel, ""), requestPayloadHash)
+				cyberForwardModel := reqModel
+				if channelMappingWS.Mapped && strings.TrimSpace(channelMappingWS.MappedModel) != "" {
+					cyberForwardModel = channelMappingWS.MappedModel
+				}
+				cyberBillingModel, cyberUpstreamModel := service.ResolveOpenAICyberPolicyUsageModels(account, cyberForwardModel, false)
+				h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, turnErr != nil, cyberBlockKey, channelMappingWS.ToUsageFields(reqModel, cyberUpstreamModel), requestPayloadHash, cyberBillingModel, cyberUpstreamModel)
 				if service.GetOpsCyberPolicy(c) != nil {
 					cyberBlockedThisConn = true
 				}
@@ -3073,7 +3088,7 @@ func (h *OpenAIGatewayHandler) enqueueCyberSessionBlockedOpsEntry(c *gin.Context
 // 并在 forward 返回错误时写一条 tokens=0 用量行。标记由 gateway 服务层在透传 cyber 后设置；
 // 当前请求已发给用户，本方法只做事后记录，不影响响应。forwardErrored 为 true 时才写用量行，
 // 避免与正常 RecordUsage(forward 成功路径)重复。每请求至多记录一次。
-func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey *service.APIKey, account *service.Account, subscription *service.UserSubscription, model string, forwardErrored bool, cyberBlockKey string, channelFields service.ChannelUsageFields, requestPayloadHash string) {
+func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey *service.APIKey, account *service.Account, subscription *service.UserSubscription, model string, forwardErrored bool, cyberBlockKey string, channelFields service.ChannelUsageFields, requestPayloadHash string, resolvedModels ...string) {
 	mark := service.GetOpsCyberPolicy(c)
 	if mark == nil {
 		return
@@ -3082,6 +3097,17 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 		return
 	}
 	c.Set(cyberPolicyRecordedKey, true)
+	cyberForwardModel := strings.TrimSpace(channelFields.ChannelMappedModel)
+	if cyberForwardModel == "" {
+		cyberForwardModel = model
+	}
+	billingModel, upstreamModel := service.ResolveOpenAICyberPolicyUsageModels(account, cyberForwardModel, false)
+	if len(resolvedModels) > 0 && strings.TrimSpace(resolvedModels[0]) != "" {
+		billingModel = resolvedModels[0]
+	}
+	if len(resolvedModels) > 1 && strings.TrimSpace(resolvedModels[1]) != "" {
+		upstreamModel = resolvedModels[1]
+	}
 
 	requestID := c.Writer.Header().Get("X-Request-Id")
 	var userID, apiKeyID int64
@@ -3127,6 +3153,11 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 		userAgent = c.GetHeader("User-Agent")
 		clientIPStr = strings.TrimSpace(ip.GetClientIP(c))
 	}
+	requestCtx := context.Background()
+	if c.Request != nil {
+		requestCtx = c.Request.Context()
+	}
+	quotaPlatform := service.QuotaPlatform(requestCtx, apiKey)
 	apiKeyPrefix := ""
 	if apiKey != nil {
 		apiKeyPrefix = keyPrefix(apiKey.Key, 8)
@@ -3176,6 +3207,8 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 				Subscription:       subscription,
 				RequestID:          requestID,
 				Model:              model,
+				BillingModel:       billingModel,
+				UpstreamModel:      upstreamModel,
 				Stream:             stream,
 				InputTokens:        mark.UpstreamInTok,
 				OutputTokens:       mark.UpstreamOutTok,
@@ -3185,6 +3218,7 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 				IPAddress:          clientIPStr,
 				RequestPayloadHash: requestPayloadHash,
 				APIKeyService:      apiKeySvc,
+				QuotaPlatform:      quotaPlatform,
 				ChannelUsageFields: channelFields,
 			})
 		}
