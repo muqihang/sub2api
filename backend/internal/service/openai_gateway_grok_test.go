@@ -48,6 +48,17 @@ func TestPatchGrokResponsesBodySanitizesUnsupportedFieldsAndTools(t *testing.T) 
 	require.False(t, gjson.GetBytes(patched, "tool_choice").Exists())
 }
 
+func TestExtractGrokResponsesReasoningEffortSupportsOpenAICompatibleField(t *testing.T) {
+	t.Parallel()
+
+	effort := extractOpenAIReasoningEffortFromBody(
+		[]byte(`{"model":"grok-4.3","reasoning_effort":"high"}`),
+		"grok-4.3",
+	)
+	require.NotNil(t, effort)
+	require.Equal(t, "high", *effort)
+}
+
 func TestPatchGrokResponsesBodyKeepsValidFunctionToolChoice(t *testing.T) {
 	body := []byte(`{
 		"model":"grok",
@@ -85,7 +96,7 @@ func TestOpenAIGatewayService_ForwardGrokResponsesUsesXAIEndpointAndSanitizedBod
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	body := []byte(`{"model":"grok","stream":false,"input":"hi","prompt_cache_retention":"24h","tools":[{"type":"image_generation"},{"type":"function","name":"ok"}],"tool_choice":{"type":"image_generation"}}`)
+	body := []byte(`{"model":"grok","stream":false,"input":"hi","reasoning_effort":"high","prompt_cache_retention":"24h","tools":[{"type":"image_generation"},{"type":"function","name":"ok"}],"tool_choice":{"type":"image_generation"}}`)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("Content-Type", "application/json")
 	c.Request.Header.Set("OpenAI-Beta", "responses=v1")
@@ -120,6 +131,7 @@ func TestOpenAIGatewayService_ForwardGrokResponsesUsesXAIEndpointAndSanitizedBod
 	require.Equal(t, "Bearer grok-access-token", upstream.lastReq.Header.Get("Authorization"))
 	require.Equal(t, "responses=v1", upstream.lastReq.Header.Get("OpenAI-Beta"))
 	require.Equal(t, "grok-4.3", gjson.GetBytes(upstream.lastBody, "model").String())
+	require.Equal(t, "high", gjson.GetBytes(upstream.lastBody, "reasoning_effort").String())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "prompt_cache_retention").Exists())
 	require.False(t, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation")`).Exists())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "tool_choice").Exists())
@@ -128,6 +140,8 @@ func TestOpenAIGatewayService_ForwardGrokResponsesUsesXAIEndpointAndSanitizedBod
 	require.Equal(t, "grok-4.3", result.UpstreamModel)
 	require.Equal(t, 2, result.Usage.InputTokens)
 	require.Equal(t, 3, result.Usage.OutputTokens)
+	require.NotNil(t, result.ReasoningEffort)
+	require.Equal(t, "high", *result.ReasoningEffort)
 }
 
 func TestOpenAIGatewayService_ForwardGrokResponsesFailoverStoresQuotaSnapshot(t *testing.T) {
