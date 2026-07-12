@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // ============================================================================
@@ -252,14 +253,13 @@ func TestComputeFinalAnthropicBeta_OAuthMimic_IgnoresClientBetaExplicit(t *testi
 			"与 count_tokens mimic 是不同的设计，不能合并为同一函数。")
 }
 
-func TestComputeFinalCountTokensAnthropicBeta_OAuthTransparent_NoClientBetaInjectsDefault(t *testing.T) {
-	// 真 CC 客户端透传 + 客户端未传 anthropic-beta → 用 CountTokensBetaHeader 兜底
+func TestComputeFinalCountTokensAnthropicBeta_OAuthTransparent_NoClientBetaInjectsCountTokensDefaults(t *testing.T) {
+	// 真 CC 客户端透传 + 客户端未传 anthropic-beta → 注入完整 CountTokensBetaHeader。
 	s := newTestGatewayServiceForBeta(false)
 	final, ok := s.computeFinalCountTokensAnthropicBeta("oauth", false, "claude-haiku-4-5", http.Header{}, []byte(`{}`), nil)
 	require.True(t, ok)
 	require.Equal(t, claude.CountTokensBetaHeader, final)
-	// CountTokensBetaHeader 不含 context-management beta
-	require.False(t, anthropicBetaTokensContains(final, claude.BetaContextManagement))
+	require.True(t, anthropicBetaTokensContains(final, claude.BetaContextManagement))
 }
 
 func TestComputeFinalCountTokensAnthropicBeta_OAuthTransparent_AppendsBetaTokenCounting(t *testing.T) {
@@ -350,6 +350,19 @@ func readUpstreamBodyForTest(t *testing.T, req *http.Request) []byte {
 	return b
 }
 
+func addValidOAuthMimicMetadataForTest(t *testing.T, body []byte) []byte {
+	t.Helper()
+	userID := FormatMetadataUserID(
+		strings.Repeat("a", 64),
+		"",
+		"11111111-2222-4333-8444-555555555555",
+		"2.1.175",
+	)
+	out, err := sjson.SetBytes(body, "metadata.user_id", userID)
+	require.NoError(t, err)
+	return out
+}
+
 func TestBuildUpstreamRequestAnthropicAPIKeyPassthrough_StripsContextManagementWhenClientHeaderMissingBeta(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
@@ -421,7 +434,7 @@ func TestBuildUpstreamRequest_OAuthMimicHaiku_StripsContextManagementEndToEnd(t 
 	}
 	// haiku + mimic CC → final beta = HaikuBetaHeader（不含 context-management）→
 	// body 必须 strip。
-	body := []byte(`{"model":"claude-haiku-4-5","context_management":{"edits":[{"type":"clear_thinking_20251015"}]},"messages":[]}`)
+	body := addValidOAuthMimicMetadataForTest(t, []byte(`{"model":"claude-haiku-4-5","context_management":{"edits":[{"type":"clear_thinking_20251015"}]},"messages":[]}`))
 	svc := &GatewayService{cfg: &config.Config{}}
 	req, _, err := svc.buildUpstreamRequest(
 		context.Background(), c, account, body,
@@ -451,7 +464,7 @@ func TestBuildUpstreamRequest_OAuthMimicNonHaiku_PreservesContextManagementEndTo
 	}
 	// sonnet + mimic CC → final beta = FullClaudeCodeMimicryBetas（含 context-management）→
 	// body 保留。
-	body := []byte(`{"model":"claude-sonnet-4-6","context_management":{"edits":[{"type":"clear_thinking_20251015"}]},"messages":[]}`)
+	body := addValidOAuthMimicMetadataForTest(t, []byte(`{"model":"claude-sonnet-4-6","context_management":{"edits":[{"type":"clear_thinking_20251015"}]},"messages":[]}`))
 	svc := &GatewayService{cfg: &config.Config{}}
 	req, _, err := svc.buildUpstreamRequest(
 		context.Background(), c, account, body,
@@ -574,7 +587,7 @@ func TestBuildCountTokensRequest_OAuthMimicHaiku_PreservesContextManagementEndTo
 		Credentials: map[string]any{"access_token": "oauth-tok"},
 		Status:      StatusActive, Schedulable: true,
 	}
-	body := []byte(`{"model":"claude-haiku-4-5","context_management":{"edits":[{"type":"clear_thinking_20251015"}]},"messages":[]}`)
+	body := addValidOAuthMimicMetadataForTest(t, []byte(`{"model":"claude-haiku-4-5","context_management":{"edits":[{"type":"clear_thinking_20251015"}]},"messages":[]}`))
 	svc := &GatewayService{cfg: &config.Config{}}
 	req, _, err := svc.buildCountTokensRequest(
 		context.Background(), c, account, body,

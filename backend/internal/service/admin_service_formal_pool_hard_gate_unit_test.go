@@ -167,7 +167,7 @@ func TestAdminServiceUpdateAccount_FormalPoolImportedCannotBeMadeSchedulable(t *
 	require.False(t, repo.accountsByID[204].Schedulable)
 }
 
-func TestAdminServiceUpdateAccount_FormalPoolAllowsAtomicWarmingTransition(t *testing.T) {
+func TestAdminServiceUpdateAccount_FormalPoolRejectsAtomicWarmingTransition(t *testing.T) {
 	t.Parallel()
 
 	repo := &formalPoolCreateRepoStub{mockAccountRepoForGemini: mockAccountRepoForGemini{accountsByID: map[int64]*Account{205: {
@@ -186,8 +186,11 @@ func TestAdminServiceUpdateAccount_FormalPoolAllowsAtomicWarmingTransition(t *te
 		Extra:       mergeFormalPoolTestExtra(FormalPoolStageWarming),
 	})
 
-	require.NoError(t, err)
-	require.NotNil(t, got)
+	require.Error(t, err)
+	require.Nil(t, got)
+	require.Contains(t, err.Error(), "FORMAL_POOL_ONBOARDING_STAGE_NOT_SCHEDULABLE")
+	require.False(t, repo.accountsByID[205].Schedulable)
+	require.Equal(t, FormalPoolStageHealthcheckPassed, FormalPoolAccountStage(repo.accountsByID[205]))
 }
 
 func TestAdminServiceUpdateAccount_FormalPoolCredentialPartialUpdatePreservesOAuthSecrets(t *testing.T) {

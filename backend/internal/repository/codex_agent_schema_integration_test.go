@@ -42,7 +42,7 @@ func TestCodexAgentSchema(t *testing.T) {
 	requireIndex(t, tx, "codex_managed_devices", "idx_codex_managed_devices_status")
 	requireForeignKey(t, tx, "codex_managed_devices", "codex_managed_devices_user_id_fkey", "user_id", "users")
 	requireForeignKey(t, tx, "codex_managed_devices", "codex_managed_devices_api_key_id_fkey", "api_key_id", "api_keys")
-	requireColumnDefaultContains(t, tx, "codex_managed_devices", "status", "'active'")
+	requireCodexColumnDefaultContains(t, tx, "codex_managed_devices", "status", "'active'")
 	requireCheckConstraintContains(t, tx, "codex_managed_devices", "codex_managed_devices_status_check", "reauthorization_required")
 	requireCheckConstraintContains(t, tx, "codex_managed_devices", "codex_managed_devices_status_check", "revoked")
 
@@ -68,7 +68,7 @@ func TestCodexAgentSchema(t *testing.T) {
 	requireIndex(t, tx, "codex_device_audit_logs", "idx_codex_device_audit_logs_created_at")
 	requireForeignKey(t, tx, "codex_device_audit_logs", "codex_device_audit_logs_device_id_fkey", "device_id", "codex_managed_devices")
 	requireForeignKey(t, tx, "codex_device_audit_logs", "codex_device_audit_logs_user_id_fkey", "user_id", "users")
-	requireColumnDefaultContains(t, tx, "codex_device_audit_logs", "metadata", "'{}'::jsonb")
+	requireCodexColumnDefaultContains(t, tx, "codex_device_audit_logs", "metadata", "'{}'::jsonb")
 }
 
 func requireForeignKey(t *testing.T, tx *sql.Tx, table, constraint, column, refTable string) {
@@ -115,7 +115,7 @@ WHERE n.nspname = 'public'
 	require.Contains(t, definition, fragment, "check constraint mismatch for %s", constraint)
 }
 
-func requireColumnDefaultContains(t *testing.T, tx *sql.Tx, table, column, fragment string) {
+func requireCodexColumnDefaultContains(t *testing.T, tx *sql.Tx, table, column, fragment string) {
 	t.Helper()
 
 	var defaultValue sql.NullString

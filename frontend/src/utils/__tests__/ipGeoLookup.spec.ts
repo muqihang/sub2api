@@ -64,7 +64,8 @@ describe('fetchOne', () => {
   })
 
   it('fetches and stores a successful geolocation result', async () => {
-    ;(global.fetch as any).mockResolvedValue({
+    const fetchMock = global.fetch as any
+    fetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({
         ip: '121.35.47.43',
@@ -89,7 +90,8 @@ describe('fetchOne', () => {
   })
 
   it('marks the entry as error when the response has no country_code', async () => {
-    ;(global.fetch as any).mockResolvedValue({
+    const fetchMock = global.fetch as any
+    fetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({ ip: '192.0.2.55', organization: 'AS64512 Unknown' }),
     })
@@ -100,7 +102,8 @@ describe('fetchOne', () => {
   })
 
   it('marks the entry as error when the request rejects', async () => {
-    ;(global.fetch as any).mockRejectedValue(new Error('network down'))
+    const fetchMock = global.fetch as any
+    fetchMock.mockRejectedValue(new Error('network down'))
 
     await fetchOne('198.51.100.7')
 
@@ -108,7 +111,8 @@ describe('fetchOne', () => {
   })
 
   it('does not re-fetch a cached successful IP unless forced', async () => {
-    ;(global.fetch as any).mockResolvedValue({
+    const fetchMock = global.fetch as any
+    fetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({ ip: '8.8.8.8', country_code: 'US', region: 'California', city: 'Mountain View' }),
     })
@@ -131,7 +135,8 @@ describe('fetchBatch', () => {
   })
 
   it('deduplicates IPs and skips private addresses without a network call', async () => {
-    ;(global.fetch as any).mockResolvedValue({
+    const fetchMock = global.fetch as any
+    fetchMock.mockResolvedValue({
       ok: true,
       json: async () => [{ ip: '203.0.113.10', country_code: 'US', region: 'Texas', city: 'Dallas' }],
     })
@@ -147,7 +152,8 @@ describe('fetchBatch', () => {
   })
 
   it('returns false when a chunk request fails at the network level', async () => {
-    ;(global.fetch as any).mockRejectedValue(new Error('network down'))
+    const fetchMock = global.fetch as any
+    fetchMock.mockRejectedValue(new Error('network down'))
 
     const ok = await fetchBatch(['203.0.113.50', '203.0.113.51'])
 

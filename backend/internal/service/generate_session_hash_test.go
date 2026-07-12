@@ -81,7 +81,7 @@ func TestGenerateSessionHash_MetadataHasHighestPriority(t *testing.T) {
 	parsed := mustParseSessionHashRequest(t, anthropicSessionBody("You are a helpful assistant.", []any{msg("user", "hello")}, metadata), nil)
 
 	hash := svc.GenerateSessionHash(parsed)
-	require.Equal(t, "123e4567-e89b-12d3-a456-426614174000", hash, "metadata session_id should have highest priority")
+	require.Equal(t, scopedStickyHMAC("metadata_user_id", "123e4567-e89b-12d3-a456-426614174000"), hash, "metadata session_id should have highest priority")
 }
 
 func TestGenerateSessionHash_SystemPlusMessages(t *testing.T) {
@@ -165,7 +165,7 @@ func TestGenerateSessionHash_MetadataOverridesSessionContext(t *testing.T) {
 	parsed := mustParseSessionHashRequest(t, anthropicSessionBody(nil, []any{msg("user", "hello")}, metadata), &SessionContext{ClientIP: "192.168.1.1", UserAgent: "Mozilla/5.0", APIKeyID: 100})
 
 	hash := svc.GenerateSessionHash(parsed)
-	require.Equal(t, "123e4567-e89b-12d3-a456-426614174000", hash, "metadata session_id should take priority over SessionContext")
+	require.Equal(t, scopedStickyHMAC("metadata_user_id", "123e4567-e89b-12d3-a456-426614174000"), hash, "metadata session_id should take priority over SessionContext")
 }
 
 func TestGenerateSessionHash_MetadataJSON_HasHighestPriority(t *testing.T) {
@@ -174,7 +174,7 @@ func TestGenerateSessionHash_MetadataJSON_HasHighestPriority(t *testing.T) {
 	parsed := mustParseSessionHashRequest(t, anthropicSessionBody("You are a helpful assistant.", []any{msg("user", "hello")}, metadata), nil)
 
 	hash := svc.GenerateSessionHash(parsed)
-	require.Equal(t, "c72554f2-1234-5678-abcd-123456789abc", hash, "JSON format metadata session_id should have highest priority")
+	require.Equal(t, scopedStickyHMAC("metadata_user_id", "c72554f2-1234-5678-abcd-123456789abc"), hash, "JSON format metadata session_id should have highest priority")
 }
 
 func TestGenerateSessionHash_NilSessionContextBackwardCompatible(t *testing.T) {

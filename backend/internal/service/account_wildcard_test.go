@@ -503,8 +503,8 @@ func TestAccountGetModelMapping_AntigravityEnsuresGeminiDefaultPassthroughs(t *t
 	if mapping["gemini-3-flash"] != "gemini-3-flash" {
 		t.Fatalf("expected gemini-3-flash passthrough to be auto-filled, got: %q", mapping["gemini-3-flash"])
 	}
-	if mapping["gemini-3.1-pro-high"] != "gemini-3.1-pro-high" {
-		t.Fatalf("expected gemini-3.1-pro-high passthrough to be auto-filled, got: %q", mapping["gemini-3.1-pro-high"])
+	if mapping["gemini-3.1-pro-high"] != domain.AntigravityGemini31ProAgentModel {
+		t.Fatalf("expected gemini-3.1-pro-high to use the agent route, got: %q", mapping["gemini-3.1-pro-high"])
 	}
 	if mapping["gemini-3.1-pro-low"] != "gemini-3.1-pro-low" {
 		t.Fatalf("expected gemini-3.1-pro-low passthrough to be auto-filled, got: %q", mapping["gemini-3.1-pro-low"])
