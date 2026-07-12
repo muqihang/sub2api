@@ -5,6 +5,7 @@ package repository
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
@@ -268,6 +269,8 @@ func (s *ConcurrencyCacheSuite) TestCleanupStaleProcessSlots() {
 		redis.Z{Score: float64(now), Member: "oldproc-2"},
 		redis.Z{Score: float64(now), Member: "keep-2"},
 	).Err())
+	require.NoError(s.T(), s.rdb.ZAdd(s.ctx, accountActiveIndexKey, redis.Z{Score: float64(now), Member: strconv.FormatInt(accountID, 10)}).Err())
+	require.NoError(s.T(), s.rdb.ZAdd(s.ctx, userActiveIndexKey, redis.Z{Score: float64(now), Member: strconv.FormatInt(userID, 10)}).Err())
 	require.NoError(s.T(), s.rdb.Set(s.ctx, userWaitKey, 3, time.Minute).Err())
 	require.NoError(s.T(), s.rdb.Set(s.ctx, accountWaitKey, 2, time.Minute).Err())
 
@@ -452,6 +455,10 @@ func (s *ConcurrencyCacheSuite) TestCleanupExpiredAccountSlotKeys() {
 	require.NoError(s.T(), s.rdb.ZAdd(s.ctx, userKey,
 		redis.Z{Score: float64(expiredTime), Member: "user-expired"},
 	).Err())
+	require.NoError(s.T(), s.rdb.ZAdd(s.ctx, accountActiveIndexKey,
+		redis.Z{Score: float64(now - 1), Member: "301"},
+		redis.Z{Score: float64(now - 1), Member: "302"},
+	).Err())
 
 	require.NoError(s.T(), s.cache.CleanupExpiredAccountSlotKeys(s.ctx))
 
@@ -489,6 +496,8 @@ func (s *ConcurrencyCacheSuite) TestCleanupStaleProcessSlots_RemovesOldPrefixesA
 	require.NoError(s.T(), s.rdb.Expire(s.ctx, userSlotKey, testSlotTTL).Err())
 	require.NoError(s.T(), s.rdb.Set(s.ctx, userWaitKey, 3, testSlotTTL).Err())
 	require.NoError(s.T(), s.rdb.Set(s.ctx, accountWaitKey, 2, testSlotTTL).Err())
+	require.NoError(s.T(), s.rdb.ZAdd(s.ctx, accountActiveIndexKey, redis.Z{Score: now, Member: strconv.FormatInt(accountID, 10)}).Err())
+	require.NoError(s.T(), s.rdb.ZAdd(s.ctx, userActiveIndexKey, redis.Z{Score: now, Member: strconv.FormatInt(userID, 10)}).Err())
 
 	require.NoError(s.T(), s.cache.CleanupStaleProcessSlots(s.ctx, "activeproc-"))
 
@@ -511,6 +520,7 @@ func (s *ConcurrencyCacheSuite) TestCleanupStaleProcessSlots_DeletesEmptySlotKey
 	accountSlotKey := fmt.Sprintf("%s%d", accountSlotKeyPrefix, accountID)
 	require.NoError(s.T(), s.rdb.ZAdd(s.ctx, accountSlotKey, redis.Z{Score: float64(time.Now().Unix()), Member: "oldproc-1"}).Err())
 	require.NoError(s.T(), s.rdb.Expire(s.ctx, accountSlotKey, testSlotTTL).Err())
+	require.NoError(s.T(), s.rdb.ZAdd(s.ctx, accountActiveIndexKey, redis.Z{Score: float64(time.Now().Unix()), Member: strconv.FormatInt(accountID, 10)}).Err())
 
 	require.NoError(s.T(), s.cache.CleanupStaleProcessSlots(s.ctx, "activeproc-"))
 

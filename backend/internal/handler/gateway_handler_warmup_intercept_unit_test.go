@@ -409,10 +409,9 @@ func TestGatewayHandlerMessages_BlocksSuspiciousClaudeCodeProbeBeforeScheduling(
 
 	require.Equal(t, 403, rec.Code)
 	require.Contains(t, rec.Body.String(), "Suspicious Claude Code probe request blocked")
-	entry := &service.OpsInsertErrorLogInput{}
-	attachOpsRequestBodyToEntry(c, entry)
-	require.Nil(t, entry.RequestBodyJSON, "blocked probe payload must not be persisted to ops error logs")
-	require.Nil(t, entry.RequestBodyBytes, "blocked probe payload size must not be persisted to ops error logs")
+	// Raw request-body replay fields were removed from ops logs upstream. The
+	// remaining observable boundary is that this denial happens before account
+	// selection or any gateway service call that can attach upstream metadata.
 	_, selected := c.Get(opsAccountIDKey)
 	require.False(t, selected, "blocked probe must not reach account scheduling")
 }

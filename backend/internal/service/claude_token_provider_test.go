@@ -371,7 +371,7 @@ func TestClaudeTokenProvider_WrongPlatform(t *testing.T) {
 
 	token, err := provider.GetAccessToken(context.Background(), account)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "not an anthropic oauth or service account")
+	require.Contains(t, err.Error(), "not an anthropic oauth, setup-token, or service account")
 	require.Empty(t, token)
 }
 
@@ -385,7 +385,7 @@ func TestClaudeTokenProvider_WrongAccountType(t *testing.T) {
 
 	token, err := provider.GetAccessToken(context.Background(), account)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "not an anthropic oauth or service account")
+	require.Contains(t, err.Error(), "not an anthropic oauth, setup-token, or service account")
 	require.Empty(t, token)
 }
 
@@ -399,7 +399,7 @@ func TestClaudeTokenProvider_SetupTokenType(t *testing.T) {
 
 	token, err := provider.GetAccessToken(context.Background(), account)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "not an anthropic oauth or service account")
+	require.Contains(t, err.Error(), "access_token not found in credentials")
 	require.Empty(t, token)
 }
 

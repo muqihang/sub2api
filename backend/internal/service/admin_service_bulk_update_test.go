@@ -295,7 +295,7 @@ func TestAdminService_BulkUpdateAccounts_FormalPoolProductionCanBeMadeSchedulabl
 	require.Equal(t, []int64{302}, repo.bulkUpdateIDs)
 }
 
-func TestAdminService_BulkUpdateAccounts_FormalPoolHealthcheckPassedCanMoveToWarmingAndSchedulableInSameUpdate(t *testing.T) {
+func TestAdminService_BulkUpdateAccounts_FormalPoolRejectsAtomicWarmingAndSchedulableUpdate(t *testing.T) {
 	repo := &accountRepoStubForBulkUpdate{
 		getByIDsAccounts: []*Account{{
 			ID:          303,
@@ -315,9 +315,10 @@ func TestAdminService_BulkUpdateAccounts_FormalPoolHealthcheckPassedCanMoveToWar
 		Extra:       mergeFormalPoolTestExtra(FormalPoolStageWarming),
 	})
 
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.Equal(t, []int64{303}, repo.bulkUpdateIDs)
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Contains(t, err.Error(), "FORMAL_POOL_ONBOARDING_STAGE_NOT_SCHEDULABLE")
+	require.Empty(t, repo.bulkUpdateIDs)
 }
 
 func TestAdminService_BulkUpdateAccounts_FormalPoolPreWarmingStagesCannotBeMadeSchedulable(t *testing.T) {

@@ -165,7 +165,7 @@ func TestValidate_MessagesPath_InvalidMetadataUserIDWithoutClaudeCodePrompt(t *t
 	}
 }
 
-func TestValidate_MessagesPath_ValidMetadataAllowsMissingClaudeCodeSystemPrompt(t *testing.T) {
+func TestValidate_MessagesPath_ValidMetadataRejectsMissingClaudeCodeSystemPrompt(t *testing.T) {
 	v := newTestValidator()
 
 	req := httptest.NewRequest("POST", "/v1/messages", nil)
@@ -188,7 +188,7 @@ func TestValidate_MessagesPath_ValidMetadataAllowsMissingClaudeCodeSystemPrompt(
 	}
 
 	result := v.Validate(req, body)
-	require.True(t, result, "官方 UA + 可解析 metadata.user_id 应通过，即使 system prompt 被剥离或不是 Claude Code prompt")
+	require.False(t, result, "官方 UA 和 metadata 仍需 Claude Code system/billing 证据")
 }
 
 func TestValidate_MessagesPath_ClaudeCodeSystemPromptRequiresValidMetadata(t *testing.T) {

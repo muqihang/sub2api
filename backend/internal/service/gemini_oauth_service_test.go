@@ -1295,10 +1295,10 @@ func TestGeminiOAuthService_RefreshAccountToken_GoogleOneFreshCacheRestoresStore
 	protector, err := ProvideGeminiSecretProtector(cfg)
 	require.NoError(t, err)
 	protected, err := protector.ProtectCredentials(map[string]any{
-		"refresh_token":            "rt",
-		"oauth_type":               "google_one",
-		"project_id":               "proj",
-		"tier_id":                  GeminiTierGoogleOneFree,
+		"refresh_token":             "rt",
+		"oauth_type":                "google_one",
+		"project_id":                "proj",
+		"tier_id":                   GeminiTierGoogleOneFree,
 		geminiDriveTierUpdatedAtKey: time.Now().Add(-1 * time.Hour).Format(time.RFC3339),
 		geminiOAuthStateKey:         geminiOAuthStateDegraded,
 		geminiOAuthReasonKey:        geminiOAuthReasonGoogleOneDefaultTierFallback,
@@ -1622,6 +1622,7 @@ func TestGeminiOAuthService_ExchangeCode_GoogleOneDefaultTierFallbackVisibleInPr
 	}
 	cfg := &config.Config{}
 	cfg.Gemini.ProductionMode = true
+	cfg.Gemini.AllowGoogleOneDefaultTierFallback = true
 
 	svc := NewGeminiOAuthService(nil, client, nil, drive, cfg)
 	defer svc.Stop()

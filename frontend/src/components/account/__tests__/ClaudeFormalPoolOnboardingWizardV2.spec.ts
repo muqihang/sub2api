@@ -1,6 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { defineComponent } from 'vue'
+import { defineComponent, readonly, ref } from 'vue'
 
 import ClaudeFormalPoolOnboardingWizardV2 from '../ClaudeFormalPoolOnboardingWizardV2.vue'
 import type { FormalPoolAcceptanceResult, FormalPoolSession } from '@/api/admin/claudeOnboarding'
@@ -44,18 +44,19 @@ const adminApiMock = vi.hoisted(() => ({
   },
 }))
 
-const egressPollingMock = vi.hoisted(() => {
-  const { ref, readonly } = require('vue') as typeof import('vue')
-  return {
-    session: readonly(ref(null)),
-    status: readonly(ref('idle')),
-    running: readonly(ref(false)),
-    error: readonly(ref('')),
-    start: vi.fn(),
-    stop: vi.fn(),
-    abort: vi.fn(),
-  }
-})
+const egressPollingActions = vi.hoisted(() => ({
+  start: vi.fn(),
+  stop: vi.fn(),
+  abort: vi.fn(),
+}))
+
+const egressPollingMock = {
+  session: readonly(ref(null)),
+  status: readonly(ref('idle')),
+  running: readonly(ref(false)),
+  error: readonly(ref('')),
+  ...egressPollingActions,
+}
 
 vi.mock('@/api/admin/claudeOnboarding', () => ({
   default: onboardingApi,

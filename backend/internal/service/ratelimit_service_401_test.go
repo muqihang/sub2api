@@ -196,10 +196,8 @@ func TestRateLimitService_CheckErrorPolicy_Antigravity401TempUnschedMarksForceRe
 		Platform: PlatformAntigravity,
 		Type:     AccountTypeOAuth,
 		Credentials: map[string]any{
-			"access_token":  "expired-at",
-			"refresh_token": "rt-3675",
-		},
-		Extra: map[string]any{
+			"access_token":               "expired-at",
+			"refresh_token":              "rt-3675",
 			"temp_unschedulable_enabled": true,
 			"temp_unschedulable_rules": []any{
 				map[string]any{
@@ -209,6 +207,7 @@ func TestRateLimitService_CheckErrorPolicy_Antigravity401TempUnschedMarksForceRe
 				},
 			},
 		},
+		Extra: map[string]any{},
 	}
 
 	result := service.CheckErrorPolicy(context.Background(), account, http.StatusUnauthorized, []byte("unauthorized"))

@@ -206,7 +206,7 @@ func TestHandleUpstreamError_429_NonModelRateLimit(t *testing.T) {
 	// 但 429 兜底逻辑会使用 requestedModel 设置模型级限流
 	require.Nil(t, result)
 	require.Len(t, repo.modelRateLimitCalls, 1)
-	require.Equal(t, "claude-sonnet-4-5", repo.modelRateLimitCalls[0].modelKey)
+	require.Equal(t, "claude-sonnet-4-6", repo.modelRateLimitCalls[0].modelKey)
 }
 
 // TestHandleUpstreamError_429_NonModelRateLimit_UsesMappedModelKey 测试 429 非模型限流场景

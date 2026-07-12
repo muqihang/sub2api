@@ -34,7 +34,7 @@ func newPaymentPublicVerifyIntakeClient(t *testing.T) *dbent.Client {
 	return client
 }
 
-func TestVerifyOrderPublicReturnsMinimalAnonymousOrderState(t *testing.T) {
+func TestVerifyOrderPublicReturnsMinimalAnonymousRefundState(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := context.Background()
 	client := newPaymentPublicVerifyIntakeClient(t)

@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -25,8 +24,7 @@ const (
 
 func TestClaudePlatformAWSLocalFullChainE2EUsesCCGatewayAndSafeMockUpstream(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	t.Setenv("CC_GATEWAY_REPO_ROOT", "/Users/muqihang/chelingxi_workspace/cc-gateway-claude-platform-aws-cp5")
-	require.DirExists(t, os.Getenv("CC_GATEWAY_REPO_ROOT"))
+	require.DirExists(t, ccGatewayRepoRoot())
 	useClaudeCodeSessionBoundaryLedgerFileForTest(t)
 
 	proxyA := startConnectProxyServer(t)
