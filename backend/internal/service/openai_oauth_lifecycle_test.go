@@ -221,6 +221,23 @@ func TestEvaluateOpenAIImportLifecycle_ATOnlyQuarantine(t *testing.T) {
 	require.Equal(t, "at-only", decision.Credentials["access_token"])
 }
 
+func TestEvaluateOpenAIImportLifecycle_ATOnlyWithUsableLifetimeIsSchedulable(t *testing.T) {
+	decision, err := EvaluateOpenAIImportLifecycle(context.Background(), nil, "", map[string]any{
+		"access_token": "at-only",
+		"expires_at":   time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339),
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, OpenAIPoolRoleMain, decision.PoolRole)
+	require.Equal(t, OpenAIAuthStateATOnly, decision.AuthState)
+	require.Equal(t, OpenAITokenSourceATOnly, decision.TokenSource)
+	require.Equal(t, OpenAIValidationOutcomeATOnlyAccepted, decision.ValidationOutcome)
+	require.Equal(t, StatusActive, decision.Status)
+	require.True(t, decision.Schedulable)
+	require.Equal(t, "at-only", decision.Credentials["access_token"])
+	require.Empty(t, decision.Extra["openai_last_validated_at"])
+}
+
 func TestEvaluateOpenAIImportLifecycle_RetryableValidationFailure(t *testing.T) {
 	svc := NewOpenAIOAuthService(nil, &openaiLifecycleClientStub{
 		refreshErr: errors.New("request failed: dial tcp timeout"),

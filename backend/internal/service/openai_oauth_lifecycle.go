@@ -25,6 +25,7 @@ const (
 	OpenAIValidationOutcomeRTValidationRetryableFailure  = "rt_validation_retryable_failure"
 	OpenAIValidationOutcomeRTValidationTerminalFailure   = "rt_validation_terminal_failure"
 	OpenAIValidationOutcomeRTValidationScopeInsufficient = "rt_validation_scope_insufficient"
+	OpenAIValidationOutcomeATOnlyAccepted                = "at_only_accepted"
 	OpenAIValidationOutcomeATOnlyQuarantined             = "at_only_quarantined"
 
 	openAIAuthErrorCodeUnknown               = "oauth_refresh_failed"
@@ -35,6 +36,8 @@ const (
 	openAIAuthErrorCodeRTReused              = "refresh_token_reused"
 	openAIAuthErrorCodeInvalidGrant          = "invalid_grant"
 	openAIAuthErrorCodeResponsesWriteMissing = "responses_write_scope_missing"
+
+	openAIATOnlyMinimumUsableLifetime = time.Hour
 )
 
 type OpenAIImportLifecycleDecision struct {
@@ -114,6 +117,27 @@ func EvaluateOpenAIImportLifecycleWithExtra(
 	}
 
 	if strings.TrimSpace(stringValue(normalized["refresh_token"])) == "" {
+		expiresAt := (&Account{Credentials: normalized}).GetCredentialAsTime("expires_at")
+		if strings.TrimSpace(stringValue(normalized["access_token"])) != "" &&
+			expiresAt != nil && time.Until(*expiresAt) >= openAIATOnlyMinimumUsableLifetime {
+			return &OpenAIImportLifecycleDecision{
+				PoolRole:          OpenAIPoolRoleMain,
+				AuthState:         OpenAIAuthStateATOnly,
+				TokenSource:       OpenAITokenSourceATOnly,
+				ValidationOutcome: OpenAIValidationOutcomeATOnlyAccepted,
+				Status:            StatusActive,
+				Schedulable:       true,
+				Credentials:       protectedNormalized,
+				Extra: map[string]any{
+					"openai_pool_role":               OpenAIPoolRoleMain,
+					"openai_auth_state":              OpenAIAuthStateATOnly,
+					"openai_token_source":            OpenAITokenSourceATOnly,
+					"openai_validation_outcome":      OpenAIValidationOutcomeATOnlyAccepted,
+					"openai_last_refresh_error_code": "",
+					"openai_last_validated_at":       "",
+				},
+			}, nil
+		}
 		return &OpenAIImportLifecycleDecision{
 			PoolRole:          OpenAIPoolRoleQuarantine,
 			AuthState:         OpenAIAuthStateATOnly,

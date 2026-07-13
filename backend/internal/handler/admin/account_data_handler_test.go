@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
@@ -507,4 +508,44 @@ func TestImportData_OpenAIATOnlyQuarantinesAndDisablesScheduling(t *testing.T) {
 
 	require.Len(t, adminSvc.updatedAccounts, 1)
 	require.Equal(t, service.StatusDisabled, adminSvc.updatedAccounts[0].input.Status)
+}
+
+func TestImportData_OpenAIATOnlyWithUsableLifetimeBindsDefaultGroup(t *testing.T) {
+	router, adminSvc := setupAccountDataRouterWithOpenAIClient(&accountDataOpenAIClientStub{})
+
+	dataPayload := map[string]any{
+		"data": map[string]any{
+			"type":    dataType,
+			"version": dataVersion,
+			"proxies": []map[string]any{},
+			"accounts": []map[string]any{
+				{
+					"name":     "openai-at-only-long-lived",
+					"platform": service.PlatformOpenAI,
+					"type":     service.AccountTypeOAuth,
+					"credentials": map[string]any{
+						"access_token": "at-only",
+						"expires_at":   time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339),
+					},
+					"concurrency": 3,
+					"priority":    50,
+				},
+			},
+		},
+	}
+
+	body, _ := json.Marshal(dataPayload)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/data", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Len(t, adminSvc.createdAccounts, 1)
+	created := adminSvc.createdAccounts[0]
+	require.False(t, created.SkipDefaultGroupBind)
+	require.Equal(t, service.OpenAIPoolRoleMain, created.Extra["openai_pool_role"])
+	require.Equal(t, service.OpenAITokenSourceATOnly, created.Extra["openai_token_source"])
+	require.Equal(t, service.OpenAIValidationOutcomeATOnlyAccepted, created.Extra["openai_validation_outcome"])
+	require.Empty(t, adminSvc.updatedAccounts)
 }
