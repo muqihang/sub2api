@@ -364,6 +364,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	}
 	if req.ExcludedIDs != nil {
 		if _, excluded := req.ExcludedIDs[accountID]; excluded {
+			_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 			return nil, false, nil
 		}
 	}
@@ -386,6 +387,10 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	}
 	account = s.service.recheckSelectedSchedulerAccountFromDB(ctx, account, req)
 	if account == nil || !openAIStickyAccountMatchesGroup(account, req.GroupID) || !s.isAccountTransportCompatible(account, req.RequiredTransport) {
+		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
+		return nil, false, nil
+	}
+	if req.RequireCompact && openAICompactSupportTierForRequest(account, req.RequestedModel) != 2 {
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, false, nil
 	}

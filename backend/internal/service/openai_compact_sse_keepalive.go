@@ -9,6 +9,7 @@ import (
 )
 
 const openAICompactSSEKeepaliveKey = "openai_compact_sse_keepalive"
+const openAICompactSSEHeartbeat = "event: ping\ndata: {\"type\":\"ping\"}\n\n"
 
 type openAICompactSSEKeepalive struct {
 	mu      sync.Mutex
@@ -69,7 +70,7 @@ func openAICompactSSEKeepaliveFirstBeatDelay(interval time.Duration) time.Durati
 		return 0
 	}
 	// Give routing and fast upstream failures a chance to retain their real HTTP
-	// status before the first SSE comment commits a 200 response. Subsequent beats
+	// status before the first SSE heartbeat commits a 200 response. Subsequent beats
 	// still use the configured interval for long-running compact requests.
 	delay := 2 * interval
 	if delay > 20*time.Second {
@@ -93,7 +94,11 @@ func (k *openAICompactSSEKeepalive) beat() bool {
 		k.writer.WriteHeader(http.StatusOK)
 		k.started = true
 	}
-	written, err := k.writer.Write([]byte(": keepalive\n\n"))
+	// Codex applies its idle timeout around eventsource.next(). SSE comments are
+	// discarded by the parser and therefore do not reset that timer. A data event
+	// with an unknown type is parsed, safely ignored by the Responses dispatcher,
+	// and still keeps the remote compaction stream alive.
+	written, err := k.writer.Write([]byte(openAICompactSSEHeartbeat))
 	k.bytes += written
 	if err != nil {
 		k.stopped = true

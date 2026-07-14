@@ -374,6 +374,90 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactRechecksStaleSco
 	}
 }
 
+func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactSkipsUnknownStickyAccount(t *testing.T) {
+	groupID := int64(91010)
+	sessionHash := "compact-unknown-sticky"
+	accounts := []Account{
+		{
+			ID: 71070, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive,
+			Schedulable: true, Concurrency: 1, Priority: 0, GroupIDs: []int64{groupID},
+			Extra: map[string]any{},
+		},
+		{
+			ID: 71071, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive,
+			Schedulable: true, Concurrency: 1, Priority: 1, GroupIDs: []int64{groupID},
+			Extra: map[string]any{"openai_compact_supported": true},
+		},
+	}
+
+	for _, tt := range []struct {
+		name              string
+		advancedScheduler string
+	}{
+		{name: "legacy load-aware scheduler", advancedScheduler: "false"},
+		{name: "advanced scheduler", advancedScheduler: "true"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stickyKey := "openai:" + sessionHash
+			cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{stickyKey: 71070}}
+			svc := &OpenAIGatewayService{
+				accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+				cache:              cache,
+				cfg:                &config.Config{},
+				rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService(tt.advancedScheduler),
+				concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+			}
+
+			selection, _, err := svc.SelectAccountWithScheduler(context.Background(), &groupID, "", sessionHash, "gpt-5.4", nil, OpenAIUpstreamTransportAny, true)
+			require.NoError(t, err)
+			require.NotNil(t, selection)
+			require.Equal(t, int64(71071), selection.Account.ID)
+			require.GreaterOrEqual(t, cache.deletedSessions[stickyKey], 1)
+		})
+	}
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_ExcludedStickyBindingIsCleared(t *testing.T) {
+	groupID := int64(91011)
+	sessionHash := "failed-sticky-account"
+	accounts := []Account{
+		{
+			ID: 71080, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive,
+			Schedulable: true, Concurrency: 1, Priority: 0, GroupIDs: []int64{groupID},
+		},
+		{
+			ID: 71081, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive,
+			Schedulable: true, Concurrency: 1, Priority: 1, GroupIDs: []int64{groupID},
+		},
+	}
+
+	for _, tt := range []struct {
+		name              string
+		advancedScheduler string
+	}{
+		{name: "legacy load-aware scheduler", advancedScheduler: "false"},
+		{name: "advanced scheduler", advancedScheduler: "true"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stickyKey := "openai:" + sessionHash
+			cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{stickyKey: 71080}}
+			svc := &OpenAIGatewayService{
+				accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+				cache:              cache,
+				cfg:                &config.Config{},
+				rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService(tt.advancedScheduler),
+				concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+			}
+
+			selection, _, err := svc.SelectAccountWithScheduler(context.Background(), &groupID, "", sessionHash, "gpt-5.4", map[int64]struct{}{71080: {}}, OpenAIUpstreamTransportAny, false)
+			require.NoError(t, err)
+			require.NotNil(t, selection)
+			require.Equal(t, int64(71081), selection.Account.ID)
+			require.GreaterOrEqual(t, cache.deletedSessions[stickyKey], 1)
+		})
+	}
+}
+
 // TestOpenAICompactSupportTier 验证 tier 分类逻辑。
 func TestOpenAICompactSupportTier(t *testing.T) {
 	tests := []struct {

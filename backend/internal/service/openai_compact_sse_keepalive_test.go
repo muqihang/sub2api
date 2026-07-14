@@ -30,10 +30,10 @@ func waitForCompactKeepaliveBeat() {
 	time.Sleep(20 * keepaliveTestInterval)
 }
 
-func stripCompactKeepaliveComments(body string) string {
+func stripCompactKeepaliveEvents(body string) string {
 	var blocks []string
 	for _, block := range strings.Split(strings.TrimSpace(body), "\n\n") {
-		if strings.HasPrefix(strings.TrimSpace(block), ":") {
+		if strings.Contains(block, `"type":"ping"`) {
 			continue
 		}
 		blocks = append(blocks, block)
@@ -57,7 +57,7 @@ func TestStartOpenAICompactSSEKeepalive_NoopWhenUnmarkedOrDisabled(t *testing.T)
 	require.False(t, StopOpenAICompactSSEKeepaliveCommitted(ctx))
 }
 
-func TestOpenAICompactSSEKeepalive_CommitsHeadersAndComments(t *testing.T) {
+func TestOpenAICompactSSEKeepalive_CommitsHeadersAndCodexVisibleEvent(t *testing.T) {
 	ctx, recorder := newCompactKeepaliveTestContext(true)
 	stop := StartOpenAICompactSSEKeepalive(ctx, keepaliveTestInterval)
 	defer stop()
@@ -67,7 +67,8 @@ func TestOpenAICompactSSEKeepalive_CommitsHeadersAndComments(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.Equal(t, "text/event-stream", recorder.Header().Get("Content-Type"))
 	require.Equal(t, "no", recorder.Header().Get("X-Accel-Buffering"))
-	require.Contains(t, recorder.Body.String(), ": keepalive\n\n")
+	require.Contains(t, recorder.Body.String(), "event: ping\n")
+	require.Contains(t, recorder.Body.String(), `data: {"type":"ping"}`+"\n\n")
 }
 
 func TestOpenAICompactSSEKeepalive_FirstBeatWaitsForFastFailureWindow(t *testing.T) {
@@ -79,7 +80,7 @@ func TestOpenAICompactSSEKeepalive_FirstBeatWaitsForFastFailureWindow(t *testing
 	time.Sleep(100 * time.Millisecond)
 	stop()
 
-	require.Contains(t, recorder.Body.String(), ": keepalive\n\n")
+	require.Contains(t, recorder.Body.String(), `data: {"type":"ping"}`+"\n\n")
 }
 
 func TestOpenAICompactSSEKeepalive_StopRestoresInstalledWriter(t *testing.T) {
@@ -122,7 +123,7 @@ func TestWriteOpenAICompactSSEBridge_AfterKeepaliveCommit(t *testing.T) {
 
 		finalResponse := []byte(`{"id":"resp_ka_1","output":[{"id":"cmp_ka","type":"compaction","encrypted_content":"x"}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
 		require.True(t, writeOpenAICompactSSEBridge(ctx, http.StatusOK, finalResponse))
-		events := parseCompactBridgeSSE(t, stripCompactKeepaliveComments(recorder.Body.String()))
+		events := parseCompactBridgeSSE(t, stripCompactKeepaliveEvents(recorder.Body.String()))
 		require.Len(t, events, 2)
 		require.Equal(t, "compaction", gjson.Get(events[0][1], "item.type").String())
 		require.Equal(t, "response.completed", events[1][0])
@@ -135,7 +136,7 @@ func TestWriteOpenAICompactSSEBridge_AfterKeepaliveCommit(t *testing.T) {
 		waitForCompactKeepaliveBeat()
 
 		require.True(t, writeOpenAICompactSSEBridge(ctx, http.StatusBadGateway, []byte(`{"error":{"message":"upstream exploded"}}`)))
-		events := parseCompactBridgeSSE(t, stripCompactKeepaliveComments(recorder.Body.String()))
+		events := parseCompactBridgeSSE(t, stripCompactKeepaliveEvents(recorder.Body.String()))
 		require.Len(t, events, 1)
 		require.Equal(t, "response.failed", events[0][0])
 		require.Contains(t, gjson.Get(events[0][1], "response.error.message").String(), "upstream exploded")
@@ -200,7 +201,7 @@ func TestOpenAICompactKeepaliveAdjustedWrittenSize_ExcludesHeartbeatBytes(t *tes
 	_, err := ctx.Writer.Write([]byte("real-bytes"))
 	require.NoError(t, err)
 	require.Equal(t, len("real-bytes"), OpenAICompactKeepaliveAdjustedWrittenSize(ctx))
-	require.Contains(t, recorder.Body.String(), ": keepalive\n\n")
+	require.Contains(t, recorder.Body.String(), `data: {"type":"ping"}`+"\n\n")
 }
 
 func TestWriteOpenAIFastPolicyBlockedResponse_CompactKeepalive(t *testing.T) {
@@ -211,7 +212,7 @@ func TestWriteOpenAIFastPolicyBlockedResponse_CompactKeepalive(t *testing.T) {
 		waitForCompactKeepaliveBeat()
 
 		writeOpenAIFastPolicyBlockedResponse(ctx, &OpenAIFastBlockedError{Message: "tier blocked"})
-		events := parseCompactBridgeSSE(t, stripCompactKeepaliveComments(recorder.Body.String()))
+		events := parseCompactBridgeSSE(t, stripCompactKeepaliveEvents(recorder.Body.String()))
 		require.Len(t, events, 1)
 		require.Equal(t, "permission_error", gjson.Get(events[0][1], "response.error.code").String())
 	})
