@@ -844,6 +844,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		reqLog.Debug("openai.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		setOpsSelectedAccount(c, account.ID, account.Platform)
+		cyberForwardModel := reqModel
+		if channelMapping.Mapped && strings.TrimSpace(channelMapping.MappedModel) != "" {
+			cyberForwardModel = channelMapping.MappedModel
+		}
+		cyberBillingModel, cyberUpstreamModel := service.ResolveOpenAICyberPolicyUsageModels(account, cyberForwardModel, requireCompact)
+		setOpsEndpointContext(c, cyberUpstreamModel, int16(service.RequestTypeFromLegacy(reqStream, false)))
 
 		accountReleaseFunc, acquired := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, reqStream, &streamStarted, reqLog)
 		if !acquired {
@@ -866,11 +872,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if service.GetOpsCyberPolicy(c) != nil {
 			cyberBlockKeyHTTP = service.CyberSessionBlockKey(apiKey.ID, c, sessionHashBody)
 		}
-		cyberForwardModel := reqModel
-		if channelMapping.Mapped && strings.TrimSpace(channelMapping.MappedModel) != "" {
-			cyberForwardModel = channelMapping.MappedModel
-		}
-		cyberBillingModel, cyberUpstreamModel := service.ResolveOpenAICyberPolicyUsageModels(account, cyberForwardModel, requireCompact)
 		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyHTTP, channelMapping.ToUsageFields(reqModel, cyberUpstreamModel), service.HashUsageRequestPayload(body), cyberBillingModel, cyberUpstreamModel)
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
@@ -1097,12 +1098,16 @@ func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcome(c *gin.Context, sta
 	}
 
 	outcome := "failed"
+	wireStatus := status
 	if status >= 200 && status < 300 {
 		outcome = "succeeded"
 	}
 	if outcome == "succeeded" && c != nil {
-		if _, hasStreamError := service.GetOpsStreamError(c); hasStreamError {
+		if streamError, hasStreamError := service.GetOpsStreamError(c); hasStreamError {
 			outcome = "failed"
+			if streamError.IntendedStatus > 0 {
+				status = streamError.IntendedStatus
+			}
 		}
 	}
 	latencyMs := time.Since(startedAt).Milliseconds()
@@ -1119,6 +1124,9 @@ func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcome(c *gin.Context, sta
 		zap.String("path", path),
 		zap.Bool("force_codex_cli", h != nil && h.cfg != nil && h.cfg.Gateway.ForceCodexCLI),
 	}
+	if wireStatus != status {
+		fields = append(fields, zap.Int("wire_status_code", wireStatus))
+	}
 
 	if c != nil {
 		if userAgent := strings.TrimSpace(c.GetHeader("User-Agent")); userAgent != "" {
@@ -1132,6 +1140,11 @@ func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcome(c *gin.Context, sta
 		if v, ok := c.Get(opsAccountIDKey); ok {
 			if accountID, ok := v.(int64); ok && accountID > 0 {
 				fields = append(fields, zap.Int64("account_id", accountID))
+			}
+		}
+		if v, ok := c.Get(opsUpstreamModelKey); ok {
+			if upstreamModel, ok := v.(string); ok && strings.TrimSpace(upstreamModel) != "" {
+				fields = append(fields, zap.String("upstream_model", strings.TrimSpace(upstreamModel)))
 			}
 		}
 		if c.Writer != nil {

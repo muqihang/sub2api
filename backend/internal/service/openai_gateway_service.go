@@ -1816,10 +1816,36 @@ func openAICompactSupportTier(account *Account) int {
 	return 0
 }
 
+func openAICompactSupportTierForRequest(account *Account, requestedModel string) int {
+	if account == nil || !account.IsOpenAI() {
+		return 0
+	}
+	supported, known := account.OpenAICompactSupportKnownForModel(requestedModel)
+	if !known {
+		return 1
+	}
+	if supported {
+		return 2
+	}
+	return 0
+}
+
 // isOpenAIAccountEligibleForRequest centralises the schedulable / OpenAI / model /
 // compact-support checks used during account selection. Shadow parent health is
 // checked by callers that have repository access.
 func isOpenAIAccountEligibleForRequest(ctx context.Context, account *Account, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability) bool {
+	return isOpenAIAccountEligibleForRequestWithCompactSupportCheck(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, true)
+}
+
+// isOpenAIAccountEligibleBeforeCompactRecheck applies request-shape and runtime
+// guard checks but defers the persisted compact-support verdict. Scheduler
+// snapshots are allowed to lag the account row, so compact support must be
+// decided by recheckSelectedOpenAIAccountFromDB rather than stale cache data.
+func isOpenAIAccountEligibleBeforeCompactRecheck(ctx context.Context, account *Account, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability) bool {
+	return isOpenAIAccountEligibleForRequestWithCompactSupportCheck(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability, false)
+}
+
+func isOpenAIAccountEligibleForRequestWithCompactSupportCheck(ctx context.Context, account *Account, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, checkCompactSupport bool) bool {
 	if account == nil || !account.IsOpenAI() || !account.IsSchedulableForModelWithContext(ctx, requestedModel) {
 		return false
 	}
@@ -1837,13 +1863,13 @@ func isOpenAIAccountEligibleForRequest(ctx context.Context, account *Account, re
 	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
 		return false
 	}
-	if !openAIAccountSupportsRuntimeGuardCapability(account, requestedModel, requiredImageCapability) {
+	if !openAIAccountSupportsRuntimeGuardCapabilityForRequest(account, requestedModel, requireCompact, requiredImageCapability) {
 		return false
 	}
 	if !account.SupportsOpenAIEndpointCapability(requiredCapability) {
 		return false
 	}
-	if requireCompact && openAICompactSupportTier(account) == 0 {
+	if requireCompact && checkCompactSupport && openAICompactSupportTierForRequest(account, requestedModel) == 0 {
 		return false
 	}
 	return true
@@ -2074,7 +2100,7 @@ func (s *OpenAIGatewayService) withOpenAIQuotaAutoPauseContext(ctx context.Conte
 // prioritizeOpenAICompactAccounts re-orders a slice so that accounts with known
 // compact support are tried first, followed by unknown, then explicitly unsupported.
 // The relative order within each tier is preserved.
-func prioritizeOpenAICompactAccounts(accounts []*Account) []*Account {
+func prioritizeOpenAICompactAccounts(accounts []*Account, requestedModel string) []*Account {
 	if len(accounts) == 0 {
 		return nil
 	}
@@ -2082,7 +2108,7 @@ func prioritizeOpenAICompactAccounts(accounts []*Account) []*Account {
 	unknown := make([]*Account, 0, len(accounts))
 	unsupported := make([]*Account, 0, len(accounts))
 	for _, account := range accounts {
-		switch openAICompactSupportTier(account) {
+		switch openAICompactSupportTierForRequest(account, requestedModel) {
 		case 2:
 			supported = append(supported, account)
 		case 1:
@@ -2205,7 +2231,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 
 	// 验证账号是否可用于当前请求
 	// Verify account is usable for current request
-	if !isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, false, requiredCapability, requiredImageCapability) {
+	if !isOpenAIAccountEligibleBeforeCompactRecheck(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability) {
 		return nil
 	}
 	if !parentHealthyForShadow(account, s.parentAccountLookup(ctx)) {
@@ -2255,15 +2281,18 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 		if _, excluded := excludedIDs[acc.ID]; excluded {
 			continue
 		}
+		if requireCompact && openAICompactSupportTierForRequest(acc, requestedModel) == 0 {
+			compactBlocked = true
+		}
 
-		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability)
+		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, requireCompact, requiredCapability, requiredImageCapability)
 		if fresh == nil {
-			if openAIAccountRuntimeGuardRejectsOAuthCandidate(acc, requestedModel, requiredImageCapability) {
+			if openAIAccountRuntimeGuardRejectsOAuthCandidateForRequest(acc, requestedModel, requireCompact, requiredImageCapability) {
 				oauthCapabilityFiltered = true
 			}
 			continue
 		}
-		fresh = s.recheckSelectedOpenAIAccountFromDB(ctx, fresh, requestedModel, false, requiredCapability, requiredImageCapability)
+		fresh = s.recheckSelectedOpenAIAccountFromDB(ctx, fresh, requestedModel, requireCompact, requiredCapability, requiredImageCapability)
 		if fresh == nil {
 			continue
 		}
@@ -2272,7 +2301,7 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 		}
 		compactTier := 0
 		if requireCompact {
-			compactTier = openAICompactSupportTier(fresh)
+			compactTier = openAICompactSupportTierForRequest(fresh, requestedModel)
 			if compactTier == 0 {
 				compactBlocked = true
 				continue
@@ -2413,7 +2442,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 				if clearSticky {
 					_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 				}
-				if !clearSticky && isOpenAIAccountEligibleForRequest(ctx, account, requestedModel, false, requiredCapability, requiredImageCapability) {
+				if !clearSticky && isOpenAIAccountEligibleBeforeCompactRecheck(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability) {
 					account = s.recheckSelectedOpenAIAccountFromDB(ctx, account, requestedModel, requireCompact, requiredCapability, requiredImageCapability)
 					if account == nil {
 						_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
@@ -2467,6 +2496,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		return a
 	}
 	baseCandidateCount := 0
+	compactBlocked := false
 	oauthCapabilityFiltered := false
 	candidates := make([]*Account, 0, len(accounts))
 	for i := range accounts {
@@ -2474,11 +2504,14 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		if isExcluded(acc.ID) {
 			continue
 		}
+		if requireCompact && openAICompactSupportTierForRequest(acc, requestedModel) == 0 {
+			compactBlocked = true
+		}
 		// Scheduler snapshots can be temporarily stale (bucket rebuild is throttled);
 		// re-check schedulability here so recently rate-limited/overloaded accounts
 		// are not selected again before the bucket is rebuilt.
-		if !isOpenAIAccountEligibleForRequest(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability) {
-			if openAIAccountRuntimeGuardRejectsOAuthCandidate(acc, requestedModel, requiredImageCapability) {
+		if !isOpenAIAccountEligibleBeforeCompactRecheck(ctx, acc, requestedModel, requireCompact, requiredCapability, requiredImageCapability) {
+			if openAIAccountRuntimeGuardRejectsOAuthCandidateForRequest(acc, requestedModel, requireCompact, requiredImageCapability) {
 				oauthCapabilityFiltered = true
 			}
 			continue
@@ -2497,7 +2530,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	}
 
 	if len(candidates) == 0 {
-		return nil, noAvailableOpenAISelectionErrorForRequest(requestedModel, requiredImageCapability, false, oauthCapabilityFiltered)
+		return nil, noAvailableOpenAISelectionErrorForRequest(requestedModel, requiredImageCapability, compactBlocked, oauthCapabilityFiltered)
 	}
 
 	accountLoads := make([]AccountWithConcurrency, 0, len(candidates))
@@ -2577,7 +2610,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		if requireCompact {
 			appendTier := func(out []accountWithLoad, tier int) []accountWithLoad {
 				for _, item := range available {
-					if openAICompactSupportTier(item.account) == tier {
+					if openAICompactSupportTierForRequest(item.account, requestedModel) == tier {
 						out = append(out, item)
 					}
 				}
@@ -2593,7 +2626,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		}
 
 		for _, item := range selectionOrder {
-			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, item.account, requestedModel, false, requiredCapability, requiredImageCapability)
+			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, item.account, requestedModel, requireCompact, requiredCapability, requiredImageCapability)
 			if fresh == nil {
 				continue
 			}
@@ -2624,10 +2657,10 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		ordered := append([]*Account(nil), candidates...)
 		sortAccountsByPriorityAndLastUsed(ordered, false)
 		if requireCompact {
-			ordered = prioritizeOpenAICompactAccounts(ordered)
+			ordered = prioritizeOpenAICompactAccounts(ordered, requestedModel)
 		}
 		for _, acc := range ordered {
-			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability)
+			fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, requireCompact, requiredCapability, requiredImageCapability)
 			if fresh == nil {
 				continue
 			}
@@ -2669,10 +2702,10 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 	// ============ Layer 3: Fallback wait ============
 	sortAccountsByPriorityAndLastUsed(candidates, false)
 	if requireCompact {
-		candidates = prioritizeOpenAICompactAccounts(candidates)
+		candidates = prioritizeOpenAICompactAccounts(candidates, requestedModel)
 	}
 	for _, acc := range candidates {
-		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, false, requiredCapability, requiredImageCapability)
+		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel, requireCompact, requiredCapability, requiredImageCapability)
 		if fresh == nil {
 			continue
 		}
@@ -2691,7 +2724,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		})
 	}
 
-	if requireCompact && baseCandidateCount > 0 {
+	if requireCompact && (baseCandidateCount > 0 || compactBlocked) {
 		return nil, ErrNoAvailableCompactAccounts
 	}
 	return nil, noAvailableOpenAISelectionErrorForRequest(requestedModel, requiredImageCapability, false, oauthCapabilityFiltered)
@@ -2746,7 +2779,7 @@ func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccount(ctx context.
 		fresh = current
 	}
 
-	if !isOpenAIAccountEligibleForRequest(ctx, fresh, requestedModel, requireCompact, requiredCapability, requiredImageCapability) {
+	if !isOpenAIAccountEligibleBeforeCompactRecheck(ctx, fresh, requestedModel, requireCompact, requiredCapability, requiredImageCapability) {
 		return nil
 	}
 	if !parentHealthyForShadow(fresh, s.parentAccountLookup(ctx)) {
@@ -4025,6 +4058,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					Platform:           account.Platform,
 					AccountID:          account.ID,
 					AccountName:        account.Name,
+					UpstreamModel:      upstreamModel,
 					UpstreamStatusCode: resp.StatusCode,
 					UpstreamRequestID:  resp.Header.Get("x-request-id"),
 					Kind:               "failover",

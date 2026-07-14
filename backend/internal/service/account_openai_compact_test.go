@@ -356,6 +356,60 @@ func TestAccountResolveCompactMappedModel(t *testing.T) {
 	}
 }
 
+func TestAccountOpenAICompactSupportKnownForModel(t *testing.T) {
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Credentials: map[string]any{
+			"compact_model_mapping": map[string]any{
+				"gpt-5.6-sol":  "gpt-5.4",
+				"gpt-5.6-luna": "gpt-5.5",
+			},
+		},
+		Extra: map[string]any{
+			"openai_compact_supported": true,
+			"openai_compact_model_support": map[string]any{
+				"gpt-5.4": map[string]any{"supported": true},
+				"gpt-5.5": map[string]any{"supported": false},
+			},
+		},
+	}
+
+	supported, known := account.OpenAICompactSupportKnownForModel("gpt-5.6-sol")
+	if !supported || !known {
+		t.Fatalf("gpt-5.6-sol support = (%v, %v), want (true, true)", supported, known)
+	}
+	supported, known = account.OpenAICompactSupportKnownForModel("gpt-5.6-luna")
+	if supported || !known {
+		t.Fatalf("gpt-5.6-luna support = (%v, %v), want (false, true)", supported, known)
+	}
+	supported, known = account.OpenAICompactSupportKnownForModel("gpt-5.6-terra")
+	if supported || known {
+		t.Fatalf("unprobed scoped support = (%v, %v), want (false, false)", supported, known)
+	}
+}
+
+func TestAccountOpenAICompactSupportKnownForModelLegacyAndOverrides(t *testing.T) {
+	legacy := &Account{Platform: PlatformOpenAI, Extra: map[string]any{"openai_compact_supported": true}}
+	supported, known := legacy.OpenAICompactSupportKnownForModel("gpt-5.4")
+	if !supported || !known {
+		t.Fatalf("legacy support = (%v, %v), want (true, true)", supported, known)
+	}
+
+	forceOff := &Account{
+		Platform: PlatformOpenAI,
+		Extra: map[string]any{
+			"openai_compact_mode": OpenAICompactModeForceOff,
+			"openai_compact_model_support": map[string]any{
+				"gpt-5.4": map[string]any{"supported": true},
+			},
+		},
+	}
+	supported, known = forceOff.OpenAICompactSupportKnownForModel("gpt-5.4")
+	if supported || !known {
+		t.Fatalf("force-off support = (%v, %v), want (false, true)", supported, known)
+	}
+}
+
 func equalStringMap(left, right map[string]string) bool {
 	if len(left) != len(right) {
 		return false

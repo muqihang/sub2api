@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -152,6 +153,27 @@ func TestLogOpenAIRemoteCompactOutcome_Failed(t *testing.T) {
 	require.True(t, logSink.ContainsFieldValue("compact_outcome", "failed"))
 	require.True(t, logSink.ContainsFieldValue("status_code", "502"))
 	require.True(t, logSink.ContainsFieldValue("path", "/responses/compact"))
+}
+
+func TestLogOpenAIRemoteCompactOutcome_InBandFailureUsesIntendedStatusAndUpstreamModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logSink, restore := captureHandlerStructuredLog(t)
+	defer restore()
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/responses/compact", nil)
+	c.Status(http.StatusOK)
+	setOpsEndpointContext(c, "gpt-5.4", int16(1))
+	service.MarkOpsStreamError(c, "upstream_error", "upstream failed", http.StatusBadGateway)
+
+	h := &OpenAIGatewayHandler{}
+	h.logOpenAIRemoteCompactOutcome(c, time.Now())
+
+	require.True(t, logSink.ContainsMessageAtLevel("codex.remote_compact.failed", "warn"))
+	require.True(t, logSink.ContainsFieldValue("status_code", "502"))
+	require.True(t, logSink.ContainsFieldValue("wire_status_code", "200"))
+	require.True(t, logSink.ContainsFieldValue("upstream_model", "gpt-5.4"))
 }
 
 func TestLogOpenAIRemoteCompactOutcome_NonCompactSkips(t *testing.T) {

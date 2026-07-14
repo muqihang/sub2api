@@ -833,6 +833,44 @@ func (a *Account) OpenAICompactSupportKnown() (supported bool, known bool) {
 	return supported, true
 }
 
+// OpenAICompactSupportKnownForModel returns the capability state for the
+// compact upstream model that this account would actually receive. Once
+// model-scoped probe data exists, an unprobed target remains unknown instead
+// of inheriting a result from an unrelated model.
+func (a *Account) OpenAICompactSupportKnownForModel(requestedModel string) (supported bool, known bool) {
+	if a == nil || !a.IsOpenAI() {
+		return false, false
+	}
+	switch a.GetOpenAICompactMode() {
+	case OpenAICompactModeForceOn:
+		return true, true
+	case OpenAICompactModeForceOff:
+		return false, true
+	}
+
+	rawSupport, exists := a.Extra["openai_compact_model_support"]
+	modelSupport, valid := rawSupport.(map[string]any)
+	if !exists || !valid || len(modelSupport) == 0 {
+		return a.OpenAICompactSupportKnown()
+	}
+
+	upstreamModel := resolveOpenAIAccountUpstreamModelForRequest(a, requestedModel, true)
+	entryRaw, exists := modelSupport[normalizeOpenAICompactSupportModel(upstreamModel)]
+	if !exists {
+		return false, false
+	}
+	entry, valid := entryRaw.(map[string]any)
+	if !valid {
+		return false, false
+	}
+	supported, known = entry["supported"].(bool)
+	return supported, known
+}
+
+func normalizeOpenAICompactSupportModel(model string) string {
+	return strings.ToLower(strings.TrimSpace(model))
+}
+
 // AllowsOpenAICompact reports whether the account may be considered for compact
 // requests. Unknown capability remains allowed to avoid breaking older accounts
 // before an explicit probe has been run.

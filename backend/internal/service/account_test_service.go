@@ -574,13 +574,14 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	if testModelID == "" {
 		testModelID = openai.DefaultTestModel
 	}
+	requestedTestModelID := testModelID
 
 	// Align test routing with gateway behavior: OpenAI accounts apply normal
 	// account model mapping, and compact mode applies compact-only mapping on top.
 	testModelID = account.GetMappedModel(testModelID)
 	if mode == AccountTestModeCompact {
 		testModelID = resolveOpenAICompactForwardModel(account, testModelID)
-		return s.testOpenAICompactConnection(c, account, testModelID)
+		return s.testOpenAICompactConnection(c, account, requestedTestModelID, testModelID)
 	}
 
 	// Route to image generation test if an image model is selected
@@ -779,7 +780,7 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 
 // testOpenAICompactConnection probes /responses/compact and persists the
 // resulting capability state on the account.
-func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account *Account, testModelID string) error {
+func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account *Account, requestedModelID, upstreamModelID string) error {
 	ctx := c.Request.Context()
 
 	authToken := ""
@@ -820,8 +821,8 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
-	payloadBytes, _ := json.Marshal(createOpenAICompactProbePayload(testModelID))
-	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
+	payloadBytes, _ := json.Marshal(createOpenAICompactProbePayload(upstreamModelID))
+	s.sendEvent(c, TestEvent{Type: "test_start", Model: upstreamModelID})
 
 	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(payloadBytes))
 	if err != nil {
@@ -849,7 +850,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	resp, err := s.sendOpenAIAccountTestHTTPRequest(ctx, c, req, account)
 	if err != nil {
 		if s.accountRepo != nil {
-			updates := buildOpenAICompactProbeExtraUpdates(nil, nil, err, time.Now())
+			updates := buildOpenAICompactProbeExtraUpdatesForModel(account.Extra, requestedModelID, upstreamModelID, nil, nil, err, time.Now())
 			_ = s.accountRepo.UpdateExtra(ctx, account.ID, updates)
 			mergeAccountExtra(account, updates)
 		}
@@ -860,7 +861,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 
 	if s.accountRepo != nil {
-		updates := buildOpenAICompactProbeExtraUpdates(resp, body, nil, time.Now())
+		updates := buildOpenAICompactProbeExtraUpdatesForModel(account.Extra, requestedModelID, upstreamModelID, resp, body, nil, time.Now())
 		if codexUpdates, err := extractOpenAICodexProbeUpdates(resp); err == nil && len(codexUpdates) > 0 {
 			updates = mergeExtraUpdates(updates, codexUpdates)
 		}

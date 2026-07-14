@@ -4699,13 +4699,13 @@ func (s *OpenAIGatewayService) selectAccountByPreviousResponseIDForCapability(
 	if !account.SupportsOpenAIEndpointCapability(requiredCapability) {
 		return nil, nil
 	}
-	if !openAIAccountSupportsRuntimeGuardCapability(account, requestedModel, requiredImageCapability) {
+	if !openAIAccountSupportsRuntimeGuardCapabilityForRequest(account, requestedModel, requireCompact, requiredImageCapability) {
 		return nil, nil
 	}
 	if !account.SupportsOpenAIImageCapability(requiredImageCapability) {
 		return nil, nil
 	}
-	if requireCompact && openAICompactSupportTier(account) == 0 {
+	if requireCompact && openAICompactSupportTierForRequest(account, requestedModel) == 0 {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), lookupResponseID)
 		return nil, nil
 	}

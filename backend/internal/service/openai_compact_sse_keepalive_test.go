@@ -70,11 +70,13 @@ func TestOpenAICompactSSEKeepalive_CommitsHeadersAndComments(t *testing.T) {
 	require.Contains(t, recorder.Body.String(), ": keepalive\n\n")
 }
 
-func TestOpenAICompactSSEKeepalive_FirstBeatArrivesBeforeFullInterval(t *testing.T) {
+func TestOpenAICompactSSEKeepalive_FirstBeatWaitsForFastFailureWindow(t *testing.T) {
 	ctx, recorder := newCompactKeepaliveTestContext(true)
-	interval := 400 * time.Millisecond
+	interval := 100 * time.Millisecond
 	stop := StartOpenAICompactSSEKeepalive(ctx, interval)
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(150 * time.Millisecond)
+	require.Empty(t, recorder.Body.String())
+	time.Sleep(100 * time.Millisecond)
 	stop()
 
 	require.Contains(t, recorder.Body.String(), ": keepalive\n\n")

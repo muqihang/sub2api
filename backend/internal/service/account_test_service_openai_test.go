@@ -427,7 +427,7 @@ func TestAccountTestService_OpenAICompactConnectionUsesSharedTLSAwareSender(t *t
 		},
 	}
 
-	err := svc.testOpenAICompactConnection(ctx, account, "gpt-5.4")
+	err := svc.testOpenAICompactConnection(ctx, account, "gpt-5.4", "gpt-5.4")
 
 	require.NoError(t, err)
 	requireOpenAIAccountTestUsedSharedTLSSender(t, upstream)
@@ -498,7 +498,7 @@ func TestAccountTestService_OpenAICompactRejectsFailClosedEgressBeforeHTTPUpstre
 	}
 	ctx, recorder := newTestContext()
 
-	err := svc.testOpenAICompactConnection(ctx, account, "gpt-5.4")
+	err := svc.testOpenAICompactConnection(ctx, account, "gpt-5.4", "gpt-5.4")
 
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "openai egress policy rejected request")

@@ -120,3 +120,41 @@ func TestBuildOpenAICompactProbeExtraUpdates_EmptyFailureBodyFallsBackToHTTPStat
 		t.Fatalf("openai_compact_last_error = %v, want HTTP 503", got)
 	}
 }
+
+func TestBuildOpenAICompactProbeExtraUpdatesForModel_MergesScopedResults(t *testing.T) {
+	now := time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)
+	existing := map[string]any{
+		"openai_compact_model_support": map[string]any{
+			"gpt-5.5": map[string]any{"supported": false, "status": http.StatusNotFound},
+		},
+	}
+
+	updates := buildOpenAICompactProbeExtraUpdatesForModel(existing, "gpt-5.6-sol", "gpt-5.4", &http.Response{StatusCode: http.StatusOK}, []byte(`{"id":"cmp"}`), nil, now)
+	scoped, ok := updates["openai_compact_model_support"].(map[string]any)
+	if !ok {
+		t.Fatalf("openai_compact_model_support = %#v, want map", updates["openai_compact_model_support"])
+	}
+	if _, exists := scoped["gpt-5.5"]; !exists {
+		t.Fatal("existing gpt-5.5 result was not preserved")
+	}
+	entry, ok := scoped["gpt-5.4"].(map[string]any)
+	if !ok {
+		t.Fatalf("gpt-5.4 entry = %#v, want map", scoped["gpt-5.4"])
+	}
+	if entry["supported"] != true || entry["requested_model"] != "gpt-5.6-sol" || entry["upstream_model"] != "gpt-5.4" {
+		t.Fatalf("gpt-5.4 entry = %#v", entry)
+	}
+	if updates["openai_compact_last_requested_model"] != "gpt-5.6-sol" || updates["openai_compact_last_upstream_model"] != "gpt-5.4" {
+		t.Fatalf("last model fields = (%v, %v)", updates["openai_compact_last_requested_model"], updates["openai_compact_last_upstream_model"])
+	}
+}
+
+func TestBuildOpenAICompactProbeExtraUpdatesForModel_TransientFailureRemainsUnknown(t *testing.T) {
+	now := time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)
+	updates := buildOpenAICompactProbeExtraUpdatesForModel(nil, "gpt-5.6-sol", "gpt-5.4", &http.Response{StatusCode: http.StatusBadGateway}, []byte(`Upstream request failed`), nil, now)
+	scoped := updates["openai_compact_model_support"].(map[string]any)
+	entry := scoped["gpt-5.4"].(map[string]any)
+	if _, exists := entry["supported"]; exists {
+		t.Fatalf("transient failure must not persist supported=false: %#v", entry)
+	}
+}

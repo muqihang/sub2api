@@ -699,7 +699,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAIAccountLoadPlan(
 	if req.RequireCompact {
 		candidates = make([]openAIAccountCandidateScore, 0, len(allCandidates))
 		for _, candidate := range allCandidates {
-			if openAICompactSupportTier(candidate.account) == 0 {
+			if openAICompactSupportTierForRequest(candidate.account, req.RequestedModel) == 0 {
 				staleSnapshotCompactRetry = append(staleSnapshotCompactRetry, candidate)
 				continue
 			}
@@ -846,7 +846,7 @@ func (s *defaultOpenAIAccountScheduler) buildOpenAISelectionOrder(
 		supported := make([]openAIAccountCandidateScore, 0, len(plan.candidates))
 		unknown := make([]openAIAccountCandidateScore, 0, len(plan.candidates))
 		for _, candidate := range plan.candidates {
-			switch openAICompactSupportTier(candidate.account) {
+			switch openAICompactSupportTierForRequest(candidate.account, req.RequestedModel) {
 			case 2:
 				supported = append(supported, candidate)
 			case 1:
@@ -911,7 +911,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
-		if req.RequireCompact && openAICompactSupportTier(fresh) == 0 {
+		if req.RequireCompact && openAICompactSupportTierForRequest(fresh, req.RequestedModel) == 0 {
 			compactBlocked = true
 			continue
 		}
@@ -935,7 +935,7 @@ func (s *defaultOpenAIAccountScheduler) tryAcquireOpenAISelectionOrder(
 
 func openAISelectionOrderHasOAuthRuntimeGuardReject(selectionOrder []openAIAccountCandidateScore, req OpenAIAccountScheduleRequest) bool {
 	for _, candidate := range selectionOrder {
-		if openAIAccountRuntimeGuardRejectsOAuthCandidate(candidate.account, req.RequestedModel, req.RequiredImageCapability) {
+		if openAIAccountRuntimeGuardRejectsOAuthCandidateForRequest(candidate.account, req.RequestedModel, req.RequireCompact, req.RequiredImageCapability) {
 			return true
 		}
 	}
@@ -989,7 +989,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			continue
 		}
 		if !s.isAccountRequestCompatible(ctx, account, req) {
-			if openAIAccountRuntimeGuardRejectsOAuthCandidate(account, req.RequestedModel, req.RequiredImageCapability) {
+			if openAIAccountRuntimeGuardRejectsOAuthCandidateForRequest(account, req.RequestedModel, req.RequireCompact, req.RequiredImageCapability) {
 				oauthCapabilityFiltered = true
 			}
 			continue
@@ -1068,7 +1068,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !s.isAccountRequestCompatible(ctx, fresh, req) {
 			continue
 		}
-		if req.RequireCompact && openAICompactSupportTier(fresh) == 0 {
+		if req.RequireCompact && openAICompactSupportTierForRequest(fresh, req.RequestedModel) == 0 {
 			compactBlocked = true
 			continue
 		}
@@ -1170,7 +1170,7 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.C
 	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
 		return false
 	}
-	if !openAIAccountSupportsRuntimeGuardCapability(account, req.RequestedModel, req.RequiredImageCapability) {
+	if !openAIAccountSupportsRuntimeGuardCapabilityForRequest(account, req.RequestedModel, req.RequireCompact, req.RequiredImageCapability) {
 		return false
 	}
 	if req.GroupID != nil && s != nil && s.service != nil &&
@@ -1178,7 +1178,7 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.C
 		s.service.isUpstreamModelRestrictedByChannel(ctx, *req.GroupID, account, req.RequestedModel, req.RequireCompact) {
 		return false
 	}
-	return accountSupportsOpenAIRequestCapabilities(account, req.RequestedModel, req.RequiredCapability, req.RequiredImageCapability)
+	return accountSupportsOpenAIRequestCapabilities(account, req.RequestedModel, req.RequiredCapability, req.RequiredImageCapability, req.RequireCompact)
 }
 
 func (s *defaultOpenAIAccountScheduler) ReportResult(accountID int64, success bool, firstTokenMs *int) {
@@ -1364,7 +1364,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 				if selection == nil || selection.Account == nil {
 					return selection, decision, nil
 				}
-				if accountSupportsOpenAIRequestCapabilities(selection.Account, requestedModel, requiredCapability, requiredImageCapability) {
+				if accountSupportsOpenAIRequestCapabilities(selection.Account, requestedModel, requiredCapability, requiredImageCapability, requireCompact) {
 					return selection, decision, nil
 				}
 				if selection.ReleaseFunc != nil {
@@ -1390,7 +1390,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 				return selection, decision, nil
 			}
 			if s.isOpenAIAccountTransportCompatible(selection.Account, requiredTransport) &&
-				accountSupportsOpenAIRequestCapabilities(selection.Account, requestedModel, requiredCapability, requiredImageCapability) {
+				accountSupportsOpenAIRequestCapabilities(selection.Account, requestedModel, requiredCapability, requiredImageCapability, requireCompact) {
 				return selection, decision, nil
 			}
 			if selection.ReleaseFunc != nil {
@@ -1436,16 +1436,16 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 }
 
 func accountSupportsOpenAICapabilities(account *Account, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability) bool {
-	return accountSupportsOpenAIRequestCapabilities(account, "", requiredCapability, requiredImageCapability)
+	return accountSupportsOpenAIRequestCapabilities(account, "", requiredCapability, requiredImageCapability, false)
 }
 
-func accountSupportsOpenAIRequestCapabilities(account *Account, requestedModel string, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability) bool {
+func accountSupportsOpenAIRequestCapabilities(account *Account, requestedModel string, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, requireCompact bool) bool {
 	if account == nil {
 		return false
 	}
 	return account.SupportsOpenAIEndpointCapability(requiredCapability) &&
 		account.SupportsOpenAIImageCapability(requiredImageCapability) &&
-		openAIAccountSupportsRuntimeGuardCapability(account, requestedModel, requiredImageCapability)
+		openAIAccountSupportsRuntimeGuardCapabilityForRequest(account, requestedModel, requireCompact, requiredImageCapability)
 }
 
 func cloneExcludedAccountIDs(excludedIDs map[int64]struct{}) map[int64]struct{} {

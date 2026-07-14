@@ -98,6 +98,39 @@ func buildOpenAICompactProbeExtraUpdates(resp *http.Response, body []byte, probe
 	return updates
 }
 
+func buildOpenAICompactProbeExtraUpdatesForModel(existingExtra map[string]any, requestedModel, upstreamModel string, resp *http.Response, body []byte, probeErr error, now time.Time) map[string]any {
+	updates := buildOpenAICompactProbeExtraUpdates(resp, body, probeErr, now)
+	requestedModel = strings.TrimSpace(requestedModel)
+	upstreamModel = strings.TrimSpace(upstreamModel)
+	updates["openai_compact_last_requested_model"] = requestedModel
+	updates["openai_compact_last_upstream_model"] = upstreamModel
+
+	scoped := make(map[string]any)
+	if current, ok := existingExtra["openai_compact_model_support"].(map[string]any); ok {
+		for key, value := range current {
+			scoped[key] = value
+		}
+	}
+	key := normalizeOpenAICompactSupportModel(upstreamModel)
+	if key == "" {
+		return updates
+	}
+
+	entry := map[string]any{
+		"requested_model": requestedModel,
+		"upstream_model":  upstreamModel,
+		"checked_at":      now.Format(time.RFC3339),
+		"status":          updates["openai_compact_last_status"],
+		"error":           updates["openai_compact_last_error"],
+	}
+	if supported, known := updates["openai_compact_supported"].(bool); known {
+		entry["supported"] = supported
+	}
+	scoped[key] = entry
+	updates["openai_compact_model_support"] = scoped
+	return updates
+}
+
 func mergeExtraUpdates(base map[string]any, more map[string]any) map[string]any {
 	if len(base) == 0 && len(more) == 0 {
 		return nil

@@ -144,13 +144,17 @@ func newOpenAIUnsupportedOAuthCapabilitySelectionErrorForUpstream(account *Accou
 }
 
 func openAIAccountRuntimeGuardRejectsOAuthCandidate(account *Account, requestedModel string, imageCapability OpenAIImagesCapability) bool {
+	return openAIAccountRuntimeGuardRejectsOAuthCandidateForRequest(account, requestedModel, false, imageCapability)
+}
+
+func openAIAccountRuntimeGuardRejectsOAuthCandidateForRequest(account *Account, requestedModel string, requireCompact bool, imageCapability OpenAIImagesCapability) bool {
 	if account == nil || !account.IsOpenAI() || !account.IsOpenAIOAuth() {
 		return false
 	}
 	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
 		return false
 	}
-	return !openAIAccountSupportsRuntimeGuardCapability(account, requestedModel, imageCapability)
+	return !openAIAccountSupportsRuntimeGuardCapabilityForRequest(account, requestedModel, requireCompact, imageCapability)
 }
 
 func isUnsupportedOpenAIOAuthRuntimeGuardModel(requestedModel string, imageCapability OpenAIImagesCapability) bool {
@@ -179,6 +183,26 @@ func openAIAccountSupportsRuntimeGuardCapability(account *Account, requestedMode
 		openAIAccountRuntimeGuardResolvedUpstreamModel(account, requestedModel),
 		imageCapability,
 	)
+}
+
+// openAIAccountSupportsRuntimeGuardCapabilityForRequest honours an explicit
+// compact-only mapping when evaluating a compact request. The mapping is an
+// operator declaration that the source alias is served by the mapped compact
+// model, so OAuth capability checks must evaluate that target rather than
+// rejecting the source alias before forwarding.
+func openAIAccountSupportsRuntimeGuardCapabilityForRequest(account *Account, requestedModel string, requireCompact bool, imageCapability OpenAIImagesCapability) bool {
+	if !requireCompact || account == nil || !account.IsOpenAIOAuth() {
+		return openAIAccountSupportsRuntimeGuardCapability(account, requestedModel, imageCapability)
+	}
+
+	baseModel := resolveOpenAIForwardModel(account, requestedModel, "")
+	mappedModel, matched := account.ResolveCompactMappedModel(baseModel)
+	if !matched || strings.TrimSpace(mappedModel) == "" {
+		return openAIAccountSupportsRuntimeGuardCapability(account, requestedModel, imageCapability)
+	}
+
+	return openAIOAuthAccountSupportsImageCapability(account, imageCapability) &&
+		openAIOAuthAccountSupportsRequestedModel(account, mappedModel, imageCapability)
 }
 
 func openAIAccountSupportsRuntimeGuardUpstreamCapability(account *Account, requestedModel string, upstreamModel string, imageCapability OpenAIImagesCapability) bool {

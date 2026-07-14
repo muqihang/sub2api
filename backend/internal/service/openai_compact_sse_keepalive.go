@@ -68,12 +68,12 @@ func openAICompactSSEKeepaliveFirstBeatDelay(interval time.Duration) time.Durati
 	if interval <= 0 {
 		return 0
 	}
-	delay := interval / 2
-	if delay <= 0 {
-		return interval
-	}
-	if delay > 5*time.Second {
-		return 5 * time.Second
+	// Give routing and fast upstream failures a chance to retain their real HTTP
+	// status before the first SSE comment commits a 200 response. Subsequent beats
+	// still use the configured interval for long-running compact requests.
+	delay := 2 * interval
+	if delay > 20*time.Second {
+		return 20 * time.Second
 	}
 	return delay
 }

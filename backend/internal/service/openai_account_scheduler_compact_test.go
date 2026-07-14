@@ -46,7 +46,6 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactPrefersSupported
 		cfg:                cfg,
 		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
 	}
-
 	selection, _, err := svc.SelectAccountWithScheduler(
 		ctx,
 		&groupID,
@@ -153,7 +152,6 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactFallsBackToUnkno
 		cfg:                cfg,
 		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
 	}
-
 	selection, _, err := svc.SelectAccountWithScheduler(
 		ctx,
 		&groupID,
@@ -168,6 +166,212 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactFallsBackToUnkno
 	require.NotNil(t, selection)
 	require.NotNil(t, selection.Account)
 	require.Equal(t, int64(71021), selection.Account.ID, "unknown account should be picked when no supported account available")
+}
+
+// A compact-only mapping is an explicit declaration that the OAuth account
+// should serve the requested alias through the mapped compact model.
+func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactMappingAllowsOAuthAlias(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(91004)
+	accounts := []Account{
+		{
+			ID:          71030,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{
+				"compact_model_mapping": map[string]any{"gpt-5.6-sol": "gpt-5.4"},
+			},
+			Extra: map[string]any{
+				"openai_compact_mode":              OpenAICompactModeForceOn,
+				"openai_gateway_canonical_version": "0.104.0",
+			},
+		},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+	selection, _, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"",
+		"",
+		"gpt-5.6-sol",
+		nil,
+		OpenAIUpstreamTransportAny,
+		true,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(71030), selection.Account.ID)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactMappingRejectsUnsupportedOAuthTarget(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	groupID := int64(91005)
+	account := Account{
+		ID: 71031, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive,
+		Schedulable: true, Concurrency: 1, GroupIDs: []int64{groupID},
+		Credentials: map[string]any{"compact_model_mapping": map[string]any{"gpt-5.6-sol": "unsupported-compact-model"}},
+		Extra:       map[string]any{"openai_compact_mode": OpenAICompactModeForceOn},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{account}},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                &config.Config{},
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithScheduler(context.Background(), &groupID, "", "", "gpt-5.6-sol", nil, OpenAIUpstreamTransportAny, true)
+	require.Error(t, err)
+	require.Nil(t, selection)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactMappingDoesNotAffectNormalTraffic(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	groupID := int64(91006)
+	account := Account{
+		ID: 71032, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive,
+		Schedulable: true, Concurrency: 1, GroupIDs: []int64{groupID},
+		Credentials: map[string]any{"compact_model_mapping": map[string]any{"gpt-5.6-sol": "gpt-5.4"}},
+		Extra:       map[string]any{"openai_compact_mode": OpenAICompactModeForceOn},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{account}},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                &config.Config{},
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithScheduler(context.Background(), &groupID, "", "", "gpt-5.6-sol", nil, OpenAIUpstreamTransportAny, false)
+	require.Error(t, err)
+	require.Nil(t, selection)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactUsesModelScopedSupport(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	groupID := int64(91007)
+	accounts := []Account{
+		{
+			ID: 71040, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive,
+			Schedulable: true, Concurrency: 1, Priority: 0,
+			Extra: map[string]any{
+				"openai_compact_supported": true,
+				"openai_compact_model_support": map[string]any{
+					"gpt-5.4": map[string]any{"supported": false},
+				},
+			},
+		},
+		{
+			ID: 71041, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive,
+			Schedulable: true, Concurrency: 1, Priority: 0,
+			Extra: map[string]any{
+				"openai_compact_model_support": map[string]any{
+					"gpt-5.4": map[string]any{"supported": true},
+				},
+			},
+		},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                &config.Config{},
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithScheduler(context.Background(), &groupID, "", "", "gpt-5.4", nil, OpenAIUpstreamTransportAny, true)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, int64(71041), selection.Account.ID)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactFailoverReachesMappedOAuth(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+	groupID := int64(91008)
+	compactMapping := map[string]any{"gpt-5.6-sol": "gpt-5.4"}
+	accounts := []Account{
+		{
+			ID: 71050, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive,
+			Schedulable: true, Concurrency: 1, Priority: 0,
+			Credentials: map[string]any{"compact_model_mapping": compactMapping},
+			Extra:       map[string]any{"openai_compact_mode": OpenAICompactModeForceOn},
+		},
+		{
+			ID: 71051, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive,
+			Schedulable: true, Concurrency: 1, Priority: 1,
+			Credentials: map[string]any{"compact_model_mapping": compactMapping},
+			Extra:       map[string]any{"openai_compact_mode": OpenAICompactModeForceOn, "openai_gateway_canonical_version": "0.104.0"},
+		},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                &config.Config{},
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	first, _, err := svc.SelectAccountWithScheduler(context.Background(), &groupID, "", "", "gpt-5.6-sol", nil, OpenAIUpstreamTransportAny, true)
+	require.NoError(t, err)
+	require.Equal(t, int64(71050), first.Account.ID)
+	first.ReleaseFunc()
+
+	second, _, err := svc.SelectAccountWithScheduler(context.Background(), &groupID, "", "", "gpt-5.6-sol", map[int64]struct{}{71050: {}}, OpenAIUpstreamTransportAny, true)
+	require.NoError(t, err)
+	require.Equal(t, int64(71051), second.Account.ID)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactRechecksStaleScopedCapability(t *testing.T) {
+	groupID := int64(91009)
+	stale := &Account{
+		ID: 71060, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive,
+		Schedulable: true, Concurrency: 1, GroupIDs: []int64{groupID},
+		Extra: map[string]any{"openai_compact_model_support": map[string]any{
+			"gpt-5.4": map[string]any{"supported": false},
+		}},
+	}
+	fresh := *stale
+	fresh.Extra = map[string]any{"openai_compact_model_support": map[string]any{
+		"gpt-5.4": map[string]any{"supported": true},
+	}}
+	for _, tt := range []struct {
+		name              string
+		advancedScheduler string
+	}{
+		{name: "legacy load-aware scheduler", advancedScheduler: "false"},
+		{name: "advanced scheduler", advancedScheduler: "true"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			snapshotCache := &openAISnapshotCacheStub{
+				snapshotAccounts: []*Account{stale},
+				accountsByID:     map[int64]*Account{stale.ID: stale},
+			}
+			svc := &OpenAIGatewayService{
+				accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{fresh}},
+				cache:              &schedulerTestGatewayCache{},
+				cfg:                &config.Config{},
+				rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService(tt.advancedScheduler),
+				schedulerSnapshot:  &SchedulerSnapshotService{cache: snapshotCache},
+				concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+			}
+
+			selection, _, err := svc.SelectAccountWithScheduler(context.Background(), &groupID, "", "", "gpt-5.4", nil, OpenAIUpstreamTransportAny, true)
+			require.NoError(t, err)
+			require.NotNil(t, selection)
+			require.Equal(t, stale.ID, selection.Account.ID)
+		})
+	}
 }
 
 // TestOpenAICompactSupportTier 验证 tier 分类逻辑。
