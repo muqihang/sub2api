@@ -71,6 +71,60 @@ func TestOpenAIRuntimeGuardCapabilityFixturesCaptureContextPolicy(t *testing.T) 
 	require.Less(t, near.Expect.Context.EstimatedTokens, near.Expect.Context.LimitTokens)
 }
 
+func TestOpenAIOAuthBuiltInModelSeedSupportsGPT56Family(t *testing.T) {
+	for _, model := range []string{
+		"gpt-5.6",
+		"gpt-5.6-sol",
+		"gpt-5.6-terra",
+		"gpt-5.6-luna",
+	} {
+		t.Run(model, func(t *testing.T) {
+			require.True(t, openAIOAuthBuiltInModelSeedSupports(model))
+		})
+	}
+}
+
+func TestOpenAIRuntimeGuardCapabilitySchedulerSelectsOAuthGPT56Compact(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(30300)
+	account := Account{
+		ID:          3030001,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		GroupIDs:    []int64{groupID},
+		Extra: map[string]any{
+			"openai_compact_mode": OpenAICompactModeForceOn,
+		},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{account}},
+		cache:              &schedulerTestGatewayCache{},
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"",
+		"",
+		"gpt-5.6-sol",
+		nil,
+		OpenAIUpstreamTransportAny,
+		true,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, account.ID, selection.Account.ID)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
 func TestOpenAIRuntimeGuardCapabilitySchedulerBypassesOAuthUnsupportedModelWithoutMapping(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(30301)

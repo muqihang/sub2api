@@ -5754,18 +5754,27 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		errMsg = "Upstream request failed"
 	}
 
-	c.JSON(statusCode, gin.H{
-		"error": gin.H{
-			"type":    errType,
-			"message": errMsg,
-		},
-	})
-	MarkResponseCommitted(c)
+	writeOpenAIResponsesError(c, statusCode, errType, errMsg)
 
 	if upstreamMsg == "" {
 		return nil, fmt.Errorf("upstream error: %d", resp.StatusCode)
 	}
 	return nil, fmt.Errorf("upstream error: %d message=%s", resp.StatusCode, upstreamMsg)
+}
+
+func writeOpenAIResponsesError(c *gin.Context, statusCode int, errType, message string) {
+	if openAICompactClientWantsStream(c) && StopOpenAICompactSSEKeepaliveCommitted(c) {
+		writeOpenAICompactSSEFailureMessage(c, statusCode, errType, message)
+		MarkResponseCommitted(c)
+		return
+	}
+	c.JSON(statusCode, gin.H{
+		"error": gin.H{
+			"type":    errType,
+			"message": message,
+		},
+	})
+	MarkResponseCommitted(c)
 }
 
 // compatErrorWriter is the signature for format-specific error writers used by
