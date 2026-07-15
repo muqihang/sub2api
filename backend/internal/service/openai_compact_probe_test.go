@@ -152,8 +152,14 @@ func TestBuildOpenAICompactProbeExtraUpdatesForModel_MergesScopedResults(t *test
 func TestBuildOpenAICompactProbeExtraUpdatesForModel_TransientFailureRemainsUnknown(t *testing.T) {
 	now := time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)
 	updates := buildOpenAICompactProbeExtraUpdatesForModel(nil, "gpt-5.6-sol", "gpt-5.4", &http.Response{StatusCode: http.StatusBadGateway}, []byte(`Upstream request failed`), nil, now)
-	scoped := updates["openai_compact_model_support"].(map[string]any)
-	entry := scoped["gpt-5.4"].(map[string]any)
+	scoped, ok := updates["openai_compact_model_support"].(map[string]any)
+	if !ok {
+		t.Fatalf("openai_compact_model_support = %#v, want map", updates["openai_compact_model_support"])
+	}
+	entry, ok := scoped["gpt-5.4"].(map[string]any)
+	if !ok {
+		t.Fatalf("gpt-5.4 entry = %#v, want map", scoped["gpt-5.4"])
+	}
 	if _, exists := entry["supported"]; exists {
 		t.Fatalf("transient failure must not persist supported=false: %#v", entry)
 	}
