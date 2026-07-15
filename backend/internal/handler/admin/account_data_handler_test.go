@@ -514,6 +514,7 @@ func TestImportData_OpenAIATOnlyWithUsableLifetimeBindsDefaultGroup(t *testing.T
 	router, adminSvc := setupAccountDataRouterWithOpenAIClient(&accountDataOpenAIClientStub{})
 
 	dataPayload := map[string]any{
+		"skip_default_group_bind": false,
 		"data": map[string]any{
 			"type":    dataType,
 			"version": dataVersion,
