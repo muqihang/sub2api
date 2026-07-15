@@ -306,6 +306,8 @@ process:
   heap_total_range: [40000000, 80000000]
   heap_used_range: [100000000, 200000000]
 shared_pool:
+  gateway_compromise_boundary: protected_gateway
+  upstream_mode: local-capture
   context_attestation_secret_ref: "%s"
   context_attestation_secret: "%s"
   sticky_session_hmac_key: "%s"
