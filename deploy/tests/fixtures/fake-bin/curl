@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -u
+
+printf 'scope=%s kind=%s args=%s\n' \
+  "${HOT_DEPLOY_PROBE_SCOPE:-unknown}" \
+  "${HOT_DEPLOY_PROBE_KIND:-unknown}" \
+  "$*" >>"${FAKE_CURL_LOG:?}"
+
+while IFS= read -r config_line; do
+  case "${config_line}" in
+    'header = "Authorization:'*)
+      printf '%s\n' 'header = "Authorization: [REDACTED]"' >>"${FAKE_CURL_LOG}"
+      ;;
+    *)
+      printf '%s\n' "${config_line}" >>"${FAKE_CURL_LOG}"
+      ;;
+  esac
+done
+
+if [[ "${HOT_DEPLOY_PROBE_SCOPE:-}" == "public" && "${FAKE_SIGNAL_ON_PUBLIC:-0}" == "1" ]]; then
+  kill -TERM "${PPID}"
+  sleep 1
+  exit 143
+fi
+
+if [[ "${HOT_DEPLOY_PROBE_SCOPE:-}" == "public" && "${FAKE_PUBLIC_FAIL:-0}" == "1" ]]; then
+  exit 22
+fi
+
+case "${HOT_DEPLOY_PROBE_KIND:-}" in
+  health)
+    if [[ "${HOT_DEPLOY_PROBE_SCOPE:-}" == "public" && -n "${FAKE_PUBLIC_HEALTH_FAIL_AFTER:-}" ]]; then
+      counter_file="${FAKE_CURL_LOG}.public-health-count"
+      count=0
+      if [[ -f "${counter_file}" ]]; then
+        count="$(cat "${counter_file}")"
+      fi
+      count=$((count + 1))
+      printf '%s\n' "${count}" >"${counter_file}"
+      if (( count > FAKE_PUBLIC_HEALTH_FAIL_AFTER )); then
+        exit 22
+      fi
+    fi
+    [[ "${FAKE_HEALTH_FAIL:-0}" != "1" ]] || exit 22
+    printf '{"status":"ok"}\n'
+    ;;
+  responses)
+    [[ "${FAKE_RESPONSES_FAIL:-0}" != "1" ]] || exit 22
+    if [[ "${FAKE_RESPONSES_INVALID:-0}" == "1" ]]; then
+      printf '{}\n'
+    elif [[ "${FAKE_RESPONSES_STATUS_MISSING:-0}" == "1" ]]; then
+      printf '{"id":"resp_smoke","output":[{"type":"message","content":[{"type":"output_text","text":"OK"}]}]}\n'
+    elif [[ "${FAKE_RESPONSES_EMPTY_OUTPUT:-0}" == "1" ]]; then
+      printf '{"id":"resp_smoke","status":"completed","output":[]}\n'
+    else
+      printf '{"id":"resp_smoke","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"OK"}]}]}\n'
+    fi
+    ;;
+  compact)
+    [[ "${FAKE_COMPACT_FAIL:-0}" != "1" ]] || exit 22
+    if [[ "${FAKE_COMPACT_INVALID:-0}" == "1" ]]; then
+      printf '{"id":"cmp_smoke","output":[]}\n'
+    else
+      printf 'event: response.output_item.done\n'
+      printf 'data: {"type":"response.output_item.done","item":{"id":"cmp_smoke","type":"compaction","encrypted_content":"canary"}}\n\n'
+      printf 'event: response.completed\n'
+      if [[ "${FAKE_COMPACT_INCOMPLETE:-0}" == "1" ]]; then
+        printf 'data: {"type":"response.completed","response":{"id":"resp_compact_smoke","status":"incomplete"}}\n\n'
+      else
+        printf 'data: {"type":"response.completed","response":{"id":"resp_compact_smoke","status":"completed"}}\n\n'
+      fi
+    fi
+    ;;
+  *)
+    printf 'unknown probe kind\n' >&2
+    exit 64
+    ;;
+esac
+
+if [[ "${HOT_DEPLOY_PROBE_SCOPE:-}" == "direct" && \
+      "${HOT_DEPLOY_PROBE_KIND:-}" == "compact" && \
+      "${FAKE_CADDY_DRIFT_AFTER_DIRECT:-0}" == "1" ]]; then
+  cp "${FAKE_CADDY_V7:?}" "${FAKE_CADDY_STATE:?}"
+fi
+if [[ "${HOT_DEPLOY_PROBE_SCOPE:-}" == "direct" && \
+      "${HOT_DEPLOY_PROBE_KIND:-}" == "compact" && \
+      "${FAKE_CADDY_JSON_DRIFT_AFTER_DIRECT:-0}" == "1" ]]; then
+  cp "${FAKE_CADDY_V5_MUTATED:?}" "${FAKE_CADDY_STATE:?}"
+fi
+if [[ "${HOT_DEPLOY_PROBE_SCOPE:-}" == "public" && \
+      "${HOT_DEPLOY_PROBE_KIND:-}" == "compact" && \
+      "${FAKE_CADDY_DRIFT_AFTER_PUBLIC_COMPACT:-0}" == "1" ]]; then
+  cp "${FAKE_CADDY_V7:?}" "${FAKE_CADDY_STATE:?}"
+fi
+if [[ "${HOT_DEPLOY_PROBE_SCOPE:-}" == "public" && \
+      "${HOT_DEPLOY_PROBE_KIND:-}" == "compact" && \
+      "${FAKE_CADDY_JSON_DRIFT_AFTER_PUBLIC_COMPACT:-0}" == "1" ]]; then
+  cp "${FAKE_CADDY_V6_MUTATED:?}" "${FAKE_CADDY_STATE:?}"
+fi
+if [[ "${HOT_DEPLOY_PROBE_SCOPE:-}" == "public" && \
+      "${HOT_DEPLOY_PROBE_KIND:-}" == "compact" && \
+      "${FAKE_HOST_CADDY_DRIFT_AFTER_PUBLIC_COMPACT:-0}" == "1" ]]; then
+  printf '%s\n' '# external host mutation' >>"${FAKE_HOST_CADDYFILE:?}"
+fi

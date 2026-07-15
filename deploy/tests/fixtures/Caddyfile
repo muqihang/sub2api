@@ -1,0 +1,11 @@
+{
+	auto_https disable_redirects
+}
+
+(reverse_to_sub2api) {
+	reverse_proxy sub2api-next-v5:8080
+}
+
+api.example.test {
+	import reverse_to_sub2api
+}

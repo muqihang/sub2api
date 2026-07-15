@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+set -u
+
+printf '%s\n' "$*" >>"${FAKE_DOCKER_LOG:?}"
+if [[ "${1:-}" == "create" ]]; then
+  for argument in "$@"; do
+    if [[ "${argument}" == "DATABASE_PASSWORD" && -n "${DATABASE_PASSWORD:-}" ]]; then
+      printf '%s\n' 'inherited-env-present=DATABASE_PASSWORD' >>"${FAKE_DOCKER_LOG}"
+    fi
+  done
+fi
+
+case "$*" in
+  *" wget -q -O - "*)
+    cat "${FAKE_CADDY_STATE:-${FAKE_CADDY_JSON:?}}"
+    ;;
+  *" caddy validate "*)
+    cat >"${FAKE_STDIN_CAPTURE:?}"
+    if [[ "${FAKE_CADDY_VALIDATE_FAIL:-0}" == "1" ]]; then
+      exit 1
+    fi
+    ;;
+  *" caddy adapt "*)
+    cat >"${FAKE_STDIN_CAPTURE:?}"
+    if [[ "${FAKE_CADDY_ADAPT_FAIL:-0}" == "1" ]]; then
+      exit 1
+    fi
+    if grep -Fq 'sub2api-next-v6:8080' "${FAKE_STDIN_CAPTURE}"; then
+      cat "${FAKE_CADDY_V6:?}"
+    else
+      cat "${FAKE_CADDY_V5:?}"
+    fi
+    ;;
+  *" caddy reload "*)
+    cat >"${FAKE_STDIN_CAPTURE:?}"
+    if [[ "${FAKE_CADDY_RELOAD_FAIL:-0}" == "1" ]]; then
+      exit 1
+    fi
+    if [[ -n "${FAKE_CADDY_STATE:-}" ]]; then
+      if [[ "$*" == *"--adapter caddyfile"* ]]; then
+        if grep -Fq 'sub2api-next-v6:8080' "${FAKE_STDIN_CAPTURE}"; then
+          cp "${FAKE_CADDY_V6:?}" "${FAKE_CADDY_STATE}"
+          if [[ "${FAKE_CADDY_DRIFT_DURING_CUTOVER:-0}" == "1" ]]; then
+            cp "${FAKE_CADDY_V6_MUTATED:?}" "${FAKE_CADDY_STATE}"
+          fi
+        elif grep -Fq 'sub2api-next-v5:8080' "${FAKE_STDIN_CAPTURE}"; then
+          cp "${FAKE_CADDY_V5:?}" "${FAKE_CADDY_STATE}"
+        fi
+      elif [[ "${FAKE_ROLLBACK_VERIFY_FAIL:-0}" != "1" ]]; then
+        cp "${FAKE_STDIN_CAPTURE}" "${FAKE_CADDY_STATE}"
+      fi
+    fi
+    ;;
+  *" cat /etc/caddy/Caddyfile"*)
+    cat "${FAKE_HOST_CADDYFILE:?}"
+    ;;
+  "image inspect "*)
+    [[ "${FAKE_IMAGE_MISSING:-0}" != "1" ]]
+    ;;
+  "container inspect "*)
+    [[ "${FAKE_CANDIDATE_EXISTS:-0}" == "1" ]]
+    ;;
+  *".Config.Env"*)
+    printf '%s\n' \
+      'DATABASE_HOST=postgres' \
+      'DATABASE_PASSWORD=production-secret' \
+      'REDIS_HOST=redis'
+    ;;
+  *".HostConfig.RestartPolicy.Name"*)
+    printf '%s\n' "${FAKE_RESTART_POLICY:-unless-stopped}"
+    ;;
+  *".HostConfig.Ulimits"*)
+    printf '%s\n' 'nofile 100000 100000'
+    ;;
+  *"range \$name, \$_ := .NetworkSettings.Networks"*)
+    printf '%s\n' "${FAKE_NETWORK:-deploy_sub2api-network}"
+    ;;
+  *".State.Status"*)
+    printf '%s %s\n' "${FAKE_CONTAINER_STATUS:-running}" "${FAKE_CANDIDATE_HEALTH:-healthy}"
+    ;;
+  *".IPAddress"*)
+    printf '%s\n' "${FAKE_CANDIDATE_IP:-172.18.0.99}"
+    ;;
+  "create "*)
+    [[ "${FAKE_CREATE_FAIL:-0}" != "1" ]]
+    ;;
+  "start "*)
+    [[ "${FAKE_START_FAIL:-0}" != "1" ]]
+    ;;
+  "update "*)
+    [[ "${FAKE_UPDATE_FAIL:-0}" != "1" ]]
+    ;;
+  "stop "*)
+    [[ "${FAKE_STOP_FAIL:-0}" != "1" ]]
+    ;;
+  *)
+    printf 'unsupported fake docker invocation: %s\n' "$*" >&2
+    exit 64
+    ;;
+esac
