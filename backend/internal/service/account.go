@@ -86,6 +86,7 @@ type OpenAIEndpointCapability string
 const (
 	OpenAIEndpointCapabilityChatCompletions OpenAIEndpointCapability = "chat_completions"
 	OpenAIEndpointCapabilityEmbeddings      OpenAIEndpointCapability = "embeddings"
+	OpenAIEndpointCapabilitySearch          OpenAIEndpointCapability = "search"
 )
 
 const openAIEndpointCapabilitiesCredentialKey = "openai_capabilities"
@@ -1408,6 +1409,9 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 	}
 	if !a.IsOpenAI() {
 		return false
+	}
+	if capability == OpenAIEndpointCapabilitySearch {
+		return a.Type == AccountTypeOAuth
 	}
 	switch capability {
 	case OpenAIEndpointCapabilityChatCompletions:
