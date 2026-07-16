@@ -182,6 +182,13 @@ func registerGatewayRoutes(
 		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Videos API is not supported for this platform"}})
 	}
 
+	r.POST("/alpha/search", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm,
+		apiKeyAuthWithAugmentBearer, requireGroupOpenAI,
+		openAIGatewayHandler(h.OpenAIGateway.NativeSearch))
+	r.POST("/v1/alpha/search", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm,
+		gin.HandlerFunc(v1GatewayAuth), requireGroupOpenAI,
+		openAIGatewayHandler(h.OpenAIGateway.NativeSearch))
+
 	// API网关（Claude API兼容）
 	gateway := r.Group("/v1")
 	gateway.Use(bodyLimit)
