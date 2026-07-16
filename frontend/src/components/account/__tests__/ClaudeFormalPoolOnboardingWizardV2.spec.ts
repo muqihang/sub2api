@@ -90,6 +90,7 @@ function mountWizard() {
 function sessionFixture(overrides: Partial<FormalPoolSession> = {}): FormalPoolSession {
   return {
     id: 'session-1',
+    version: 1,
     status: 'idle',
     pool_profile: 'normal',
     group_id: 9,
@@ -103,11 +104,13 @@ function sessionFixture(overrides: Partial<FormalPoolSession> = {}): FormalPoolS
 
 function acceptanceFixture(overrides: Partial<FormalPoolAcceptanceResult> = {}): FormalPoolAcceptanceResult {
   return {
+    version: 2,
     status: 'healthcheck_passed',
     account_id: 42,
     account_ref: 'acct_bucket_42',
     proxy_ref: 'proxy_bucket_1',
     egress_bucket: 'egress_bucket_1',
+    pool_profile: 'normal',
     checks: [],
     no_real_messages_request_performed: false,
     activation_required: false,
@@ -223,7 +226,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
       proxy_id: 7,
       group_id: 9,
       account_name: 'claude-safe-name',
-    }))
+    }), expect.any(String))
   })
 
   it('selects an Anthropic group card and submits its group_id', async () => {
@@ -245,7 +248,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     expect(onboardingApi.createSession).toHaveBeenCalledWith(expect.objectContaining({
       proxy_id: 7,
       group_id: 12,
-    }))
+    }), expect.any(String))
   })
 
   it('shows management guidance when proxy and group lists are empty', async () => {
@@ -555,7 +558,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
         host: 'proxy.example.net',
         port: 18080,
       }),
-    }))
+    }), expect.any(String))
   })
 
   it('does not render undefined capacity fragments when group capacity fields are incomplete', async () => {
@@ -851,7 +854,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     await createButton.trigger('click')
     await flushPromises()
 
-    expect(onboardingApi.setupTokenCookieAuthAndCreate).toHaveBeenCalledWith('session-1', 'safe-test-token')
+    expect(onboardingApi.setupTokenCookieAuthAndCreate).toHaveBeenCalledWith(expect.objectContaining({ id: 'session-1' }), 'safe-test-token')
     expect(wrapper.find('[data-testid="stepper-gates"]').attributes('data-step-status')).toBe('active')
     expect(wrapper.text()).toContain('完成上号检查，进入预热期')
   })
@@ -938,7 +941,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     await recommendedButton.trigger('click')
     await flushPromises()
 
-    expect(onboardingApi.refreshOnly).toHaveBeenCalledWith('session-1')
+    expect(onboardingApi.refreshOnly).toHaveBeenCalledWith(expect.objectContaining({ id: 'session-1' }))
     expect(onboardingApi.runtimeRegister).not.toHaveBeenCalled()
     expect(wrapper.find('[data-testid="recommended-gate-action"]').text()).toContain('继续下一步：接入调度器')
   })
@@ -1062,7 +1065,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     await wrapper.find('[data-testid="confirm-dialog-stub-confirm"]').trigger('click')
     await flushPromises()
 
-    expect(onboardingApi.promoteProduction).toHaveBeenCalledWith('session-1')
+    expect(onboardingApi.promoteProduction).toHaveBeenCalledWith(expect.objectContaining({ id: 'session-1' }), expect.any(String))
     expect(wrapper.find('[data-testid="recommended-gate-action"]').text()).toContain('查看诊断状态')
   })
 
@@ -1098,7 +1101,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     await wrapper.find('[data-testid="confirm-dialog-stub-confirm"]').trigger('click')
     await flushPromises()
 
-    expect(onboardingApi.promoteProduction).toHaveBeenCalledWith('session-1')
+    expect(onboardingApi.promoteProduction).toHaveBeenCalledWith(expect.objectContaining({ id: 'session-1' }), expect.any(String))
   })
 
   it('renders browser egress statuses in Chinese without raw status codes', async () => {

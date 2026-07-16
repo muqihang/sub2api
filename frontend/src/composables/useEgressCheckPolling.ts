@@ -58,6 +58,7 @@ export function useEgressCheckPolling(options: UseEgressCheckPollingOptions = {}
         currentGeneration !== generation ||
         activeSessionId !== id
       ) return
+      if (session.value?.id === nextSession.id && nextSession.version < session.value.version) return
 
       session.value = nextSession
       status.value = nextSession.browser_egress_check_status ?? 'idle'

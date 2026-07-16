@@ -25,24 +25,35 @@ type userActivityToucher interface {
 
 // jwtAuth JWT认证中间件实现
 func jwtAuth(authService *service.AuthService, userService jwtUserReader, activityToucher userActivityToucher) gin.HandlerFunc {
+	return jwtAuthWithFailure(authService, userService, activityToucher, nil)
+}
+
+func jwtAuthWithFailure(authService *service.AuthService, userService jwtUserReader, activityToucher userActivityToucher, commonFailure func(*gin.Context)) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		fail := func(code, message string) {
+			if commonFailure != nil {
+				commonFailure(c)
+				return
+			}
+			AbortWithError(c, 401, code, message)
+		}
 		// 从Authorization header中提取token
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
-			AbortWithError(c, 401, "UNAUTHORIZED", "Authorization header is required")
+			fail("UNAUTHORIZED", "Authorization header is required")
 			return
 		}
 
 		// 验证Bearer scheme
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			AbortWithError(c, 401, "INVALID_AUTH_HEADER", "Authorization header format must be 'Bearer {token}'")
+			fail("INVALID_AUTH_HEADER", "Authorization header format must be 'Bearer {token}'")
 			return
 		}
 
 		tokenString := strings.TrimSpace(parts[1])
 		if tokenString == "" {
-			AbortWithError(c, 401, "EMPTY_TOKEN", "Token cannot be empty")
+			fail("EMPTY_TOKEN", "Token cannot be empty")
 			return
 		}
 
@@ -50,36 +61,43 @@ func jwtAuth(authService *service.AuthService, userService jwtUserReader, activi
 		claims, err := authService.ValidateToken(tokenString)
 		if err != nil {
 			if errors.Is(err, service.ErrTokenExpired) {
-				AbortWithError(c, 401, "TOKEN_EXPIRED", "Token has expired")
+				fail("TOKEN_EXPIRED", "Token has expired")
 				return
 			}
-			AbortWithError(c, 401, "INVALID_TOKEN", "Invalid token")
+			fail("INVALID_TOKEN", "Invalid token")
 			return
 		}
 
 		// 从数据库获取最新的用户信息
 		user, err := userService.GetByID(c.Request.Context(), claims.UserID)
 		if err != nil {
-			AbortWithError(c, 401, "USER_NOT_FOUND", "User not found")
+			fail("USER_NOT_FOUND", "User not found")
 			return
 		}
 
 		// 检查用户状态
 		if !user.IsActive() {
-			AbortWithError(c, 401, "USER_INACTIVE", "User account is not active")
+			fail("USER_INACTIVE", "User account is not active")
 			return
 		}
 
 		// Security: Validate TokenVersion to ensure token hasn't been invalidated
 		// This check ensures tokens issued before a password change are rejected
 		if claims.TokenVersion != user.TokenVersion {
-			AbortWithError(c, 401, "TOKEN_REVOKED", "Token has been revoked (password changed)")
+			fail("TOKEN_REVOKED", "Token has been revoked (password changed)")
 			return
+		}
+		expiresAtUnix := int64(0)
+		if claims.ExpiresAt != nil {
+			expiresAtUnix = claims.ExpiresAt.Time.Unix()
 		}
 
 		c.Set(string(ContextKeyUser), AuthSubject{
-			UserID:      user.ID,
-			Concurrency: user.Concurrency,
+			UserID:        user.ID,
+			Concurrency:   user.Concurrency,
+			AuthMethod:    "jwt",
+			TokenVersion:  claims.TokenVersion,
+			ExpiresAtUnix: expiresAtUnix,
 		})
 		c.Set(string(ContextKeyUserRole), user.Role)
 		if activityToucher != nil {

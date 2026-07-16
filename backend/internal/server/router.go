@@ -8,6 +8,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/server/routes"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -24,6 +25,8 @@ func SetupRouter(
 	r *gin.Engine,
 	handlers *handler.Handlers,
 	jwtAuth middleware2.JWTAuthMiddleware,
+	formalPoolJWTAuth middleware2.FormalPoolOnboardingJWTAuthMiddleware,
+	formalPoolPrincipalResolver admin.FormalPoolOnboardingPrincipalResolver,
 	adminAuth middleware2.AdminAuthMiddleware,
 	apiKeyAuth middleware2.APIKeyAuthMiddleware,
 	apiKeyService *service.APIKeyService,
@@ -82,7 +85,7 @@ func SetupRouter(
 	}
 
 	// 注册路由
-	registerRoutes(r, handlers, jwtAuth, adminAuth, apiKeyAuth, apiKeyService, subscriptionService, codexAgentService, opsService, settingService, cfg, redisClient)
+	registerRoutes(r, handlers, jwtAuth, formalPoolJWTAuth, formalPoolPrincipalResolver, adminAuth, apiKeyAuth, apiKeyService, subscriptionService, codexAgentService, opsService, settingService, cfg, redisClient)
 
 	return r
 }
@@ -92,6 +95,8 @@ func registerRoutes(
 	r *gin.Engine,
 	h *handler.Handlers,
 	jwtAuth middleware2.JWTAuthMiddleware,
+	formalPoolJWTAuth middleware2.FormalPoolOnboardingJWTAuthMiddleware,
+	formalPoolPrincipalResolver admin.FormalPoolOnboardingPrincipalResolver,
 	adminAuth middleware2.AdminAuthMiddleware,
 	apiKeyAuth middleware2.APIKeyAuthMiddleware,
 	apiKeyService *service.APIKeyService,
@@ -113,6 +118,7 @@ func registerRoutes(
 	routes.RegisterUserRoutes(v1, h, jwtAuth, settingService)
 	routes.RegisterCodexAgentRoutes(v1, h, jwtAuth, settingService)
 	routes.RegisterFormalPoolOnboardingPublicRoutes(v1, h)
+	routes.RegisterFormalPoolOnboardingAdminRoutes(v1, h, formalPoolJWTAuth, formalPoolPrincipalResolver, settingService)
 	routes.RegisterAdminRoutes(v1, h, adminAuth, settingService)
 	codexGatewayAPIKeyAuth := middleware2.NewCodexGatewayAPIKeyAuthMiddleware(apiKeyService, subscriptionService, cfg)
 	codexGatewayAuth := middleware2.APIKeyAuthMiddleware(middleware2.ManagedDeviceOrAPIKeyAuth(codexAgentService, codexGatewayAPIKeyAuth, apiKeyService, subscriptionService, cfg))

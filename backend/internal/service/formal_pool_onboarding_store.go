@@ -46,6 +46,7 @@ type formalPoolOnboardingSessionRecord struct {
 	CreateKeySafeRef             string
 	CreateRequestFingerprint     string
 	ActiveOperation              *FormalPoolOperationReservation
+	LastOperation                *formalPoolOperationOutcome
 	Status                       string
 	ProxyMode                    string
 	ProxyID                      int64
@@ -192,6 +193,12 @@ func (s *FormalPoolOnboardingStore) completeReservedMutation(id string, reservat
 	}
 	next.ActiveOperation = nil
 	next.Version = rec.Version + 1
+	if active.IdempotencyKeySafeRef != "" {
+		next.LastOperation = &formalPoolOperationOutcome{
+			Kind: active.Kind, IdempotencyKeySafeRef: active.IdempotencyKeySafeRef,
+			RequestFingerprint: active.RequestFingerprint, Version: next.Version, Status: next.Status,
+		}
+	}
 	next.UpdatedAt = s.now()
 	s.sessions[rec.ID] = next
 	return cloneFormalPoolOnboardingSessionRecord(next), nil
@@ -326,6 +333,10 @@ func cloneFormalPoolOnboardingSessionRecord(rec *formalPoolOnboardingSessionReco
 	if rec.ActiveOperation != nil {
 		operation := *rec.ActiveOperation
 		copy.ActiveOperation = &operation
+	}
+	if rec.LastOperation != nil {
+		outcome := *rec.LastOperation
+		copy.LastOperation = &outcome
 	}
 	if rec.CreatedProxyInput != nil {
 		proxy := *rec.CreatedProxyInput

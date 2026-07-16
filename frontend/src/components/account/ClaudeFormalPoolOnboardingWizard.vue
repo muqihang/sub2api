@@ -156,6 +156,9 @@ const authMode = ref<'oauth' | 'setup-token-cookie'>('oauth')
 const oauthCode = ref('')
 const setupSessionKey = ref('')
 const attestationCode = ref('')
+const createIdempotencyKey = ref('')
+const exchangeIdempotencyKey = ref('')
+const promoteIdempotencyKey = ref('')
 const form = reactive<{ proxy_mode: FormalPoolProxyMode; proxy_id?: number; group_id?: number; account_name: string; pool_profile: FormalPoolProfile; concurrency: number }>({ proxy_mode: 'existing', proxy_id: undefined, group_id: undefined, account_name: '', pool_profile: 'normal', concurrency: 10 })
 const proxy = reactive({ name: '', protocol: 'socks5' as 'http' | 'https' | 'socks5' | 'socks5h', host: '', port: 1080, username: '', password: '' })
 const canStart = computed(() => !!form.group_id && !!form.account_name && (form.proxy_mode === 'existing' ? !!form.proxy_id : !!proxy.host && !!proxy.port))
@@ -176,29 +179,38 @@ const safeSession = computed(() => JSON.stringify({
 async function run<T>(fn: () => Promise<T>): Promise<T | null> {
   busy.value = true
   error.value = ''
-  try { return await fn() } catch (e: any) { error.value = e?.response?.data?.message || e?.message || '操作失败'; return null } finally { busy.value = false }
+  try { return await fn() } catch (e: any) {
+    const status = Number(e?.response?.status || 0)
+    const id = session.value?.id
+    if (id && (status === 409 || status >= 500 || status === 0)) {
+      try { session.value = await claudeOnboarding.getSession(id) } catch { /* retain the last known safe snapshot */ }
+    }
+    error.value = e?.response?.data?.message || e?.message || '操作失败'
+    return null
+  } finally { busy.value = false }
 }
 async function start() {
   const payload: any = { ...form }
   if (form.proxy_mode === 'create') payload.proxy = { ...proxy }
-  const res = await run(() => claudeOnboarding.createSession(payload))
-  if (res) session.value = res
+  if (!createIdempotencyKey.value) createIdempotencyKey.value = crypto.randomUUID()
+  const res = await run(() => claudeOnboarding.createSession(payload, createIdempotencyKey.value))
+  if (res) { session.value = res; createIdempotencyKey.value = '' }
 }
-async function testProxyStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.testProxy(session.value!.id)); if (res) session.value = res }
-async function attest() { if (!session.value) return; const res = await run(() => claudeOnboarding.attestBrowserEgress(session.value!.id, attestationCode.value)); if (res) session.value = res }
-async function generateOAuth() { if (!session.value) return; const res = await run(() => claudeOnboarding.generateAuthUrl(session.value!.id)); if (res) session.value = res }
-async function exchangeCreate() { if (!session.value) return; const res = await run(() => claudeOnboarding.exchangeCodeAndCreate(session.value!.id, oauthCode.value)); if (res) session.value = res }
+async function testProxyStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.testProxy(session.value!)); if (res) session.value = res }
+async function attest() { if (!session.value) return; const res = await run(() => claudeOnboarding.attestBrowserEgress(session.value!, attestationCode.value)); if (res) session.value = res }
+async function generateOAuth() { if (!session.value) return; const res = await run(() => claudeOnboarding.generateAuthUrl(session.value!)); if (res) session.value = res }
+async function exchangeCreate() { if (!session.value) return; if (!exchangeIdempotencyKey.value) exchangeIdempotencyKey.value = crypto.randomUUID(); const res = await run(() => claudeOnboarding.exchangeCodeAndCreate(session.value!, oauthCode.value, exchangeIdempotencyKey.value)); if (res) { session.value = res; exchangeIdempotencyKey.value = '' } }
 async function setupTokenCreate() {
   if (!session.value) return
-  const res = await run(() => claudeOnboarding.setupTokenCookieAuthAndCreate(session.value!.id, setupSessionKey.value))
+  const res = await run(() => claudeOnboarding.setupTokenCookieAuthAndCreate(session.value!, setupSessionKey.value))
   if (res) {
     session.value = res
     setupSessionKey.value = ''
   }
 }
-async function refreshOnlyStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.refreshOnly(session.value!.id)); if (res) session.value = res }
-async function runtimeRegisterStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.runtimeRegister(session.value!.id)); if (res) session.value = res }
-async function healthcheckStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.healthcheck(session.value!.id)); if (res) acceptance.value = res }
-async function startWarmingStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.startWarming(session.value!.id)); if (res) session.value = res }
-async function promoteProductionStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.promoteProduction(session.value!.id)); if (res) session.value = res }
+async function refreshOnlyStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.refreshOnly(session.value!)); if (res) session.value = res }
+async function runtimeRegisterStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.runtimeRegister(session.value!)); if (res) session.value = res }
+async function healthcheckStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.healthcheck(session.value!)); if (res) { acceptance.value = res; session.value = { ...session.value!, version: res.version, status: res.status, healthcheck_passed: res.status === 'healthcheck_passed' } } }
+async function startWarmingStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.startWarming(session.value!)); if (res) session.value = res }
+async function promoteProductionStep() { if (!session.value) return; if (!promoteIdempotencyKey.value) promoteIdempotencyKey.value = crypto.randomUUID(); const res = await run(() => claudeOnboarding.promoteProduction(session.value!, promoteIdempotencyKey.value)); if (res) { session.value = res; promoteIdempotencyKey.value = '' } }
 </script>

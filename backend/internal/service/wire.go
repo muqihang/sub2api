@@ -80,21 +80,23 @@ func ProvideFormalPoolEgressRateLimiter(formalPoolCfg FormalPoolConfig) FormalPo
 	return NewFormalPoolEgressRateLimiter(formalPoolCfg, time.Now)
 }
 
-func ProvideFormalPoolOnboardingService(adminService AdminService, oauthService *OAuthService, cfg *config.Config, formalPoolCfg FormalPoolConfig, riskWriter FormalPoolRiskEventWriter, accountRepo AccountRepository, httpUpstream HTTPUpstream, cacheInvalidator TokenCacheInvalidator, schedulerCache SchedulerCache) *FormalPoolOnboardingService {
+func ProvideFormalPoolOnboardingService(adminService AdminService, oauthService *OAuthService, cfg *config.Config, formalPoolCfg FormalPoolConfig, riskWriter FormalPoolRiskEventWriter, accountRepo AccountRepository, groupRepo GroupRepository, httpUpstream HTTPUpstream, cacheInvalidator TokenCacheInvalidator, schedulerCache SchedulerCache, principalRevalidator FormalPoolOnboardingPrincipalRevalidator) *FormalPoolOnboardingService {
 	oauthFacade := NewFormalPoolClaudeOAuthFacade(oauthService)
 	quarantine := NewAccountQuarantineService(accountRepo, newDefaultSessionBudgetObserveSink())
 	return NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{
-		Config:           formalPoolCfg,
-		OAuth:            oauthFacade,
-		Refresh:          oauthFacade,
-		Proxy:            NewFormalPoolAdminProxyVerifier(adminService),
-		Accounts:         NewFormalPoolAdminAccountManager(adminService),
-		CCGateway:        NewFormalPoolStaticCCGatewayReadinessVerifier(),
-		CCGatewayRuntime: NewFormalPoolHTTPCCGatewayRuntimeRegistrar(cfg),
-		Healthcheck:      NewFormalPoolGatewayHealthcheckRunner(accountRepo, httpUpstream, cfg, quarantine),
-		Risk:             riskWriter,
-		CacheInvalidator: cacheInvalidator,
-		SchedulerCache:   schedulerCache,
+		Config:               formalPoolCfg,
+		OAuth:                oauthFacade,
+		Refresh:              oauthFacade,
+		Proxy:                NewFormalPoolAdminProxyVerifier(adminService),
+		Accounts:             NewFormalPoolAdminAccountManager(adminService),
+		CCGateway:            NewFormalPoolStaticCCGatewayReadinessVerifier(),
+		CCGatewayRuntime:     NewFormalPoolHTTPCCGatewayRuntimeRegistrar(cfg),
+		Healthcheck:          NewFormalPoolGatewayHealthcheckRunner(accountRepo, httpUpstream, cfg, quarantine),
+		Risk:                 riskWriter,
+		CacheInvalidator:     cacheInvalidator,
+		SchedulerCache:       schedulerCache,
+		Groups:               groupRepo,
+		PrincipalRevalidator: principalRevalidator,
 	})
 }
 
@@ -311,7 +313,6 @@ func ProvideOpenAIGatewayService(
 	entityRegistryRepo EntityRegistryRepository,
 	entityRateLimitService *EntityRateLimitService,
 	contentModerationService *ContentModerationService,
-	optionalDeps ...any,
 ) *OpenAIGatewayService {
 	deps := []any{
 		gatewayCoreService,
@@ -323,7 +324,6 @@ func ProvideOpenAIGatewayService(
 		entityRateLimitService,
 		NewContentModerationOpenAIContentSafetyProvider(contentModerationService),
 	}
-	deps = append(deps, optionalDeps...)
 	return NewOpenAIGatewayService(
 		accountRepo,
 		usageLogRepo,
@@ -343,6 +343,17 @@ func ProvideOpenAIGatewayService(
 		openAITokenProvider,
 		deps...,
 	)
+}
+
+func ProvideCodexEntryCenterService(
+	repo CodexAgentRepository,
+	apiKeyReader codexManagedAPIKeyReader,
+	apiKeyCreator codexAPIKeyCreator,
+	cfg *CodexEntryCenterConfig,
+	modelRegistry *CodexGatewayModelRegistry,
+	pricingResolver *ModelPricingResolver,
+) *CodexEntryCenterServiceImpl {
+	return NewCodexEntryCenterService(repo, apiKeyReader, apiKeyCreator, cfg, modelRegistry, pricingResolver)
 }
 
 // ProvideClaudeTokenProvider creates ClaudeTokenProvider with OAuthRefreshAPI injection
@@ -1049,7 +1060,7 @@ var ProviderSet = wire.NewSet(
 	ProvideCodexGatewayService,
 	ProvideCodexGatewayAdminServiceWithVariantChecker,
 	ProvideCodexEntryCenterConfig,
-	NewCodexEntryCenterService,
+	ProvideCodexEntryCenterService,
 	wire.Bind(new(CodexEntryCenterService), new(*CodexEntryCenterServiceImpl)),
 	NewAugmentGatewayReasoningTurnStore,
 	NewAugmentGatewayProviderExecutor,
@@ -1106,6 +1117,7 @@ var ProviderSet = wire.NewSet(
 	ProvideOpenAITokenProvider,
 	ProvideOpenAIQuotaService,
 	ProvideGrokQuotaService,
+	NewGrokQuotaFetcher,
 	ProvideOpenAISecretProtector,
 	ProvideClaudeTokenProvider,
 	NewAntigravityGatewayService,

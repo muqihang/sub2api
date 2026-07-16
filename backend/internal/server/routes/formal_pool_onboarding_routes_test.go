@@ -20,18 +20,21 @@ import (
 
 func TestFormalPoolOnboardingAdminRoutesDeriveAbsoluteBrowserEgressURLFromForwardedHost(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	svc := service.NewFormalPoolOnboardingService(service.FormalPoolOnboardingDeps{Proxy: &formalPoolOnboardingRoutesProxy{rawIP: "198.51.100.10"}})
+	svc := service.NewFormalPoolOnboardingService(formalPoolOnboardingRoutesDeps(service.FormalPoolOnboardingDeps{Proxy: &formalPoolOnboardingRoutesProxy{rawIP: "198.51.100.10"}}))
 	router := newFormalPoolOnboardingRoutesRouter(adminhandler.NewFormalPoolOnboardingHandler(svc), func(c *gin.Context) { c.Next() })
 
 	body := bytes.NewBufferString(`{"proxy_mode":"existing","proxy_id":7,"group_id":42,"account_name":"acct"}`)
 	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/claude-onboarding/sessions", body)
 	createReq.Header.Set("Content-Type", "application/json")
+	createReq.Header.Set("If-Match", `"0"`)
+	createReq.Header.Set("Idempotency-Key", "routes-create-stable-key")
 	createRec := httptest.NewRecorder()
 	router.ServeHTTP(createRec, createReq)
 	require.Equal(t, http.StatusOK, createRec.Code, createRec.Body.String())
 	sessionID := extractFormalPoolOnboardingSessionID(t, createRec.Body.String())
 
 	testReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/claude-onboarding/sessions/"+sessionID+"/test-proxy", nil)
+	testReq.Header.Set("If-Match", `"2"`)
 	testReq.Header.Set("X-Forwarded-Proto", "https")
 	testReq.Header.Set("X-Forwarded-Host", "admin.example.test")
 	testRec := httptest.NewRecorder()
@@ -56,15 +59,15 @@ func TestFormalPoolOnboardingRoutes_AdminAndPublicBrowserEgress(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	v1 := router.Group("/api/v1")
-	svc := service.NewFormalPoolOnboardingService(service.FormalPoolOnboardingDeps{})
+	svc := service.NewFormalPoolOnboardingService(formalPoolOnboardingRoutesDeps(service.FormalPoolOnboardingDeps{}))
 	h := &ihandler.Handlers{Admin: &ihandler.AdminHandlers{FormalPoolOnboarding: adminhandler.NewFormalPoolOnboardingHandler(svc)}}
 	adminAuthCalls := 0
 
 	RegisterFormalPoolOnboardingPublicRoutes(v1, h)
-	RegisterAdminRoutes(v1, h, middleware.AdminAuthMiddleware(func(c *gin.Context) {
+	RegisterFormalPoolOnboardingAdminRoutes(v1, h, middleware.FormalPoolOnboardingJWTAuthMiddleware(func(c *gin.Context) {
 		adminAuthCalls++
 		c.Next()
-	}))
+	}), formalPoolOnboardingRoutesPrincipalResolver{}, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/claude-onboarding/browser-egress-check/bad-nonce", nil)
 	rec := httptest.NewRecorder()
@@ -82,24 +85,29 @@ func TestFormalPoolOnboardingRoutes_AdminAndPublicBrowserEgress(t *testing.T) {
 	require.Equal(t, 1, adminAuthCalls, "mutating onboarding session routes must remain admin protected")
 
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/claude-onboarding/sessions/fpo_test/setup-token-cookie-auth-and-create", bytes.NewBufferString(`{"session_key":"sk-ant-sid02-test"}`))
+	req.Header.Set("If-Match", `"1"`)
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	require.Equal(t, 2, adminAuthCalls, "setup-token onboarding route must remain admin protected")
 	require.Contains(t, rec.Body.String(), "FORMAL_POOL_ONBOARDING_NOT_FOUND", "registered route should reach onboarding service")
 	require.NotContains(t, rec.Body.String(), "sk-ant-sid02-test", "route errors must not echo setup-token login state")
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/claude-onboarding/sessions/fpo_test/healthcheck", nil)
+	req.Header.Set("If-Match", `"1"`)
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	require.Equal(t, 3, adminAuthCalls, "healthcheck route must remain admin protected")
 	require.Contains(t, rec.Body.String(), "FORMAL_POOL_ONBOARDING_NOT_FOUND")
 
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/claude-onboarding/accounts/2/healthcheck", nil)
+	req.Header.Set("If-Match", `"1"`)
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	require.Equal(t, 4, adminAuthCalls, "account-level healthcheck route must remain admin protected")
-	require.NotContains(t, rec.Body.String(), "FORMAL_POOL_ONBOARDING_NOT_FOUND", "account-level healthcheck must not use expired onboarding sessions")
+	require.Contains(t, rec.Body.String(), "FORMAL_POOL_ONBOARDING_NOT_FOUND", "account-level healthcheck must resolve its owning onboarding session")
 
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/claude-onboarding/sessions/fpo_test/promote-production", nil)
+	req.Header.Set("If-Match", `"1"`)
+	req.Header.Set("Idempotency-Key", "routes-promote-stable-key")
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	require.Equal(t, 5, adminAuthCalls, "production promotion route must remain admin protected")
@@ -114,7 +122,7 @@ func TestFormalPoolOnboardingBrowserEgressPublicRouteSafeFailureBodiesAreEqual(t
 	proxy := &formalPoolOnboardingRoutesProxy{rawIP: "198.51.100.10"}
 	cfg := service.DefaultFormalPoolConfig()
 	cfg.NonceTTL = time.Minute
-	svc := service.NewFormalPoolOnboardingService(service.FormalPoolOnboardingDeps{Store: store, Proxy: proxy, Config: cfg})
+	svc := service.NewFormalPoolOnboardingService(formalPoolOnboardingRoutesDeps(service.FormalPoolOnboardingDeps{Store: store, Proxy: proxy, Config: cfg}))
 	router := newFormalPoolOnboardingRoutesRouter(adminhandler.NewFormalPoolOnboardingHandler(svc), nil)
 
 	mismatchNonce := createFormalPoolOnboardingRoutesNonce(t, svc)
@@ -148,7 +156,7 @@ func TestFormalPoolOnboardingBrowserEgressPublicRouteLimiterDeniedRecordsSafeRis
 		Allowed: false, NonceBucket: "nonce_bucket_safe1234", IPBucket: "ip_bucket_safe5678", Reason: "per_ip",
 	}}
 	risk := &formalPoolOnboardingRoutesRiskWriter{}
-	svc := service.NewFormalPoolOnboardingService(service.FormalPoolOnboardingDeps{})
+	svc := service.NewFormalPoolOnboardingService(formalPoolOnboardingRoutesDeps(service.FormalPoolOnboardingDeps{}))
 	h := adminhandler.NewFormalPoolOnboardingHandlerWithPublicDeps(svc, limiter, risk)
 	router := newFormalPoolOnboardingRoutesRouter(h, nil)
 
@@ -166,7 +174,7 @@ func TestFormalPoolOnboardingBrowserEgressPublicRouteLimiterDeniedRecordsSafeRis
 
 func TestFormalPoolOnboardingBrowserEgressPublicRouteSuccessOnlyReturnsOK(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	svc := service.NewFormalPoolOnboardingService(service.FormalPoolOnboardingDeps{Proxy: &formalPoolOnboardingRoutesProxy{rawIP: "198.51.100.10"}})
+	svc := service.NewFormalPoolOnboardingService(formalPoolOnboardingRoutesDeps(service.FormalPoolOnboardingDeps{Proxy: &formalPoolOnboardingRoutesProxy{rawIP: "198.51.100.10"}}))
 	nonce := createFormalPoolOnboardingRoutesNonce(t, svc)
 	router := newFormalPoolOnboardingRoutesRouter(adminhandler.NewFormalPoolOnboardingHandler(svc), nil)
 
@@ -189,6 +197,7 @@ func TestFormalPoolOnboardingBrowserEgressPublicRouteAppliesConstantDelay(t *tes
 		cfg.PublicRouteConstantDelayMin = minDelay
 		cfg.PublicRouteConstantDelayMax = minDelay
 		deps.Config = cfg
+		deps = formalPoolOnboardingRoutesDeps(deps)
 		return service.NewFormalPoolOnboardingService(deps)
 	}
 
@@ -221,7 +230,7 @@ func newFormalPoolOnboardingRoutesRouter(h *adminhandler.FormalPoolOnboardingHan
 	handlers := &ihandler.Handlers{Admin: &ihandler.AdminHandlers{FormalPoolOnboarding: h}}
 	RegisterFormalPoolOnboardingPublicRoutes(v1, handlers)
 	if adminAuth != nil {
-		RegisterAdminRoutes(v1, handlers, middleware.AdminAuthMiddleware(adminAuth))
+		RegisterFormalPoolOnboardingAdminRoutes(v1, handlers, middleware.FormalPoolOnboardingJWTAuthMiddleware(adminAuth), formalPoolOnboardingRoutesPrincipalResolver{}, nil)
 	}
 	return router
 }
@@ -238,11 +247,19 @@ func performFormalPoolOnboardingRoutesRequest(router *gin.Engine, method, path, 
 
 func createFormalPoolOnboardingRoutesNonce(t *testing.T, svc *service.FormalPoolOnboardingService) string {
 	t.Helper()
-	created, err := svc.StartSession(context.Background(), service.FormalPoolOnboardingStartRequest{
+	version := int64(0)
+	ctx := service.WithFormalPoolRequestAuthority(context.Background(), service.FormalPoolRequestAuthority{
+		Principal: formalPoolOnboardingRoutesPrincipal(), ExpectedVersion: &version, IdempotencyKey: "routes-direct-create-key",
+	})
+	created, err := svc.StartSession(ctx, service.FormalPoolOnboardingStartRequest{
 		ProxyMode: "existing", ProxyID: formalPoolOnboardingRoutesPtrInt64(7), GroupID: 42, AccountName: "acct",
 	})
 	require.NoError(t, err)
-	tested, err := svc.TestProxy(context.Background(), created.ID)
+	version = created.Version
+	ctx = service.WithFormalPoolRequestAuthority(context.Background(), service.FormalPoolRequestAuthority{
+		Principal: formalPoolOnboardingRoutesPrincipal(), ExpectedVersion: &version,
+	})
+	tested, err := svc.TestProxy(ctx, created.ID)
 	require.NoError(t, err)
 	parts := strings.Split(strings.TrimRight(tested.BrowserEgressCheckURL, "/"), "/")
 	nonce := parts[len(parts)-1]
@@ -253,6 +270,38 @@ func createFormalPoolOnboardingRoutesNonce(t *testing.T, svc *service.FormalPool
 func formalPoolOnboardingRoutesPtrInt64(v int64) *int64 { return &v }
 
 type formalPoolOnboardingRoutesProxy struct{ rawIP string }
+
+type formalPoolOnboardingRoutesPrincipalResolver struct{}
+
+func (formalPoolOnboardingRoutesPrincipalResolver) Resolve(*gin.Context) (service.FormalPoolOnboardingPrincipal, error) {
+	return formalPoolOnboardingRoutesPrincipal(), nil
+}
+
+type formalPoolOnboardingRoutesPrincipalRevalidator struct{}
+
+func (formalPoolOnboardingRoutesPrincipalRevalidator) Revalidate(context.Context, service.FormalPoolOnboardingPrincipal) error {
+	return nil
+}
+
+type formalPoolOnboardingRoutesGroupReader struct{}
+
+func (formalPoolOnboardingRoutesGroupReader) GetByID(_ context.Context, id int64) (*service.Group, error) {
+	return &service.Group{ID: id, Status: service.StatusActive}, nil
+}
+
+func formalPoolOnboardingRoutesPrincipal() service.FormalPoolOnboardingPrincipal {
+	return service.FormalPoolOnboardingPrincipal{
+		SubjectID: 1, AdministratorID: 1, TenantID: "routes-tenant", CreatorID: 1,
+		Role: service.RoleAdmin, CallerKind: service.CallerKindHumanJWT, AuthorityRevision: 1,
+		ExpiresAtUnix: time.Now().Add(time.Hour).Unix(), Active: true, SystemAdmin: true,
+	}
+}
+
+func formalPoolOnboardingRoutesDeps(deps service.FormalPoolOnboardingDeps) service.FormalPoolOnboardingDeps {
+	deps.Groups = formalPoolOnboardingRoutesGroupReader{}
+	deps.PrincipalRevalidator = formalPoolOnboardingRoutesPrincipalRevalidator{}
+	return deps
+}
 
 func (p *formalPoolOnboardingRoutesProxy) ResolveOrCreateProxy(ctx context.Context, req service.FormalPoolOnboardingStartRequest) (service.FormalPoolProxyResolution, error) {
 	id := int64(7)

@@ -33,6 +33,56 @@ func newAuthorizedFlowService(deps FormalPoolOnboardingDeps) *FormalPoolOnboardi
 	return NewFormalPoolOnboardingService(authorizedFlowDeps(deps))
 }
 
+func advanceAuthorizedFlowSession(t *testing.T, current *FormalPoolOnboardingSession, call func(context.Context, string) (*FormalPoolOnboardingSession, error)) *FormalPoolOnboardingSession {
+	t.Helper()
+	next, err := call(authorizedFlowContext(t, current.Version), current.ID)
+	if err != nil {
+		t.Fatalf("advance formal-pool flow: %v", err)
+	}
+	if next == nil {
+		t.Fatal("advance formal-pool flow returned nil session")
+	}
+	return next
+}
+
+func advanceAuthorizedFlowToProxyVerified(t *testing.T, svc *FormalPoolOnboardingService, current *FormalPoolOnboardingSession) *FormalPoolOnboardingSession {
+	t.Helper()
+	return advanceAuthorizedFlowSession(t, current, svc.TestProxy)
+}
+
+func advanceAuthorizedFlowToOAuthURL(t *testing.T, svc *FormalPoolOnboardingService, current *FormalPoolOnboardingSession) *FormalPoolOnboardingSession {
+	t.Helper()
+	current = advanceAuthorizedFlowToProxyVerified(t, svc, current)
+	current = advanceAuthorizedFlowSession(t, current, func(ctx context.Context, id string) (*FormalPoolOnboardingSession, error) {
+		return svc.AttestBrowserEgress(ctx, id, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
+	})
+	return advanceAuthorizedFlowSession(t, current, svc.GenerateAuthURL)
+}
+
+func advanceAuthorizedFlowToImported(t *testing.T, svc *FormalPoolOnboardingService, current *FormalPoolOnboardingSession) *FormalPoolOnboardingSession {
+	t.Helper()
+	current = advanceAuthorizedFlowToOAuthURL(t, svc, current)
+	return advanceAuthorizedFlowSession(t, current, func(ctx context.Context, id string) (*FormalPoolOnboardingSession, error) {
+		return svc.ExchangeCodeAndCreate(ctx, id, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+	})
+}
+
+func seedAuthorizedFlowAccountSession(t *testing.T, svc *FormalPoolOnboardingService, accountID int64) *FormalPoolOnboardingSession {
+	t.Helper()
+	principal := authorizedOnboardingPrincipal()
+	now := svc.store.now()
+	rec := &formalPoolOnboardingSessionRecord{
+		ID: formalPoolRandomID("fpo_test_"), Version: 2, Status: FormalPoolOnboardingStatusRuntimeRegistered,
+		OwnerSubjectID: principal.SubjectID, OwnerAdministratorID: principal.AdministratorID,
+		OwnerTenantID: principal.TenantID, OwnerCreatorID: principal.CreatorID, OwnerRole: principal.Role,
+		OwnerGroupID: 42, GroupID: 42, AccountID: accountID, CreatedAt: now, UpdatedAt: now,
+	}
+	svc.store.mu.Lock()
+	svc.store.sessions[rec.ID] = cloneFormalPoolOnboardingSessionRecord(rec)
+	svc.store.mu.Unlock()
+	return svc.sessionResponse(rec, nil)
+}
+
 type formalProxyFake struct {
 	testErr            error
 	inactive           bool
@@ -238,15 +288,13 @@ func TestFormalPoolProxyTestAndAttestationGatesOAuth(t *testing.T) {
 	if _, err := svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID); err == nil {
 		t.Fatalf("oauth url should be blocked before attestation")
 	}
-	if _, err := svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID); err != nil {
-		t.Fatalf("test proxy: %v", err)
-	}
+	sess = advanceAuthorizedFlowToProxyVerified(t, svc, sess)
 	if _, err := svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID); err == nil {
 		t.Fatalf("oauth url should still be blocked before browser egress attestation")
 	}
-	if _, err := svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "exit-ip-ref-ok"}); err != nil {
-		t.Fatalf("attest: %v", err)
-	}
+	sess = advanceAuthorizedFlowSession(t, sess, func(ctx context.Context, id string) (*FormalPoolOnboardingSession, error) {
+		return svc.AttestBrowserEgress(ctx, id, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "exit-ip-ref-ok"})
+	})
 	got, err := svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
 	if err != nil {
 		t.Fatalf("generate auth url: %v", err)
@@ -294,9 +342,7 @@ func TestFormalPoolExchangeCodeAndCreateWritesSafeDefaults(t *testing.T) {
 	runtime := &formalRuntimeFake{}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{EmailPresent: true, AccountUUIDPresent: true, OrganizationUUIDPresent: true, ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGatewayRuntime: runtime})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct", PoolProfile: "aggressive"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
-	_, _ = svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
+	sess = advanceAuthorizedFlowToOAuthURL(t, svc, sess)
 	got, err := svc.ExchangeCodeAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
 	if err != nil {
 		t.Fatalf("exchange/create: %v", err)
@@ -332,9 +378,7 @@ func TestFormalPoolExchangeRegistersCCGatewayRuntimeMapping(t *testing.T) {
 	runtime := &formalRuntimeFake{}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{normalizedProxyURL: "socks5h://proxy.local:1080"}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{EmailPresent: true, AccountUUIDPresent: true, OrganizationUUIDPresent: true, ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGatewayRuntime: runtime})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
-	_, _ = svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
+	sess = advanceAuthorizedFlowToOAuthURL(t, svc, sess)
 	got, err := svc.ExchangeCodeAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
 	if err != nil {
 		t.Fatalf("exchange/create: %v", err)
@@ -361,10 +405,7 @@ func TestFormalPoolAcceptanceFailsUntilCCGatewayRuntimeRegistered(t *testing.T) 
 	acct := &formalAccountFake{}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
-	_, _ = svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.ExchangeCodeAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+	sess = advanceAuthorizedFlowToImported(t, svc, sess)
 	accepted, err := svc.RunAcceptance(authorizedFlowContext(t, sess.Version), sess.ID)
 	if err != nil {
 		t.Fatalf("acceptance: %v", err)
@@ -394,7 +435,7 @@ func TestFormalPoolSetupTokenCookieRequiresProxyTestButNotBrowserEgress(t *testi
 func TestFormalPoolSetupTokenCookieCreateWrapsUntypedOAuthFailuresAsSafeBadRequest(t *testing.T) {
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{err: errors.New("failed to get organizations: status 403, body: <html>sk-ant-sid-secret</html>")}, Accounts: &formalAccountFake{}, CCGatewayRuntime: &formalRuntimeFake{}})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "setup-acct", PoolProfile: "normal"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
+	sess = advanceAuthorizedFlowToProxyVerified(t, svc, sess)
 
 	_, err := svc.SetupTokenCookieAuthAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolSetupTokenCookieAuthAndCreateRequest{SessionKey: "sk-ant-sid02-secret"})
 	if err == nil {
@@ -414,7 +455,7 @@ func TestFormalPoolSetupTokenCookieCreateRegistersRuntimeAndKeepsAccountUnschedu
 	oauth := &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{EmailPresent: true, AccountUUIDPresent: true, OrganizationUUIDPresent: true, ScopeContainsUserInference: true, ScopeContainsClaudeCode: false, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "setup-access", "refresh_token": "setup-refresh", "token_type": "Bearer", "expires_in": int64(31536000), "scope": "user:inference"}}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{normalizedProxyURL: "http://proxy.local:443"}, OAuth: oauth, Accounts: acct, CCGatewayRuntime: runtime})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "setup-acct", PoolProfile: "normal"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
+	sess = advanceAuthorizedFlowToProxyVerified(t, svc, sess)
 	got, err := svc.SetupTokenCookieAuthAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolSetupTokenCookieAuthAndCreateRequest{SessionKey: "sk-ant-sid02-test"})
 	if err != nil {
 		t.Fatalf("setup-token create: %v", err)
@@ -455,7 +496,7 @@ func TestFormalPoolSetupTokenCookieCreateRegistersRuntimeAndKeepsAccountUnschedu
 func TestFormalPoolSetupTokenCookieRejectsFullClaudeCodeScope(t *testing.T) {
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: &formalAccountFake{}, CCGatewayRuntime: &formalRuntimeFake{}})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
+	sess = advanceAuthorizedFlowToProxyVerified(t, svc, sess)
 	if _, err := svc.SetupTokenCookieAuthAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolSetupTokenCookieAuthAndCreateRequest{SessionKey: "sk-ant-sid02-test"}); err == nil {
 		t.Fatalf("setup-token path must reject full Claude Code OAuth scope")
 	}
@@ -464,9 +505,7 @@ func TestFormalPoolSetupTokenCookieRejectsFullClaudeCodeScope(t *testing.T) {
 func TestFormalPoolExchangeScopeFailClosed(t *testing.T) {
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: false}, creds: map[string]any{"refresh_token": "refresh", "scope": "user:inference"}}, Accounts: &formalAccountFake{}})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
-	_, _ = svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
+	sess = advanceAuthorizedFlowToOAuthURL(t, svc, sess)
 	if _, err := svc.ExchangeCodeAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"}); err == nil {
 		t.Fatalf("expected setup-token/inference-only scope to fail closed")
 	}
@@ -476,10 +515,7 @@ func TestFormalPoolAcceptanceAndActivation(t *testing.T) {
 	acct := &formalAccountFake{}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}, CCGatewayRuntime: &formalRuntimeFake{}, Acceptance: formalAcceptanceFake{}})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
-	_, _ = svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.ExchangeCodeAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+	sess = advanceAuthorizedFlowToImported(t, svc, sess)
 	accepted, err := svc.RunAcceptance(authorizedFlowContext(t, sess.Version), sess.ID)
 	if err != nil {
 		t.Fatalf("acceptance: %v", err)
@@ -490,6 +526,7 @@ func TestFormalPoolAcceptanceAndActivation(t *testing.T) {
 	if acct.account.Schedulable {
 		t.Fatalf("acceptance must not activate account")
 	}
+	sess.Version = accepted.Version
 	activated, err := svc.Activate(authorizedFlowContext(t, sess.Version), sess.ID)
 	if err != nil {
 		t.Fatalf("activate: %v", err)
@@ -503,11 +540,12 @@ func TestFormalPoolActivationFailDoesNotUpdateState(t *testing.T) {
 	acct := &formalAccountFake{activateErr: errors.New("db down")}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}, CCGatewayRuntime: &formalRuntimeFake{}, Acceptance: formalAcceptanceFake{}})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
-	_, _ = svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.ExchangeCodeAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
-	_, _ = svc.RunAcceptance(authorizedFlowContext(t, sess.Version), sess.ID)
+	sess = advanceAuthorizedFlowToImported(t, svc, sess)
+	accepted, err := svc.RunAcceptance(authorizedFlowContext(t, sess.Version), sess.ID)
+	if err != nil {
+		t.Fatalf("acceptance: %v", err)
+	}
+	sess.Version = accepted.Version
 	if _, err := svc.Activate(authorizedFlowContext(t, sess.Version), sess.ID); err == nil {
 		t.Fatalf("expected activate error")
 	}
@@ -521,16 +559,17 @@ func TestFormalPoolPromoteProductionRequiresWarmingAndEnablesRequestedProfile(t 
 	acct := &formalAccountFake{}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}, CCGatewayRuntime: &formalRuntimeFake{}, Acceptance: formalAcceptanceFake{}})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct", PoolProfile: PoolProfileAggressive})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
-	_, _ = svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.ExchangeCodeAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
-	_, _ = svc.RunAcceptance(authorizedFlowContext(t, sess.Version), sess.ID)
+	sess = advanceAuthorizedFlowToImported(t, svc, sess)
+	accepted, err := svc.RunAcceptance(authorizedFlowContext(t, sess.Version), sess.ID)
+	if err != nil {
+		t.Fatalf("acceptance: %v", err)
+	}
+	sess.Version = accepted.Version
 
 	if _, err := svc.PromoteProduction(authorizedFlowContext(t, sess.Version), sess.ID); err == nil {
 		t.Fatalf("production promotion must require warming first")
 	}
-	_, err := svc.StartWarming(authorizedFlowContext(t, sess.Version), sess.ID)
+	sess, err = svc.StartWarming(authorizedFlowContext(t, sess.Version), sess.ID)
 	if err != nil {
 		t.Fatalf("start warming: %v", err)
 	}
@@ -547,10 +586,7 @@ func TestFormalPoolRefreshOnlyRequiresRealRefreshRunner(t *testing.T) {
 	acct := &formalAccountFake{}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
-	_, _ = svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.ExchangeCodeAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+	sess = advanceAuthorizedFlowToImported(t, svc, sess)
 
 	if _, err := svc.RefreshOnly(authorizedFlowContext(t, sess.Version), sess.ID); err == nil {
 		t.Fatalf("refresh-only must fail closed without real refresh runner")
@@ -562,10 +598,7 @@ func TestFormalPoolRefreshOnlyPerformsRefreshBeforeMarkingRefreshed(t *testing.T
 	oauth := &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}, refreshSummary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, refreshCreds: map[string]any{"access_token": "new-access", "refresh_token": "new-refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: oauth, Refresh: oauth, Accounts: acct})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
-	_, _ = svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.ExchangeCodeAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+	sess = advanceAuthorizedFlowToImported(t, svc, sess)
 
 	got, err := svc.RefreshOnly(authorizedFlowContext(t, sess.Version), sess.ID)
 	if err != nil {
@@ -586,10 +619,7 @@ func TestFormalPoolRefreshOnlyInvalidGrantMarksTerminalCredentialBucket(t *testi
 	}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: oauth, Refresh: oauth, Accounts: acct})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
-	_, _ = svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.ExchangeCodeAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+	sess = advanceAuthorizedFlowToImported(t, svc, sess)
 
 	_, err := svc.RefreshOnly(authorizedFlowContext(t, sess.Version), sess.ID)
 	if err == nil {
@@ -610,10 +640,7 @@ func TestFormalPoolRefreshOnlyInvalidatesTokenAndSyncsSchedulerCache(t *testing.
 	scheduler := &formalPoolSchedulerCacheFake{}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: oauth, Refresh: oauth, Accounts: acct, CacheInvalidator: invalidator, SchedulerCache: scheduler})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
-	_, _ = svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.ExchangeCodeAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+	sess = advanceAuthorizedFlowToImported(t, svc, sess)
 
 	_, err := svc.RefreshOnly(authorizedFlowContext(t, sess.Version), sess.ID)
 	if err != nil {
@@ -632,10 +659,7 @@ func TestFormalPoolAcceptanceUsesHealthcheckRunnerWhenAcceptanceRunnerMissing(t 
 	healthcheck := &formalHealthcheckFake{}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}, CCGatewayRuntime: &formalRuntimeFake{}, Healthcheck: healthcheck})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
-	_, _ = svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.ExchangeCodeAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+	sess = advanceAuthorizedFlowToImported(t, svc, sess)
 
 	accepted, err := svc.RunAcceptance(authorizedFlowContext(t, sess.Version), sess.ID)
 	if err != nil {
@@ -651,10 +675,7 @@ func TestFormalPoolAcceptanceRejectsHealthcheckWithoutRawCapture(t *testing.T) {
 	healthcheck := &formalHealthcheckFake{result: &FormalPoolAcceptanceResult{Status: FormalPoolOnboardingStatusHealthcheckPassed, Checks: []FormalPoolAcceptanceCheck{{Name: "directed_healthcheck", Status: "pass"}}, StatusCodeBucket: "status_2xx", CCGatewaySeen: true, RawCapturePresent: false}}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}, CCGatewayRuntime: &formalRuntimeFake{}, Healthcheck: healthcheck})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
-	_, _ = svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.ExchangeCodeAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+	sess = advanceAuthorizedFlowToImported(t, svc, sess)
 
 	accepted, err := svc.RunAcceptance(authorizedFlowContext(t, sess.Version), sess.ID)
 	if err != nil {
@@ -692,8 +713,9 @@ func TestFormalPoolRunAccountHealthcheckRejectsMissingRuntimeTimestampBeforeRunn
 	}
 	healthcheck := &formalHealthcheckFake{}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Accounts: acct, Healthcheck: healthcheck})
+	sess := seedAuthorizedFlowAccountSession(t, svc, 2)
 
-	_, err := svc.RunAccountHealthcheck(authorizedFlowContext(t, 0), 2)
+	_, err := svc.RunAccountHealthcheck(authorizedFlowContext(t, sess.Version), 2)
 	if err == nil {
 		t.Fatalf("account healthcheck must reject incomplete runtime evidence")
 	}
@@ -707,10 +729,7 @@ func TestFormalPoolRunAcceptanceRejectsMissingPersistedRuntimeTimestampBeforeRun
 	healthcheck := &formalHealthcheckFake{}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}, CCGatewayRuntime: &formalRuntimeFake{}, Healthcheck: healthcheck})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
-	_, _ = svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.ExchangeCodeAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+	sess = advanceAuthorizedFlowToImported(t, svc, sess)
 	acct.account.Extra[FormalPoolExtraRuntimeRegistered] = "true"
 	acct.account.Extra[FormalPoolExtraRuntimeRegisteredAt] = ""
 
@@ -726,7 +745,7 @@ func TestFormalPoolRunAcceptanceRejectsMissingPersistedRuntimeTimestampBeforeRun
 	}
 }
 
-func TestFormalPoolRunAccountHealthcheckUsesExistingFormalAccountWithoutSession(t *testing.T) {
+func TestFormalPoolRunAccountHealthcheckUsesOwningOnboardingSession(t *testing.T) {
 	acct := &formalAccountFake{}
 	proxyID := int64(6)
 	accountRef := "hmac-sha256:" + strings.Repeat("a", 64)
@@ -765,8 +784,9 @@ func TestFormalPoolRunAccountHealthcheckUsesExistingFormalAccountWithoutSession(
 	}
 	healthcheck := &formalHealthcheckFake{}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Accounts: acct, CCGateway: formalCCFake{}, Healthcheck: healthcheck})
+	sess := seedAuthorizedFlowAccountSession(t, svc, 2)
 
-	result, err := svc.RunAccountHealthcheck(authorizedFlowContext(t, 0), 2)
+	result, err := svc.RunAccountHealthcheck(authorizedFlowContext(t, sess.Version), 2)
 	if err != nil {
 		t.Fatalf("account healthcheck: %v", err)
 	}
@@ -803,10 +823,7 @@ func TestFormalPoolRunAcceptanceWritesFullHealthcheckEvidence(t *testing.T) {
 	healthcheck := &formalHealthcheckFake{result: &FormalPoolAcceptanceResult{Status: FormalPoolOnboardingStatusHealthcheckPassed, Checks: []FormalPoolAcceptanceCheck{{Name: "directed_healthcheck", Status: "pass"}}, StatusCodeBucket: "status_2xx", CCGatewaySeen: true, RawCapturePresent: true, RawCaptureRef: rawRef, FallbackDetected: false, ProxyMismatch: false, RiskTextDetected: false}}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}, CCGatewayRuntime: &formalRuntimeFake{}, Healthcheck: healthcheck})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
-	_, _ = svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.ExchangeCodeAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+	sess = advanceAuthorizedFlowToImported(t, svc, sess)
 
 	_, err := svc.RunAcceptance(authorizedFlowContext(t, sess.Version), sess.ID)
 	if err != nil {
@@ -830,10 +847,7 @@ func TestFormalPoolRunAcceptanceWritesFailedHealthcheckEvidence(t *testing.T) {
 	healthcheck := &formalHealthcheckFake{result: &FormalPoolAcceptanceResult{Status: "failed_acceptance", Checks: []FormalPoolAcceptanceCheck{{Name: "directed_healthcheck_status_200", Status: "fail", Message: "status_4xx"}}, StatusCodeBucket: "status_4xx", CCGatewaySeen: true, RawCapturePresent: true, RawCaptureRef: rawRef, FallbackDetected: false, ProxyMismatch: false, RiskTextDetected: false, SafeErrorCode: "bad_request", SafeErrorBucket: "request_shape"}}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}, CCGatewayRuntime: &formalRuntimeFake{}, Healthcheck: healthcheck})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
-	_, _ = svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.ExchangeCodeAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+	sess = advanceAuthorizedFlowToImported(t, svc, sess)
 
 	accepted, err := svc.RunAcceptance(authorizedFlowContext(t, sess.Version), sess.ID)
 	if err != nil {
@@ -861,8 +875,9 @@ func TestFormalPoolRunAccountHealthcheckWritesFullFailureEvidence(t *testing.T) 
 	acct.account = &Account{ID: 2, Name: "formal-existing", Platform: PlatformAnthropic, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: false, ProxyID: &proxyID, Credentials: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}, Extra: map[string]any{"cc_gateway_enabled": "true", "cc_gateway_routes": string(ccGatewayRouteNativeMessages), "cc_gateway_egress_bucket_enabled": "true", "cc_gateway_egress_bucket": "bucket-existing", "cc_gateway_account_ref": accountRef, "cc_gateway_credential_ref": ccGatewayGeneratedCredentialRef(accountRef, "1"), "cc_gateway_credential_binding_hmac": ccGatewayOAuthCredentialBindingHMAC("formal-pool-runtime-binding-local-test-secret", "access"), "cc_gateway_proxy_identity_ref": formalPoolSafeRef("proxy", "6"), "cc_gateway_persona_profile": ccGatewayDefaultPersonaProfile, "claude_code_device_id": ccGatewayGeneratedDeviceID(accountRef), FormalPoolExtraOnboardingStage: FormalPoolStageRuntimeRegistered, FormalPoolExtraRuntimeRegistered: "true", FormalPoolExtraRuntimeRegisteredAt: "2026-05-29T00:00:00Z"}}
 	healthcheck := &formalHealthcheckFake{result: &FormalPoolAcceptanceResult{Status: "failed_acceptance", Checks: []FormalPoolAcceptanceCheck{{Name: "directed_healthcheck", Status: "fail"}}, StatusCodeBucket: "status_4xx", CCGatewaySeen: true, RawCapturePresent: true, RawCaptureRef: "https://sensitive.example/raw", FallbackDetected: true, ProxyMismatch: false, RiskTextDetected: true}}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Accounts: acct, Healthcheck: healthcheck})
+	sess := seedAuthorizedFlowAccountSession(t, svc, 2)
 
-	_, err := svc.RunAccountHealthcheck(authorizedFlowContext(t, 0), 2)
+	_, err := svc.RunAccountHealthcheck(authorizedFlowContext(t, sess.Version), 2)
 	if err != nil {
 		t.Fatalf("account healthcheck: %v", err)
 	}
@@ -887,14 +902,12 @@ func TestFormalPoolActivateRejectsIncompletePersistedEvidenceEvenWhenSessionPass
 	healthcheck := &formalHealthcheckFake{result: &FormalPoolAcceptanceResult{Status: FormalPoolOnboardingStatusHealthcheckPassed, Checks: []FormalPoolAcceptanceCheck{{Name: "directed_healthcheck", Status: "pass"}}, StatusCodeBucket: "status_2xx", CCGatewaySeen: true, RawCapturePresent: true, RawCaptureRef: rawRef}}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}, CCGatewayRuntime: &formalRuntimeFake{}, Healthcheck: healthcheck})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
-	_, _ = svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.ExchangeCodeAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
-	_, err := svc.RunAcceptance(authorizedFlowContext(t, sess.Version), sess.ID)
+	sess = advanceAuthorizedFlowToImported(t, svc, sess)
+	accepted, err := svc.RunAcceptance(authorizedFlowContext(t, sess.Version), sess.ID)
 	if err != nil {
 		t.Fatalf("acceptance: %v", err)
 	}
+	sess.Version = accepted.Version
 	acct.account.Extra[FormalPoolExtraHealthcheckRawRef] = ""
 
 	_, err = svc.Activate(authorizedFlowContext(t, sess.Version), sess.ID)
@@ -917,17 +930,12 @@ func TestFormalPoolStartWarmingWritesWarmingUntil(t *testing.T) {
 		CCGatewayRuntime: &formalRuntimeFake{},
 	})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
-	_, _ = svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, err := svc.ExchangeCodeAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	_, err = svc.RunAcceptance(authorizedFlowContext(t, sess.Version), sess.ID)
+	sess = advanceAuthorizedFlowToImported(t, svc, sess)
+	accepted, err := svc.RunAcceptance(authorizedFlowContext(t, sess.Version), sess.ID)
 	if err != nil {
 		t.Fatalf("acceptance: %v", err)
 	}
+	sess.Version = accepted.Version
 	_, err = svc.StartWarming(authorizedFlowContext(t, sess.Version), sess.ID)
 	if err != nil {
 		t.Fatalf("start warming: %v", err)
@@ -945,16 +953,10 @@ func TestFormalPoolRegisterRuntimeRequiresRefreshOnlyGate(t *testing.T) {
 	runtime := &formalRuntimeFake{}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{normalizedProxyURL: "socks5h://proxy.local:1080"}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGatewayRuntime: runtime})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
-	_, _ = svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, err := svc.ExchangeCodeAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
-	if err != nil {
-		t.Fatalf("exchange/create: %v", err)
-	}
+	sess = advanceAuthorizedFlowToImported(t, svc, sess)
 
 	callsBefore := runtime.calls
-	_, err = svc.RegisterRuntime(authorizedFlowContext(t, sess.Version), sess.ID)
+	_, err := svc.RegisterRuntime(authorizedFlowContext(t, sess.Version), sess.ID)
 	if err == nil {
 		t.Fatalf("runtime registration must fail before refresh-only gate")
 	}
@@ -969,13 +971,7 @@ func TestFormalPoolRefreshOnlyInvalidatesRuntimeRegistrationWhenCredentialRefres
 	oauth := &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}, refreshSummary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, refreshCreds: map[string]any{"access_token": "new-access", "refresh_token": "new-refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{normalizedProxyURL: "socks5h://proxy.local:1080"}, OAuth: oauth, Refresh: oauth, Accounts: acct, CCGatewayRuntime: runtime})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
-	_, _ = svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, err := svc.ExchangeCodeAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
-	if err != nil {
-		t.Fatalf("exchange/create: %v", err)
-	}
+	sess = advanceAuthorizedFlowToImported(t, svc, sess)
 
 	got, err := svc.RefreshOnly(authorizedFlowContext(t, sess.Version), sess.ID)
 	if err != nil {
@@ -995,14 +991,12 @@ func TestFormalPoolRefreshOnlyThenRegisterRuntimePromotesRuntimeRegistered(t *te
 	oauth := &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}, refreshSummary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, refreshCreds: map[string]any{"access_token": "new-access", "refresh_token": "new-refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: oauth, Refresh: oauth, Accounts: acct})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
-	_, _ = svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.ExchangeCodeAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
-	_, err := svc.RefreshOnly(authorizedFlowContext(t, sess.Version), sess.ID)
+	sess = advanceAuthorizedFlowToImported(t, svc, sess)
+	refreshed, err := svc.RefreshOnly(authorizedFlowContext(t, sess.Version), sess.ID)
 	if err != nil {
 		t.Fatalf("refresh-only: %v", err)
 	}
+	sess = refreshed
 	svc.ccGatewayRuntime = runtime
 
 	got, err := svc.RegisterRuntime(authorizedFlowContext(t, sess.Version), sess.ID)
@@ -1021,10 +1015,7 @@ func TestFormalPoolRunAcceptanceReturnsErrorWhenHealthcheckStateUpdateFails(t *t
 	acct := &formalAccountFake{stateUpdateErr: errors.New("db down")}
 	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Proxy: &formalProxyFake{}, OAuth: &formalOAuthFake{summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true, ExpiresInBucket: "gt_1h"}, creds: map[string]any{"access_token": "access", "refresh_token": "refresh", "scope": "user:profile user:inference user:sessions:claude_code"}}, Accounts: acct, CCGateway: formalCCFake{}, CCGatewayRuntime: &formalRuntimeFake{}, Acceptance: formalAcceptanceFake{}})
 	sess, _ := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(9), GroupID: 42, AccountName: "acct"})
-	_, _ = svc.TestProxy(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.AttestBrowserEgress(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
-	_, _ = svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
-	_, _ = svc.ExchangeCodeAndCreate(authorizedFlowContext(t, sess.Version), sess.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "oauth-code"})
+	sess = advanceAuthorizedFlowToImported(t, svc, sess)
 
 	accepted, err := svc.RunAcceptance(authorizedFlowContext(t, sess.Version), sess.ID)
 	if err == nil {

@@ -72,11 +72,21 @@ type FormalPoolOnboardingPrincipalRevalidator interface {
 }
 
 type FormalPoolOperationReservation struct {
-	OperationID        string
-	Kind               string
-	InputVersion       int64
-	ReservationVersion int64
-	StartedAt          time.Time
+	OperationID           string
+	Kind                  string
+	InputVersion          int64
+	ReservationVersion    int64
+	StartedAt             time.Time
+	IdempotencyKeySafeRef string
+	RequestFingerprint    string
+}
+
+type formalPoolOperationOutcome struct {
+	Kind                  string
+	IdempotencyKeySafeRef string
+	RequestFingerprint    string
+	Version               int64
+	Status                string
 }
 
 type formalPoolRequestAuthorityContextKey struct{}
@@ -184,12 +194,25 @@ func (s *FormalPoolOnboardingService) beginReservedMutation(ctx context.Context,
 	if err != nil {
 		return nil, nil, err
 	}
+	return s.reserveAuthorizedMutation(snapshot, operationKind)
+}
+
+func (s *FormalPoolOnboardingService) reserveAuthorizedMutation(snapshot *formalPoolOnboardingSessionRecord, operationKind string) (*formalPoolOnboardingSessionRecord, *FormalPoolOperationReservation, error) {
+	return s.reserveAuthorizedMutationWithIdempotency(snapshot, operationKind, "", "")
+}
+
+func (s *FormalPoolOnboardingService) reserveAuthorizedMutationWithIdempotency(snapshot *formalPoolOnboardingSessionRecord, operationKind, keySafeRef, requestFingerprint string) (*formalPoolOnboardingSessionRecord, *FormalPoolOperationReservation, error) {
+	if snapshot == nil {
+		return nil, nil, ErrFormalPoolOnboardingNotFound
+	}
 	reservation := &FormalPoolOperationReservation{
-		OperationID:        formalPoolRandomID("fpo_op_"),
-		Kind:               strings.TrimSpace(operationKind),
-		InputVersion:       snapshot.Version,
-		ReservationVersion: snapshot.Version + 1,
-		StartedAt:          s.store.now(),
+		OperationID:           formalPoolRandomID("fpo_op_"),
+		Kind:                  strings.TrimSpace(operationKind),
+		InputVersion:          snapshot.Version,
+		ReservationVersion:    snapshot.Version + 1,
+		StartedAt:             s.store.now(),
+		IdempotencyKeySafeRef: keySafeRef,
+		RequestFingerprint:    requestFingerprint,
 	}
 	updated, err := s.store.casUpdate(snapshot.ID, snapshot.Version, func(rec *formalPoolOnboardingSessionRecord) error {
 		if rec.ActiveOperation != nil {
@@ -203,6 +226,58 @@ func (s *FormalPoolOnboardingService) beginReservedMutation(ctx context.Context,
 		return nil, nil, err
 	}
 	return updated, reservation, nil
+}
+
+func (s *FormalPoolOnboardingService) beginIdempotentReservedMutation(ctx context.Context, id, operationKind, requestFingerprint string, allowedStates ...string) (*formalPoolOnboardingSessionRecord, *FormalPoolOperationReservation, bool, error) {
+	authority, err := s.authorityFromContext(ctx)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	rec, ok := s.store.get(id)
+	if !ok {
+		return nil, nil, false, ErrFormalPoolOnboardingNotFound
+	}
+	if !formalPoolOwnerMatches(authority.Principal, rec) {
+		return nil, nil, false, ErrFormalPoolOnboardingForbidden
+	}
+	if err := s.revalidatePrincipal(ctx, authority.Principal); err != nil {
+		return nil, nil, false, err
+	}
+	if !validFormalPoolIdempotencyKey(authority.IdempotencyKey) {
+		return nil, nil, false, ErrFormalPoolIdempotencyKeyRequired
+	}
+	keySafeRef := formalPoolSafeRef("operation_key", authority.IdempotencyKey)
+	if active := rec.ActiveOperation; active != nil {
+		if active.Kind == operationKind && active.IdempotencyKeySafeRef == keySafeRef && active.RequestFingerprint == requestFingerprint {
+			return rec, nil, true, nil
+		}
+		return nil, nil, false, ErrFormalPoolOnboardingVersionConflict
+	}
+	if outcome := rec.LastOperation; outcome != nil && outcome.IdempotencyKeySafeRef == keySafeRef {
+		if outcome.Kind == operationKind && outcome.RequestFingerprint == requestFingerprint {
+			return rec, nil, true, nil
+		}
+		return nil, nil, false, ErrFormalPoolOnboardingVersionConflict
+	}
+	if _, err := authorizeFormalPoolVersionAndState(authority, rec, true, allowedStates...); err != nil {
+		return nil, nil, false, err
+	}
+	reserved, reservation, err := s.reserveAuthorizedMutationWithIdempotency(rec, operationKind, keySafeRef, requestFingerprint)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	return reserved, reservation, false, nil
+}
+
+func (s *FormalPoolOnboardingService) failReservedMutationUnknown(id string, reservation *FormalPoolOperationReservation, cause error) error {
+	_, finalizeErr := s.failReservedMutation(id, reservation, func(rec *formalPoolOnboardingSessionRecord) error {
+		rec.Status = FormalPoolOnboardingStatusOperationOutcomeUnknown
+		return nil
+	})
+	if finalizeErr != nil {
+		return errors.Join(cause, finalizeErr)
+	}
+	return cause
 }
 
 func (s *FormalPoolOnboardingService) beginCreateReservation(rec *formalPoolOnboardingSessionRecord) (*formalPoolOnboardingSessionRecord, bool, error) {

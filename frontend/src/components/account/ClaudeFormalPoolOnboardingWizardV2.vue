@@ -492,6 +492,9 @@ const pendingPromoteProductionConfirm = ref(false)
 const authMode = ref<'oauth' | 'setup-token-cookie'>('oauth')
 const oauthCode = ref('')
 const setupSessionKey = ref('')
+const createIdempotencyKey = ref('')
+const exchangeIdempotencyKey = ref('')
+const promoteIdempotencyKey = ref('')
 const copyStatus = ref('')
 const oauthCopyStatus = ref('')
 const proxyOptions = ref<Proxy[]>([])
@@ -1186,6 +1189,15 @@ async function run<T>(fn: () => Promise<T>): Promise<T | null> {
   try {
     return await fn()
   } catch (err: any) {
+    const status = Number(err?.response?.status || 0)
+    const id = session.value?.id
+    if (id && (status === 409 || status >= 500 || status === 0)) {
+      try {
+        session.value = await claudeOnboarding.getSession(id)
+      } catch {
+        // Keep the last known safe snapshot when reconciliation also fails.
+      }
+    }
     error.value = err?.response?.data?.message || err?.message || '操作失败'
     return null
   } finally {
@@ -1205,9 +1217,11 @@ function sessionPayload() {
 async function startSession() {
   egressPolling.stop()
   acceptance.value = null
-  const res = await run(() => claudeOnboarding.createSession(sessionPayload()))
+  if (!createIdempotencyKey.value) createIdempotencyKey.value = crypto.randomUUID()
+  const res = await run(() => claudeOnboarding.createSession(sessionPayload(), createIdempotencyKey.value))
   if (res) {
     session.value = res
+    createIdempotencyKey.value = ''
     activeStep.value = 'proxy'
   }
 }
@@ -1215,7 +1229,7 @@ async function startSession() {
 async function testProxyStep() {
   if (!session.value) return
   egressPolling.stop()
-  const res = await run(() => claudeOnboarding.testProxy(session.value!.id))
+  const res = await run(() => claudeOnboarding.testProxy(session.value!))
   if (res) {
     session.value = res
     if (requiresBrowserEgress.value) {
@@ -1228,22 +1242,24 @@ async function testProxyStep() {
 
 async function generateOAuth() {
   if (!session.value) return
-  const res = await run(() => claudeOnboarding.generateAuthUrl(session.value!.id))
+  const res = await run(() => claudeOnboarding.generateAuthUrl(session.value!))
   if (res) session.value = res
 }
 
 async function exchangeCreate() {
   if (!session.value) return
-  const res = await run(() => claudeOnboarding.exchangeCodeAndCreate(session.value!.id, oauthCode.value))
+  if (!exchangeIdempotencyKey.value) exchangeIdempotencyKey.value = crypto.randomUUID()
+  const res = await run(() => claudeOnboarding.exchangeCodeAndCreate(session.value!, oauthCode.value, exchangeIdempotencyKey.value))
   if (res) {
     session.value = res
+    exchangeIdempotencyKey.value = ''
     activeStep.value = 'gates'
   }
 }
 
 async function setupTokenCreate() {
   if (!session.value) return
-  const res = await run(() => claudeOnboarding.setupTokenCookieAuthAndCreate(session.value!.id, setupSessionKey.value))
+  const res = await run(() => claudeOnboarding.setupTokenCookieAuthAndCreate(session.value!, setupSessionKey.value))
   if (res) {
     session.value = res
     setupSessionKey.value = ''
@@ -1253,13 +1269,13 @@ async function setupTokenCreate() {
 
 async function refreshOnlyStep() {
   if (!session.value) return
-  const res = await run(() => claudeOnboarding.refreshOnly(session.value!.id))
+  const res = await run(() => claudeOnboarding.refreshOnly(session.value!))
   if (res) session.value = res
 }
 
 async function runtimeRegisterStep() {
   if (!session.value) return
-  const res = await run(() => claudeOnboarding.runtimeRegister(session.value!.id))
+  const res = await run(() => claudeOnboarding.runtimeRegister(session.value!))
   if (res) session.value = res
 }
 
@@ -1271,10 +1287,10 @@ async function healthcheckStep() {
 async function confirmHealthcheckStep() {
   pendingHealthcheckConfirm.value = false
   if (!session.value) return
-  const res = await run(() => claudeOnboarding.healthcheck(session.value!.id))
+  const res = await run(() => claudeOnboarding.healthcheck(session.value!))
   if (res) {
     acceptance.value = res
-    session.value = { ...session.value, healthcheck_passed: res.status === 'healthcheck_passed', status: res.status }
+    session.value = { ...session.value, version: res.version, healthcheck_passed: res.status === 'healthcheck_passed', status: res.status }
   }
 }
 
@@ -1284,7 +1300,7 @@ function cancelHealthcheckConfirm() {
 
 async function startWarmingStep() {
   if (!session.value) return
-  const res = await run(() => claudeOnboarding.startWarming(session.value!.id))
+  const res = await run(() => claudeOnboarding.startWarming(session.value!))
   if (res) session.value = res
 }
 
@@ -1319,8 +1335,12 @@ async function promoteProductionStep() {
 async function confirmPromoteProductionStep() {
   pendingPromoteProductionConfirm.value = false
   if (!session.value) return
-  const res = await run(() => claudeOnboarding.promoteProduction(session.value!.id))
-  if (res) session.value = res
+  if (!promoteIdempotencyKey.value) promoteIdempotencyKey.value = crypto.randomUUID()
+  const res = await run(() => claudeOnboarding.promoteProduction(session.value!, promoteIdempotencyKey.value))
+  if (res) {
+    session.value = res
+    promoteIdempotencyKey.value = ''
+  }
 }
 
 function cancelPromoteProductionConfirm() {

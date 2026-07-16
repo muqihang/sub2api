@@ -8,6 +8,7 @@ import type { FormalPoolSession } from '@/api/admin/claudeOnboarding'
 function sessionFixture(overrides: Partial<FormalPoolSession> = {}): FormalPoolSession {
   return {
     id: 'session-1',
+    version: 1,
     status: 'proxy_tested',
     pool_profile: 'normal',
     group_id: 1,
@@ -121,5 +122,22 @@ describe('useEgressCheckPolling', () => {
     await flush()
     expect(poller.status.value).toBe('verified')
     expect(poller.session.value?.browser_egress_verified).toBe(true)
+  })
+
+  it('does not replace a newer session with an older polling version', async () => {
+    const fetchSession = vi.fn()
+      .mockResolvedValueOnce(sessionFixture({ version: 5, browser_egress_check_status: 'verified' }))
+      .mockResolvedValueOnce(sessionFixture({ version: 4, browser_egress_check_status: 'waiting' }))
+    const { poller } = mountHarness(fetchSession)
+
+    poller.start('session-1')
+    await flush()
+    expect(poller.session.value?.version).toBe(5)
+
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+
+    expect(poller.session.value?.version).toBe(5)
+    expect(poller.status.value).toBe('verified')
   })
 })
