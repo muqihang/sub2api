@@ -61,7 +61,8 @@ disagrees with the upstream returned by Caddy's Admin API, deployment stops.
    candidate that has no published host ports. The candidate starts with
    `restart=no`; its target restart policy is applied only after final commit.
 4. Wait for Docker health and probe the candidate bridge IP directly.
-5. Run normal Responses and Compact probes directly against the candidate.
+5. Run normal Responses, streaming Compact, and both native Search path probes
+   directly against the candidate.
 6. Validate the candidate Caddyfile through stdin.
 7. Re-read Caddy and the host Caddyfile, aborting if the full canonical active
    JSON or host file changed since the initial snapshot; then reload through
@@ -69,7 +70,8 @@ disagrees with the upstream returned by Caddy's Admin API, deployment stops.
 8. Adapt the candidate Caddyfile to expected native JSON before reload. After
    reload, require the full active JSON to match that expected JSON before the
    transaction claims ownership.
-9. Run public health, Responses, and Compact probes.
+9. Run public health, Responses, streaming Compact, `/alpha/search`, and
+   `/v1/alpha/search` probes.
 10. Monitor public health for the configured soak window, then require the full
     active Caddy JSON and persistent Caddyfile to still match the transaction's
     candidate state before declaring success.
@@ -82,6 +84,13 @@ Both API probes send paired official-client identity headers (`User-Agent` and
 `originator`) so accounts with `codex_cli_only` exercise the real Codex path.
 The normal Responses probe also requires `status=completed` and an output text
 equal to `OK`; an empty HTTP 200 JSON object cannot pass.
+
+Each native Search probe requires HTTP 200, JSON Content-Type, a top-level JSON
+object, a non-empty string `output`, and absent/null/string `encrypted_output`.
+Search response bytes flow directly into a validator and are never written to
+the deployment state directory or logs. Only a sanitized status/media-type
+verdict exists transiently; Search request JSON, `output`, and
+`encrypted_output` are not retained.
 
 Only this final line is a successful deployment:
 
@@ -127,6 +136,10 @@ snapshots, smoke request/response artifacts, and `deploy.log`. It never stores
 `SMOKE_API_KEY` or a copied application environment file. Inherited values are
 exported only inside the short-lived `docker create` subprocess while Docker
 arguments contain variable names, not `KEY=secret` values.
+
+Responses and Compact keep their existing diagnostic artifacts. Native Search
+is the exception: neither Search requests nor raw Search responses are written
+to `STATE_DIR`, including failed probes.
 
 The current Caddy uses a read-only single-file bind mount. If its mounted file
 is stale, the command prints a warning. This does not change reload behavior:

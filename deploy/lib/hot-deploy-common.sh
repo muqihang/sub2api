@@ -29,7 +29,7 @@ Options:
   --candidate NAME         Candidate container name
   --active-container NAME  Override active application container discovery
   --config FILE            Load deployment settings from FILE
-  --skip-api-smoke         Explicitly skip Responses and Compact smoke probes
+  --skip-api-smoke         Explicitly skip Responses, Compact, and Search smoke probes
   --dry-run                Validate input and print the intended deployment
   --help                   Show this help
 EOF
@@ -44,6 +44,8 @@ apply_defaults() {
   HEALTH_PATH="${HEALTH_PATH:-/health}"
   RESPONSES_PATH="${RESPONSES_PATH:-/responses}"
   COMPACT_PATH="${COMPACT_PATH:-/responses}"
+  NATIVE_SEARCH_ROOT_PATH="${NATIVE_SEARCH_ROOT_PATH:-/alpha/search}"
+  NATIVE_SEARCH_V1_PATH="${NATIVE_SEARCH_V1_PATH:-/v1/alpha/search}"
   CONTAINER_PREFIX="${CONTAINER_PREFIX:-sub2api-next}"
   SMOKE_MODEL="${SMOKE_MODEL:-gpt-5.6-sol}"
   SMOKE_USER_AGENT="${SMOKE_USER_AGENT:-codex_cli_rs/hot-deploy}"
@@ -673,6 +675,138 @@ probe_health() {
   run_probe health "${scope}" "${base_url}${HEALTH_PATH}"
 }
 
+validate_native_search_headers() {
+  local verdict_file="$1"
+  python3 -c '
+import re
+import sys
+
+raw = sys.stdin.buffer.read().decode("iso-8859-1", "replace")
+blocks = [block for block in re.split(r"\r?\n\r?\n", raw) if block.strip()]
+status = None
+content_type = ""
+for block in blocks:
+    lines = block.splitlines()
+    if not lines or not lines[0].startswith("HTTP/"):
+        continue
+    parts = lines[0].split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        continue
+    candidate_status = int(parts[1])
+    if 100 <= candidate_status < 200:
+        continue
+    status = candidate_status
+    content_type = ""
+    for line in lines[1:]:
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        if key.strip().lower() == "content-type":
+            content_type = value.strip().lower()
+if status != 200:
+    raise SystemExit("native Search probe returned a non-200 status")
+if content_type.split(";", 1)[0].strip() != "application/json":
+    raise SystemExit("native Search probe returned a non-JSON Content-Type")
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    handle.write("status=200 content_type=application/json\n")
+' "${verdict_file}"
+}
+
+validate_native_search_body_stream() {
+  python3 -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin.buffer)
+except Exception:
+    raise SystemExit("native Search probe returned malformed JSON")
+if not isinstance(payload, dict):
+    raise SystemExit("native Search probe response is not a JSON object")
+output = payload.get("output")
+if not isinstance(output, str) or not output.strip():
+    raise SystemExit("native Search probe returned no output string")
+encrypted = payload.get("encrypted_output")
+if encrypted is not None and not isinstance(encrypted, str):
+    raise SystemExit("native Search probe returned invalid encrypted_output")
+' >/dev/null
+}
+
+probe_native_search_path() {
+  local base_url="${1%/}"
+  local scope="$2"
+  local path="$3"
+  local kind="$4"
+  local escaped_key payload scratch headers_fifo header_verdict header_pid
+  local curl_status body_status header_status had_errexit=false
+  local -a pipeline_status
+
+  case "${SMOKE_API_KEY}" in
+    *$'\n'*|*$'\r'*)
+      printf 'SMOKE_API_KEY must not contain a newline\n' >&2
+      return 1
+      ;;
+  esac
+  case "${SMOKE_USER_AGENT}${SMOKE_ORIGINATOR}" in
+    *$'\n'*|*$'\r'*)
+      printf 'Codex smoke identity headers must not contain a newline\n' >&2
+      return 1
+      ;;
+  esac
+  escaped_key="${SMOKE_API_KEY//\\/\\\\}"
+  escaped_key="${escaped_key//\"/\\\"}"
+  payload="$(python3 -c 'import json,sys; print(json.dumps({"id":"hot-deploy-native-search","model":sys.argv[1],"commands":{}}, separators=(",",":")))' "${SMOKE_MODEL}")" || return 1
+
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/sub2api-native-search-probe.XXXXXX")" || return 1
+  headers_fifo="${scratch}/headers.fifo"
+  header_verdict="${scratch}/header.verdict"
+  mkfifo "${headers_fifo}" || {
+    rm -rf "${scratch}"
+    return 1
+  }
+  validate_native_search_headers "${header_verdict}" <"${headers_fifo}" &
+  header_pid=$!
+
+  [[ $- == *e* ]] && had_errexit=true
+  set +e
+  HOT_DEPLOY_PROBE_SCOPE="${scope}" HOT_DEPLOY_PROBE_KIND="${kind}" \
+    curl -sS --max-time "${REQUEST_TIMEOUT_SECONDS}" --dump-header "${headers_fifo}" \
+    --data-binary @<(printf '%s' "${payload}") --config - <<EOF | validate_native_search_body_stream
+url = "${base_url}${path}"
+header = "Authorization: Bearer ${escaped_key}"
+header = "Content-Type: application/json"
+header = "Accept: application/json"
+header = "User-Agent: ${SMOKE_USER_AGENT}"
+header = "originator: ${SMOKE_ORIGINATOR}"
+EOF
+  pipeline_status=("${PIPESTATUS[@]}")
+  curl_status="${pipeline_status[0]}"
+  body_status="${pipeline_status[1]}"
+  if [[ "${curl_status}" -ne 0 ]]; then
+    kill "${header_pid}" 2>/dev/null || true
+    wait "${header_pid}" 2>/dev/null
+    header_status=1
+  else
+    wait "${header_pid}"
+    header_status=$?
+  fi
+  [[ "${had_errexit}" == "true" ]] && set -e
+
+  if [[ "${curl_status}" -ne 0 || "${body_status}" -ne 0 || "${header_status}" -ne 0 || ! -s "${header_verdict}" ]]; then
+    rm -rf "${scratch}"
+    return 1
+  fi
+  rm -rf "${scratch}"
+  log "Native Search probe passed: scope=${scope} path=${path}"
+}
+
+probe_native_search_pair() {
+  local base_url="$1"
+  local scope="$2"
+  probe_native_search_path "${base_url}" "${scope}" "${NATIVE_SEARCH_ROOT_PATH}" native-search-root || return 1
+  probe_native_search_path "${base_url}" "${scope}" "${NATIVE_SEARCH_V1_PATH}" native-search-v1
+}
+
 probe_api_pair() {
   local base_url="${1%/}"
   local scope="$2"
@@ -680,7 +814,8 @@ probe_api_pair() {
   run_probe responses "${scope}" "${base_url}${RESPONSES_PATH}" \
     "${RESPONSES_SMOKE_PAYLOAD}" || return 1
   run_probe compact "${scope}" "${base_url}${COMPACT_PATH}" \
-    "${COMPACT_SMOKE_PAYLOAD}"
+    "${COMPACT_SMOKE_PAYLOAD}" || return 1
+  probe_native_search_pair "${base_url}" "${scope}"
 }
 
 require_commands() {

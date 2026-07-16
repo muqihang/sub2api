@@ -246,6 +246,8 @@ setup_candidate_case() {
   export HEALTH_PATH=/health
   export RESPONSES_PATH=/v1/responses
   export COMPACT_PATH=/responses
+  export NATIVE_SEARCH_ROOT_PATH=/alpha/search
+  export NATIVE_SEARCH_V1_PATH=/v1/alpha/search
   export SMOKE_MODEL=gpt-5.6-sol
   export SMOKE_USER_AGENT=codex_cli_rs/hot-deploy
   export SMOKE_ORIGINATOR=codex_cli_rs
@@ -440,10 +442,12 @@ test_candidate_probe_pair_succeeds_without_secret_artifacts() {
   probe_health "${base_url}" direct
   probe_api_pair "${base_url}" direct
   local status=$?
-  assert_status "${status}" 0 "candidate health, Responses, and Compact probes pass"
+  assert_status "${status}" 0 "candidate health, Responses, Compact, and native Search probes pass"
   assert_file_contains "${case_dir}/curl.log" "scope=direct kind=health" "direct health probe is recorded"
   assert_file_contains "${case_dir}/curl.log" "scope=direct kind=responses" "direct Responses probe is recorded"
   assert_file_contains "${case_dir}/curl.log" "scope=direct kind=compact" "direct Compact probe is recorded"
+  assert_file_contains "${case_dir}/curl.log" "scope=direct kind=native-search-root" "direct root native Search probe is recorded"
+  assert_file_contains "${case_dir}/curl.log" "scope=direct kind=native-search-v1" "direct v1 native Search probe is recorded"
   assert_file_contains "${case_dir}/curl.log" 'header = "User-Agent: codex_cli_rs/' "smoke identifies as an official Codex client"
   assert_file_contains "${case_dir}/curl.log" 'header = "originator: codex_cli_rs"' "smoke sends the paired Codex originator"
   assert_file_contains "${COMPACT_SMOKE_PAYLOAD}" '"stream":true' "Compact smoke exercises the streaming client path"
@@ -453,6 +457,26 @@ test_candidate_probe_pair_succeeds_without_secret_artifacts() {
   else
     pass "candidate probe artifacts redact the API key"
   fi
+  if rg -q 'SEARCH_(OUTPUT|ENCRYPTED)_SENTINEL' "${STATE_DIR}" "${case_dir}/curl.log" 2>/dev/null; then
+    fail "candidate probe artifacts must not retain native Search output"
+  else
+    pass "candidate probe artifacts do not retain native Search output"
+  fi
+}
+
+test_native_search_rejects_invalid_contracts() {
+  local case_dir mode status env_var
+  for mode in TRANSPORT_FAIL HTML BAD_CONTENT_TYPE MALFORMED MISSING_OUTPUT INVALID_OUTPUT INVALID_ENCRYPTED; do
+    case_dir="${TEST_ROOT}/candidate-native-search-${mode}"
+    setup_candidate_case "${case_dir}"
+    env_var="FAKE_NATIVE_SEARCH_${mode}"
+    printf -v "${env_var}" '%s' 1
+    export "${env_var}"
+    probe_api_pair "http://172.18.0.99:8080" direct 2>"${case_dir}/probe.err"
+    status=$?
+    unset "${env_var}"
+    assert_status "${status}" 1 "native Search rejects ${mode} response"
+  done
 }
 
 run_candidate_tests() {
@@ -467,6 +491,7 @@ run_candidate_tests() {
   test_compact_requires_terminal_compaction_sse
   test_compact_requires_completed_status
   test_candidate_probe_pair_succeeds_without_secret_artifacts
+  test_native_search_rejects_invalid_contracts
 }
 
 test_transaction_success_commits_cutover() {
@@ -498,6 +523,21 @@ test_public_failure_rolls_back() {
   assert_contains "${output}" "ROLLBACK VERIFIED" "public failure verifies rollback"
   assert_file_contains "${case_dir}/caddy-active.json" "sub2api-next-v5:8080" "rollback restores active Caddy JSON"
   assert_file_contains "${case_dir}/Caddyfile" "sub2api-next-v5:8080" "rollback restores persistent Caddyfile"
+}
+
+test_public_native_search_failure_rolls_back() {
+  local case_dir="${TEST_ROOT}/transaction-public-native-search-fail"
+  FAKE_PUBLIC_NATIVE_SEARCH_V1_FAIL=1 run_transaction_deploy "${case_dir}"
+  local status=$?
+  local output
+  output="$(captured_output "${case_dir}")"
+  if [[ "${status}" -ne 0 ]]; then
+    pass "public native Search failure fails the deployment"
+  else
+    fail "public native Search failure fails the deployment"
+  fi
+  assert_contains "${output}" "ROLLBACK VERIFIED" "public native Search failure verifies rollback"
+  assert_file_contains "${case_dir}/caddy-active.json" "sub2api-next-v5:8080" "native Search rollback restores active Caddy JSON"
 }
 
 test_soak_failure_rolls_back() {
@@ -640,6 +680,7 @@ test_signal_rolls_back() {
 run_transaction_tests() {
   test_transaction_success_commits_cutover
   test_public_failure_rolls_back
+  test_public_native_search_failure_rolls_back
   test_soak_failure_rolls_back
   test_rollback_verification_failure_is_critical
   test_pre_cutover_caddy_drift_aborts_without_overwrite
@@ -663,6 +704,8 @@ test_repository_deployment_policy() {
   assert_file_contains "${runbook}" "SMOKE_API_KEY" "runbook documents mandatory API smoke credentials"
   assert_file_contains "${runbook}" "ROLLBACK VERIFIED" "runbook documents verified rollback evidence"
   assert_file_contains "${runbook}" "/responses" "runbook documents the real Codex remote compact path"
+  assert_file_contains "${runbook}" "/alpha/search" "runbook documents native Search deployment gates"
+  assert_file_contains "${runbook}" "never written" "runbook documents native Search artifact privacy"
   assert_file_contains "${example_config}" "COMPACT_SMOKE_BYTES=1048576" "example config keeps the large compact canary"
   assert_file_contains "${DEPLOY_DIR}/Makefile" "test-hot-deploy" "deploy Makefile exposes the regression suite"
   local repository_root="${DEPLOY_DIR}/.."
