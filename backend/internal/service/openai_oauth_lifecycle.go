@@ -211,25 +211,6 @@ func EvaluateOpenAIImportLifecycleWithExtra(
 		decisionExtra["openai_gateway_egress_bucket"] = bucket
 	}
 
-	if capability.Known && !capability.ResponsesWriteCapable {
-		return &OpenAIImportLifecycleDecision{
-			PoolRole:          OpenAIPoolRoleQuarantine,
-			AuthState:         OpenAIAuthStateTerminal,
-			TokenSource:       OpenAITokenSourceRTManaged,
-			ValidationOutcome: OpenAIValidationOutcomeRTValidationScopeInsufficient,
-			Status:            StatusDisabled,
-			Schedulable:       false,
-			Credentials:       validated,
-			RefreshErrorCode:  openAIAuthErrorCodeResponsesWriteMissing,
-			Extra: mergeMap(decisionExtra, map[string]any{
-				"openai_pool_role":               OpenAIPoolRoleQuarantine,
-				"openai_auth_state":              OpenAIAuthStateTerminal,
-				"openai_validation_outcome":      OpenAIValidationOutcomeRTValidationScopeInsufficient,
-				"openai_last_refresh_error_code": openAIAuthErrorCodeResponsesWriteMissing,
-			}),
-		}, nil
-	}
-
 	return &OpenAIImportLifecycleDecision{
 		PoolRole:          OpenAIPoolRoleMain,
 		AuthState:         OpenAIAuthStateHealthy,

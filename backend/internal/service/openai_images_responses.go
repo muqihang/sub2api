@@ -930,7 +930,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesErrorResponse(
 		return nil, &UpstreamFailoverError{
 			StatusCode:             resp.StatusCode,
 			ResponseBody:           body,
-			RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+			RetryableOnSameAccount: account.IsPoolMode() && !isOpenAIInsufficientBalanceError(body, upstreamMsg) && account.IsPoolModeRetryableStatus(resp.StatusCode),
 		}
 	}
 
@@ -1554,7 +1554,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
-				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+				RetryableOnSameAccount: account.IsPoolMode() && !isOpenAIInsufficientBalanceError(respBody, upstreamMsg) && account.IsPoolModeRetryableStatus(resp.StatusCode),
 			}
 		}
 		return s.handleOpenAIImagesErrorResponse(upstreamCtx, resp, c, account, requestModel)
@@ -1687,6 +1687,6 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthResponseError(
 		StatusCode:             upstreamErr.StatusCode,
 		ResponseBody:           responseBody,
 		ResponseHeaders:        headers,
-		RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(upstreamErr.StatusCode),
+		RetryableOnSameAccount: account.IsPoolMode() && !isOpenAIInsufficientBalanceError(responseBody, upstreamErr.clientMessage()) && account.IsPoolModeRetryableStatus(upstreamErr.StatusCode),
 	}
 }

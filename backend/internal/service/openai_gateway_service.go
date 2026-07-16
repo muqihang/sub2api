@@ -4079,7 +4079,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				return nil, &UpstreamFailoverError{
 					StatusCode:             resp.StatusCode,
 					ResponseBody:           respBody,
-					RetryableOnSameAccount: account.IsPoolMode() && (account.IsPoolModeRetryableStatus(resp.StatusCode) || isOpenAITransientProcessingError(resp.StatusCode, upstreamMsg, respBody)),
+					RetryableOnSameAccount: isOpenAIUpstreamRetryableOnSameAccount(account, resp.StatusCode, upstreamMsg, respBody),
 				}
 			}
 			return s.handleErrorResponse(ctx, resp, c, account, body, billingModel)
@@ -4154,6 +4154,28 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 		return forwardResult, nil
 	}
+}
+
+func isOpenAIInsufficientBalanceError(responseBody []byte, upstreamMsg string) bool {
+	code := strings.TrimSpace(extractUpstreamErrorCode(responseBody))
+	if code == "" {
+		code = strings.TrimSpace(gjson.GetBytes(responseBody, "code").String())
+	}
+	if strings.EqualFold(code, "INSUFFICIENT_BALANCE") {
+		return true
+	}
+	message := strings.TrimSpace(upstreamMsg)
+	if message == "" {
+		message = extractUpstreamErrorMessage(responseBody)
+	}
+	return strings.Contains(strings.ToLower(message), "insufficient balance")
+}
+
+func isOpenAIUpstreamRetryableOnSameAccount(account *Account, statusCode int, upstreamMsg string, responseBody []byte) bool {
+	if account == nil || !account.IsPoolMode() || isOpenAIInsufficientBalanceError(responseBody, upstreamMsg) {
+		return false
+	}
+	return account.IsPoolModeRetryableStatus(statusCode) || isOpenAITransientProcessingError(statusCode, upstreamMsg, responseBody)
 }
 
 func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
@@ -5723,7 +5745,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		return nil, &UpstreamFailoverError{
 			StatusCode:             resp.StatusCode,
 			ResponseBody:           body,
-			RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+			RetryableOnSameAccount: account.IsPoolMode() && !isOpenAIInsufficientBalanceError(body, upstreamMsg) && account.IsPoolModeRetryableStatus(resp.StatusCode),
 		}
 	}
 
@@ -5897,7 +5919,7 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 		return nil, &UpstreamFailoverError{
 			StatusCode:             resp.StatusCode,
 			ResponseBody:           body,
-			RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+			RetryableOnSameAccount: account.IsPoolMode() && !isOpenAIInsufficientBalanceError(body, upstreamMsg) && account.IsPoolModeRetryableStatus(resp.StatusCode),
 		}
 	}
 
@@ -6945,11 +6967,20 @@ func normalizeResponsesStreamingTerminalOutput(data []byte, acc *apicompat.Buffe
 		return data, false
 	}
 
-	output := gjson.GetBytes(data, "response.output")
+	normalizedData := data
+	normalized := false
+	if eventType == "response.completed" && !gjson.GetBytes(data, "response.status").Exists() {
+		if updated, err := sjson.SetBytes(data, "response.status", "completed"); err == nil {
+			normalizedData = updated
+			normalized = true
+		}
+	}
+
+	output := gjson.GetBytes(normalizedData, "response.output")
 	hasAccumulatedOutput := (acc != nil && acc.HasContent()) || len(imageOutputs) > 0
 	if output.Exists() && output.IsArray() {
 		if len(output.Array()) > 0 || !hasAccumulatedOutput {
-			return data, false
+			return normalizedData, normalized
 		}
 	}
 
@@ -6957,9 +6988,9 @@ func normalizeResponsesStreamingTerminalOutput(data []byte, acc *apicompat.Buffe
 	if reconstructed, ok := buildResponsesOutputJSON(acc, imageOutputs); ok {
 		outputJSON = reconstructed
 	}
-	updated, err := sjson.SetRawBytes(data, "response.output", outputJSON)
+	updated, err := sjson.SetRawBytes(normalizedData, "response.output", outputJSON)
 	if err != nil {
-		return data, false
+		return normalizedData, normalized
 	}
 	return updated, true
 }

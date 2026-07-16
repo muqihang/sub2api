@@ -105,6 +105,24 @@ func TestOpenAIModelNotFound_DoesNotRuntimeBlockWholeAccount(t *testing.T) {
 	require.Len(t, repo.modelRateLimitCalls, 1)
 }
 
+func TestOpenAITemporaryNetworkHTTPError_DoesNotRuntimeBlockWholeAccount(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{ID: 48, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+
+	shouldDisable := svc.handleOpenAIAccountUpstreamError(
+		context.Background(),
+		account,
+		http.StatusBadGateway,
+		http.Header{},
+		[]byte(`<html><title>502 Bad Gateway</title></html>`),
+		"gpt-5.4",
+		"responses",
+	)
+
+	require.False(t, shouldDisable)
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+}
+
 func TestOpenAIRuntimeBlock_DoesNotShortenExistingBlock(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	account := &Account{ID: 46, Platform: PlatformOpenAI, Type: AccountTypeOAuth}

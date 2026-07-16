@@ -126,8 +126,13 @@ func buildOpenAICompactSSEPayload(finalResponse []byte) ([]byte, bool) {
 		}
 		response = next
 	}
+	next, err := sjson.SetBytes(response, "status", "completed")
+	if err != nil {
+		return nil, false
+	}
+	response = next
 	if usage := gjson.GetBytes(response, "usage"); usage.Exists() && !openAICompactUsageParsableByCodex(usage) {
-		next, err := sjson.DeleteBytes(response, "usage")
+		next, err = sjson.DeleteBytes(response, "usage")
 		if err != nil {
 			return nil, false
 		}
