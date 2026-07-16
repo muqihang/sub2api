@@ -195,7 +195,8 @@ func (s *FormalPoolOnboardingService) beginReservedMutation(ctx context.Context,
 		if rec.ActiveOperation != nil {
 			return ErrFormalPoolOnboardingVersionConflict
 		}
-		rec.ActiveOperation = reservation
+		storedReservation := *reservation
+		rec.ActiveOperation = &storedReservation
 		return nil
 	})
 	if err != nil {
@@ -223,19 +224,7 @@ func (s *FormalPoolOnboardingService) completeReservedMutation(id string, reserv
 	if reservation == nil || strings.TrimSpace(reservation.OperationID) == "" {
 		return nil, ErrFormalPoolOnboardingVersionConflict
 	}
-	return s.store.casUpdate(id, reservation.ReservationVersion, func(rec *formalPoolOnboardingSessionRecord) error {
-		active := rec.ActiveOperation
-		if active == nil || active.OperationID != reservation.OperationID || active.ReservationVersion != reservation.ReservationVersion {
-			return ErrFormalPoolOnboardingVersionConflict
-		}
-		if mutate != nil {
-			if err := mutate(rec); err != nil {
-				return err
-			}
-		}
-		rec.ActiveOperation = nil
-		return nil
-	})
+	return s.store.completeReservedMutation(id, reservation, mutate)
 }
 
 func (s *FormalPoolOnboardingService) authorityFromContext(ctx context.Context) (FormalPoolRequestAuthority, error) {

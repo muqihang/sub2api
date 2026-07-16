@@ -172,6 +172,31 @@ func (s *FormalPoolOnboardingStore) casUpdate(id string, expectedVersion int64, 
 	return cloneFormalPoolOnboardingSessionRecord(next), nil
 }
 
+func (s *FormalPoolOnboardingStore) completeReservedMutation(id string, reservation *FormalPoolOperationReservation, mutate func(*formalPoolOnboardingSessionRecord) error) (*formalPoolOnboardingSessionRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.sessions[strings.TrimSpace(id)]
+	if !ok || rec == nil {
+		return nil, ErrFormalPoolOnboardingNotFound
+	}
+	active := rec.ActiveOperation
+	if reservation == nil || rec.Version != reservation.ReservationVersion ||
+		active == nil || active.OperationID != reservation.OperationID || active.ReservationVersion != reservation.ReservationVersion {
+		return nil, ErrFormalPoolOnboardingVersionConflict
+	}
+	next := cloneFormalPoolOnboardingSessionRecord(rec)
+	if mutate != nil {
+		if err := mutate(next); err != nil {
+			return nil, err
+		}
+	}
+	next.ActiveOperation = nil
+	next.Version = rec.Version + 1
+	next.UpdatedAt = s.now()
+	s.sessions[rec.ID] = next
+	return cloneFormalPoolOnboardingSessionRecord(next), nil
+}
+
 func (s *FormalPoolOnboardingStore) snapshotByAccountID(accountID int64) (*formalPoolOnboardingSessionRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -211,11 +236,16 @@ func (s *FormalPoolOnboardingStore) beginCreateReservation(rec *formalPoolOnboar
 	indexKey := formalPoolCreateKeyIndex(rec.OwnerTenantID, rec.OwnerAdministratorID, rec.OwnerCreatorID, rec.CreateKeySafeRef)
 	if existingID := s.createKeys[indexKey]; existingID != "" {
 		existing := s.sessions[existingID]
-		if existing != nil && !s.sessionExpired(existing, s.now()) {
+		if existing != nil {
+			if !formalPoolCreateOwnerMatches(existing, rec) {
+				return nil, false, ErrFormalPoolOnboardingForbidden
+			}
 			if existing.CreateRequestFingerprint != rec.CreateRequestFingerprint || existing.ActiveOperation != nil {
 				return nil, false, ErrFormalPoolOnboardingVersionConflict
 			}
-			return cloneFormalPoolOnboardingSessionRecord(existing), true, nil
+			if !s.createReservationExpired(existing, s.now()) {
+				return cloneFormalPoolOnboardingSessionRecord(existing), true, nil
+			}
 		}
 		delete(s.createKeys, indexKey)
 	}
@@ -228,6 +258,32 @@ func (s *FormalPoolOnboardingStore) beginCreateReservation(rec *formalPoolOnboar
 
 func (s *FormalPoolOnboardingStore) sessionExpired(rec *formalPoolOnboardingSessionRecord, now time.Time) bool {
 	return rec == nil || now.Sub(rec.CreatedAt) > s.ttl
+}
+
+func (s *FormalPoolOnboardingStore) createReservationExpired(rec *formalPoolOnboardingSessionRecord, now time.Time) bool {
+	if rec == nil {
+		return true
+	}
+	if rec.ActiveOperation != nil || rec.Status == FormalPoolOnboardingStatusOperationOutcomeUnknown {
+		return false
+	}
+	retainedAt := rec.UpdatedAt
+	if retainedAt.IsZero() {
+		retainedAt = rec.CreatedAt
+	}
+	return now.Sub(retainedAt) > s.ttl
+}
+
+func formalPoolCreateOwnerMatches(existing, candidate *formalPoolOnboardingSessionRecord) bool {
+	return existing != nil && candidate != nil &&
+		existing.OwnerSubjectID == candidate.OwnerSubjectID &&
+		existing.OwnerAdministratorID == candidate.OwnerAdministratorID &&
+		existing.OwnerTenantID == candidate.OwnerTenantID &&
+		existing.OwnerCreatorID == candidate.OwnerCreatorID &&
+		existing.OwnerRole == candidate.OwnerRole &&
+		existing.OwnerGroupID > 0 && existing.OwnerGroupID == existing.GroupID &&
+		candidate.OwnerGroupID > 0 && candidate.OwnerGroupID == candidate.GroupID &&
+		existing.OwnerGroupID == candidate.OwnerGroupID
 }
 
 func nonceExpired(rec *formalPoolOnboardingSessionRecord, now time.Time) bool {

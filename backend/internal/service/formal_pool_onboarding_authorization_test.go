@@ -231,6 +231,161 @@ func TestFormalPoolStartSessionProxyFailureFinalizesUnknownAndNeverRetries(t *te
 	require.Nil(t, rec.ActiveOperation)
 }
 
+func TestFormalPoolStartSessionPostTTLReservationStaysExclusiveAndFinalizes(t *testing.T) {
+	proxyErr := errors.New("ambiguous proxy result after ttl")
+	cases := []struct {
+		name       string
+		proxyErr   error
+		wantStatus string
+	}{
+		{name: "success", wantStatus: FormalPoolOnboardingStatusDraft},
+		{name: "error", proxyErr: proxyErr, wantStatus: FormalPoolOnboardingStatusOperationOutcomeUnknown},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clock := newFormalMutableClock(time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC))
+			store := NewFormalPoolOnboardingStore(time.Minute, clock.Now)
+			proxy := &formalBlockingCreateProxy{
+				entered: make(chan struct{}), release: make(chan struct{}), err: tc.proxyErr,
+			}
+			svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{
+				Store: store, Proxy: proxy, PrincipalRevalidator: &formalPrincipalRevalidatorFake{},
+				Groups: &formalGroupReaderFake{groups: map[int64]*Group{101: {ID: 101, Status: StatusActive}}},
+			})
+			ctx := authorizedOnboardingContext("post-ttl-create-key-"+tc.name, 0)
+			req := validAuthorizedStartRequest()
+			type result struct {
+				session *FormalPoolOnboardingSession
+				err     error
+			}
+			firstResult := make(chan result, 1)
+			go func() {
+				session, err := svc.StartSession(ctx, req)
+				firstResult <- result{session: session, err: err}
+			}()
+			<-proxy.entered
+
+			clock.Advance(2 * time.Minute)
+			secondSession, secondErr := svc.StartSession(ctx, req)
+			close(proxy.release)
+			first := <-firstResult
+
+			require.Nil(t, secondSession)
+			require.ErrorIs(t, secondErr, ErrFormalPoolOnboardingVersionConflict)
+			require.Equal(t, int64(1), proxy.calls.Load())
+			if tc.proxyErr == nil {
+				require.NoError(t, first.err)
+				require.NotNil(t, first.session)
+				require.Equal(t, int64(2), first.session.Version)
+			} else {
+				require.Nil(t, first.session)
+				require.ErrorIs(t, first.err, tc.proxyErr)
+			}
+
+			replayed, err := svc.StartSession(ctx, req)
+			require.NoError(t, err)
+			require.Equal(t, int64(2), replayed.Version)
+			require.Equal(t, tc.wantStatus, replayed.Status)
+			require.Equal(t, int64(1), proxy.calls.Load())
+		})
+	}
+}
+
+func TestFormalPoolStartSessionReturnsProxyAndFinalizationErrors(t *testing.T) {
+	proxyErr := errors.New("ambiguous proxy result")
+	proxy := &formalBlockingCreateProxy{
+		entered: make(chan struct{}), release: make(chan struct{}), err: proxyErr,
+	}
+	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{
+		Proxy: proxy, PrincipalRevalidator: &formalPrincipalRevalidatorFake{},
+		Groups: &formalGroupReaderFake{groups: map[int64]*Group{101: {ID: 101, Status: StatusActive}}},
+	})
+	result := make(chan error, 1)
+	go func() {
+		_, err := svc.StartSession(authorizedOnboardingContext("finalization-error-key", 0), validAuthorizedStartRequest())
+		result <- err
+	}()
+	<-proxy.entered
+
+	svc.store.mu.Lock()
+	for _, rec := range svc.store.sessions {
+		if rec != nil && rec.ActiveOperation != nil {
+			rec.ActiveOperation.OperationID = "invalidated-operation"
+		}
+	}
+	svc.store.mu.Unlock()
+	close(proxy.release)
+
+	err := <-result
+	require.ErrorIs(t, err, proxyErr)
+	require.ErrorIs(t, err, ErrFormalPoolOnboardingVersionConflict)
+	require.Equal(t, int64(1), proxy.calls.Load())
+}
+
+func TestFormalPoolStartSessionCreateKeyChecksCompleteOwnerBeforeReplayClassification(t *testing.T) {
+	dimensions := []struct {
+		name   string
+		mutate func(*formalPoolOnboardingSessionRecord)
+	}{
+		{name: "subject", mutate: func(rec *formalPoolOnboardingSessionRecord) { rec.OwnerSubjectID++ }},
+		{name: "administrator", mutate: func(rec *formalPoolOnboardingSessionRecord) { rec.OwnerAdministratorID++ }},
+		{name: "tenant", mutate: func(rec *formalPoolOnboardingSessionRecord) { rec.OwnerTenantID = "other-tenant" }},
+		{name: "creator", mutate: func(rec *formalPoolOnboardingSessionRecord) { rec.OwnerCreatorID++ }},
+		{name: "role", mutate: func(rec *formalPoolOnboardingSessionRecord) { rec.OwnerRole = "user" }},
+		{name: "group integrity", mutate: func(rec *formalPoolOnboardingSessionRecord) { rec.OwnerGroupID++ }},
+	}
+	classifications := []struct {
+		name   string
+		mutate func(*formalPoolOnboardingSessionRecord, *FormalPoolOnboardingStartRequest)
+	}{
+		{
+			name: "completed fingerprint mismatch",
+			mutate: func(_ *formalPoolOnboardingSessionRecord, req *FormalPoolOnboardingStartRequest) {
+				req.AccountName = "changed-fingerprint"
+			},
+		},
+		{
+			name: "active reservation",
+			mutate: func(rec *formalPoolOnboardingSessionRecord, _ *FormalPoolOnboardingStartRequest) {
+				rec.ActiveOperation = &FormalPoolOperationReservation{
+					OperationID: "active-operation", Kind: formalPoolOperationCreateSession,
+					InputVersion: rec.Version, ReservationVersion: rec.Version,
+				}
+			},
+		},
+	}
+
+	for _, classification := range classifications {
+		for _, dimension := range dimensions {
+			t.Run(classification.name+"/"+dimension.name, func(t *testing.T) {
+				proxy := &formalCountingProxy{}
+				svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{
+					Proxy: proxy, PrincipalRevalidator: &formalPrincipalRevalidatorFake{},
+					Groups: &formalGroupReaderFake{groups: map[int64]*Group{101: {ID: 101, Status: StatusActive}}},
+				})
+				ctx := authorizedOnboardingContext("owner-envelope-create-key", 0)
+				req := validAuthorizedStartRequest()
+				created, err := svc.StartSession(ctx, req)
+				require.NoError(t, err)
+
+				svc.store.mu.Lock()
+				rec := svc.store.sessions[created.ID]
+				dimension.mutate(rec)
+				classification.mutate(rec, &req)
+				svc.store.mu.Unlock()
+				proxy.calls.Store(0)
+
+				got, err := svc.StartSession(ctx, req)
+				require.Nil(t, got)
+				require.ErrorIs(t, err, ErrFormalPoolOnboardingForbidden)
+				require.NotErrorIs(t, err, ErrFormalPoolOnboardingVersionConflict)
+				require.Zero(t, proxy.calls.Load())
+			})
+		}
+	}
+}
+
 func TestFormalPoolSessionResponseIncludesVersionWithoutOwnerEnvelope(t *testing.T) {
 	svc, owner, session, _ := newAuthorizedOnboardingFixture(t)
 	encoded, err := json.Marshal(session)
@@ -397,6 +552,31 @@ func TestFormalPoolReservedMutationRequiresExactOperationAndReservationVersion(t
 	require.ErrorIs(t, err, ErrFormalPoolOnboardingVersionConflict)
 }
 
+func TestFormalPoolReservedMutationReturnDoesNotAliasStoredReservation(t *testing.T) {
+	svc, owner, session, _ := newAuthorizedOnboardingFixture(t)
+	ctx := WithFormalPoolRequestAuthority(context.Background(), FormalPoolRequestAuthority{
+		Principal: owner, ExpectedVersion: &session.Version,
+	})
+	_, reservation, err := svc.beginReservedMutation(ctx, session.ID, "test_operation", FormalPoolOnboardingStatusDraft)
+	require.NoError(t, err)
+	original := *reservation
+
+	reservation.OperationID = "mutated-operation"
+	reservation.Kind = "mutated-kind"
+	reservation.InputVersion++
+	reservation.ReservationVersion++
+	reservation.StartedAt = reservation.StartedAt.Add(time.Hour)
+
+	stored, ok := svc.store.get(session.ID)
+	require.True(t, ok)
+	require.Equal(t, &original, stored.ActiveOperation)
+	_, err = svc.finishReservedMutation(session.ID, reservation, nil)
+	require.ErrorIs(t, err, ErrFormalPoolOnboardingVersionConflict)
+	finished, err := svc.finishReservedMutation(session.ID, &original, nil)
+	require.NoError(t, err)
+	require.Nil(t, finished.ActiveOperation)
+}
+
 func newAuthorizedOnboardingFixture(t *testing.T) (*FormalPoolOnboardingService, FormalPoolOnboardingPrincipal, *FormalPoolOnboardingSession, *formalPrincipalRevalidatorFake) {
 	t.Helper()
 	revalidator := &formalPrincipalRevalidatorFake{}
@@ -560,14 +740,19 @@ func (f *formalCountingProxy) GetRawEgressIP(ctx context.Context, proxyID int64,
 type formalBlockingCreateProxy struct {
 	entered chan struct{}
 	release chan struct{}
+	err     error
 	calls   atomic.Int64
 }
 
 func (f *formalBlockingCreateProxy) ResolveOrCreateProxy(ctx context.Context, req FormalPoolOnboardingStartRequest) (FormalPoolProxyResolution, error) {
 	_ = ctx
-	f.calls.Add(1)
-	close(f.entered)
-	<-f.release
+	if f.calls.Add(1) == 1 {
+		close(f.entered)
+		<-f.release
+	}
+	if f.err != nil {
+		return FormalPoolProxyResolution{}, f.err
+	}
 	id := int64(9)
 	if req.ProxyID != nil {
 		id = *req.ProxyID
@@ -581,6 +766,22 @@ func (f *formalBlockingCreateProxy) TestProxy(ctx context.Context, proxyID int64
 
 func (f *formalBlockingCreateProxy) GetRawEgressIP(ctx context.Context, proxyID int64, normalizedProxyURL string) (string, error) {
 	return "", nil
+}
+
+type formalMutableClock struct{ nanos atomic.Int64 }
+
+func newFormalMutableClock(now time.Time) *formalMutableClock {
+	clock := &formalMutableClock{}
+	clock.nanos.Store(now.UnixNano())
+	return clock
+}
+
+func (c *formalMutableClock) Now() time.Time {
+	return time.Unix(0, c.nanos.Load()).UTC()
+}
+
+func (c *formalMutableClock) Advance(delta time.Duration) {
+	c.nanos.Add(int64(delta))
 }
 
 func TestFormalPoolIdempotencyKeyValidationIsCanonicalURLSafe(t *testing.T) {

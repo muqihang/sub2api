@@ -412,10 +412,13 @@ func (s *FormalPoolOnboardingService) StartSession(ctx context.Context, req Form
 	if s.proxy != nil {
 		resolved, resolveErr := s.proxy.ResolveOrCreateProxy(ctx, req)
 		if resolveErr != nil {
-			_, _ = s.failReservedMutation(reserved.ID, reservation, func(rec *formalPoolOnboardingSessionRecord) error {
+			_, finalizeErr := s.failReservedMutation(reserved.ID, reservation, func(rec *formalPoolOnboardingSessionRecord) error {
 				rec.Status = FormalPoolOnboardingStatusOperationOutcomeUnknown
 				return nil
 			})
+			if finalizeErr != nil {
+				return nil, errors.Join(resolveErr, finalizeErr)
+			}
 			return nil, resolveErr
 		}
 		proxyID = resolved.ProxyID
