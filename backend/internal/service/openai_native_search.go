@@ -126,8 +126,12 @@ func (s *OpenAIGatewayService) buildNativeSearchRequest(
 	copyNativeSearchIdentityHeaders(req.Header, clientHeaders)
 	account.ApplyHeaderOverrides(req.Header)
 	profile := buildOpenAIGatewayFallbackProfile(req.Header)
-	if s.gatewayCoreService != nil {
-		if runtime, runtimeErr := s.gatewayCoreService.ResolveAccountRuntime(ctx, account, clientHeaders, OpenAIClientTransportHTTP); runtimeErr == nil && runtime != nil && runtime.Profile != nil {
+	if s.gatewayCoreService != nil && s.gatewayCoreService.IsEnabled() {
+		runtime, runtimeErr := s.gatewayCoreService.ResolveAccountRuntime(ctx, account, clientHeaders, OpenAIClientTransportHTTP)
+		if runtimeErr != nil {
+			return nil, runtimeErr
+		}
+		if runtime != nil && runtime.Profile != nil {
 			profile = runtime.Profile
 		}
 	}
