@@ -9,7 +9,7 @@ import (
 
 func NativeSearchNamespaceGuard() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		path := strings.TrimSpace(c.Request.URL.Path)
+		path := c.Request.URL.Path
 		if !isNativeSearchNamespacePath(path) {
 			c.Next()
 			return

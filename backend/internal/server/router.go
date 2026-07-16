@@ -54,14 +54,13 @@ func SetupRouter(
 	// 应用中间件
 	r.Use(middleware2.RequestLogger())
 	r.Use(middleware2.Logger())
-	r.Use(middleware2.CORS(cfg.CORS))
+	usePreRoutingProtocolMiddleware(r, cfg.CORS)
 	r.Use(middleware2.SecurityHeaders(cfg.Security.CSP, func() []string {
 		if p := cachedFrameOrigins.Load(); p != nil {
 			return *p
 		}
 		return nil
 	}))
-	r.Use(middleware2.NativeSearchNamespaceGuard())
 
 	// Serve embedded frontend with settings injection if available
 	if web.HasEmbeddedFrontend() {
@@ -86,6 +85,11 @@ func SetupRouter(
 	registerRoutes(r, handlers, jwtAuth, adminAuth, apiKeyAuth, apiKeyService, subscriptionService, codexAgentService, opsService, settingService, cfg, redisClient)
 
 	return r
+}
+
+func usePreRoutingProtocolMiddleware(r *gin.Engine, corsConfig config.CORSConfig) {
+	r.Use(middleware2.NativeSearchNamespaceGuard())
+	r.Use(middleware2.CORS(corsConfig))
 }
 
 // registerRoutes 注册所有 HTTP 路由

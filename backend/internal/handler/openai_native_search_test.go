@@ -98,6 +98,22 @@ type nativeSearchHandlerUpstream struct {
 	accountIDs []int64
 }
 
+type nativeSearchBillingCache struct {
+	service.BillingCache
+	balance float64
+}
+
+func (c *nativeSearchBillingCache) GetUserBalance(context.Context, int64) (float64, error) {
+	return c.balance, nil
+}
+
+func (c *nativeSearchBillingCache) GetSubscriptionCache(context.Context, int64, int64) (*service.SubscriptionCacheData, error) {
+	return &service.SubscriptionCacheData{
+		Status:    service.SubscriptionStatusActive,
+		ExpiresAt: time.Now().Add(time.Hour),
+	}, nil
+}
+
 func (u *nativeSearchHandlerUpstream) Do(_ *http.Request, _ string, accountID int64, _ int) (*http.Response, error) {
 	return u.response(accountID)
 }
@@ -184,6 +200,65 @@ func TestNativeSearch_FailsOverAndReleasesConcurrencySlots(t *testing.T) {
 	require.Equal(t, int32(1), atomic.LoadInt32(&cache.releaseUserCalled))
 	require.Equal(t, int32(2), atomic.LoadInt32(&cache.releaseAccountCalled))
 	require.Equal(t, int32(1), atomic.LoadInt32(&cache.releaseAPIKeyCalled))
+}
+
+func TestNativeSearch_RechecksSubscriptionAfterUserSlotWait(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(601)
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAICore.Enabled = true
+
+	req := httptest.NewRequest(http.MethodPost, "/alpha/search", bytes.NewBufferString(`{"id":"session","model":"gpt-5.4","commands":{}}`))
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		ID:      602,
+		GroupID: &groupID,
+		Group: &service.Group{
+			ID:               groupID,
+			Platform:         service.PlatformOpenAI,
+			Status:           service.StatusActive,
+			SubscriptionType: service.SubscriptionTypeSubscription,
+		},
+		User: &service.User{ID: 603, Status: service.StatusActive},
+	})
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 603, Concurrency: 1})
+	c.Set(string(middleware2.ContextKeySubscription), &service.UserSubscription{
+		ID:        604,
+		UserID:    603,
+		GroupID:   groupID,
+		Status:    service.SubscriptionStatusActive,
+		ExpiresAt: time.Now().Add(time.Hour),
+	})
+
+	cache := &concurrencyCacheMock{
+		acquireUserSlotFn: func(context.Context, int64, int, string) (bool, error) {
+			c.Set(string(middleware2.ContextKeySubscription), (*service.UserSubscription)(nil))
+			return true, nil
+		},
+	}
+	concurrencyService := service.NewConcurrencyService(cache)
+	billingCache := service.NewBillingCacheService(&nativeSearchBillingCache{balance: -1}, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(billingCache.Stop)
+	repo := nativeSearchHandlerAccountRepo{}
+	h := NewOpenAIGatewayHandler(
+		service.NewOpenAIGatewayService(
+			repo, nil, nil, nil, nil, nil, nil, cfg, nil, concurrencyService, nil, nil,
+			billingCache, &nativeSearchHandlerUpstream{}, nil, nil,
+		),
+		concurrencyService,
+		service.NewOpenAIGatewayCoreService(repo, cfg, nil),
+		billingCache,
+		service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg),
+		cfg,
+	)
+
+	h.NativeSearch(c)
+
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), "insufficient balance")
+	require.Equal(t, int32(1), atomic.LoadInt32(&cache.releaseUserCalled))
 }
 
 func TestNativeSearch_RejectsInvalidEnvelopeBeforeAdmission(t *testing.T) {

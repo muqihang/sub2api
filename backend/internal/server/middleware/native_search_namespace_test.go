@@ -27,6 +27,8 @@ func TestNativeSearchNamespaceGuard(t *testing.T) {
 		{name: "v1 root", method: http.MethodGet, path: "/v1/alpha", captured: true},
 		{name: "v1 root slash", method: http.MethodGet, path: "/v1/alpha/", captured: true},
 		{name: "v1 unknown", method: http.MethodPost, path: "/v1/alpha/unknown", captured: true},
+		{name: "encoded trailing space", method: http.MethodPost, path: "/alpha/search%20", captured: true},
+		{name: "v1 encoded trailing tab", method: http.MethodPost, path: "/v1/alpha/search%09", captured: true},
 		{name: "alphabet boundary", method: http.MethodGet, path: "/alphabet"},
 		{name: "v1 alphabet boundary", method: http.MethodGet, path: "/v1/alphabet"},
 	}
