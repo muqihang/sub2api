@@ -211,6 +211,9 @@ func validateOpenAINativeSearchResponse(body []byte) error {
 	if !ok {
 		return errors.New("native Search response output is missing")
 	}
+	if bytes.Equal(bytes.TrimSpace(outputRaw), []byte("null")) {
+		return errors.New("native Search response output must be a string")
+	}
 	var output string
 	if err := json.Unmarshal(outputRaw, &output); err != nil {
 		return errors.New("native Search response output must be a string")
