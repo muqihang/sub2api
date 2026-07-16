@@ -49,15 +49,29 @@ returns the native Codex search contract with `encrypted_output` and `output`.
 
 ### Routing and authentication
 
-The authenticated OpenAI gateway router registers `/alpha/search` and
-`/v1/alpha/search` with the same API-key middleware chain used by `/responses`.
-The handler requires an assigned OpenAI group and a valid authenticated user.
-It applies the normal billing-eligibility check before scheduling an upstream
-account.
+The embedded frontend bypass list includes the complete root `/alpha` namespace
+(`/alpha`, `/alpha/`, and descendants) before any Search route is registered.
+The `/v1/` namespace is already bypassed. A namespace guard runs before the
+embedded frontend middleware and permits only `POST /alpha/search` and
+`POST /v1/alpha/search`; every other method or path in `/alpha`, `/alpha/`,
+`/alpha/*`, `/v1/alpha`, `/v1/alpha/`, or `/v1/alpha/*` is terminated there
+with an OpenAI-compatible JSON 404. The guard avoids a Gin catch-all route, so
+it cannot conflict with either static Search route.
 
-The router also reserves `/alpha/*` and `/v1/alpha/*` as API namespaces. An
-unknown path in either namespace returns a JSON 404 envelope. This prevents a
-future Codex control-plane endpoint from silently receiving frontend HTML.
+The two static routes use explicit middleware chains because the root and
+`/v1` gateway groups are not interchangeable:
+
+- `/alpha/search` uses the root Responses body limit, client request ID, ops
+  error logger, endpoint normalization, Augment-compatible bearer API-key
+  authentication, OpenAI group assignment, and the OpenAI platform gate.
+- `/v1/alpha/search` uses the `/v1` body limit, client request ID, ops error
+  logger, endpoint normalization, `v1GatewayAuth`, OpenAI group assignment, and
+  the same OpenAI platform gate. It is registered as an explicit root route,
+  outside the Anthropic-default `/v1` route group.
+
+The handler therefore always receives a valid authenticated user and an
+assigned OpenAI group. Search never inherits an Anthropic-default group error
+envelope and never reaches the SPA fallback.
 
 ### Request validation
 
@@ -66,8 +80,11 @@ requires:
 
 - a valid JSON object;
 - a non-empty string `id`;
-- a non-empty string `model`;
-- a non-empty JSON object in `commands`.
+- a non-empty string `model`.
+
+When `commands` is present it must be a JSON object, but both an absent field
+and an empty object are valid. Codex 0.144.2 serializes empty tool arguments as
+`commands: {}`, and the upstream native request type makes the field optional.
 
 The handler does not parse or reconstruct individual command payloads. After
 the minimal envelope checks, it forwards the original bytes and leaves command
@@ -92,9 +109,21 @@ Search does not use `previous_response_id`. A deterministic session hash is
 derived from the request `id` so repeated operations can retain normal scheduler
 locality without logging the identifier.
 
-The selected account acquires the same account concurrency lease used by OpenAI
-HTTP requests. The lease is always released on success, error, cancellation,
-and failover.
+Search is a non-streaming request and follows the Responses admission sequence:
+
+1. Acquire the authenticated user's concurrency slot.
+2. Re-read the subscription and re-check billing eligibility after any wait.
+3. Admit the OpenAI entity quota.
+4. Select a Search-capable account.
+5. Acquire that account's HTTP concurrency lease.
+6. Forward one upstream attempt and release that account lease before retry or
+   failover.
+
+The user slot and entity quota lease span the complete request, including all
+failover attempts, and are released on success, validation failure after
+admission, billing failure, scheduler failure, upstream error, cancellation,
+and panic. Each selected account has its own attempt-scoped lease and no lease
+survives a switch to the next account.
 
 ### Native upstream forwarding
 
@@ -105,9 +134,11 @@ A focused `ForwardNativeSearch` service method:
    and refresh-failure state updates.
 3. Posts the original body to
    `https://chatgpt.com/backend-api/codex/alpha/search`.
-4. Applies the canonical Codex identity headers, ChatGPT account header,
-   configured proxy, OpenAI HTTP profile, and TLS fingerprint policy used by
-   existing Codex upstream calls.
+4. Applies the canonical Codex identity headers and ChatGPT account header, then
+   sends through `sendOpenAIHTTPRequest` so configured proxy resolution,
+   `DoWithTLS`, and the OpenAI HTTP fingerprint policy remain centralized.
+   Search has a dedicated gateway profile route kind and does not inherit the
+   Responses-only `OpenAI-Beta: responses=experimental` header.
 5. Copies only safe end-to-end response headers and returns the upstream body
    unchanged.
 
@@ -121,15 +152,23 @@ URL.
 - Authentication, group, billing, and concurrency failures use existing gateway
   envelopes and status codes.
 - Token refresh failures fail closed before an upstream request.
-- Upstream 401/403/429 and model errors use the existing OpenAI account state
-  handlers.
-- `INSUFFICIENT_BALANCE` never retries the same account.
-- Upstream 429, 5xx, and transport failures may fail over to another eligible
-  OAuth account within the existing switch limit.
-- HTTP 502/503/504 remain request-local and do not globally poison account
-  scheduling.
-- A non-JSON 2xx upstream response is converted to a JSON 502 instead of being
-  passed to Codex as a successful Search result.
+- Upstream HTTP failures call `handleOpenAIAccountUpstreamError` with endpoint
+  scope `"search"`; Search learned state never falls back to the default
+  `"responses"` scope.
+- `INSUFFICIENT_BALANCE` immediately applies the existing balance-disable path,
+  is never retryable on the same account, and may only continue by selecting a
+  different eligible account.
+- HTTP 502/503/504 remain request-local, may fail over within the existing
+  switch limit, and never create a global runtime block. A Search 5xx therefore
+  cannot make the same account unavailable to Responses.
+- Transport failures use the centralized OpenAI transport classifier.
+  `context.Canceled` and caller deadline cancellation terminate immediately and
+  do not fail over; eligible transient transport errors may switch accounts.
+- A 2xx response is successful only when it is valid JSON with a top-level
+  object, a string `output`, and either an absent, null, or string
+  `encrypted_output`. Empty bodies, HTML, arrays, a missing or non-string
+  `output`, and an invalid `encrypted_output` type are converted to a JSON 502.
+  Validation parses only the contract shape; valid bytes are relayed unchanged.
 - Once a valid native Search response is written, no failover is attempted.
 
 ### Observability and privacy
@@ -153,24 +192,34 @@ failure metrics are reported through the existing OpenAI scheduler hooks.
   never forwarded.
 - Token refresh failure performs no upstream request.
 - Valid native JSON is returned unchanged.
-- HTML or empty 2xx response becomes JSON 502.
+- Empty bodies, HTML, arrays, missing/null/non-string `output`, and non-string
+  non-null `encrypted_output` in a 2xx response become JSON 502.
 - Balance 403 is terminal for the selected account and not same-account
   retryable.
 - Temporary 502 is failover-eligible but does not create a global runtime block.
+- A Search 502 does not make the same account unavailable to Responses.
+- Caller cancellation stops immediately without an account switch.
 
 ### Handler and router tests
 
 - Both Search paths share the authenticated OpenAI route behavior.
 - Missing API key, group, billing eligibility, malformed JSON, missing `id`,
-  missing `model`, and empty commands fail before upstream.
+  missing `model`, and non-object commands fail before upstream; absent commands
+  and `commands: {}` are accepted.
 - API-key upstream accounts are excluded by the Search capability.
-- Account leases are released across success, error, cancellation, and failover.
-- Unknown `/alpha/*` and `/v1/alpha/*` paths return JSON 404, not HTML 200.
+- The user slot and entity quota lease are released across success, billing
+  failure after a user wait, entity rejection, scheduler failure, cancellation,
+  and failover; every attempt-scoped account lease is also released.
+- `/alpha/search` and `/v1/alpha/search` bypass the SPA and reach the handler.
+- Unknown methods and paths across `/alpha`, `/alpha/`, `/alpha/*`,
+  `/v1/alpha`, `/v1/alpha/`, and `/v1/alpha/*` return JSON 404 with JSON
+  Content-Type, never HTML or Gin's default plain-text body.
 
 ### Production verification
 
 The deployment candidate and public endpoint each receive a minimal native
-Search request. The probe requires:
+Search request through both `/alpha/search` and `/v1/alpha/search`. All four
+probes require:
 
 - HTTP 200;
 - `Content-Type: application/json`;
@@ -178,6 +227,19 @@ Search request. The probe requires:
 - a non-empty string `output`;
 - no HTML prefix;
 - no token, query, or result content in deployment logs.
+
+Search probes use a dedicated streaming validator instead of the existing
+`run_probe` response artifact path. The fixed request is supplied without a
+retained payload file; response bytes flow directly into a shape validator and
+are never written to `STATE_DIR`. Headers are reduced to status and media type,
+and only a sanitized pass/fail verdict is retained. Raw `output`,
+`encrypted_output`, request JSON, authorization, and account headers are absent
+from stdout, stderr, curl traces, deployment state, and failure artifacts.
+
+`test-hot-deploy` covers HTML, an incorrect Content-Type, malformed JSON,
+missing or invalid `output`, either Search path failing during candidate or
+public verification, rollback-before-cutover behavior, and scans all retained
+artifacts for probe secrets and sentinel Search content.
 
 Normal Responses and streaming remote Compact probes remain mandatory. A Search
 probe does not replace either existing gate.
