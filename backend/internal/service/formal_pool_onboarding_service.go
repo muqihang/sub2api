@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -60,37 +61,41 @@ type FormalPoolAccountHealthcheckRunner interface {
 }
 
 type FormalPoolOnboardingDeps struct {
-	Store            *FormalPoolOnboardingStore
-	Config           FormalPoolConfig
-	OAuth            FormalPoolOAuthFacade
-	Proxy            FormalPoolProxyVerifier
-	Accounts         FormalPoolAccountCreator
-	CCGateway        FormalPoolCCGatewayReadinessVerifier
-	CCGatewayRuntime FormalPoolCCGatewayRuntimeRegistrar
-	Acceptance       FormalPoolAcceptanceRunner
-	Healthcheck      FormalPoolAccountHealthcheckRunner
-	Refresh          FormalPoolRefreshOnlyRunner
-	Risk             FormalPoolRiskEventWriter
-	CacheInvalidator TokenCacheInvalidator
-	SchedulerCache   SchedulerCache
-	PublicURLPrefix  string
+	Store                *FormalPoolOnboardingStore
+	Config               FormalPoolConfig
+	OAuth                FormalPoolOAuthFacade
+	Proxy                FormalPoolProxyVerifier
+	Accounts             FormalPoolAccountCreator
+	CCGateway            FormalPoolCCGatewayReadinessVerifier
+	CCGatewayRuntime     FormalPoolCCGatewayRuntimeRegistrar
+	Acceptance           FormalPoolAcceptanceRunner
+	Healthcheck          FormalPoolAccountHealthcheckRunner
+	Refresh              FormalPoolRefreshOnlyRunner
+	Risk                 FormalPoolRiskEventWriter
+	CacheInvalidator     TokenCacheInvalidator
+	SchedulerCache       SchedulerCache
+	PublicURLPrefix      string
+	Groups               FormalPoolOnboardingGroupReader
+	PrincipalRevalidator FormalPoolOnboardingPrincipalRevalidator
 }
 
 type FormalPoolOnboardingService struct {
-	store            *FormalPoolOnboardingStore
-	oauth            FormalPoolOAuthFacade
-	proxy            FormalPoolProxyVerifier
-	accounts         FormalPoolAccountCreator
-	ccGateway        FormalPoolCCGatewayReadinessVerifier
-	ccGatewayRuntime FormalPoolCCGatewayRuntimeRegistrar
-	acceptance       FormalPoolAcceptanceRunner
-	healthcheck      FormalPoolAccountHealthcheckRunner
-	refresh          FormalPoolRefreshOnlyRunner
-	risk             FormalPoolRiskEventWriter
-	cacheInvalidator TokenCacheInvalidator
-	schedulerCache   SchedulerCache
-	publicURLPrefix  string
-	config           FormalPoolConfig
+	store                *FormalPoolOnboardingStore
+	oauth                FormalPoolOAuthFacade
+	proxy                FormalPoolProxyVerifier
+	accounts             FormalPoolAccountCreator
+	ccGateway            FormalPoolCCGatewayReadinessVerifier
+	ccGatewayRuntime     FormalPoolCCGatewayRuntimeRegistrar
+	acceptance           FormalPoolAcceptanceRunner
+	healthcheck          FormalPoolAccountHealthcheckRunner
+	refresh              FormalPoolRefreshOnlyRunner
+	risk                 FormalPoolRiskEventWriter
+	cacheInvalidator     TokenCacheInvalidator
+	schedulerCache       SchedulerCache
+	publicURLPrefix      string
+	config               FormalPoolConfig
+	groups               FormalPoolOnboardingGroupReader
+	principalRevalidator FormalPoolOnboardingPrincipalRevalidator
 }
 
 type FormalPoolOnboardingStartRequest struct {
@@ -120,6 +125,7 @@ type FormalPoolProxyInput struct {
 
 type FormalPoolOnboardingSession struct {
 	ID                           string                       `json:"id"`
+	Version                      int64                        `json:"version"`
 	Status                       string                       `json:"status"`
 	ProxyID                      int64                        `json:"proxy_id,omitempty"`
 	ProxyRef                     string                       `json:"proxy_ref,omitempty"`
@@ -301,7 +307,7 @@ func NewFormalPoolOnboardingService(deps FormalPoolOnboardingDeps) *FormalPoolOn
 	}
 	prefix := strings.TrimRight(strings.TrimSpace(deps.PublicURLPrefix), "/")
 	cfg := formalPoolOnboardingConfigWithDefaults(deps.Config)
-	return &FormalPoolOnboardingService{store: store, oauth: deps.OAuth, proxy: deps.Proxy, accounts: deps.Accounts, ccGateway: deps.CCGateway, ccGatewayRuntime: deps.CCGatewayRuntime, acceptance: deps.Acceptance, healthcheck: deps.Healthcheck, refresh: deps.Refresh, risk: deps.Risk, cacheInvalidator: deps.CacheInvalidator, schedulerCache: deps.SchedulerCache, publicURLPrefix: prefix, config: cfg}
+	return &FormalPoolOnboardingService{store: store, oauth: deps.OAuth, proxy: deps.Proxy, accounts: deps.Accounts, ccGateway: deps.CCGateway, ccGatewayRuntime: deps.CCGatewayRuntime, acceptance: deps.Acceptance, healthcheck: deps.Healthcheck, refresh: deps.Refresh, risk: deps.Risk, cacheInvalidator: deps.CacheInvalidator, schedulerCache: deps.SchedulerCache, publicURLPrefix: prefix, config: cfg, groups: deps.Groups, principalRevalidator: deps.PrincipalRevalidator}
 }
 
 func formalPoolOnboardingConfigWithDefaults(cfg FormalPoolConfig) FormalPoolConfig {
@@ -337,9 +343,28 @@ func (s *FormalPoolOnboardingService) PublicRouteConstantDelayBounds() (time.Dur
 }
 
 func (s *FormalPoolOnboardingService) StartSession(ctx context.Context, req FormalPoolOnboardingStartRequest) (*FormalPoolOnboardingSession, error) {
+	authority, err := s.authorizeCreate(ctx, req.GroupID)
+	if err != nil {
+		return nil, err
+	}
 	if err := validateFormalPoolStartRequest(req); err != nil {
 		return nil, err
 	}
+	if authority.ExpectedVersion == nil {
+		return nil, ErrFormalPoolOnboardingVersionRequired
+	}
+	if *authority.ExpectedVersion != 0 {
+		return nil, ErrFormalPoolOnboardingVersionConflict
+	}
+	if !validFormalPoolIdempotencyKey(authority.IdempotencyKey) {
+		return nil, ErrFormalPoolIdempotencyKeyRequired
+	}
+	fingerprintBytes, err := json.Marshal(req)
+	if err != nil {
+		return nil, infraerrors.BadRequest("FORMAL_POOL_CREATE_REQUEST_INVALID", "formal pool create request is invalid")
+	}
+	requestFingerprint := formalPoolSafeRef("create_request", string(fingerprintBytes))
+	createKeySafeRef := formalPoolSafeRef("create_key", strings.TrimSpace(authority.IdempotencyKey))
 	profile := normalizeFormalPoolProfile(req.PoolProfile)
 	concurrency := req.Concurrency
 	if concurrency == 0 {
@@ -352,20 +377,19 @@ func (s *FormalPoolOnboardingService) StartSession(ctx context.Context, req Form
 		proxyID = *req.ProxyID
 		proxyRef = formalPoolSafeRef("proxy", fmt.Sprintf("%d", proxyID))
 	}
-	if s.proxy != nil {
-		resolved, err := s.proxy.ResolveOrCreateProxy(ctx, req)
-		if err != nil {
-			return nil, err
-		}
-		proxyID = resolved.ProxyID
-		proxyRef = resolved.ProxyRef
-		normalizedProxyURL = resolved.NormalizedProxyURL
-	}
 	now := s.store.now()
 	sessionID := formalPoolRandomID("fpo_")
 	accountName := strings.TrimSpace(req.AccountName)
+	reservation := &FormalPoolOperationReservation{
+		OperationID: formalPoolRandomID("fpo_op_"), Kind: formalPoolOperationCreateSession,
+		InputVersion: 0, ReservationVersion: 1, StartedAt: now,
+	}
 	rec := &formalPoolOnboardingSessionRecord{
-		ID: sessionID, Status: FormalPoolOnboardingStatusDraft,
+		ID: sessionID, Version: 1, Status: FormalPoolOnboardingStatusCreatingProxy,
+		OwnerSubjectID: authority.Principal.SubjectID, OwnerAdministratorID: authority.Principal.AdministratorID,
+		OwnerTenantID: strings.TrimSpace(authority.Principal.TenantID), OwnerCreatorID: authority.Principal.CreatorID,
+		OwnerRole: authority.Principal.Role, OwnerGroupID: req.GroupID,
+		CreateKeySafeRef: createKeySafeRef, CreateRequestFingerprint: requestFingerprint, ActiveOperation: reservation,
 		ProxyMode: strings.ToLower(strings.TrimSpace(req.ProxyMode)), ProxyID: proxyID, ProxyRef: proxyRef,
 		NormalizedProxyURL: normalizedProxyURL,
 		GroupID:            req.GroupID, AccountName: accountName, Notes: strings.TrimSpace(req.Notes),
@@ -378,20 +402,69 @@ func (s *FormalPoolOnboardingService) StartSession(ctx context.Context, req Form
 		copy.Password = ""
 		rec.CreatedProxyInput = &copy
 	}
-	s.store.save(rec)
-	return s.sessionResponse(rec, nil), nil
+	reserved, replay, err := s.beginCreateReservation(rec)
+	if err != nil {
+		return nil, err
+	}
+	if replay {
+		return s.sessionResponse(reserved, nil), nil
+	}
+	if s.proxy != nil {
+		resolved, resolveErr := s.proxy.ResolveOrCreateProxy(ctx, req)
+		if resolveErr != nil {
+			_, _ = s.failReservedMutation(reserved.ID, reservation, func(rec *formalPoolOnboardingSessionRecord) error {
+				rec.Status = FormalPoolOnboardingStatusOperationOutcomeUnknown
+				return nil
+			})
+			return nil, resolveErr
+		}
+		proxyID = resolved.ProxyID
+		proxyRef = resolved.ProxyRef
+		normalizedProxyURL = resolved.NormalizedProxyURL
+	}
+	finalized, err := s.finishReservedMutation(reserved.ID, reservation, func(rec *formalPoolOnboardingSessionRecord) error {
+		rec.Status = FormalPoolOnboardingStatusDraft
+		rec.ProxyID = proxyID
+		rec.ProxyRef = proxyRef
+		rec.NormalizedProxyURL = normalizedProxyURL
+		rec.EgressBucket = formalPoolSafeBucket(rec.ID + ":" + proxyRef + ":" + accountName)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.sessionResponse(finalized, nil), nil
 }
 
-func (s *FormalPoolOnboardingService) GetSession(_ context.Context, id string) (*FormalPoolOnboardingSession, error) {
-	rec, ok := s.store.get(id)
-	if !ok {
-		return nil, ErrFormalPoolOnboardingNotFound
+func (s *FormalPoolOnboardingService) GetSession(ctx context.Context, id string) (*FormalPoolOnboardingSession, error) {
+	rec, err := s.authorizeSession(ctx, id, false)
+	if err != nil {
+		return nil, err
 	}
 	return s.sessionResponse(rec, nil), nil
 }
 
-func (s *FormalPoolOnboardingService) AbortSession(_ context.Context, id string) (*FormalPoolOnboardingSession, error) {
-	rec, err := s.store.update(id, func(rec *formalPoolOnboardingSessionRecord) error {
+func (s *FormalPoolOnboardingService) AbortSession(ctx context.Context, id string) (*FormalPoolOnboardingSession, error) {
+	snapshot, err := s.authorizeSession(ctx, id, true,
+		FormalPoolOnboardingStatusDraft,
+		FormalPoolOnboardingStatusProxyVerified,
+		FormalPoolOnboardingStatusBrowserEgressVerified,
+		FormalPoolOnboardingStatusOAuthURLGenerated,
+		FormalPoolOnboardingStatusAccountCreated,
+		FormalPoolOnboardingStatusImported,
+		FormalPoolOnboardingStatusRefreshed,
+		FormalPoolOnboardingStatusRuntimeRegistered,
+		FormalPoolOnboardingStatusHealthcheckPassed,
+		FormalPoolOnboardingStatusPendingAcceptance,
+		FormalPoolOnboardingStatusWarming,
+	)
+	if err != nil {
+		return nil, err
+	}
+	rec, err := s.store.casUpdate(snapshot.ID, snapshot.Version, func(rec *formalPoolOnboardingSessionRecord) error {
+		if rec.ActiveOperation != nil {
+			return ErrFormalPoolOnboardingVersionConflict
+		}
 		rec.Status = FormalPoolOnboardingStatusAborted
 		rec.AuthURL = ""
 		rec.OAuthSessionID = ""
@@ -1681,7 +1754,7 @@ func (s *FormalPoolOnboardingService) sessionResponse(rec *formalPoolOnboardingS
 		summary["browser_egress_last_error_code"] = lastErrorCode
 	}
 	return &FormalPoolOnboardingSession{
-		ID: rec.ID, Status: rec.Status, ProxyID: rec.ProxyID, ProxyRef: rec.ProxyRef, EgressBucket: rec.EgressBucket,
+		ID: rec.ID, Version: rec.Version, Status: rec.Status, ProxyID: rec.ProxyID, ProxyRef: rec.ProxyRef, EgressBucket: rec.EgressBucket,
 		PoolProfile: rec.PoolProfile, GroupID: rec.GroupID, AccountName: rec.AccountName, Concurrency: rec.Concurrency,
 		AuthURL: rec.AuthURL, OAuthSessionID: rec.OAuthSessionID, BrowserEgressCheckURL: s.browserURL(rec.BrowserNonce),
 		BrowserEgressCheckStatus:     checkStatus,

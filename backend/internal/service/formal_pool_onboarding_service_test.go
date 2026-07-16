@@ -14,7 +14,7 @@ import (
 )
 
 func TestFormalPoolOnboardingStartValidation(t *testing.T) {
-	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{})
+	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{})
 
 	cases := []struct {
 		name string
@@ -36,7 +36,7 @@ func TestFormalPoolOnboardingStartValidation(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := svc.StartSession(context.Background(), tc.req); err == nil {
+			if _, err := svc.StartSession(authorizedFlowContext(t, 0), tc.req); err == nil {
 				t.Fatalf("expected validation error")
 			}
 		})
@@ -44,8 +44,8 @@ func TestFormalPoolOnboardingStartValidation(t *testing.T) {
 }
 
 func TestFormalPoolOnboardingStartDefaultsAndSafeSummary(t *testing.T) {
-	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{})
-	got, err := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{
+	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{})
+	got, err := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{
 		ProxyMode:   "create",
 		GroupID:     42,
 		AccountName: "Claude sub account",
@@ -75,9 +75,9 @@ func TestFormalPoolOnboardingStartDefaultsAndSafeSummary(t *testing.T) {
 func TestFormalPoolOnboardingStartDoesNotMintBrowserNonce(t *testing.T) {
 	now := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)
 	store := NewFormalPoolOnboardingStore(30*time.Minute, func() time.Time { return now })
-	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Store: store})
+	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Store: store})
 
-	created, err := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{
+	created, err := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{
 		ProxyMode:   "existing",
 		ProxyID:     formalPtrInt64(7),
 		GroupID:     42,
@@ -106,7 +106,7 @@ func TestFormalPoolOnboardingStartDoesNotMintBrowserNonce(t *testing.T) {
 		t.Fatalf("stored NonceExpiresAt = %v, want zero", rec.NonceExpiresAt)
 	}
 
-	got, err := svc.GetSession(context.Background(), created.ID)
+	got, err := svc.GetSession(authorizedFlowContext(t, created.Version), created.ID)
 	if err != nil {
 		t.Fatalf("GetSession() error = %v", err)
 	}
@@ -120,9 +120,9 @@ func TestFormalPoolOnboardingTestProxyMintsBrowserNonceAndUsesNonceTTL(t *testin
 	store := NewFormalPoolOnboardingStore(30*time.Minute, func() time.Time { return now })
 	cfg := DefaultFormalPoolConfig()
 	cfg.NonceTTL = 2 * time.Minute
-	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Store: store, Proxy: &formalProxyFake{}, Config: cfg})
+	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Store: store, Proxy: &formalProxyFake{}, Config: cfg})
 
-	created, err := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{
+	created, err := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{
 		ProxyMode:   "existing",
 		ProxyID:     formalPtrInt64(7),
 		GroupID:     42,
@@ -144,7 +144,7 @@ func TestFormalPoolOnboardingTestProxyMintsBrowserNonceAndUsesNonceTTL(t *testin
 		t.Fatalf("seed browser egress residue: %v", err)
 	}
 
-	tested, err := svc.TestProxy(context.Background(), created.ID)
+	tested, err := svc.TestProxy(authorizedFlowContext(t, created.Version), created.ID)
 	if err != nil {
 		t.Fatalf("TestProxy() error = %v", err)
 	}
@@ -154,7 +154,7 @@ func TestFormalPoolOnboardingTestProxyMintsBrowserNonceAndUsesNonceTTL(t *testin
 	if !strings.Contains(tested.BrowserEgressCheckURL, formalPoolBrowserEgressPublicPathPrefix) {
 		t.Fatalf("TestProxy browser URL = %q, want public nonce path", tested.BrowserEgressCheckURL)
 	}
-	got, err := svc.GetSession(context.Background(), created.ID)
+	got, err := svc.GetSession(authorizedFlowContext(t, created.Version), created.ID)
 	if err != nil {
 		t.Fatalf("GetSession() error = %v", err)
 	}
@@ -194,13 +194,13 @@ func TestFormalPoolOnboardingTestProxyMintsBrowserNonceAndUsesNonceTTL(t *testin
 func TestFormalPoolOnboardingTestProxyDefaultsNonPositiveNonceTTL(t *testing.T) {
 	now := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)
 	store := NewFormalPoolOnboardingStore(30*time.Minute, func() time.Time { return now })
-	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{
+	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{
 		Store:  store,
 		Proxy:  &formalProxyFake{},
 		Config: FormalPoolConfig{NonceTTL: -time.Minute},
 	})
 
-	created, err := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{
+	created, err := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{
 		ProxyMode:   "existing",
 		ProxyID:     formalPtrInt64(7),
 		GroupID:     42,
@@ -209,7 +209,7 @@ func TestFormalPoolOnboardingTestProxyDefaultsNonPositiveNonceTTL(t *testing.T) 
 	if err != nil {
 		t.Fatalf("StartSession() error = %v", err)
 	}
-	if _, err := svc.TestProxy(context.Background(), created.ID); err != nil {
+	if _, err := svc.TestProxy(authorizedFlowContext(t, created.Version), created.ID); err != nil {
 		t.Fatalf("TestProxy() error = %v", err)
 	}
 	rec, ok := store.get(created.ID)
@@ -223,7 +223,7 @@ func TestFormalPoolOnboardingTestProxyDefaultsNonPositiveNonceTTL(t *testing.T) 
 }
 
 func TestFormalPoolOnboardingBrowserURLEmptyNonce(t *testing.T) {
-	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{})
+	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{})
 	for _, nonce := range []string{"", "   "} {
 		if got := svc.browserURL(nonce); got != "" {
 			t.Fatalf("browserURL(%q) = %q, want empty", nonce, got)
@@ -297,7 +297,7 @@ func TestFormalPoolVerifyBrowserEgressByNonceMatchingRemoteIPVerifiesAndRedacts(
 	store := NewFormalPoolOnboardingStore(30*time.Minute, func() time.Time { return now })
 	proxy := &formalPoolBrowserEgressProxyFake{rawIP: "198.51.100.10"}
 	risk := &formalPoolRiskCaptureWriter{}
-	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Store: store, Proxy: proxy, Risk: risk})
+	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Store: store, Proxy: proxy, Risk: risk})
 	created, nonce := formalPoolCreateSessionWithNonce(t, svc, store)
 
 	got, err := svc.VerifyBrowserEgressByNonce(context.Background(), nonce, "198.51.100.10")
@@ -340,7 +340,7 @@ func TestFormalPoolVerifyBrowserEgressByNonceMismatchRecordsMismatchAndRedacts(t
 	store := NewFormalPoolOnboardingStore(30*time.Minute, func() time.Time { return now })
 	proxy := &formalPoolBrowserEgressProxyFake{rawIP: "198.51.100.10"}
 	risk := &formalPoolRiskCaptureWriter{}
-	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Store: store, Proxy: proxy, Risk: risk})
+	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Store: store, Proxy: proxy, Risk: risk})
 	created, nonce := formalPoolCreateSessionWithNonce(t, svc, store)
 
 	_, err := svc.VerifyBrowserEgressByNonce(context.Background(), nonce, "203.0.113.44")
@@ -355,7 +355,7 @@ func TestFormalPoolVerifyBrowserEgressByNonceMismatchRecordsMismatchAndRedacts(t
 		t.Fatalf("stored mismatch fields = status:%q verified:%v error:%q mismatch_at:%v", rec.BrowserEgressCheckStatus, rec.BrowserVerified, rec.BrowserEgressLastErrorCode, rec.BrowserEgressMismatchAt)
 	}
 	assertFormalPoolEgressBucketsRedacted(t, rec, "198.51.100.10", "203.0.113.44")
-	got, err := svc.GetSession(context.Background(), created.ID)
+	got, err := svc.GetSession(authorizedFlowContext(t, created.Version), created.ID)
 	if err != nil {
 		t.Fatalf("GetSession() error = %v", err)
 	}
@@ -381,7 +381,7 @@ func TestFormalPoolVerifyBrowserEgressByNonceExpiredWritesExpiredState(t *testin
 	risk := &formalPoolRiskCaptureWriter{}
 	cfg := DefaultFormalPoolConfig()
 	cfg.NonceTTL = time.Minute
-	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Store: store, Proxy: proxy, Risk: risk, Config: cfg})
+	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Store: store, Proxy: proxy, Risk: risk, Config: cfg})
 	created, nonce := formalPoolCreateSessionWithNonce(t, svc, store)
 	now = now.Add(2 * time.Minute)
 
@@ -399,7 +399,7 @@ func TestFormalPoolVerifyBrowserEgressByNonceExpiredWritesExpiredState(t *testin
 	if rec.BrowserEgressCheckStatus != "expired" || rec.BrowserEgressLastErrorCode != "nonce_expired" {
 		t.Fatalf("expired fields = status:%q error:%q", rec.BrowserEgressCheckStatus, rec.BrowserEgressLastErrorCode)
 	}
-	got, err := svc.GetSession(context.Background(), created.ID)
+	got, err := svc.GetSession(authorizedFlowContext(t, created.Version), created.ID)
 	if err != nil {
 		t.Fatalf("GetSession() error = %v", err)
 	}
@@ -422,7 +422,7 @@ func TestFormalPoolVerifyBrowserEgressByNonceProxyRawEgressFailureWritesNoProxyA
 	probeErr := errors.New("probe failed without raw identifiers")
 	proxy := &formalPoolBrowserEgressProxyFake{getErr: probeErr}
 	risk := &formalPoolRiskCaptureWriter{}
-	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Store: store, Proxy: proxy, Risk: risk})
+	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Store: store, Proxy: proxy, Risk: risk})
 	created, nonce := formalPoolCreateSessionWithNonce(t, svc, store)
 
 	_, err := svc.VerifyBrowserEgressByNonce(context.Background(), nonce, "198.51.100.10")
@@ -439,7 +439,7 @@ func TestFormalPoolVerifyBrowserEgressByNonceProxyRawEgressFailureWritesNoProxyA
 	if rec.BrowserEgressCheckStatus != "waiting" || rec.BrowserEgressLastErrorCode != "no_proxy_egress" {
 		t.Fatalf("no proxy fields = status:%q error:%q", rec.BrowserEgressCheckStatus, rec.BrowserEgressLastErrorCode)
 	}
-	got, err := svc.GetSession(context.Background(), created.ID)
+	got, err := svc.GetSession(authorizedFlowContext(t, created.Version), created.ID)
 	if err != nil {
 		t.Fatalf("GetSession() error = %v", err)
 	}
@@ -460,7 +460,7 @@ func TestFormalPoolVerifyBrowserEgressByNonceAlreadyVerifiedIsIdempotent(t *test
 	store := NewFormalPoolOnboardingStore(30*time.Minute, func() time.Time { return now })
 	proxy := &formalPoolBrowserEgressProxyFake{rawIP: "198.51.100.10"}
 	risk := &formalPoolRiskCaptureWriter{}
-	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Store: store, Proxy: proxy, Risk: risk})
+	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Store: store, Proxy: proxy, Risk: risk})
 	created, nonce := formalPoolCreateSessionWithNonce(t, svc, store)
 	first, err := svc.VerifyBrowserEgressByNonce(context.Background(), nonce, "198.51.100.10")
 	if err != nil {
@@ -480,11 +480,11 @@ func TestFormalPoolVerifyBrowserEgressByNonceAlreadyVerifiedIsIdempotent(t *test
 
 func formalPoolCreateSessionWithNonce(t *testing.T, svc *FormalPoolOnboardingService, store *FormalPoolOnboardingStore) (*FormalPoolOnboardingSession, string) {
 	t.Helper()
-	created, err := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(7), GroupID: 42, AccountName: "acct"})
+	created, err := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(7), GroupID: 42, AccountName: "acct"})
 	if err != nil {
 		t.Fatalf("StartSession() error = %v", err)
 	}
-	if _, err := svc.TestProxy(context.Background(), created.ID); err != nil {
+	if _, err := svc.TestProxy(authorizedFlowContext(t, created.Version), created.ID); err != nil {
 		t.Fatalf("TestProxy() error = %v", err)
 	}
 	rec, ok := store.get(created.ID)
@@ -577,8 +577,8 @@ func assertFormalPoolRiskInputSafe(t *testing.T, input FormalPoolRiskEventInput,
 func TestFormalPoolOnboardingSessionResponseNormalizesUnsafeEgressErrorCode(t *testing.T) {
 	now := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)
 	store := NewFormalPoolOnboardingStore(30*time.Minute, func() time.Time { return now })
-	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Store: store})
-	created, err := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(7), GroupID: 42, AccountName: "acct"})
+	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Store: store})
+	created, err := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(7), GroupID: 42, AccountName: "acct"})
 	if err != nil {
 		t.Fatalf("StartSession() error = %v", err)
 	}
@@ -594,7 +594,7 @@ func TestFormalPoolOnboardingSessionResponseNormalizesUnsafeEgressErrorCode(t *t
 		t.Fatalf("seed unsafe error code: %v", err)
 	}
 
-	got, err := svc.GetSession(context.Background(), created.ID)
+	got, err := svc.GetSession(authorizedFlowContext(t, created.Version), created.ID)
 	if err != nil {
 		t.Fatalf("GetSession() error = %v", err)
 	}
@@ -608,8 +608,8 @@ func TestFormalPoolOnboardingSessionResponseNormalizesUnsafeEgressErrorCode(t *t
 func TestFormalPoolOnboardingStoreTTLAbortAndNoSecretInResponse(t *testing.T) {
 	now := time.Date(2026, 5, 26, 12, 0, 0, 0, time.UTC)
 	store := NewFormalPoolOnboardingStore(30*time.Minute, func() time.Time { return now })
-	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{Store: store})
-	created, err := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{
+	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Store: store})
+	created, err := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{
 		ProxyMode:   "existing",
 		ProxyID:     formalPtrInt64(7),
 		GroupID:     42,
@@ -618,10 +618,10 @@ func TestFormalPoolOnboardingStoreTTLAbortAndNoSecretInResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartSession() error = %v", err)
 	}
-	if _, err := svc.AbortSession(context.Background(), created.ID); err != nil {
+	if _, err := svc.AbortSession(authorizedFlowContext(t, created.Version), created.ID); err != nil {
 		t.Fatalf("AbortSession() error = %v", err)
 	}
-	aborted, err := svc.GetSession(context.Background(), created.ID)
+	aborted, err := svc.GetSession(authorizedFlowContext(t, created.Version), created.ID)
 	if err != nil {
 		t.Fatalf("GetSession() error = %v", err)
 	}
@@ -631,14 +631,14 @@ func TestFormalPoolOnboardingStoreTTLAbortAndNoSecretInResponse(t *testing.T) {
 	assertNoFormalPoolSensitive(t, aborted)
 
 	store.now = func() time.Time { return now.Add(31 * time.Minute) }
-	if _, err := svc.GetSession(context.Background(), created.ID); err == nil {
+	if _, err := svc.GetSession(authorizedFlowContext(t, created.Version), created.ID); err == nil {
 		t.Fatalf("expected expired session error")
 	}
 }
 
 func TestFormalPoolOnboardingBlocksOAuthUntilBrowserEgressVerifiedAndFailsClosed(t *testing.T) {
-	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{})
-	created, err := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{
+	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{})
+	created, err := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{
 		ProxyMode:   "existing",
 		ProxyID:     formalPtrInt64(7),
 		GroupID:     42,
@@ -647,20 +647,20 @@ func TestFormalPoolOnboardingBlocksOAuthUntilBrowserEgressVerifiedAndFailsClosed
 	if err != nil {
 		t.Fatalf("StartSession() error = %v", err)
 	}
-	if _, err := svc.GenerateAuthURL(context.Background(), created.ID); err == nil {
+	if _, err := svc.GenerateAuthURL(authorizedFlowContext(t, created.Version), created.ID); err == nil {
 		t.Fatalf("expected browser egress gate error")
 	}
-	if _, err := svc.MarkBrowserEgressVerifiedForTest(context.Background(), created.ID); err != nil {
+	if _, err := svc.MarkBrowserEgressVerifiedForTest(authorizedFlowContext(t, created.Version), created.ID); err != nil {
 		t.Fatalf("mark verified: %v", err)
 	}
-	if _, err := svc.GenerateAuthURL(context.Background(), created.ID); err == nil {
+	if _, err := svc.GenerateAuthURL(authorizedFlowContext(t, created.Version), created.ID); err == nil {
 		t.Fatalf("expected nil oauth facade to fail closed")
 	}
 }
 
 func TestFormalPoolExchangeRejectsFrontendControlledRefsAndSecrets(t *testing.T) {
-	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{})
-	created, err := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(7), GroupID: 42, AccountName: "acct"})
+	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{})
+	created, err := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{ProxyMode: "existing", ProxyID: formalPtrInt64(7), GroupID: 42, AccountName: "acct"})
 	if err != nil {
 		t.Fatalf("StartSession() error = %v", err)
 	}
@@ -671,16 +671,16 @@ func TestFormalPoolExchangeRejectsFrontendControlledRefsAndSecrets(t *testing.T)
 		{Code: "code", ProxyID: formalPtrInt64(8)},
 	}
 	for _, req := range bad {
-		if _, err := svc.ExchangeCodeAndCreate(context.Background(), created.ID, req); err == nil {
+		if _, err := svc.ExchangeCodeAndCreate(authorizedFlowContext(t, created.Version), created.ID, req); err == nil {
 			t.Fatalf("expected request %+v to be rejected", req)
 		}
 	}
 }
 
 func TestFormalPoolOnboardingProxyValidation(t *testing.T) {
-	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{})
+	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{})
 	for _, protocol := range []string{"socks5", "socks5h", "http", "https"} {
-		_, err := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{
+		_, err := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{
 			ProxyMode: "create", GroupID: 42, AccountName: "acct",
 			Proxy: &FormalPoolProxyInput{Name: "p", Protocol: protocol, Host: "127.0.0.1", Port: 1080, Password: "secret"},
 		})
@@ -688,7 +688,7 @@ func TestFormalPoolOnboardingProxyValidation(t *testing.T) {
 			t.Fatalf("protocol %s should be accepted: %v", protocol, err)
 		}
 	}
-	_, err := svc.StartSession(context.Background(), FormalPoolOnboardingStartRequest{
+	_, err := svc.StartSession(authorizedFlowContext(t, 0), FormalPoolOnboardingStartRequest{
 		ProxyMode: "create", GroupID: 42, AccountName: "acct",
 		Proxy: &FormalPoolProxyInput{Name: "p", Protocol: "direct", Host: "127.0.0.1", Port: 1080},
 	})
@@ -698,13 +698,13 @@ func TestFormalPoolOnboardingProxyValidation(t *testing.T) {
 }
 
 func TestFormalPoolOnboardingRejectsDangerousRouteAndAccountRefInputs(t *testing.T) {
-	svc := NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{})
+	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{})
 	for _, req := range []FormalPoolOnboardingStartRequest{
 		{ProxyMode: "existing", ProxyID: formalPtrInt64(1), GroupID: 1, AccountName: "acct", AccountRef: "raw-ref"},
 		{ProxyMode: "existing", ProxyID: formalPtrInt64(1), GroupID: 1, AccountName: "acct", Code: "oauth-code"},
 		{ProxyMode: "existing", ProxyID: formalPtrInt64(1), GroupID: 1, AccountName: "acct", AccessToken: "access"},
 	} {
-		if _, err := svc.StartSession(context.Background(), req); err == nil {
+		if _, err := svc.StartSession(authorizedFlowContext(t, 0), req); err == nil {
 			t.Fatalf("expected dangerous input %#v to be rejected", req)
 		}
 	}

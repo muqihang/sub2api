@@ -215,3 +215,61 @@ func TestFormalPoolOnboardingStoreSaveInitializesVersion(t *testing.T) {
 		t.Fatalf("initial version = %d, want 1", stored.Version)
 	}
 }
+
+func TestFormalPoolOnboardingStoreSnapshotsByAccountAndCreateKeyReturnCopies(t *testing.T) {
+	now := time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC)
+	store := NewFormalPoolOnboardingStore(30*time.Minute, func() time.Time { return now })
+	operation := &FormalPoolOperationReservation{
+		OperationID: "operation-1", Kind: "test", InputVersion: 1, ReservationVersion: 2, StartedAt: now,
+	}
+	rec := &formalPoolOnboardingSessionRecord{
+		ID: "session-indexed", Version: 2, Status: FormalPoolOnboardingStatusImported,
+		OwnerTenantID: "tenant-one", OwnerAdministratorID: 1001, OwnerCreatorID: 1001,
+		CreateKeySafeRef: "ref_create_key", CreateRequestFingerprint: "ref_request",
+		AccountID: 55, ActiveOperation: operation, CreatedAt: now, UpdatedAt: now,
+	}
+	store.save(rec)
+	store.createKeys[formalPoolCreateKeyIndex("tenant-one", 1001, 1001, "ref_create_key")] = rec.ID
+
+	byAccount, err := store.snapshotByAccountID(55)
+	if err != nil {
+		t.Fatalf("snapshotByAccountID() error = %v", err)
+	}
+	byCreateKey, err := store.snapshotByCreateKey("tenant-one", 1001, 1001, "ref_create_key")
+	if err != nil {
+		t.Fatalf("snapshotByCreateKey() error = %v", err)
+	}
+	byAccount.Status = FormalPoolOnboardingStatusFailed
+	byCreateKey.ActiveOperation.OperationID = "polluted"
+
+	stored, ok := store.get(rec.ID)
+	if !ok {
+		t.Fatal("stored record missing")
+	}
+	if stored.Status != FormalPoolOnboardingStatusImported {
+		t.Fatalf("stored status = %q, want imported", stored.Status)
+	}
+	if stored.ActiveOperation == nil || stored.ActiveOperation.OperationID != "operation-1" {
+		t.Fatalf("stored operation polluted: %#v", stored.ActiveOperation)
+	}
+}
+
+func TestFormalPoolOnboardingStoreSnapshotsByAccountAndCreateKeyHonorSessionExpiry(t *testing.T) {
+	now := time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC)
+	store := NewFormalPoolOnboardingStore(time.Minute, func() time.Time { return now })
+	rec := &formalPoolOnboardingSessionRecord{
+		ID: "expired-indexed", OwnerTenantID: "tenant-one", OwnerAdministratorID: 1001,
+		OwnerCreatorID: 1001, CreateKeySafeRef: "ref_create_key", AccountID: 55,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	store.save(rec)
+	store.createKeys[formalPoolCreateKeyIndex("tenant-one", 1001, 1001, "ref_create_key")] = rec.ID
+	now = now.Add(2 * time.Minute)
+
+	if _, err := store.snapshotByAccountID(55); !errors.Is(err, ErrFormalPoolOnboardingNotFound) {
+		t.Fatalf("snapshotByAccountID() error = %v, want not found", err)
+	}
+	if _, err := store.snapshotByCreateKey("tenant-one", 1001, 1001, "ref_create_key"); !errors.Is(err, ErrFormalPoolOnboardingNotFound) {
+		t.Fatalf("snapshotByCreateKey() error = %v, want not found", err)
+	}
+}
