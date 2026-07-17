@@ -61,8 +61,11 @@ type formalPoolOnboardingSessionRecord struct {
 	EgressBucket                 string
 	BrowserNonce                 string
 	NonceExpiresAt               time.Time
+	BrowserProofConsumedHash     string
+	BrowserProofConsumedAt       time.Time
 	BrowserVerified              bool
 	BrowserEgressCheckStatus     string
+	BrowserEgressObservedAt      time.Time
 	BrowserVerifiedAt            time.Time
 	BrowserEgressMismatchAt      time.Time
 	BrowserEgressBrowserIPBucket string
@@ -311,6 +314,14 @@ func formalPoolRandomID(prefix string) string {
 		return prefix + time.Now().UTC().Format("20060102150405.000000000")
 	}
 	return prefix + hex.EncodeToString(b[:])
+}
+
+func formalPoolRandomNonce() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return "nonce_" + hex.EncodeToString(b[:]), nil
 }
 
 func (s *FormalPoolOnboardingStore) findByNonce(nonce string) (*formalPoolOnboardingSessionRecord, bool) {

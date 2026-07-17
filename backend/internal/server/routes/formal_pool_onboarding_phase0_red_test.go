@@ -125,7 +125,11 @@ func TestFormalPoolOnboardingAuthorizationRejectsCrossBoundaryOperations(t *test
 				} else if authorityCase.staleVersion {
 					version = 0
 				}
-				rec := fixture.request(authorityCase.principal(), operation.method, operation.path(fixture), operation.body, `"`+strconv.FormatInt(version, 10)+`"`)
+				body := operation.body
+				if operation.name == "BrowserEgressAttestation" {
+					body = `{"confirmed":true,"verification_code":` + strconv.Quote(fixture.browserProof) + `}`
+				}
+				rec := fixture.request(authorityCase.principal(), operation.method, operation.path(fixture), body, `"`+strconv.FormatInt(version, 10)+`"`)
 				require.Equal(t, wantStatus, rec.Code, rec.Body.String())
 			})
 		}
@@ -234,13 +238,14 @@ func TestFormalPoolOnboardingPublicOriginAuthority(t *testing.T) {
 }
 
 type phase0AuthorizationFixture struct {
-	router      *gin.Engine
-	svc         *service.FormalPoolOnboardingService
-	resolver    *phase0PrincipalResolver
-	revalidator *phase0PrincipalRevalidator
-	sessionID   string
-	accountID   int64
-	version     int64
+	router       *gin.Engine
+	svc          *service.FormalPoolOnboardingService
+	resolver     *phase0PrincipalResolver
+	revalidator  *phase0PrincipalRevalidator
+	sessionID    string
+	accountID    int64
+	version      int64
+	browserProof string
 }
 
 func newPhase0AuthorizationFixture(t *testing.T, stage string) *phase0AuthorizationFixture {
@@ -286,9 +291,17 @@ func newPhase0AuthorizationFixture(t *testing.T, stage string) *phase0Authorizat
 	if stage == "created" {
 		return fixture
 	}
+	var tested *service.FormalPoolOnboardingSession
 	advance(func() (*service.FormalPoolOnboardingSession, error) {
-		return svc.TestProxy(phase0AuthorityContext(phase0Owner, fixture.version), fixture.sessionID)
+		var testErr error
+		tested, testErr = svc.TestProxy(phase0AuthorityContext(phase0Owner, fixture.version), fixture.sessionID)
+		return tested, testErr
 	})
+	parts := strings.Split(strings.TrimRight(tested.BrowserEgressCheckURL, "/"), "/")
+	fixture.browserProof = parts[len(parts)-1]
+	observed, err := svc.VerifyBrowserEgressByNonce(context.Background(), fixture.browserProof, "198.51.100.10")
+	require.NoError(t, err)
+	fixture.version = observed.Version
 	if stage == "proxy-tested" || stage == "setup-token-ready" {
 		if stage == "setup-token-ready" {
 			oauth.fullScope = false
@@ -296,7 +309,7 @@ func newPhase0AuthorizationFixture(t *testing.T, stage string) *phase0Authorizat
 		return fixture
 	}
 	advance(func() (*service.FormalPoolOnboardingSession, error) {
-		return svc.AttestBrowserEgress(phase0AuthorityContext(phase0Owner, fixture.version), fixture.sessionID, service.FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "owner-proof"})
+		return svc.AttestBrowserEgress(phase0AuthorityContext(phase0Owner, fixture.version), fixture.sessionID, service.FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: fixture.browserProof})
 	})
 	if stage == "attested" {
 		return fixture

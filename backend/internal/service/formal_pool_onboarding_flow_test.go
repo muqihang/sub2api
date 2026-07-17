@@ -53,10 +53,26 @@ func advanceAuthorizedFlowToProxyVerified(t *testing.T, svc *FormalPoolOnboardin
 func advanceAuthorizedFlowToOAuthURL(t *testing.T, svc *FormalPoolOnboardingService, current *FormalPoolOnboardingSession) *FormalPoolOnboardingSession {
 	t.Helper()
 	current = advanceAuthorizedFlowToProxyVerified(t, svc, current)
+	proof := formalPoolProofFromBrowserURLForTest(t, current.BrowserEgressCheckURL)
+	observed, err := svc.VerifyBrowserEgressByNonce(context.Background(), proof, "203.0.113.10")
+	if err != nil {
+		t.Fatalf("observe formal-pool browser egress: %v", err)
+	}
+	current = observed
 	current = advanceAuthorizedFlowSession(t, current, func(ctx context.Context, id string) (*FormalPoolOnboardingSession, error) {
-		return svc.AttestBrowserEgress(ctx, id, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "manual"})
+		return svc.AttestBrowserEgress(ctx, id, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: proof})
 	})
 	return advanceAuthorizedFlowSession(t, current, svc.GenerateAuthURL)
+}
+
+func formalPoolProofFromBrowserURLForTest(t *testing.T, raw string) string {
+	t.Helper()
+	parts := strings.Split(strings.TrimRight(raw, "/"), "/")
+	proof := parts[len(parts)-1]
+	if !strings.HasPrefix(proof, "nonce_") {
+		t.Fatalf("browser egress URL has no server proof: %q", raw)
+	}
+	return proof
 }
 
 func advanceAuthorizedFlowToImported(t *testing.T, svc *FormalPoolOnboardingService, current *FormalPoolOnboardingSession) *FormalPoolOnboardingSession {
@@ -292,8 +308,13 @@ func TestFormalPoolProxyTestAndAttestationGatesOAuth(t *testing.T) {
 	if _, err := svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID); err == nil {
 		t.Fatalf("oauth url should still be blocked before browser egress attestation")
 	}
+	proof := formalPoolProofFromBrowserURLForTest(t, sess.BrowserEgressCheckURL)
+	sess, err = svc.VerifyBrowserEgressByNonce(context.Background(), proof, "203.0.113.10")
+	if err != nil {
+		t.Fatalf("observe browser egress: %v", err)
+	}
 	sess = advanceAuthorizedFlowSession(t, sess, func(ctx context.Context, id string) (*FormalPoolOnboardingSession, error) {
-		return svc.AttestBrowserEgress(ctx, id, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "exit-ip-ref-ok"})
+		return svc.AttestBrowserEgress(ctx, id, FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: proof})
 	})
 	got, err := svc.GenerateAuthURL(authorizedFlowContext(t, sess.Version), sess.ID)
 	if err != nil {

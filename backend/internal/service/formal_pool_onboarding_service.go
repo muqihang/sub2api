@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ var (
 	ErrFormalPoolOnboardingVersionConflict = infraerrors.Conflict("FORMAL_POOL_ONBOARDING_VERSION_CONFLICT", "formal pool onboarding session version conflict")
 	ErrFormalPoolOnboardingNonceExpired    = infraerrors.BadRequest("FORMAL_POOL_ONBOARDING_NONCE_EXPIRED", "formal pool onboarding nonce expired")
 	ErrFormalPoolOnboardingEgressMismatch  = infraerrors.BadRequest("FORMAL_POOL_ONBOARDING_EGRESS_MISMATCH", "formal pool browser egress does not match proxy egress")
+	ErrFormalPoolOnboardingProofRejected   = infraerrors.BadRequest("FORMAL_POOL_BROWSER_PROOF_REJECTED", "browser egress proof was rejected")
 )
 
 type FormalPoolOAuthFacade interface {
@@ -502,7 +504,7 @@ func (s *FormalPoolOnboardingService) VerifyBrowserEgressByNonce(ctx context.Con
 		if err != nil {
 			return nil, err
 		}
-		if snap.BrowserEgressCheckStatus == "verified" || snap.BrowserVerified {
+		if snap.BrowserEgressCheckStatus == "verified_pending_finalize" || snap.BrowserVerified {
 			return s.sessionResponse(snap, []FormalPoolAcceptanceCheck{{Name: "browser_egress_verification", Status: "pass"}}), nil
 		}
 		if nonceExpired(snap, s.store.now()) {
@@ -517,13 +519,16 @@ func (s *FormalPoolOnboardingService) VerifyBrowserEgressByNonce(ctx context.Con
 			return nil, ErrFormalPoolOnboardingNonceExpired
 		}
 		if snap.ActiveOperation != nil {
+			if snap.ActiveOperation.Kind == "browser_egress_verify" {
+				return s.sessionResponse(snap, nil), nil
+			}
 			return nil, ErrFormalPoolOnboardingVersionConflict
 		}
 		if s.proxy == nil {
 			return nil, infraerrors.ServiceUnavailable("PROXY_VERIFIER_UNAVAILABLE", "formal pool proxy verifier is unavailable")
 		}
 		reservation := &FormalPoolOperationReservation{
-			OperationID: formalPoolRandomID("fpo_op_"), Kind: "verify_browser_egress",
+			OperationID: formalPoolRandomID("fpo_op_"), Kind: "browser_egress_verify",
 			InputVersion: snap.Version, ReservationVersion: snap.Version + 1, StartedAt: s.store.now(),
 		}
 		reserved, err := s.store.casUpdate(snap.ID, snap.Version, func(rec *formalPoolOnboardingSessionRecord) error {
@@ -577,10 +582,12 @@ func (s *FormalPoolOnboardingService) VerifyBrowserEgressByNonce(ctx context.Con
 			rec.BrowserEgressBrowserIPBucket = browserBucket
 			rec.BrowserEgressProxyIPBucket = proxyBucket
 			if matched {
-				rec.BrowserEgressCheckStatus = "verified"
-				rec.BrowserVerified = true
-				rec.BrowserVerifiedAt = now
-				rec.Status = FormalPoolOnboardingStatusBrowserEgressVerified
+				rec.BrowserEgressCheckStatus = "verified_pending_finalize"
+				rec.BrowserEgressObservedAt = now
+				rec.BrowserEgressMismatchAt = time.Time{}
+				rec.BrowserVerified = false
+				rec.BrowserVerifiedAt = time.Time{}
+				rec.Status = FormalPoolOnboardingStatusProxyVerified
 				rec.BrowserEgressLastErrorCode = ""
 				return nil
 			}
@@ -596,7 +603,7 @@ func (s *FormalPoolOnboardingService) VerifyBrowserEgressByNonce(ctx context.Con
 			s.recordFormalPoolNonceExpired(ctx, updated, nonce, remoteIP)
 			return nil, ErrFormalPoolOnboardingNonceExpired
 		}
-		if updated.BrowserEgressCheckStatus == "verified" || updated.BrowserVerified {
+		if updated.BrowserEgressCheckStatus == "verified_pending_finalize" {
 			s.recordFormalPoolEgressVerified(ctx, updated, nonce, browserBucket, proxyBucket)
 			return s.sessionResponse(updated, []FormalPoolAcceptanceCheck{{Name: "browser_egress_verification", Status: "pass"}}), nil
 		}
@@ -640,10 +647,12 @@ func (s *FormalPoolOnboardingService) casUpdateBrowserEgressResult(snap *formalP
 		rec.BrowserEgressBrowserIPBucket = browserBucket
 		rec.BrowserEgressProxyIPBucket = proxyBucket
 		if matched {
-			rec.BrowserEgressCheckStatus = "verified"
-			rec.BrowserVerified = true
-			rec.BrowserVerifiedAt = now
-			rec.Status = FormalPoolOnboardingStatusBrowserEgressVerified
+			rec.BrowserEgressCheckStatus = "verified_pending_finalize"
+			rec.BrowserEgressObservedAt = now
+			rec.BrowserEgressMismatchAt = time.Time{}
+			rec.BrowserVerified = false
+			rec.BrowserVerifiedAt = time.Time{}
+			rec.Status = FormalPoolOnboardingStatusProxyVerified
 			rec.BrowserEgressLastErrorCode = ""
 			return nil
 		}
@@ -767,14 +776,22 @@ func (s *FormalPoolOnboardingService) TestProxy(ctx context.Context, id string) 
 		err = infraerrors.BadRequest("PROXY_TEST_FAILED", "proxy test failed")
 		return nil, s.failReservedMutationKnown(id, reservation, err)
 	}
+	browserNonce, err := formalPoolRandomNonce()
+	if err != nil {
+		err = infraerrors.ServiceUnavailable("BROWSER_EGRESS_NONCE_UNAVAILABLE", "browser egress proof could not be minted")
+		return nil, s.failReservedMutationKnown(id, reservation, err)
+	}
 	rec, err = s.finishReservedMutation(id, reservation, func(rec *formalPoolOnboardingSessionRecord) error {
 		rec.Status = FormalPoolOnboardingStatusProxyVerified
 		if strings.TrimSpace(summary.ProxyRef) != "" {
 			rec.ProxyRef = summary.ProxyRef
 		}
-		rec.BrowserNonce = formalPoolRandomID("nonce_")
+		rec.BrowserNonce = browserNonce
 		rec.NonceExpiresAt = s.store.now().Add(s.config.NonceTTL)
+		rec.BrowserProofConsumedHash = ""
+		rec.BrowserProofConsumedAt = time.Time{}
 		rec.BrowserEgressCheckStatus = "waiting"
+		rec.BrowserEgressObservedAt = time.Time{}
 		rec.BrowserVerified = false
 		rec.BrowserVerifiedAt = time.Time{}
 		rec.BrowserEgressMismatchAt = time.Time{}
@@ -790,18 +807,36 @@ func (s *FormalPoolOnboardingService) TestProxy(ctx context.Context, id string) 
 }
 
 func (s *FormalPoolOnboardingService) AttestBrowserEgress(ctx context.Context, id string, req FormalPoolBrowserEgressAttestationRequest) (*FormalPoolOnboardingSession, error) {
-	snapshot, err := s.authorizeSession(ctx, id, true, FormalPoolOnboardingStatusProxyVerified)
+	authority, snapshot, err := s.authorizeBrowserEgressOwner(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if !req.Confirmed || strings.TrimSpace(req.VerificationCode) == "" {
-		return nil, infraerrors.BadRequest("BROWSER_EGRESS_ATTESTATION_REQUIRED", "browser egress attestation is required")
+	proof := strings.TrimSpace(req.VerificationCode)
+	if proof != "" && consumedBrowserProofMatches(snapshot, proof) {
+		return nil, ErrFormalPoolOnboardingProofRejected
+	}
+	snapshot, err = s.authorizeBrowserEgressVersionAndState(authority, snapshot, FormalPoolOnboardingStatusProxyVerified)
+	if err != nil {
+		return nil, err
+	}
+	if !req.Confirmed || proof == "" || nonceExpired(snapshot, s.store.now()) || snapshot.BrowserEgressObservedAt.IsZero() ||
+		snapshot.BrowserEgressCheckStatus != "verified_pending_finalize" || !constantTimeEqual(proof, snapshot.BrowserNonce) {
+		return nil, ErrFormalPoolOnboardingProofRejected
 	}
 	rec, err := s.store.casUpdate(id, snapshot.Version, func(rec *formalPoolOnboardingSessionRecord) error {
 		if rec.ActiveOperation != nil {
 			return ErrFormalPoolOnboardingVersionConflict
 		}
+		if nonceExpired(rec, s.store.now()) || rec.BrowserEgressObservedAt.IsZero() || rec.BrowserEgressCheckStatus != "verified_pending_finalize" || !constantTimeEqual(proof, rec.BrowserNonce) {
+			return ErrFormalPoolOnboardingProofRejected
+		}
+		now := s.store.now()
+		rec.BrowserProofConsumedHash = formalPoolProofDigest(proof)
+		rec.BrowserProofConsumedAt = now
+		rec.BrowserNonce = ""
 		rec.BrowserVerified = true
+		rec.BrowserVerifiedAt = now
+		rec.BrowserEgressCheckStatus = "verified"
 		rec.Status = FormalPoolOnboardingStatusBrowserEgressVerified
 		return nil
 	})
@@ -809,6 +844,28 @@ func (s *FormalPoolOnboardingService) AttestBrowserEgress(ctx context.Context, i
 		return nil, err
 	}
 	return s.sessionResponse(rec, []FormalPoolAcceptanceCheck{{Name: "browser_egress_attestation", Status: "pass"}}), nil
+}
+
+func (s *FormalPoolOnboardingService) authorizeBrowserEgressVersionAndState(authority FormalPoolRequestAuthority, rec *formalPoolOnboardingSessionRecord, allowedStates ...string) (*formalPoolOnboardingSessionRecord, error) {
+	return authorizeFormalPoolVersionAndState(authority, rec, true, allowedStates...)
+}
+
+func formalPoolProofDigest(proof string) string {
+	return formalPoolSafeRef("browser_proof_consumed", proof)
+}
+
+func consumedBrowserProofMatches(rec *formalPoolOnboardingSessionRecord, proof string) bool {
+	if rec == nil || rec.BrowserProofConsumedHash == "" || proof == "" {
+		return false
+	}
+	return constantTimeEqual(formalPoolProofDigest(proof), rec.BrowserProofConsumedHash)
+}
+
+func constantTimeEqual(left, right string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(left), []byte(right)) == 1
 }
 
 func (s *FormalPoolOnboardingService) GenerateAuthURL(ctx context.Context, id string) (*FormalPoolOnboardingSession, error) {
@@ -1937,7 +1994,7 @@ func formalPoolSafeBrowserEgressStatus(status string) string {
 	switch strings.TrimSpace(status) {
 	case "", "idle":
 		return "idle"
-	case "waiting", "verified", "mismatch", "expired":
+	case "waiting", "verified_pending_finalize", "verified", "mismatch", "expired":
 		return strings.TrimSpace(status)
 	default:
 		return "idle"

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -132,7 +133,11 @@ func TestFormalPoolOnboardingProductionRouteRevalidatesAllRoutes(t *testing.T) {
 			t.Run(operation.name+"/durable_"+mutation.name+"_after_guard", func(t *testing.T) {
 				fixture := newFormalPoolProductionRouteFixture(t, operation.stage, true, "tenant-one")
 				fixture.settings.afterGet = func() { mutation.mutate(&fixture.userRepo.user) }
-				rec := fixture.request(operation.method, operation.path(fixture), operation.body, fixture.token, "")
+				body := operation.body
+				if operation.name == "BrowserEgressAttestation" {
+					body = `{"confirmed":true,"verification_code":` + strconv.Quote(fixture.browserProof) + `}`
+				}
+				rec := fixture.request(operation.method, operation.path(fixture), body, fixture.token, "")
 				requireFormalPoolProductionDenial(t, fixture, rec, mutation.wantStatus, mutation.wantCode, 1)
 			})
 		}
@@ -240,6 +245,7 @@ type formalPoolProductionRouteFixture struct {
 	sessionID      string
 	accountID      int64
 	version        int64
+	browserProof   string
 	tenantID       string
 	configuredTime func() time.Time
 }
@@ -319,9 +325,17 @@ func (f *formalPoolProductionRouteFixture) prepareStage(stage string) {
 			f.accountID = result.AccountID
 		}
 	}
+	var tested *service.FormalPoolOnboardingSession
 	advance(func() (*service.FormalPoolOnboardingSession, error) {
-		return f.service.TestProxy(f.authorityContext(f.version), f.sessionID)
+		var testErr error
+		tested, testErr = f.service.TestProxy(f.authorityContext(f.version), f.sessionID)
+		return tested, testErr
 	})
+	parts := strings.Split(strings.TrimRight(tested.BrowserEgressCheckURL, "/"), "/")
+	f.browserProof = parts[len(parts)-1]
+	observed, err := f.service.VerifyBrowserEgressByNonce(context.Background(), f.browserProof, "198.51.100.10")
+	require.NoError(f.t, err)
+	f.version = observed.Version
 	if stage == "proxy-tested" || stage == "setup-token-ready" {
 		if stage == "setup-token-ready" {
 			f.dependencies.oauth.fullScope = false
@@ -330,7 +344,7 @@ func (f *formalPoolProductionRouteFixture) prepareStage(stage string) {
 	}
 	advance(func() (*service.FormalPoolOnboardingSession, error) {
 		return f.service.AttestBrowserEgress(f.authorityContext(f.version), f.sessionID, service.FormalPoolBrowserEgressAttestationRequest{
-			Confirmed: true, VerificationCode: "owner-proof",
+			Confirmed: true, VerificationCode: f.browserProof,
 		})
 	})
 	if stage == "attested" {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -134,6 +135,9 @@ func TestFormalPoolOnboardingTestProxyMintsBrowserNonceAndUsesNonceTTL(t *testin
 	_, err = store.update(created.ID, func(rec *formalPoolOnboardingSessionRecord) error {
 		rec.BrowserVerified = true
 		rec.BrowserVerifiedAt = now.Add(-time.Minute)
+		rec.BrowserProofConsumedHash = formalPoolProofDigest("old-proof")
+		rec.BrowserProofConsumedAt = now.Add(-time.Minute)
+		rec.BrowserEgressObservedAt = now.Add(-time.Minute)
 		rec.BrowserEgressMismatchAt = now.Add(-30 * time.Second)
 		rec.BrowserEgressBrowserIPBucket = "browser_old"
 		rec.BrowserEgressProxyIPBucket = "proxy_old"
@@ -179,8 +183,11 @@ func TestFormalPoolOnboardingTestProxyMintsBrowserNonceAndUsesNonceTTL(t *testin
 	if rec.BrowserEgressCheckStatus != "waiting" {
 		t.Fatalf("BrowserEgressCheckStatus = %q, want waiting", rec.BrowserEgressCheckStatus)
 	}
-	if rec.BrowserVerified || !rec.BrowserVerifiedAt.IsZero() || !rec.BrowserEgressMismatchAt.IsZero() {
+	if rec.BrowserVerified || !rec.BrowserVerifiedAt.IsZero() || !rec.BrowserEgressMismatchAt.IsZero() || !rec.BrowserEgressObservedAt.IsZero() {
 		t.Fatalf("browser verified residue not cleared: verified=%v verified_at=%v mismatch_at=%v", rec.BrowserVerified, rec.BrowserVerifiedAt, rec.BrowserEgressMismatchAt)
+	}
+	if rec.BrowserProofConsumedHash != "" || !rec.BrowserProofConsumedAt.IsZero() {
+		t.Fatalf("consumed proof residue not cleared: digest=%q consumed_at=%v", rec.BrowserProofConsumedHash, rec.BrowserProofConsumedAt)
 	}
 	if rec.BrowserEgressBrowserIPBucket != "" || rec.BrowserEgressProxyIPBucket != "" || rec.BrowserEgressLastErrorCode != "" {
 		t.Fatalf("browser egress buckets/error not cleared: browser=%q proxy=%q error=%q", rec.BrowserEgressBrowserIPBucket, rec.BrowserEgressProxyIPBucket, rec.BrowserEgressLastErrorCode)
@@ -292,7 +299,7 @@ func (w *formalPoolRiskCaptureWriter) RecordPublicRouteRateLimitedBuckets(ctx co
 	return nil
 }
 
-func TestFormalPoolVerifyBrowserEgressByNonceMatchingRemoteIPVerifiesAndRedacts(t *testing.T) {
+func TestFormalPoolVerifyBrowserEgressByNonceMatchingRemoteIPAwaitsFinalizationAndRedacts(t *testing.T) {
 	now := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)
 	store := NewFormalPoolOnboardingStore(30*time.Minute, func() time.Time { return now })
 	proxy := &formalPoolBrowserEgressProxyFake{rawIP: "198.51.100.10"}
@@ -304,8 +311,8 @@ func TestFormalPoolVerifyBrowserEgressByNonceMatchingRemoteIPVerifiesAndRedacts(
 	if err != nil {
 		t.Fatalf("VerifyBrowserEgressByNonce() error = %v", err)
 	}
-	if got.ID != created.ID || got.Status != FormalPoolOnboardingStatusBrowserEgressVerified || !got.BrowserEgressVerified {
-		t.Fatalf("verified session = %#v", got)
+	if got.ID != created.ID || got.Status != FormalPoolOnboardingStatusProxyVerified || got.BrowserEgressVerified {
+		t.Fatalf("observed session = %#v", got)
 	}
 	if proxy.testCalls != 1 || proxy.getCalls != 1 {
 		t.Fatalf("proxy calls test=%d get=%d, want test setup once and get once", proxy.testCalls, proxy.getCalls)
@@ -314,12 +321,12 @@ func TestFormalPoolVerifyBrowserEgressByNonceMatchingRemoteIPVerifiesAndRedacts(
 	if !ok {
 		t.Fatalf("stored session missing")
 	}
-	if rec.BrowserEgressCheckStatus != "verified" || !rec.BrowserVerified || rec.Status != FormalPoolOnboardingStatusBrowserEgressVerified {
+	if rec.BrowserEgressCheckStatus != "verified_pending_finalize" || rec.BrowserVerified || rec.Status != FormalPoolOnboardingStatusProxyVerified || rec.BrowserEgressObservedAt.IsZero() {
 		t.Fatalf("stored verification fields = status:%q verified:%v session:%q", rec.BrowserEgressCheckStatus, rec.BrowserVerified, rec.Status)
 	}
 	assertFormalPoolEgressBucketsRedacted(t, rec, "198.51.100.10")
-	if got.BrowserEgressCheckStatus != "verified" {
-		t.Fatalf("response browser egress status = %q, want verified", got.BrowserEgressCheckStatus)
+	if got.BrowserEgressCheckStatus != "verified_pending_finalize" {
+		t.Fatalf("response browser egress status = %q, want verified_pending_finalize", got.BrowserEgressCheckStatus)
 	}
 	if got.BrowserEgressBrowserIPBucket != rec.BrowserEgressBrowserIPBucket || got.BrowserEgressProxyIPBucket != rec.BrowserEgressProxyIPBucket {
 		t.Fatalf("response buckets = %q/%q, want stored %q/%q", got.BrowserEgressBrowserIPBucket, got.BrowserEgressProxyIPBucket, rec.BrowserEgressBrowserIPBucket, rec.BrowserEgressProxyIPBucket)
@@ -455,7 +462,7 @@ func TestFormalPoolVerifyBrowserEgressByNonceProxyRawEgressFailureWritesNoProxyA
 	assertFormalPoolRiskInputSafe(t, risk.noProxy[0], nonce, "198.51.100.10")
 }
 
-func TestFormalPoolVerifyBrowserEgressByNonceAlreadyVerifiedIsIdempotent(t *testing.T) {
+func TestFormalPoolVerifyBrowserEgressByNonceAlreadyObservedIsIdempotent(t *testing.T) {
 	now := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)
 	store := NewFormalPoolOnboardingStore(30*time.Minute, func() time.Time { return now })
 	proxy := &formalPoolBrowserEgressProxyFake{rawIP: "198.51.100.10"}
@@ -470,11 +477,104 @@ func TestFormalPoolVerifyBrowserEgressByNonceAlreadyVerifiedIsIdempotent(t *test
 	if err != nil {
 		t.Fatalf("second VerifyBrowserEgressByNonce() error = %v", err)
 	}
-	if first.ID != second.ID || second.ID != created.ID || !second.BrowserEgressVerified {
+	if first.ID != second.ID || second.ID != created.ID || second.BrowserEgressVerified || second.BrowserEgressCheckStatus != "verified_pending_finalize" || second.Version != first.Version {
 		t.Fatalf("idempotent response first=%#v second=%#v", first, second)
 	}
 	if proxy.getCalls != 1 || len(risk.verified) != 1 {
 		t.Fatalf("idempotent verify called probe/risk again: get=%d risk=%d", proxy.getCalls, len(risk.verified))
+	}
+}
+
+type formalPoolBlockingBrowserEgressProxy struct {
+	testCalls atomic.Int64
+	getCalls  atomic.Int64
+	entered   chan struct{}
+	release   chan struct{}
+}
+
+func newFormalPoolBlockingBrowserEgressProxy() *formalPoolBlockingBrowserEgressProxy {
+	return &formalPoolBlockingBrowserEgressProxy{entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (f *formalPoolBlockingBrowserEgressProxy) ResolveOrCreateProxy(_ context.Context, req FormalPoolOnboardingStartRequest) (FormalPoolProxyResolution, error) {
+	id := int64(9)
+	if req.ProxyID != nil {
+		id = *req.ProxyID
+	}
+	return FormalPoolProxyResolution{ProxyID: id, ProxyRef: formalPoolSafeRef("proxy", "blocking-browser-egress"), NormalizedProxyURL: "socks5h://proxy.local:1080"}, nil
+}
+
+func (f *formalPoolBlockingBrowserEgressProxy) TestProxy(context.Context, int64) (FormalPoolProxyTestSummary, error) {
+	f.testCalls.Add(1)
+	return FormalPoolProxyTestSummary{Success: true, ProxyRef: formalPoolSafeRef("proxy", "blocking-browser-egress")}, nil
+}
+
+func (f *formalPoolBlockingBrowserEgressProxy) GetRawEgressIP(context.Context, int64, string) (string, error) {
+	if f.getCalls.Add(1) == 1 {
+		close(f.entered)
+		<-f.release
+	}
+	return "198.51.100.10", nil
+}
+
+func TestFormalPoolVerifyBrowserEgressByNonceReservesOnceAndBlocksAdminDependency(t *testing.T) {
+	store := NewFormalPoolOnboardingStore(30*time.Minute, nil)
+	proxy := newFormalPoolBlockingBrowserEgressProxy()
+	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Store: store, Proxy: proxy})
+	_, nonce := formalPoolCreateSessionWithNonce(t, svc, store)
+	before, err := store.snapshotByNonce(nonce)
+	if err != nil {
+		t.Fatalf("snapshot nonce: %v", err)
+	}
+
+	type verifyResult struct {
+		session *FormalPoolOnboardingSession
+		err     error
+	}
+	firstResult := make(chan verifyResult, 1)
+	go func() {
+		got, verifyErr := svc.VerifyBrowserEgressByNonce(context.Background(), nonce, "198.51.100.10")
+		firstResult <- verifyResult{session: got, err: verifyErr}
+	}()
+	<-proxy.entered
+
+	reserved, ok := store.get(before.ID)
+	if !ok || reserved.ActiveOperation == nil || reserved.ActiveOperation.Kind != "browser_egress_verify" {
+		t.Fatalf("browser verifier reservation missing: %#v", reserved)
+	}
+	second, err := svc.VerifyBrowserEgressByNonce(context.Background(), nonce, "198.51.100.10")
+	if err != nil || second == nil {
+		t.Fatalf("concurrent public verify returned unsafe detail: session=%#v err=%v", second, err)
+	}
+	if proxy.getCalls.Load() != 1 {
+		t.Fatalf("proxy observer calls during reservation = %d, want 1", proxy.getCalls.Load())
+	}
+	_, err = svc.TestProxy(authorizedFlowContext(t, before.Version), before.ID)
+	if !errors.Is(err, ErrFormalPoolOnboardingVersionConflict) {
+		t.Fatalf("admin mutation during browser reservation error = %v, want version conflict", err)
+	}
+	if proxy.testCalls.Load() != 1 {
+		t.Fatalf("admin dependency ran during browser reservation: calls=%d", proxy.testCalls.Load())
+	}
+
+	close(proxy.release)
+	first := <-firstResult
+	if first.err != nil || first.session == nil || first.session.BrowserEgressCheckStatus != "verified_pending_finalize" {
+		t.Fatalf("first public verify = session:%#v err:%v", first.session, first.err)
+	}
+	if proxy.getCalls.Load() != 1 {
+		t.Fatalf("proxy observer final calls = %d, want 1", proxy.getCalls.Load())
+	}
+	polled, ok := store.get(before.ID)
+	if !ok {
+		t.Fatal("session missing after browser observation")
+	}
+	retested, err := svc.TestProxy(authorizedFlowContext(t, polled.Version), before.ID)
+	if err != nil {
+		t.Fatalf("admin mutation after polling current version: %v", err)
+	}
+	if proxy.testCalls.Load() != 2 || strings.HasSuffix(retested.BrowserEgressCheckURL, nonce) {
+		t.Fatalf("post-poll proxy retest did not mint a fresh proof: calls=%d response=%#v", proxy.testCalls.Load(), retested)
 	}
 }
 

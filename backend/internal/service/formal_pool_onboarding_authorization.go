@@ -172,13 +172,19 @@ func (s *FormalPoolOnboardingService) authorizeAccount(ctx context.Context, acco
 }
 
 func (s *FormalPoolOnboardingService) authorizeBrowserEgressOwner(ctx context.Context, id string) (FormalPoolRequestAuthority, *formalPoolOnboardingSessionRecord, error) {
-	authority, err := s.authorityFromContext(ctx)
-	if err != nil {
-		return FormalPoolRequestAuthority{}, nil, err
+	authority, ok := FormalPoolRequestAuthorityFromContext(ctx)
+	if !ok {
+		return FormalPoolRequestAuthority{}, nil, ErrFormalPoolOnboardingAuthenticationRequired
 	}
 	rec, ok := s.store.get(id)
 	if !ok {
 		return FormalPoolRequestAuthority{}, nil, ErrFormalPoolOnboardingNotFound
+	}
+	if !s.validPrincipalShape(authority.Principal) {
+		return FormalPoolRequestAuthority{}, nil, ErrFormalPoolOnboardingAuthenticationRequired
+	}
+	if strings.TrimSpace(authority.Principal.TenantID) == "" || !authority.Principal.SystemAdmin || authority.Principal.Role != RoleAdmin {
+		return FormalPoolRequestAuthority{}, nil, ErrFormalPoolOnboardingForbidden
 	}
 	if !formalPoolOwnerMatches(authority.Principal, rec) {
 		return FormalPoolRequestAuthority{}, nil, ErrFormalPoolOnboardingForbidden
