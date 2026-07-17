@@ -18,6 +18,7 @@ func TestNormalizeFormalPoolPublicOrigin(t *testing.T) {
 		{name: "missing optional origin", raw: "", want: ""},
 		{name: "whitespace-only optional origin", raw: "  \t\n", want: ""},
 		{name: "https domain", raw: "https://public.example.test", want: "https://public.example.test"},
+		{name: "ASCII punycode label", raw: "https://xn--bcher-kva.example", want: "https://xn--bcher-kva.example"},
 		{name: "https trailing slash", raw: " https://public.example.test/ ", want: "https://public.example.test"},
 		{name: "https explicit port", raw: "https://public.example.test:8443/", want: "https://public.example.test:8443"},
 		{name: "loopback localhost", raw: "http://localhost:8080/", want: "http://localhost:8080"},
@@ -46,6 +47,14 @@ func TestNormalizeFormalPoolPublicOrigin(t *testing.T) {
 		{name: "query", raw: "https://public.example.test/?next=evil"},
 		{name: "empty query marker", raw: "https://public.example.test/?"},
 		{name: "fragment", raw: "https://public.example.test/#fragment"},
+		{name: "empty fragment after host", raw: "https://public.example.test#"},
+		{name: "empty fragment after slash", raw: "https://public.example.test/#"},
+		{name: "composed IDN", raw: "https://éxample.test"},
+		{name: "decomposed IDN", raw: "https://e\u0301xample.test"},
+		{name: "Unicode ideographic dot", raw: "https://example。test"},
+		{name: "Unicode fullwidth dot", raw: "https://example．test"},
+		{name: "Unicode halfwidth dot", raw: "https://example｡test"},
+		{name: "Unicode separator", raw: "https://example‧test"},
 		{name: "non HTTP scheme", raw: "ftp://public.example.test"},
 		{name: "non-loopback HTTP", raw: "http://public.example.test"},
 		{name: "IPv4-like non-loopback HTTP", raw: "http://127.0.0.1.example.test"},
@@ -67,7 +76,7 @@ func TestNormalizeFormalPoolPublicOrigin(t *testing.T) {
 			got, err := NormalizeFormalPoolPublicOrigin(tc.raw)
 			require.Error(t, err)
 			require.Empty(t, got)
-			require.NotContains(t, err.Error(), tc.raw)
+			require.Equal(t, "invalid formal_pool public_origin", err.Error())
 			require.NotContains(t, strings.ToLower(err.Error()), "secret")
 		})
 	}
@@ -75,13 +84,16 @@ func TestNormalizeFormalPoolPublicOrigin(t *testing.T) {
 
 func TestValidateFormalPoolBrowserEgressURL(t *testing.T) {
 	t.Parallel()
+	validNonce := "nonce_" + strings.Repeat("a", 32)
+	validPath := formalPoolBrowserEgressPublicPathPrefix + validNonce
 
 	for _, raw := range []string{
-		"/api/v1/claude-onboarding/browser-egress-check/nonce_abc123",
-		"https://public.example.test/api/v1/claude-onboarding/browser-egress-check/nonce_abc123",
-		"http://localhost:8080/api/v1/claude-onboarding/browser-egress-check/nonce_abc123",
-		"http://127.0.0.1:8080/api/v1/claude-onboarding/browser-egress-check/nonce_abc123",
-		"http://[::1]:8080/api/v1/claude-onboarding/browser-egress-check/nonce_abc123",
+		validPath,
+		"https://public.example.test" + validPath,
+		"https://xn--bcher-kva.example" + validPath,
+		"http://localhost:8080" + validPath,
+		"http://127.0.0.1:8080" + validPath,
+		"http://[::1]:8080" + validPath,
 	} {
 		raw := raw
 		t.Run("valid "+raw, func(t *testing.T) {
@@ -92,19 +104,35 @@ func TestValidateFormalPoolBrowserEgressURL(t *testing.T) {
 
 	for _, raw := range []string{
 		"",
-		"api/v1/claude-onboarding/browser-egress-check/nonce_abc123",
-		"//evil.example/api/v1/claude-onboarding/browser-egress-check/nonce_abc123",
-		"http://public.example.test/api/v1/claude-onboarding/browser-egress-check/nonce_abc123",
-		"https://user:secret@public.example.test/api/v1/claude-onboarding/browser-egress-check/nonce_abc123",
+		strings.TrimPrefix(validPath, "/"),
+		"//evil.example" + validPath,
+		"http://public.example.test" + validPath,
+		"https://user:secret@public.example.test" + validPath,
+		"https://éxample.test" + validPath,
+		"https://e\u0301xample.test" + validPath,
+		"https://example。test" + validPath,
 		"https://public.example.test/admin",
-		"https://public.example.test/api/v1/claude-onboarding/browser-egress-check/nonce_abc123?next=evil",
-		"https://public.example.test/api/v1/claude-onboarding/browser-egress-check/nonce_abc123#fragment",
-		"https://public.example.test/api/v1/claude-onboarding/browser-egress-check/nonce_abc123/extra",
+		"https://public.example.test" + validPath + "?next=evil",
+		"https://public.example.test" + validPath + "#fragment",
+		"https://public.example.test" + validPath + "#",
+		validPath + "#",
+		"https://public.example.test" + validPath + "/extra",
+		formalPoolBrowserEgressPublicPathPrefix + ".",
+		formalPoolBrowserEgressPublicPathPrefix + "..",
+		formalPoolBrowserEgressPublicPathPrefix + `nonce_aaaaaaaaaaaaaaaa\\aaaaaaaaaaaaaaaa`,
+		formalPoolBrowserEgressPublicPathPrefix + "nonce_" + strings.Repeat("a", 31),
+		formalPoolBrowserEgressPublicPathPrefix + "nonce_" + strings.Repeat("a", 33),
+		formalPoolBrowserEgressPublicPathPrefix + "nonce_" + strings.Repeat("A", 32),
+		formalPoolBrowserEgressPublicPathPrefix + "nonce_" + strings.Repeat("g", 32),
+		formalPoolBrowserEgressPublicPathPrefix + strings.Repeat("a", 32),
+		formalPoolBrowserEgressPublicPathPrefix + "nonce_%61" + strings.Repeat("a", 30),
+		formalPoolBrowserEgressPublicPathPrefix + "nonce_%2e%2e",
 	} {
 		raw := raw
 		t.Run("invalid "+raw, func(t *testing.T) {
 			t.Parallel()
-			require.Error(t, ValidateFormalPoolBrowserEgressURL(raw))
+			err := ValidateFormalPoolBrowserEgressURL(raw)
+			require.EqualError(t, err, "invalid formal pool browser egress URL")
 		})
 	}
 }

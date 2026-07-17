@@ -33,6 +33,9 @@ func NormalizeFormalPoolPublicOrigin(raw string) (string, error) {
 	if trimmed == "" {
 		return "", nil
 	}
+	if strings.ContainsAny(trimmed, "#\\") {
+		return "", fmt.Errorf("invalid formal_pool public_origin")
+	}
 	parsed, err := url.Parse(trimmed)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Opaque != "" || parsed.User != nil ||
 		parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || parsed.RawFragment != "" ||
@@ -87,7 +90,7 @@ func validateFormalPoolOriginHost(host string) (string, error) {
 			port = host[colon+1:]
 		}
 	}
-	if hostname == "" || strings.TrimSpace(hostname) != hostname || strings.ContainsAny(hostname, "@/\\") {
+	if hostname == "" || strings.TrimSpace(hostname) != hostname || strings.ContainsAny(hostname, "@/\\") || !formalPoolASCIIOnly(hostname) {
 		return "", fmt.Errorf("invalid formal_pool public_origin")
 	}
 	if explicitPort {
@@ -103,7 +106,7 @@ func validateFormalPoolOriginHost(host string) (string, error) {
 }
 
 func ValidateFormalPoolBrowserEgressURL(raw string) error {
-	if raw == "" || strings.TrimSpace(raw) != raw {
+	if raw == "" || strings.TrimSpace(raw) != raw || strings.ContainsAny(raw, "#\\") {
 		return fmt.Errorf("invalid formal pool browser egress URL")
 	}
 	parsed, err := url.Parse(raw)
@@ -119,11 +122,33 @@ func ValidateFormalPoolBrowserEgressURL(raw string) error {
 		return fmt.Errorf("invalid formal pool browser egress URL")
 	}
 	if !strings.HasPrefix(parsed.Path, formalPoolBrowserEgressPublicPathPrefix) ||
-		strings.Contains(strings.TrimPrefix(parsed.Path, formalPoolBrowserEgressPublicPathPrefix), "/") ||
-		strings.TrimPrefix(parsed.Path, formalPoolBrowserEgressPublicPathPrefix) == "" {
+		!validFormalPoolBrowserNonce(strings.TrimPrefix(parsed.Path, formalPoolBrowserEgressPublicPathPrefix)) {
 		return fmt.Errorf("invalid formal pool browser egress URL")
 	}
 	return nil
+}
+
+func formalPoolASCIIOnly(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if value[i] > 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func validFormalPoolBrowserNonce(value string) bool {
+	const prefix = "nonce_"
+	const hexLength = 32
+	if len(value) != len(prefix)+hexLength || !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	for i := len(prefix); i < len(value); i++ {
+		if (value[i] < '0' || value[i] > '9') && (value[i] < 'a' || value[i] > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func DefaultFormalPoolConfig() FormalPoolConfig {
