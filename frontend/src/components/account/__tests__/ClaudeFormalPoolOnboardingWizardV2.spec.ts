@@ -50,8 +50,9 @@ const egressPollingActions = vi.hoisted(() => ({
   abort: vi.fn(),
 }))
 
+const egressPollingSession = ref<FormalPoolSession | null>(null)
 const egressPollingMock = {
-  session: readonly(ref(null)),
+  session: readonly(egressPollingSession),
   status: readonly(ref('idle')),
   running: readonly(ref(false)),
   error: readonly(ref('')),
@@ -190,6 +191,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     egressPollingMock.start.mockReset()
     egressPollingMock.stop.mockReset()
     egressPollingMock.abort.mockReset()
+    egressPollingSession.value = null
     onboardingApi.getSession.mockResolvedValue(sessionFixture())
     adminApiMock.proxies.getAllWithCount.mockReset()
     adminApiMock.proxies.getAll.mockReset()
@@ -804,6 +806,38 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     expect(wrapper.text()).not.toContain('打开当前浏览器')
     expect(wrapper.find('input[placeholder*="attestation"]').exists()).toBe(false)
     expect(wrapper.find('input[placeholder*="校验码"]').exists()).toBe(false)
+  })
+
+  it('monotonically consumes the shared poller finalization result', async () => {
+    const proof = `nonce_${'a'.repeat(32)}`
+    const wrapper = mountWizard()
+    await startSession(wrapper)
+    const pending = sessionFixture({
+      version: 2,
+      status: 'proxy_tested',
+      browser_egress_check_status: 'verified_pending_finalize',
+      browser_egress_verified: false,
+      browser_egress_check_url: `https://safe.example/browser-egress-check/${proof}`,
+    })
+    onboardingApi.testProxy.mockResolvedValueOnce(pending)
+
+    await wrapper.find('[data-testid="test-proxy"]').trigger('click')
+    await flushPromises()
+    expect(egressPollingMock.start).toHaveBeenCalledWith('session-1')
+
+    egressPollingSession.value = sessionFixture({
+      version: 3,
+      status: 'proxy_verified',
+      browser_egress_check_status: 'verified',
+      browser_egress_verified: true,
+    })
+    await flushPromises()
+    egressPollingSession.value = pending
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="stepper-auth"]').attributes('data-step-status')).toBe('available')
+    await wrapper.find('[data-testid="stepper-auth"]').trigger('click')
+    expect(wrapper.find('[data-testid="generate-oauth-url"]').attributes('disabled')).toBeUndefined()
   })
 
   it('labels expired nonce recovery as starting a new onboarding session and triggers createSession', async () => {

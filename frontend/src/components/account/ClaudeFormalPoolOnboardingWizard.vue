@@ -75,11 +75,7 @@
         <a v-if="session.browser_egress_check_url" class="btn btn-secondary" :href="session.browser_egress_check_url" target="_blank" rel="noreferrer">打开 browser-egress-check</a>
       </div>
       <div class="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100">
-        必须在即将登录 Claude 的同出口浏览器打开校验 URL。若自动匹配不可用，需要完成不可绕过人工 attestation；未确认前无法生成 OAuth URL。
-      </div>
-      <div class="mt-3 flex gap-2">
-        <input v-model="attestationCode" class="input flex-1" placeholder="填写脱敏校验码/人工 attestation 记录" />
-        <button class="btn btn-secondary" :disabled="busy || !attestationCode" @click="attest">确认同出口</button>
+        必须在即将登录 Claude 的同出口浏览器打开校验 URL。服务端观察到同出口后会自动完成确认；未确认前无法生成 OAuth URL。
       </div>
     </section>
 
@@ -145,8 +141,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import claudeOnboarding, { type FormalPoolAcceptanceResult, type FormalPoolSession, type FormalPoolProfile, type FormalPoolProxyMode } from '@/api/admin/claudeOnboarding'
+import { useEgressCheckPolling } from '@/composables/useEgressCheckPolling'
 import { classifyFormalPoolMutationError, mergeFormalPoolMutationResult, monotonicFormalPoolSession } from '@/utils/formalPoolMutation'
 
 const busy = ref(false)
@@ -156,12 +153,12 @@ const acceptance = ref<FormalPoolAcceptanceResult | null>(null)
 const authMode = ref<'oauth' | 'setup-token-cookie'>('oauth')
 const oauthCode = ref('')
 const setupSessionKey = ref('')
-const attestationCode = ref('')
 const createIdempotencyKey = ref('')
 const exchangeIdempotencyKey = ref('')
 const promoteIdempotencyKey = ref('')
 const form = reactive<{ proxy_mode: FormalPoolProxyMode; proxy_id?: number; group_id?: number; account_name: string; pool_profile: FormalPoolProfile; concurrency: number }>({ proxy_mode: 'existing', proxy_id: undefined, group_id: undefined, account_name: '', pool_profile: 'normal', concurrency: 10 })
 const proxy = reactive({ name: '', protocol: 'socks5' as 'http' | 'https' | 'socks5' | 'socks5h', host: '', port: 1080, username: '', password: '' })
+const egressPolling = useEgressCheckPolling()
 const canStart = computed(() => !!form.group_id && !!form.account_name && (form.proxy_mode === 'existing' ? !!form.proxy_id : !!proxy.host && !!proxy.port))
 const safeSession = computed(() => JSON.stringify({
   safe_summary: session.value?.safe_summary || {},
@@ -184,6 +181,17 @@ function acceptSession(next: FormalPoolSession): boolean {
   return true
 }
 
+watch(() => egressPolling.session.value, (nextSession) => {
+	if (!nextSession || nextSession.id !== session.value?.id) return
+	if (nextSession.version < session.value.version) return
+	const mergedSession: FormalPoolSession = {
+		...(session.value as FormalPoolSession),
+		...(nextSession as FormalPoolSession),
+		browser_egress_check_url: nextSession.browser_egress_check_url || session.value.browser_egress_check_url,
+	}
+	acceptSession(mergedSession)
+})
+
 async function reconcileSession(id: string) {
   try { acceptSession(await claudeOnboarding.getSession(id)) } catch { /* retain the last known safe snapshot */ }
 }
@@ -201,6 +209,7 @@ async function run<T>(fn: () => Promise<T>, clearOperationKey?: () => void): Pro
   } finally { busy.value = false }
 }
 async function start() {
+	egressPolling.stop()
 	if (session.value) {
 		createIdempotencyKey.value = ''
 		exchangeIdempotencyKey.value = ''
@@ -212,8 +221,15 @@ async function start() {
 	const res = await run(() => claudeOnboarding.createSession(payload, createIdempotencyKey.value), () => { createIdempotencyKey.value = '' })
 	if (res) { acceptSession(res); createIdempotencyKey.value = '' }
 }
-async function testProxyStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.testProxy(session.value!)); if (res) acceptSession(res) }
-async function attest() { if (!session.value) return; const res = await run(() => claudeOnboarding.attestBrowserEgress(session.value!, attestationCode.value)); if (res) acceptSession(res) }
+async function testProxyStep() {
+	if (!session.value) return
+	egressPolling.stop()
+	const res = await run(() => claudeOnboarding.testProxy(session.value!))
+	if (res) {
+		acceptSession(res)
+		if (res.browser_egress_check_url) egressPolling.start(res.id)
+	}
+}
 async function generateOAuth() { if (!session.value) return; const res = await run(() => claudeOnboarding.generateAuthUrl(session.value!)); if (res) acceptSession(res) }
 async function exchangeCreate() { if (!session.value) return; if (!exchangeIdempotencyKey.value) exchangeIdempotencyKey.value = crypto.randomUUID(); const res = await run(() => claudeOnboarding.exchangeCodeAndCreate(session.value!, oauthCode.value, exchangeIdempotencyKey.value), () => { exchangeIdempotencyKey.value = '' }); if (res) { acceptSession(res); exchangeIdempotencyKey.value = '' } }
 async function setupTokenCreate() {

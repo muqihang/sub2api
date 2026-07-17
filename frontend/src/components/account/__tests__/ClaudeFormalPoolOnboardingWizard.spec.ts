@@ -103,4 +103,40 @@ describe('ClaudeFormalPoolOnboardingWizard mutation retries', () => {
 		expect(onboardingApi.testProxy.mock.calls[0][0].version).toBe(5)
 		expect(onboardingApi.testProxy.mock.calls[1][0].version).toBe(5)
 	})
+
+	it('auto-finalizes only the server URL proof and renders no free-form attestation control', async () => {
+		const proof = `nonce_${'b'.repeat(32)}`
+		const pending = sessionFixture({
+			version: 2,
+			status: 'proxy_tested',
+			browser_egress_check_status: 'verified_pending_finalize',
+			browser_egress_verified: false,
+			browser_egress_check_url: `https://safe.example/browser-egress-check/${proof}`,
+		})
+		const finalized = sessionFixture({
+			version: 3,
+			status: 'proxy_verified',
+			browser_egress_check_status: 'verified',
+			browser_egress_verified: true,
+		})
+		const wrapper = mount(ClaudeFormalPoolOnboardingWizard)
+		await fillStartForm(wrapper)
+		onboardingApi.createSession.mockResolvedValueOnce(sessionFixture())
+		await buttonByText(wrapper, '创建 onboarding session').trigger('click')
+		await flushPromises()
+		onboardingApi.testProxy.mockResolvedValueOnce(pending)
+		onboardingApi.getSession.mockResolvedValue(pending)
+		onboardingApi.attestBrowserEgress.mockResolvedValueOnce(finalized)
+
+		await buttonByText(wrapper, '测试代理').trigger('click')
+		await flushPromises()
+
+		expect(onboardingApi.attestBrowserEgress).toHaveBeenCalledTimes(1)
+		expect(onboardingApi.attestBrowserEgress).toHaveBeenCalledWith(pending, proof)
+		expect(wrapper.find('input[placeholder*="attestation"]').exists()).toBe(false)
+		expect(wrapper.find('input[placeholder*="校验码"]').exists()).toBe(false)
+		expect(wrapper.findAll('button').some((button) => button.text().includes('确认同出口'))).toBe(false)
+		expect(buttonByText(wrapper, '生成 OAuth URL').attributes('disabled')).toBeUndefined()
+		wrapper.unmount()
+	})
 })
