@@ -63,6 +63,13 @@ func TestFormalPoolBrowserEgressAttestationRejectsUntrustedProofs(t *testing.T) 
 		require.Error(t, attest(t, fx.svc, session.ID, proof+"-wrong", session.Version), "a modified server proof must be rejected")
 	})
 
+	t.Run("exact server proof before observation", func(t *testing.T) {
+		fx := newService()
+		session, proof := newProxyVerifiedSession(t, fx.svc, 42)
+		err := attest(t, fx.svc, session.ID, proof, session.Version)
+		requireFormalPoolReason(t, err, "FORMAL_POOL_BROWSER_PROOF_REJECTED")
+	})
+
 	t.Run("expired server proof", func(t *testing.T) {
 		fx := newService()
 		session, proof := newProxyVerifiedSession(t, fx.svc, 42)
@@ -139,6 +146,33 @@ func TestFormalPoolBrowserEgressConsumedProofReplayReasonPrecedesOnlyVersionAndS
 
 	for _, tc := range []struct {
 		name   string
+		mutate func(*FormalPoolOnboardingPrincipal)
+	}{
+		{name: "cross-owner and expired", mutate: func(p *FormalPoolOnboardingPrincipal) { p.ExpiresAtUnix = 1 }},
+		{name: "cross-owner and inactive", mutate: func(p *FormalPoolOnboardingPrincipal) { p.Active = false }},
+		{name: "cross-owner and malformed", mutate: func(p *FormalPoolOnboardingPrincipal) { p.CallerKind = "" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			principal := owner
+			principal.SubjectID++
+			tc.mutate(&principal)
+			before, exists := svc.store.get(observed.ID)
+			require.True(t, exists)
+			beforeRevalidations := revalidator.calls.Load()
+			_, attestErr := svc.AttestBrowserEgress(
+				formalPoolBrowserProofAuthorityContext(principal, consumeInputVersion), observed.ID,
+				FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: proof},
+			)
+			requireFormalPoolReason(t, attestErr, "FORMAL_POOL_FORBIDDEN")
+			after, exists := svc.store.get(observed.ID)
+			require.True(t, exists)
+			require.Equal(t, before.Version, after.Version)
+			require.Equal(t, beforeRevalidations, revalidator.calls.Load(), "static cross-owner rejection must precede durable revalidation")
+		})
+	}
+
+	for _, tc := range []struct {
+		name   string
 		reason string
 		err    error
 	}{
@@ -169,6 +203,12 @@ func TestFormalPoolBrowserEgressConsumedProofReplayReasonPrecedesOnlyVersionAndS
 		FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: proof + "0"},
 	)
 	requireFormalPoolReason(t, err, "FORMAL_POOL_ONBOARDING_VERSION_CONFLICT")
+
+	_, err = svc.AttestBrowserEgress(
+		formalPoolBrowserProofAuthorityContext(owner, consumed.Version), observed.ID,
+		FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: proof + "0"},
+	)
+	requireFormalPoolReason(t, err, "FORMAL_POOL_ONBOARDING_INVALID_STATE")
 }
 
 func newServerObservedBrowserProofFixture(t *testing.T) (*FormalPoolOnboardingService, FormalPoolOnboardingPrincipal, *FormalPoolOnboardingSession, string, *formalPrincipalRevalidatorFake) {

@@ -504,8 +504,20 @@ func (s *FormalPoolOnboardingService) VerifyBrowserEgressByNonce(ctx context.Con
 		if err != nil {
 			return nil, err
 		}
-		if snap.BrowserEgressCheckStatus == "verified_pending_finalize" || snap.BrowserVerified {
+		if snap.ActiveOperation != nil {
+			if snap.ActiveOperation.Kind == "browser_egress_verify" {
+				return s.sessionResponse(snap, nil), nil
+			}
+			return nil, ErrFormalPoolOnboardingVersionConflict
+		}
+		if snap.Status != FormalPoolOnboardingStatusProxyVerified {
+			return nil, ErrFormalPoolOnboardingNotFound
+		}
+		if snap.BrowserEgressCheckStatus == "verified_pending_finalize" {
 			return s.sessionResponse(snap, []FormalPoolAcceptanceCheck{{Name: "browser_egress_verification", Status: "pass"}}), nil
+		}
+		if snap.BrowserEgressCheckStatus == "expired" {
+			return nil, ErrFormalPoolOnboardingNonceExpired
 		}
 		if nonceExpired(snap, s.store.now()) {
 			updated, err := s.casExpireNonce(snap)
@@ -518,12 +530,6 @@ func (s *FormalPoolOnboardingService) VerifyBrowserEgressByNonce(ctx context.Con
 			s.recordFormalPoolNonceExpired(ctx, updated, nonce, remoteIP)
 			return nil, ErrFormalPoolOnboardingNonceExpired
 		}
-		if snap.ActiveOperation != nil {
-			if snap.ActiveOperation.Kind == "browser_egress_verify" {
-				return s.sessionResponse(snap, nil), nil
-			}
-			return nil, ErrFormalPoolOnboardingVersionConflict
-		}
 		if s.proxy == nil {
 			return nil, infraerrors.ServiceUnavailable("PROXY_VERIFIER_UNAVAILABLE", "formal pool proxy verifier is unavailable")
 		}
@@ -534,6 +540,12 @@ func (s *FormalPoolOnboardingService) VerifyBrowserEgressByNonce(ctx context.Con
 		reserved, err := s.store.casUpdate(snap.ID, snap.Version, func(rec *formalPoolOnboardingSessionRecord) error {
 			if rec.ActiveOperation != nil {
 				return ErrFormalPoolOnboardingVersionConflict
+			}
+			if rec.Status != FormalPoolOnboardingStatusProxyVerified || rec.BrowserNonce != nonce || rec.BrowserVerified {
+				return ErrFormalPoolOnboardingNotFound
+			}
+			if nonceExpired(rec, s.store.now()) {
+				return ErrFormalPoolOnboardingNonceExpired
 			}
 			copy := *reservation
 			rec.ActiveOperation = &copy
@@ -547,7 +559,12 @@ func (s *FormalPoolOnboardingService) VerifyBrowserEgressByNonce(ctx context.Con
 		}
 		proxyIP, probeErr := s.proxy.GetRawEgressIP(ctx, reserved.ProxyID, reserved.NormalizedProxyURL)
 		if probeErr != nil {
+			observerEligible := true
 			updated, err := s.finishReservedMutation(reserved.ID, reservation, func(rec *formalPoolOnboardingSessionRecord) error {
+				if rec.Status != FormalPoolOnboardingStatusProxyVerified || rec.BrowserNonce != nonce || rec.BrowserVerified {
+					observerEligible = false
+					return nil
+				}
 				if nonceExpired(rec, s.store.now()) {
 					rec.BrowserEgressCheckStatus = "expired"
 					rec.BrowserEgressLastErrorCode = "nonce_expired"
@@ -562,6 +579,9 @@ func (s *FormalPoolOnboardingService) VerifyBrowserEgressByNonce(ctx context.Con
 			if err != nil {
 				return nil, err
 			}
+			if !observerEligible {
+				return nil, ErrFormalPoolOnboardingNotFound
+			}
 			if updated.BrowserEgressCheckStatus == "expired" {
 				s.recordFormalPoolNonceExpired(ctx, updated, nonce, remoteIP)
 				return nil, ErrFormalPoolOnboardingNonceExpired
@@ -573,7 +593,12 @@ func (s *FormalPoolOnboardingService) VerifyBrowserEgressByNonce(ctx context.Con
 		proxyBucket := formalPoolNetworkBucket("proxy_bucket_", proxyIP)
 		matched := formalPoolEgressIPsMatch(remoteIP, proxyIP, s.config.EgressMatchCIDRWhitelist)
 		now := s.store.now()
+		observerEligible := true
 		updated, err := s.finishReservedMutation(reserved.ID, reservation, func(rec *formalPoolOnboardingSessionRecord) error {
+			if rec.Status != FormalPoolOnboardingStatusProxyVerified || rec.BrowserNonce != nonce || rec.BrowserVerified {
+				observerEligible = false
+				return nil
+			}
 			if nonceExpired(rec, s.store.now()) {
 				rec.BrowserEgressCheckStatus = "expired"
 				rec.BrowserEgressLastErrorCode = "nonce_expired"
@@ -599,6 +624,9 @@ func (s *FormalPoolOnboardingService) VerifyBrowserEgressByNonce(ctx context.Con
 		if err != nil {
 			return nil, err
 		}
+		if !observerEligible {
+			return nil, ErrFormalPoolOnboardingNotFound
+		}
 		if updated.BrowserEgressCheckStatus == "expired" {
 			s.recordFormalPoolNonceExpired(ctx, updated, nonce, remoteIP)
 			return nil, ErrFormalPoolOnboardingNonceExpired
@@ -615,6 +643,12 @@ func (s *FormalPoolOnboardingService) VerifyBrowserEgressByNonce(ctx context.Con
 
 func (s *FormalPoolOnboardingService) casExpireNonce(snap *formalPoolOnboardingSessionRecord) (*formalPoolOnboardingSessionRecord, error) {
 	return s.store.casUpdate(snap.ID, snap.Version, func(rec *formalPoolOnboardingSessionRecord) error {
+		if rec.ActiveOperation != nil {
+			return ErrFormalPoolOnboardingVersionConflict
+		}
+		if rec.Status != FormalPoolOnboardingStatusProxyVerified || rec.BrowserNonce != snap.BrowserNonce || rec.BrowserVerified {
+			return ErrFormalPoolOnboardingNotFound
+		}
 		rec.BrowserEgressCheckStatus = "expired"
 		rec.BrowserEgressLastErrorCode = "nonce_expired"
 		return nil

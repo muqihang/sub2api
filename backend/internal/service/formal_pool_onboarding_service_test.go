@@ -242,6 +242,7 @@ type formalPoolBrowserEgressProxyFake struct {
 	testCalls int
 	getCalls  int
 	rawIP     string
+	testErr   error
 	getErr    error
 }
 
@@ -255,6 +256,9 @@ func (f *formalPoolBrowserEgressProxyFake) ResolveOrCreateProxy(ctx context.Cont
 
 func (f *formalPoolBrowserEgressProxyFake) TestProxy(ctx context.Context, proxyID int64) (FormalPoolProxyTestSummary, error) {
 	f.testCalls++
+	if f.testErr != nil {
+		return FormalPoolProxyTestSummary{}, f.testErr
+	}
 	return FormalPoolProxyTestSummary{Success: true, ProxyRef: formalPoolSafeRef("proxy", "browser-egress-proxy"), ExitIPRef: formalPoolSafeRef("exit_ip", "proxy-exit"), LatencyBucket: "lt_500ms"}, nil
 }
 
@@ -549,7 +553,7 @@ func TestFormalPoolVerifyBrowserEgressByNonceReservesOnceAndBlocksAdminDependenc
 	if proxy.getCalls.Load() != 1 {
 		t.Fatalf("proxy observer calls during reservation = %d, want 1", proxy.getCalls.Load())
 	}
-	_, err = svc.TestProxy(authorizedFlowContext(t, before.Version), before.ID)
+	_, err = svc.TestProxy(authorizedFlowContext(t, reserved.Version), before.ID)
 	if !errors.Is(err, ErrFormalPoolOnboardingVersionConflict) {
 		t.Fatalf("admin mutation during browser reservation error = %v, want version conflict", err)
 	}
@@ -575,6 +579,155 @@ func TestFormalPoolVerifyBrowserEgressByNonceReservesOnceAndBlocksAdminDependenc
 	}
 	if proxy.testCalls.Load() != 2 || strings.HasSuffix(retested.BrowserEgressCheckURL, nonce) {
 		t.Fatalf("post-poll proxy retest did not mint a fresh proof: calls=%d response=%#v", proxy.testCalls.Load(), retested)
+	}
+}
+
+func TestFormalPoolVerifyBrowserEgressByNonceExpiryDuringBrowserReservationPreservesOwner(t *testing.T) {
+	clock := newFormalMutableClock(time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC))
+	store := NewFormalPoolOnboardingStore(30*time.Minute, clock.Now)
+	proxy := newFormalPoolBlockingBrowserEgressProxy()
+	cfg := DefaultFormalPoolConfig()
+	cfg.NonceTTL = time.Minute
+	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Store: store, Proxy: proxy, Config: cfg})
+	_, nonce := formalPoolCreateSessionWithNonce(t, svc, store)
+
+	type verifyResult struct {
+		session *FormalPoolOnboardingSession
+		err     error
+	}
+	firstResult := make(chan verifyResult, 1)
+	go func() {
+		got, err := svc.VerifyBrowserEgressByNonce(context.Background(), nonce, "198.51.100.10")
+		firstResult <- verifyResult{session: got, err: err}
+	}()
+	<-proxy.entered
+	reserved, ok := store.findByNonce(nonce)
+	if !ok || reserved.ActiveOperation == nil {
+		t.Fatalf("browser reservation missing: %#v", reserved)
+	}
+	clock.Advance(2 * time.Minute)
+
+	pending, err := svc.VerifyBrowserEgressByNonce(context.Background(), nonce, "198.51.100.10")
+	if err != nil || pending == nil {
+		t.Fatalf("duplicate expired request must remain safe pending: session=%#v err=%v", pending, err)
+	}
+	afterDuplicate, ok := store.findByNonce(nonce)
+	if !ok {
+		t.Fatal("nonce disappeared during active browser reservation")
+	}
+	if afterDuplicate.Version != reserved.Version || afterDuplicate.ActiveOperation == nil || afterDuplicate.ActiveOperation.OperationID != reserved.ActiveOperation.OperationID {
+		t.Fatalf("duplicate expiry changed reservation: before=%#v after=%#v", reserved.ActiveOperation, afterDuplicate.ActiveOperation)
+	}
+	if proxy.getCalls.Load() != 1 {
+		t.Fatalf("duplicate expiry observer calls=%d, want 1", proxy.getCalls.Load())
+	}
+
+	close(proxy.release)
+	first := <-firstResult
+	if !errors.Is(first.err, ErrFormalPoolOnboardingNonceExpired) {
+		t.Fatalf("reservation owner expiry result=%#v err=%v", first.session, first.err)
+	}
+	final, ok := store.get(reserved.ID)
+	if !ok || final.ActiveOperation != nil || final.BrowserEgressCheckStatus != "expired" {
+		t.Fatalf("browser reservation owner did not clear expired operation: %#v", final)
+	}
+}
+
+func TestFormalPoolVerifyBrowserEgressByNonceExpiryDuringAdminReservationDoesNotMutateReservation(t *testing.T) {
+	clock := newFormalMutableClock(time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC))
+	store := NewFormalPoolOnboardingStore(30*time.Minute, clock.Now)
+	proxy := &formalPoolBrowserEgressProxyFake{rawIP: "198.51.100.10"}
+	cfg := DefaultFormalPoolConfig()
+	cfg.NonceTTL = time.Minute
+	svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Store: store, Proxy: proxy, Config: cfg})
+	_, nonce := formalPoolCreateSessionWithNonce(t, svc, store)
+	before, err := store.snapshotByNonce(nonce)
+	if err != nil {
+		t.Fatalf("snapshot nonce: %v", err)
+	}
+	reserved, reservation, err := svc.reserveAuthorizedMutation(before, "test_proxy")
+	if err != nil {
+		t.Fatalf("reserve admin operation: %v", err)
+	}
+	clock.Advance(2 * time.Minute)
+
+	_, err = svc.VerifyBrowserEgressByNonce(context.Background(), nonce, "198.51.100.10")
+	if !errors.Is(err, ErrFormalPoolOnboardingVersionConflict) {
+		t.Fatalf("expired nonce during admin reservation error=%v, want safe conflict", err)
+	}
+	afterPublic, ok := store.findByNonce(nonce)
+	if !ok || afterPublic.Version != reserved.Version || afterPublic.ActiveOperation == nil || afterPublic.ActiveOperation.OperationID != reservation.OperationID {
+		t.Fatalf("public expiry mutated admin reservation: reserved=%#v after=%#v", reserved, afterPublic)
+	}
+	if proxy.getCalls != 0 {
+		t.Fatalf("observer called during admin reservation: %d", proxy.getCalls)
+	}
+	finished, err := svc.finishReservedMutation(before.ID, reservation, nil)
+	if err != nil || finished.ActiveOperation != nil {
+		t.Fatalf("admin reservation could not finish after public expiry: session=%#v err=%v", finished, err)
+	}
+}
+
+func TestFormalPoolVerifyBrowserEgressByNonceRejectsRetainedNonceInIneligibleState(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		setup          func(t *testing.T, svc *FormalPoolOnboardingService, proxy *formalPoolBrowserEgressProxyFake, before *formalPoolOnboardingSessionRecord) error
+		setupMustError bool
+		state          string
+	}{
+		{
+			name: "aborted",
+			setup: func(t *testing.T, svc *FormalPoolOnboardingService, _ *formalPoolBrowserEgressProxyFake, before *formalPoolOnboardingSessionRecord) error {
+				_, err := svc.AbortSession(authorizedFlowContext(t, before.Version), before.ID)
+				return err
+			},
+			state: FormalPoolOnboardingStatusAborted,
+		},
+		{
+			name: "operation outcome unknown",
+			setup: func(t *testing.T, svc *FormalPoolOnboardingService, proxy *formalPoolBrowserEgressProxyFake, before *formalPoolOnboardingSessionRecord) error {
+				proxy.testErr = errors.New("ambiguous proxy test failure")
+				_, err := svc.TestProxy(authorizedFlowContext(t, before.Version), before.ID)
+				return err
+			},
+			setupMustError: true,
+			state:          FormalPoolOnboardingStatusOperationOutcomeUnknown,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewFormalPoolOnboardingStore(30*time.Minute, nil)
+			proxy := &formalPoolBrowserEgressProxyFake{rawIP: "198.51.100.10"}
+			svc := newAuthorizedFlowService(FormalPoolOnboardingDeps{Store: store, Proxy: proxy})
+			_, nonce := formalPoolCreateSessionWithNonce(t, svc, store)
+			before, err := store.snapshotByNonce(nonce)
+			if err != nil {
+				t.Fatalf("snapshot nonce: %v", err)
+			}
+			setupErr := tc.setup(t, svc, proxy, before)
+			if tc.setupMustError && setupErr == nil {
+				t.Fatal("fixture expected an ambiguous operation error")
+			}
+			if !tc.setupMustError && setupErr != nil {
+				t.Fatalf("fixture setup failed: %v", setupErr)
+			}
+			terminal, ok := store.findByNonce(nonce)
+			if !ok || terminal.Status != tc.state {
+				t.Fatalf("retained nonce fixture state=%#v", terminal)
+			}
+			getCalls := proxy.getCalls
+
+			_, verifyErr := svc.VerifyBrowserEgressByNonce(context.Background(), nonce, "198.51.100.10")
+			if !errors.Is(verifyErr, ErrFormalPoolOnboardingNotFound) {
+				t.Fatalf("ineligible retained nonce error=%v, want safe not found", verifyErr)
+			}
+			after, ok := store.findByNonce(nonce)
+			if !ok || after.Version != terminal.Version || after.Status != tc.state || after.ActiveOperation != nil {
+				t.Fatalf("ineligible retained nonce mutated session: before=%#v after=%#v", terminal, after)
+			}
+			if proxy.getCalls != getCalls {
+				t.Fatalf("observer ran for ineligible state: before=%d after=%d", getCalls, proxy.getCalls)
+			}
+		})
 	}
 }
 

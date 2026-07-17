@@ -180,13 +180,13 @@ func (s *FormalPoolOnboardingService) authorizeBrowserEgressOwner(ctx context.Co
 	if !ok {
 		return FormalPoolRequestAuthority{}, nil, ErrFormalPoolOnboardingNotFound
 	}
+	if !formalPoolOwnerMatches(authority.Principal, rec) {
+		return FormalPoolRequestAuthority{}, nil, ErrFormalPoolOnboardingForbidden
+	}
 	if !s.validPrincipalShape(authority.Principal) {
 		return FormalPoolRequestAuthority{}, nil, ErrFormalPoolOnboardingAuthenticationRequired
 	}
 	if strings.TrimSpace(authority.Principal.TenantID) == "" || !authority.Principal.SystemAdmin || authority.Principal.Role != RoleAdmin {
-		return FormalPoolRequestAuthority{}, nil, ErrFormalPoolOnboardingForbidden
-	}
-	if !formalPoolOwnerMatches(authority.Principal, rec) {
 		return FormalPoolRequestAuthority{}, nil, ErrFormalPoolOnboardingForbidden
 	}
 	if err := s.revalidatePrincipal(ctx, authority.Principal); err != nil {
