@@ -313,6 +313,7 @@ func ProvideOpenAIGatewayService(
 	entityRegistryRepo EntityRegistryRepository,
 	entityRateLimitService *EntityRateLimitService,
 	contentModerationService *ContentModerationService,
+	optionalDeps ...any,
 ) *OpenAIGatewayService {
 	deps := []any{
 		gatewayCoreService,
@@ -324,6 +325,7 @@ func ProvideOpenAIGatewayService(
 		entityRateLimitService,
 		NewContentModerationOpenAIContentSafetyProvider(contentModerationService),
 	}
+	deps = append(deps, optionalDeps...)
 	return NewOpenAIGatewayService(
 		accountRepo,
 		usageLogRepo,
@@ -342,6 +344,62 @@ func ProvideOpenAIGatewayService(
 		deferredService,
 		openAITokenProvider,
 		deps...,
+	)
+}
+
+func ProvideOpenAIGatewayServiceForWire(
+	accountRepo AccountRepository,
+	usageLogRepo UsageLogRepository,
+	usageBillingRepo UsageBillingRepository,
+	userRepo UserRepository,
+	userSubRepo UserSubscriptionRepository,
+	userGroupRateRepo UserGroupRateRepository,
+	cache GatewayCache,
+	cfg *config.Config,
+	schedulerSnapshot *SchedulerSnapshotService,
+	concurrencyService *ConcurrencyService,
+	billingService *BillingService,
+	rateLimitService *RateLimitService,
+	billingCacheService *BillingCacheService,
+	httpUpstream HTTPUpstream,
+	deferredService *DeferredService,
+	openAITokenProvider *OpenAITokenProvider,
+	grokTokenProvider *GrokTokenProvider,
+	gatewayCoreService *OpenAIGatewayCoreService,
+	resolver *ModelPricingResolver,
+	channelService *ChannelService,
+	balanceNotifyService *BalanceNotifyService,
+	settingService *SettingService,
+	entityRegistryRepo EntityRegistryRepository,
+	entityRateLimitService *EntityRateLimitService,
+	userPlatformQuotaRepo UserPlatformQuotaRepository,
+) *OpenAIGatewayService {
+	return NewOpenAIGatewayService(
+		accountRepo,
+		usageLogRepo,
+		usageBillingRepo,
+		userRepo,
+		userSubRepo,
+		userGroupRateRepo,
+		cache,
+		cfg,
+		schedulerSnapshot,
+		concurrencyService,
+		billingService,
+		rateLimitService,
+		billingCacheService,
+		httpUpstream,
+		deferredService,
+		openAITokenProvider,
+		grokTokenProvider,
+		gatewayCoreService,
+		resolver,
+		channelService,
+		balanceNotifyService,
+		settingService,
+		entityRegistryRepo,
+		entityRateLimitService,
+		userPlatformQuotaRepo,
 	)
 }
 
@@ -1085,7 +1143,7 @@ var ProviderSet = wire.NewSet(
 	NewGatewayService,
 	ProvideOpenAIGatewayCoreService,
 	NewEntityRateLimitService,
-	ProvideOpenAIGatewayService,
+	ProvideOpenAIGatewayServiceForWire,
 	ProvideBatchImageModelPricingResolver,
 	NewBatchImagePublicService,
 	NewBatchImageDownloadService,

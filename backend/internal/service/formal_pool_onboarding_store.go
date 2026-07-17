@@ -174,6 +174,14 @@ func (s *FormalPoolOnboardingStore) casUpdate(id string, expectedVersion int64, 
 }
 
 func (s *FormalPoolOnboardingStore) completeReservedMutation(id string, reservation *FormalPoolOperationReservation, mutate func(*formalPoolOnboardingSessionRecord) error) (*formalPoolOnboardingSessionRecord, error) {
+	return s.finalizeReservedMutation(id, reservation, mutate, true)
+}
+
+func (s *FormalPoolOnboardingStore) releaseReservedMutation(id string, reservation *FormalPoolOperationReservation) (*formalPoolOnboardingSessionRecord, error) {
+	return s.finalizeReservedMutation(id, reservation, nil, false)
+}
+
+func (s *FormalPoolOnboardingStore) finalizeReservedMutation(id string, reservation *FormalPoolOperationReservation, mutate func(*formalPoolOnboardingSessionRecord) error, recordOutcome bool) (*formalPoolOnboardingSessionRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec, ok := s.sessions[strings.TrimSpace(id)]
@@ -193,7 +201,7 @@ func (s *FormalPoolOnboardingStore) completeReservedMutation(id string, reservat
 	}
 	next.ActiveOperation = nil
 	next.Version = rec.Version + 1
-	if active.IdempotencyKeySafeRef != "" {
+	if recordOutcome && active.IdempotencyKeySafeRef != "" {
 		next.LastOperation = &formalPoolOperationOutcome{
 			Kind: active.Kind, IdempotencyKeySafeRef: active.IdempotencyKeySafeRef,
 			RequestFingerprint: active.RequestFingerprint, Version: next.Version, Status: next.Status,

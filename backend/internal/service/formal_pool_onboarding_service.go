@@ -748,13 +748,16 @@ func (s *FormalPoolOnboardingService) recordFormalPoolEgressNoProxy(ctx context.
 }
 
 func (s *FormalPoolOnboardingService) TestProxy(ctx context.Context, id string) (*FormalPoolOnboardingSession, error) {
-	rec, reservation, err := s.beginReservedMutation(ctx, id, "test_proxy", FormalPoolOnboardingStatusDraft, FormalPoolOnboardingStatusProxyVerified)
+	snapshot, err := s.authorizeSession(ctx, id, true, FormalPoolOnboardingStatusDraft, FormalPoolOnboardingStatusProxyVerified)
 	if err != nil {
 		return nil, err
 	}
 	if s.proxy == nil {
-		err = infraerrors.ServiceUnavailable("PROXY_VERIFIER_UNAVAILABLE", "formal pool proxy verifier is unavailable")
-		return nil, s.failReservedMutationUnknown(id, reservation, err)
+		return nil, infraerrors.ServiceUnavailable("PROXY_VERIFIER_UNAVAILABLE", "formal pool proxy verifier is unavailable")
+	}
+	rec, reservation, err := s.reserveAuthorizedMutation(snapshot, "test_proxy")
+	if err != nil {
+		return nil, err
 	}
 	summary, err := s.proxy.TestProxy(ctx, rec.ProxyID)
 	if err != nil {
@@ -762,7 +765,7 @@ func (s *FormalPoolOnboardingService) TestProxy(ctx context.Context, id string) 
 	}
 	if !summary.Success {
 		err = infraerrors.BadRequest("PROXY_TEST_FAILED", "proxy test failed")
-		return nil, s.failReservedMutationUnknown(id, reservation, err)
+		return nil, s.failReservedMutationKnown(id, reservation, err)
 	}
 	rec, err = s.finishReservedMutation(id, reservation, func(rec *formalPoolOnboardingSessionRecord) error {
 		rec.Status = FormalPoolOnboardingStatusProxyVerified
@@ -809,13 +812,16 @@ func (s *FormalPoolOnboardingService) AttestBrowserEgress(ctx context.Context, i
 }
 
 func (s *FormalPoolOnboardingService) GenerateAuthURL(ctx context.Context, id string) (*FormalPoolOnboardingSession, error) {
-	rec, reservation, err := s.beginReservedMutation(ctx, id, "generate_auth_url", FormalPoolOnboardingStatusBrowserEgressVerified)
+	snapshot, err := s.authorizeSession(ctx, id, true, FormalPoolOnboardingStatusBrowserEgressVerified)
 	if err != nil {
 		return nil, err
 	}
 	if s.oauth == nil {
-		err = infraerrors.ServiceUnavailable("OAUTH_FACADE_UNAVAILABLE", "formal pool OAuth facade is unavailable")
-		return nil, s.failReservedMutationUnknown(id, reservation, err)
+		return nil, infraerrors.ServiceUnavailable("OAUTH_FACADE_UNAVAILABLE", "formal pool OAuth facade is unavailable")
+	}
+	rec, reservation, err := s.reserveAuthorizedMutation(snapshot, "generate_auth_url")
+	if err != nil {
+		return nil, err
 	}
 	res, err := s.oauth.GenerateFormalAuthURL(ctx, rec.ProxyID)
 	if err != nil {
@@ -839,7 +845,7 @@ func (s *FormalPoolOnboardingService) ExchangeCodeAndCreate(ctx context.Context,
 		requestProxyID = fmt.Sprint(*req.ProxyID)
 	}
 	requestFingerprint := formalPoolSafeRef("exchange_request", id+"\x00"+strings.TrimSpace(req.Code)+"\x00"+requestProxyID)
-	rec, reservation, replay, err := s.beginIdempotentReservedMutation(ctx, id, "exchange_code_and_create", requestFingerprint, FormalPoolOnboardingStatusOAuthURLGenerated)
+	rec, keySafeRef, replay, err := s.prepareIdempotentMutation(ctx, id, "exchange_code_and_create", requestFingerprint, FormalPoolOnboardingStatusOAuthURLGenerated)
 	if err != nil {
 		return nil, err
 	}
@@ -847,20 +853,20 @@ func (s *FormalPoolOnboardingService) ExchangeCodeAndCreate(ctx context.Context,
 		return s.sessionResponse(rec, nil), nil
 	}
 	if strings.TrimSpace(req.AccountRef) != "" || strings.TrimSpace(req.AccessToken) != "" || strings.TrimSpace(req.RefreshToken) != "" || strings.TrimSpace(req.Token) != "" {
-		err = infraerrors.BadRequest("FRONTEND_SECRET_FIELD_FORBIDDEN", "frontend-controlled account refs and tokens are forbidden")
-		return nil, s.failReservedMutationUnknown(id, reservation, err)
+		return nil, infraerrors.BadRequest("FRONTEND_SECRET_FIELD_FORBIDDEN", "frontend-controlled account refs and tokens are forbidden")
 	}
 	if req.ProxyID != nil && *req.ProxyID != rec.ProxyID {
-		err = infraerrors.BadRequest("PROXY_MISMATCH", "exchange proxy must match onboarding session proxy")
-		return nil, s.failReservedMutationUnknown(id, reservation, err)
+		return nil, infraerrors.BadRequest("PROXY_MISMATCH", "exchange proxy must match onboarding session proxy")
 	}
 	if strings.TrimSpace(req.Code) == "" {
-		err = infraerrors.BadRequest("OAUTH_CODE_REQUIRED", "oauth code is required")
-		return nil, s.failReservedMutationUnknown(id, reservation, err)
+		return nil, infraerrors.BadRequest("OAUTH_CODE_REQUIRED", "oauth code is required")
 	}
 	if s.oauth == nil || s.accounts == nil {
-		err = infraerrors.ServiceUnavailable("FORMAL_POOL_CREATE_UNAVAILABLE", "formal pool exchange/create dependencies are unavailable")
-		return nil, s.failReservedMutationUnknown(id, reservation, err)
+		return nil, infraerrors.ServiceUnavailable("FORMAL_POOL_CREATE_UNAVAILABLE", "formal pool exchange/create dependencies are unavailable")
+	}
+	rec, reservation, err := s.reserveAuthorizedMutationWithIdempotency(rec, "exchange_code_and_create", keySafeRef, requestFingerprint)
+	if err != nil {
+		return nil, err
 	}
 	summary, credentials, err := s.oauth.ExchangeCode(ctx, rec.OAuthSessionID, strings.TrimSpace(req.Code), rec.ProxyID)
 	if err != nil {
@@ -1046,7 +1052,7 @@ func formalPoolSafeSetupTokenCookieAuthCause(err error) error {
 }
 
 func (s *FormalPoolOnboardingService) RunAcceptance(ctx context.Context, id string) (*FormalPoolAcceptanceResult, error) {
-	rec, reservation, err := s.beginReservedMutation(ctx, id, "run_acceptance",
+	snapshot, err := s.authorizeSession(ctx, id, true,
 		FormalPoolOnboardingStatusImported,
 		FormalPoolOnboardingStatusRefreshed,
 		FormalPoolOnboardingStatusRuntimeRegistered,
@@ -1056,7 +1062,18 @@ func (s *FormalPoolOnboardingService) RunAcceptance(ctx context.Context, id stri
 	if err != nil {
 		return nil, err
 	}
-	result, err := s.runAcceptanceDependencies(ctx, rec)
+	if snapshot.AccountID <= 0 || s.accounts == nil {
+		return nil, infraerrors.BadRequest("ACCOUNT_NOT_CREATED", "account must be created before acceptance")
+	}
+	account, err := s.accounts.GetFormalPoolAccount(ctx, snapshot.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	rec, reservation, err := s.reserveAuthorizedMutation(snapshot, "run_acceptance")
+	if err != nil {
+		return nil, err
+	}
+	result, err := s.runAcceptanceDependencies(ctx, rec, account)
 	if err != nil {
 		return nil, s.failReservedMutationUnknown(id, reservation, err)
 	}
@@ -1077,14 +1094,7 @@ func (s *FormalPoolOnboardingService) RunAcceptance(ctx context.Context, id stri
 	return result, nil
 }
 
-func (s *FormalPoolOnboardingService) runAcceptanceDependencies(ctx context.Context, rec *formalPoolOnboardingSessionRecord) (*FormalPoolAcceptanceResult, error) {
-	if rec.AccountID <= 0 || s.accounts == nil {
-		return nil, infraerrors.BadRequest("ACCOUNT_NOT_CREATED", "account must be created before acceptance")
-	}
-	account, err := s.accounts.GetFormalPoolAccount(ctx, rec.AccountID)
-	if err != nil {
-		return nil, err
-	}
+func (s *FormalPoolOnboardingService) runAcceptanceDependencies(ctx context.Context, rec *formalPoolOnboardingSessionRecord, account *Account) (*FormalPoolAcceptanceResult, error) {
 	checks := formalPoolLocalAcceptanceChecks(account, rec)
 	if !runtimeEvidenceComplete(account) {
 		return &FormalPoolAcceptanceResult{Status: "failed_acceptance", AccountID: rec.AccountID, AccountRef: rec.AccountRef, ProxyRef: rec.ProxyRef, EgressBucket: rec.EgressBucket, PoolProfile: rec.PoolProfile, Checks: checks, NoRealMessagesRequestPerformed: true, ActivationRequired: false}, nil
@@ -1159,11 +1169,30 @@ func (s *FormalPoolOnboardingService) RunAccountHealthcheck(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+	if accountID <= 0 {
+		return nil, infraerrors.BadRequest("INVALID_ACCOUNT_ID", "account id must be positive")
+	}
+	if s.accounts == nil {
+		return nil, infraerrors.ServiceUnavailable("ACCOUNT_READER_UNAVAILABLE", "formal pool account reader is unavailable")
+	}
+	if s.healthcheck == nil {
+		return nil, infraerrors.ServiceUnavailable("HEALTHCHECK_UNAVAILABLE", "formal pool healthcheck runner is unavailable")
+	}
+	account, err := s.accounts.GetFormalPoolAccount(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if !IsFormalPoolAccount(account) {
+		return nil, infraerrors.BadRequest("FORMAL_POOL_ACCOUNT_REQUIRED", "account healthcheck requires a formal pool account")
+	}
+	if !runtimeEvidenceComplete(account) {
+		return nil, infraerrors.BadRequest("RUNTIME_EVIDENCE_INCOMPLETE", "complete persisted runtime registration evidence is required before healthcheck")
+	}
 	_, reservation, err := s.reserveAuthorizedMutation(rec, "account_healthcheck")
 	if err != nil {
 		return nil, err
 	}
-	result, err := s.runAccountHealthcheckDependencies(ctx, accountID)
+	result, err := s.runAccountHealthcheckDependencies(ctx, accountID, account)
 	if err != nil {
 		return nil, s.failReservedMutationUnknown(rec.ID, reservation, err)
 	}
@@ -1182,33 +1211,7 @@ func (s *FormalPoolOnboardingService) RunAccountHealthcheck(ctx context.Context,
 	return result, nil
 }
 
-func (s *FormalPoolOnboardingService) runAccountHealthcheckDependencies(ctx context.Context, accountID int64) (*FormalPoolAcceptanceResult, error) {
-	if accountID <= 0 {
-		return nil, infraerrors.BadRequest("INVALID_ACCOUNT_ID", "account id must be positive")
-	}
-	if s.accounts == nil {
-		return nil, infraerrors.ServiceUnavailable("ACCOUNT_READER_UNAVAILABLE", "formal pool account reader is unavailable")
-	}
-	if s.healthcheck == nil {
-		return nil, infraerrors.ServiceUnavailable("HEALTHCHECK_UNAVAILABLE", "formal pool healthcheck runner is unavailable")
-	}
-	account, err := s.accounts.GetFormalPoolAccount(ctx, accountID)
-	if err != nil {
-		return nil, err
-	}
-	if !IsFormalPoolAccount(account) {
-		return nil, infraerrors.BadRequest("FORMAL_POOL_ACCOUNT_REQUIRED", "account healthcheck requires a formal pool account")
-	}
-	if !runtimeEvidenceComplete(account) {
-		_, _ = s.accounts.UpdateFormalPoolAccountState(ctx, accountID, false, StatusActive, map[string]any{
-			FormalPoolExtraRuntimeRegistered:   "false",
-			FormalPoolExtraRuntimeRegisteredAt: "",
-			FormalPoolExtraLastFailureOrigin:   string(FormalPoolFailureOriginLocalGate),
-			FormalPoolExtraLastFailureCode:     "runtime_evidence_incomplete",
-			FormalPoolExtraLastFailureSource:   "formal_pool_account_healthcheck",
-		})
-		return nil, infraerrors.BadRequest("RUNTIME_EVIDENCE_INCOMPLETE", "complete persisted runtime registration evidence is required before healthcheck")
-	}
+func (s *FormalPoolOnboardingService) runAccountHealthcheckDependencies(ctx context.Context, accountID int64, account *Account) (*FormalPoolAcceptanceResult, error) {
 	input := formalPoolAccountHealthcheckInput(account)
 	result, err := s.healthcheck.RunHealthcheck(ctx, input)
 	if err != nil {
@@ -1319,17 +1322,16 @@ func (s *FormalPoolOnboardingService) Activate(ctx context.Context, id string) (
 	if s.accounts == nil {
 		return nil, infraerrors.ServiceUnavailable("ACCOUNT_ACTIVATOR_UNAVAILABLE", "formal pool account activator is unavailable")
 	}
-	_, reservation, err := s.reserveAuthorizedMutation(rec, "start_warming")
+	account, err := s.accounts.GetFormalPoolAccount(ctx, rec.AccountID)
 	if err != nil {
 		return nil, err
 	}
-	account, err := s.accounts.GetFormalPoolAccount(ctx, rec.AccountID)
-	if err != nil {
-		return nil, s.failReservedMutationUnknown(id, reservation, err)
-	}
 	if !formalPoolStartWarmingEvidenceComplete(account) {
-		err = infraerrors.BadRequest("HEALTHCHECK_EVIDENCE_INCOMPLETE", "complete persisted healthcheck evidence is required before warming")
-		return nil, s.failReservedMutationUnknown(id, reservation, err)
+		return nil, infraerrors.BadRequest("HEALTHCHECK_EVIDENCE_INCOMPLETE", "complete persisted healthcheck evidence is required before warming")
+	}
+	_, reservation, err := s.reserveAuthorizedMutation(rec, "start_warming")
+	if err != nil {
+		return nil, err
 	}
 	now := s.store.now()
 	warmingUntil := now.Add(24 * time.Hour)
@@ -1437,7 +1439,7 @@ func stringFromMap(values map[string]any, key string) string {
 }
 
 func (s *FormalPoolOnboardingService) RefreshOnly(ctx context.Context, id string) (*FormalPoolOnboardingSession, error) {
-	rec, reservation, err := s.beginReservedMutation(ctx, id, "refresh_only",
+	snapshot, err := s.authorizeSession(ctx, id, true,
 		FormalPoolOnboardingStatusImported,
 		FormalPoolOnboardingStatusRefreshed,
 		FormalPoolOnboardingStatusRuntimeRegistered,
@@ -1445,7 +1447,21 @@ func (s *FormalPoolOnboardingService) RefreshOnly(ctx context.Context, id string
 	if err != nil {
 		return nil, err
 	}
-	summary, err := s.refreshOnlyDependencies(ctx, rec)
+	if snapshot.AccountID <= 0 || s.accounts == nil {
+		return nil, infraerrors.BadRequest("ACCOUNT_NOT_CREATED", "account must be created before refresh-only")
+	}
+	if s.refresh == nil {
+		return nil, infraerrors.ServiceUnavailable("REFRESH_ONLY_UNAVAILABLE", "formal pool refresh-only runner is unavailable")
+	}
+	account, err := s.accounts.GetFormalPoolAccount(ctx, snapshot.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	rec, reservation, err := s.reserveAuthorizedMutation(snapshot, "refresh_only")
+	if err != nil {
+		return nil, err
+	}
+	summary, err := s.refreshOnlyDependencies(ctx, rec, account)
 	if err != nil {
 		return nil, s.failReservedMutationUnknown(id, reservation, err)
 	}
@@ -1461,17 +1477,7 @@ func (s *FormalPoolOnboardingService) RefreshOnly(ctx context.Context, id string
 	return s.sessionResponse(rec, nil), nil
 }
 
-func (s *FormalPoolOnboardingService) refreshOnlyDependencies(ctx context.Context, rec *formalPoolOnboardingSessionRecord) (*FormalPoolOAuthTokenSummary, error) {
-	if rec.AccountID <= 0 || s.accounts == nil {
-		return nil, infraerrors.BadRequest("ACCOUNT_NOT_CREATED", "account must be created before refresh-only")
-	}
-	if s.refresh == nil {
-		return nil, infraerrors.ServiceUnavailable("REFRESH_ONLY_UNAVAILABLE", "formal pool refresh-only runner is unavailable")
-	}
-	account, err := s.accounts.GetFormalPoolAccount(ctx, rec.AccountID)
-	if err != nil {
-		return nil, err
-	}
+func (s *FormalPoolOnboardingService) refreshOnlyDependencies(ctx context.Context, rec *formalPoolOnboardingSessionRecord, account *Account) (*FormalPoolOAuthTokenSummary, error) {
 	summary, credentials, err := s.refresh.RefreshFormalPoolAccount(ctx, account)
 	if err != nil {
 		if s.accounts != nil {
@@ -1545,11 +1551,31 @@ func (s *FormalPoolOnboardingService) syncRefreshedFormalPoolAccountCaches(ctx c
 }
 
 func (s *FormalPoolOnboardingService) RegisterRuntime(ctx context.Context, id string) (*FormalPoolOnboardingSession, error) {
-	rec, reservation, err := s.beginReservedMutation(ctx, id, "register_runtime", FormalPoolOnboardingStatusRefreshed)
+	snapshot, err := s.authorizeSession(ctx, id, true, FormalPoolOnboardingStatusRefreshed)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.registerRuntimeDependencies(ctx, rec); err != nil {
+	if snapshot.AccountID <= 0 {
+		return nil, infraerrors.BadRequest("ACCOUNT_NOT_CREATED", "account must be created before runtime registration")
+	}
+	if strings.TrimSpace(snapshot.AccountRef) == "" || strings.TrimSpace(snapshot.NormalizedProxyURL) == "" || strings.TrimSpace(snapshot.ProxyRef) == "" || strings.TrimSpace(snapshot.EgressBucket) == "" {
+		return nil, infraerrors.BadRequest("RUNTIME_REGISTRATION_INPUT_MISSING", "runtime registration requires account ref, proxy ref, proxy url and egress bucket")
+	}
+	if s.ccGatewayRuntime == nil {
+		return nil, infraRuntimeRegistrationUnavailable()
+	}
+	var account *Account
+	if s.accounts != nil {
+		account, err = s.accounts.GetFormalPoolAccount(ctx, snapshot.AccountID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	rec, reservation, err := s.reserveAuthorizedMutation(snapshot, "register_runtime")
+	if err != nil {
+		return nil, err
+	}
+	if err := s.registerRuntimeDependencies(ctx, rec, account); err != nil {
 		return nil, s.failReservedMutationUnknown(id, reservation, err)
 	}
 	rec, err = s.finishReservedMutation(id, reservation, func(rec *formalPoolOnboardingSessionRecord) error {
@@ -1563,24 +1589,7 @@ func (s *FormalPoolOnboardingService) RegisterRuntime(ctx context.Context, id st
 	return s.sessionResponse(rec, nil), nil
 }
 
-func (s *FormalPoolOnboardingService) registerRuntimeDependencies(ctx context.Context, rec *formalPoolOnboardingSessionRecord) error {
-	if rec.AccountID <= 0 {
-		return infraerrors.BadRequest("ACCOUNT_NOT_CREATED", "account must be created before runtime registration")
-	}
-	if strings.TrimSpace(rec.AccountRef) == "" || strings.TrimSpace(rec.NormalizedProxyURL) == "" || strings.TrimSpace(rec.ProxyRef) == "" || strings.TrimSpace(rec.EgressBucket) == "" {
-		return infraerrors.BadRequest("RUNTIME_REGISTRATION_INPUT_MISSING", "runtime registration requires account ref, proxy ref, proxy url and egress bucket")
-	}
-	if s.ccGatewayRuntime == nil {
-		return infraRuntimeRegistrationUnavailable()
-	}
-	var account *Account
-	if s.accounts != nil {
-		var accountErr error
-		account, accountErr = s.accounts.GetFormalPoolAccount(ctx, rec.AccountID)
-		if accountErr != nil {
-			return accountErr
-		}
-	}
+func (s *FormalPoolOnboardingService) registerRuntimeDependencies(ctx context.Context, rec *formalPoolOnboardingSessionRecord, account *Account) error {
 	reg := formalPoolRuntimeRegistration(rec)
 	if account != nil {
 		reg.CredentialRef = ccGatewayCredentialRef(account)
@@ -1618,7 +1627,7 @@ func (s *FormalPoolOnboardingService) StartWarming(ctx context.Context, id strin
 
 func (s *FormalPoolOnboardingService) PromoteProduction(ctx context.Context, id string) (*FormalPoolOnboardingSession, error) {
 	requestFingerprint := formalPoolSafeRef("promote_request", strings.TrimSpace(id))
-	rec, reservation, replay, err := s.beginIdempotentReservedMutation(ctx, id, "promote_production", requestFingerprint, FormalPoolOnboardingStatusWarming)
+	rec, keySafeRef, replay, err := s.prepareIdempotentMutation(ctx, id, "promote_production", requestFingerprint, FormalPoolOnboardingStatusWarming)
 	if err != nil {
 		return nil, err
 	}
@@ -1626,8 +1635,11 @@ func (s *FormalPoolOnboardingService) PromoteProduction(ctx context.Context, id 
 		return s.sessionResponse(rec, nil), nil
 	}
 	if s.accounts == nil {
-		err = infraerrors.ServiceUnavailable("ACCOUNT_UPDATER_UNAVAILABLE", "formal pool account updater is unavailable")
-		return nil, s.failReservedMutationUnknown(id, reservation, err)
+		return nil, infraerrors.ServiceUnavailable("ACCOUNT_UPDATER_UNAVAILABLE", "formal pool account updater is unavailable")
+	}
+	rec, reservation, err := s.reserveAuthorizedMutationWithIdempotency(rec, "promote_production", keySafeRef, requestFingerprint)
+	if err != nil {
+		return nil, err
 	}
 	effective := normalizePoolProfile(rec.PoolProfile)
 	if effective == "" {

@@ -61,11 +61,11 @@ func (r *formalPoolOnboardingPrincipalResolver) Revalidate(ctx context.Context, 
 		return service.ErrFormalPoolOnboardingAuthenticationRequired
 	}
 	if principal.SubjectID <= 0 || principal.AdministratorID <= 0 || principal.CreatorID <= 0 || principal.AuthorityRevision <= 0 ||
-		strings.TrimSpace(principal.TenantID) == "" || strings.TrimSpace(principal.Role) == "" ||
+		strings.TrimSpace(principal.Role) == "" ||
 		principal.CallerKind != service.CallerKindHumanJWT || !principal.Active || !principal.SystemAdmin || principal.ExpiresAtUnix <= r.now().Unix() {
 		return service.ErrFormalPoolOnboardingAuthenticationRequired
 	}
-	if r.tenantID == "" {
+	if r.tenantID == "" || strings.TrimSpace(principal.TenantID) == "" {
 		return service.ErrFormalPoolOnboardingForbidden
 	}
 	user, err := r.currentUser(ctx, principal.SubjectID, principal.AuthorityRevision)

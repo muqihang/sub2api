@@ -147,6 +147,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import claudeOnboarding, { type FormalPoolAcceptanceResult, type FormalPoolSession, type FormalPoolProfile, type FormalPoolProxyMode } from '@/api/admin/claudeOnboarding'
+import { classifyFormalPoolMutationError, mergeFormalPoolMutationResult, monotonicFormalPoolSession } from '@/utils/formalPoolMutation'
 
 const busy = ref(false)
 const error = ref('')
@@ -176,41 +177,56 @@ const safeSession = computed(() => JSON.stringify({
   oauth_summary: session.value?.oauth_summary
 }, null, 2))
 
-async function run<T>(fn: () => Promise<T>): Promise<T | null> {
-  busy.value = true
-  error.value = ''
-  try { return await fn() } catch (e: any) {
-    const status = Number(e?.response?.status || 0)
-    const id = session.value?.id
-    if (id && (status === 409 || status >= 500 || status === 0)) {
-      try { session.value = await claudeOnboarding.getSession(id) } catch { /* retain the last known safe snapshot */ }
-    }
-    error.value = e?.response?.data?.message || e?.message || '操作失败'
+function acceptSession(next: FormalPoolSession): boolean {
+  const current = session.value
+  if (current && current.id === next.id && next.version < current.version) return false
+  session.value = monotonicFormalPoolSession(current, next)
+  return true
+}
+
+async function reconcileSession(id: string) {
+  try { acceptSession(await claudeOnboarding.getSession(id)) } catch { /* retain the last known safe snapshot */ }
+}
+
+async function run<T>(fn: () => Promise<T>, clearOperationKey?: () => void): Promise<T | null> {
+	busy.value = true
+	error.value = ''
+	try { return await fn() } catch (e: any) {
+		const classification = classifyFormalPoolMutationError(e)
+		if (!classification.retainOperationKey) clearOperationKey?.()
+		const id = session.value?.id
+		if (id && classification.reconcile) await reconcileSession(id)
+		error.value = e?.response?.data?.message || e?.message || '操作失败'
     return null
   } finally { busy.value = false }
 }
 async function start() {
-  const payload: any = { ...form }
-  if (form.proxy_mode === 'create') payload.proxy = { ...proxy }
-  if (!createIdempotencyKey.value) createIdempotencyKey.value = crypto.randomUUID()
-  const res = await run(() => claudeOnboarding.createSession(payload, createIdempotencyKey.value))
-  if (res) { session.value = res; createIdempotencyKey.value = '' }
+	if (session.value) {
+		createIdempotencyKey.value = ''
+		exchangeIdempotencyKey.value = ''
+		promoteIdempotencyKey.value = ''
+	}
+	const payload: any = { ...form }
+	if (form.proxy_mode === 'create') payload.proxy = { ...proxy }
+	if (!createIdempotencyKey.value) createIdempotencyKey.value = crypto.randomUUID()
+	const res = await run(() => claudeOnboarding.createSession(payload, createIdempotencyKey.value), () => { createIdempotencyKey.value = '' })
+	if (res) { acceptSession(res); createIdempotencyKey.value = '' }
 }
-async function testProxyStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.testProxy(session.value!)); if (res) session.value = res }
-async function attest() { if (!session.value) return; const res = await run(() => claudeOnboarding.attestBrowserEgress(session.value!, attestationCode.value)); if (res) session.value = res }
-async function generateOAuth() { if (!session.value) return; const res = await run(() => claudeOnboarding.generateAuthUrl(session.value!)); if (res) session.value = res }
-async function exchangeCreate() { if (!session.value) return; if (!exchangeIdempotencyKey.value) exchangeIdempotencyKey.value = crypto.randomUUID(); const res = await run(() => claudeOnboarding.exchangeCodeAndCreate(session.value!, oauthCode.value, exchangeIdempotencyKey.value)); if (res) { session.value = res; exchangeIdempotencyKey.value = '' } }
+async function testProxyStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.testProxy(session.value!)); if (res) acceptSession(res) }
+async function attest() { if (!session.value) return; const res = await run(() => claudeOnboarding.attestBrowserEgress(session.value!, attestationCode.value)); if (res) acceptSession(res) }
+async function generateOAuth() { if (!session.value) return; const res = await run(() => claudeOnboarding.generateAuthUrl(session.value!)); if (res) acceptSession(res) }
+async function exchangeCreate() { if (!session.value) return; if (!exchangeIdempotencyKey.value) exchangeIdempotencyKey.value = crypto.randomUUID(); const res = await run(() => claudeOnboarding.exchangeCodeAndCreate(session.value!, oauthCode.value, exchangeIdempotencyKey.value), () => { exchangeIdempotencyKey.value = '' }); if (res) { acceptSession(res); exchangeIdempotencyKey.value = '' } }
 async function setupTokenCreate() {
   if (!session.value) return
   const res = await run(() => claudeOnboarding.setupTokenCookieAuthAndCreate(session.value!, setupSessionKey.value))
-  if (res) {
-    session.value = res
+	if (res) {
+		acceptSession(res)
     setupSessionKey.value = ''
   }
 }
-async function refreshOnlyStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.refreshOnly(session.value!)); if (res) session.value = res }
-async function runtimeRegisterStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.runtimeRegister(session.value!)); if (res) session.value = res }
-async function healthcheckStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.healthcheck(session.value!)); if (res) { acceptance.value = res; session.value = { ...session.value!, version: res.version, status: res.status, healthcheck_passed: res.status === 'healthcheck_passed' } } }
-async function startWarmingStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.startWarming(session.value!)); if (res) session.value = res }
-async function promoteProductionStep() { if (!session.value) return; if (!promoteIdempotencyKey.value) promoteIdempotencyKey.value = crypto.randomUUID(); const res = await run(() => claudeOnboarding.promoteProduction(session.value!, promoteIdempotencyKey.value)); if (res) { session.value = res; promoteIdempotencyKey.value = '' } }
+async function refreshOnlyStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.refreshOnly(session.value!)); if (res) acceptSession(res) }
+async function runtimeRegisterStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.runtimeRegister(session.value!)); if (res) acceptSession(res) }
+async function healthcheckStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.healthcheck(session.value!)); if (res && res.version >= session.value.version) { acceptance.value = res; session.value = mergeFormalPoolMutationResult(session.value, res) } }
+async function startWarmingStep() { if (!session.value) return; const res = await run(() => claudeOnboarding.startWarming(session.value!)); if (res) acceptSession(res) }
+async function promoteProductionStep() { if (!session.value) return; if (!promoteIdempotencyKey.value) promoteIdempotencyKey.value = crypto.randomUUID(); const res = await run(() => claudeOnboarding.promoteProduction(session.value!, promoteIdempotencyKey.value), () => { promoteIdempotencyKey.value = '' }); if (res) { acceptSession(res); promoteIdempotencyKey.value = '' } }
 </script>

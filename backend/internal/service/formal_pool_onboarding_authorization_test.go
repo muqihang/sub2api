@@ -449,7 +449,6 @@ func TestFormalPoolAuthorizeSessionMapsMalformedAuthoritiesToAuthenticationRequi
 		{name: "inactive", mutate: func(p *FormalPoolOnboardingPrincipal) { p.Active = false }},
 		{name: "non human", mutate: func(p *FormalPoolOnboardingPrincipal) { p.CallerKind = "service" }},
 		{name: "missing subject", mutate: func(p *FormalPoolOnboardingPrincipal) { p.SubjectID = 0 }},
-		{name: "missing tenant", mutate: func(p *FormalPoolOnboardingPrincipal) { p.TenantID = "" }},
 		{name: "missing authority revision", mutate: func(p *FormalPoolOnboardingPrincipal) { p.AuthorityRevision = 0 }},
 	}
 	for _, tc := range cases {
@@ -463,6 +462,696 @@ func TestFormalPoolAuthorizeSessionMapsMalformedAuthoritiesToAuthenticationRequi
 			require.Zero(t, revalidator.calls.Load())
 		})
 	}
+}
+
+func TestFormalPoolAuthorizeSessionMapsEmptyTenantAuthorityToForbiddenWithoutRevalidation(t *testing.T) {
+	svc, owner, session, revalidator := newAuthorizedOnboardingFixture(t)
+	revalidator.calls.Store(0)
+	owner.TenantID = ""
+	ctx := WithFormalPoolRequestAuthority(context.Background(), FormalPoolRequestAuthority{Principal: owner})
+
+	_, err := svc.GetSession(ctx, session.ID)
+	require.ErrorIs(t, err, ErrFormalPoolOnboardingForbidden)
+	require.NotErrorIs(t, err, ErrFormalPoolOnboardingAuthenticationRequired)
+	require.Zero(t, revalidator.calls.Load())
+}
+
+func TestFormalPoolExchangeDeterministicRequestFailureDoesNotReserveOrBecomeUnknown(t *testing.T) {
+	svc, _, session, _ := newAuthorizedOnboardingFixture(t)
+	rec, ok := svc.store.get(session.ID)
+	require.True(t, ok)
+	rec.Status = FormalPoolOnboardingStatusOAuthURLGenerated
+	rec.OAuthSessionID = "oauth-session"
+	svc.store.save(rec)
+	before, ok := svc.store.get(session.ID)
+	require.True(t, ok)
+
+	_, err := svc.ExchangeCodeAndCreate(
+		authorizedOnboardingContext("deterministic-exchange-key", before.Version),
+		session.ID,
+		FormalPoolExchangeCodeAndCreateRequest{},
+	)
+	require.Error(t, err)
+	after, ok := svc.store.get(session.ID)
+	require.True(t, ok)
+	require.Equal(t, before.Version, after.Version)
+	require.Equal(t, FormalPoolOnboardingStatusOAuthURLGenerated, after.Status)
+	require.Nil(t, after.ActiveOperation)
+	require.Nil(t, after.LastOperation)
+}
+
+func TestFormalPoolProxyKnownFailureReleasesReservationWithoutUnknownOutcome(t *testing.T) {
+	svc, _, session, _ := newAuthorizedOnboardingFixture(t)
+	svc.proxy = &formalCountingProxy{}
+
+	_, err := svc.TestProxy(authorizedOnboardingContext("", session.Version), session.ID)
+	require.Error(t, err)
+	after, ok := svc.store.get(session.ID)
+	require.True(t, ok)
+	require.Equal(t, session.Version+2, after.Version)
+	require.Equal(t, FormalPoolOnboardingStatusDraft, after.Status)
+	require.Nil(t, after.ActiveOperation)
+	require.Nil(t, after.LastOperation)
+}
+
+func TestFormalPoolProxyAmbiguousCallFailureFinalizesUnknownOutcome(t *testing.T) {
+	svc, _, session, _ := newAuthorizedOnboardingFixture(t)
+	ambiguous := errors.New("proxy call outcome unavailable")
+	svc.proxy = &formalProxyFake{testErr: ambiguous}
+
+	_, err := svc.TestProxy(authorizedOnboardingContext("", session.Version), session.ID)
+	require.ErrorIs(t, err, ambiguous)
+	after, ok := svc.store.get(session.ID)
+	require.True(t, ok)
+	require.Equal(t, session.Version+2, after.Version)
+	require.Equal(t, FormalPoolOnboardingStatusOperationOutcomeUnknown, after.Status)
+	require.Nil(t, after.ActiveOperation)
+}
+
+func TestFormalPoolDeterministicDependencyFailuresDoNotReserveAcrossFamilies(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    string
+		configure func(*FormalPoolOnboardingService, *formalPoolOnboardingSessionRecord)
+		call      func(*FormalPoolOnboardingService, context.Context, *formalPoolOnboardingSessionRecord) error
+	}{
+		{
+			name: "proxy", status: FormalPoolOnboardingStatusDraft,
+			configure: func(s *FormalPoolOnboardingService, _ *formalPoolOnboardingSessionRecord) { s.proxy = nil },
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) error {
+				_, err := s.TestProxy(ctx, rec.ID)
+				return err
+			},
+		},
+		{
+			name: "oauth_url", status: FormalPoolOnboardingStatusBrowserEgressVerified,
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) error {
+				_, err := s.GenerateAuthURL(ctx, rec.ID)
+				return err
+			},
+		},
+		{
+			name: "oauth_exchange", status: FormalPoolOnboardingStatusOAuthURLGenerated,
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) error {
+				_, err := s.ExchangeCodeAndCreate(ctx, rec.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "valid-code"})
+				return err
+			},
+		},
+		{
+			name: "acceptance", status: FormalPoolOnboardingStatusImported,
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) error {
+				_, err := s.RunAcceptance(ctx, rec.ID)
+				return err
+			},
+		},
+		{
+			name: "account_healthcheck", status: FormalPoolOnboardingStatusImported,
+			configure: func(_ *FormalPoolOnboardingService, rec *formalPoolOnboardingSessionRecord) { rec.AccountID = 77 },
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) error {
+				_, err := s.RunAccountHealthcheck(ctx, rec.AccountID)
+				return err
+			},
+		},
+		{
+			name: "activation", status: FormalPoolOnboardingStatusHealthcheckPassed,
+			configure: func(_ *FormalPoolOnboardingService, rec *formalPoolOnboardingSessionRecord) {
+				rec.AccountID = 77
+				rec.AcceptancePassed = true
+			},
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) error {
+				_, err := s.Activate(ctx, rec.ID)
+				return err
+			},
+		},
+		{
+			name: "refresh", status: FormalPoolOnboardingStatusImported,
+			configure: func(_ *FormalPoolOnboardingService, rec *formalPoolOnboardingSessionRecord) { rec.AccountID = 77 },
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) error {
+				_, err := s.RefreshOnly(ctx, rec.ID)
+				return err
+			},
+		},
+		{
+			name: "runtime", status: FormalPoolOnboardingStatusRefreshed,
+			configure: func(_ *FormalPoolOnboardingService, rec *formalPoolOnboardingSessionRecord) {
+				rec.AccountID = 77
+				rec.AccountRef = "hmac-sha256:" + strings.Repeat("a", 64)
+				rec.NormalizedProxyURL = "socks5h://proxy.local:1080"
+			},
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) error {
+				_, err := s.RegisterRuntime(ctx, rec.ID)
+				return err
+			},
+		},
+		{
+			name: "promotion", status: FormalPoolOnboardingStatusWarming,
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) error {
+				_, err := s.PromoteProduction(ctx, rec.ID)
+				return err
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, session, _ := newAuthorizedOnboardingFixture(t)
+			rec, ok := svc.store.get(session.ID)
+			require.True(t, ok)
+			rec.Status = tc.status
+			if tc.configure != nil {
+				tc.configure(svc, rec)
+			}
+			svc.store.save(rec)
+			before, ok := svc.store.get(session.ID)
+			require.True(t, ok)
+			ctx := authorizedOnboardingContext("deterministic-family-key", before.Version)
+
+			err := tc.call(svc, ctx, before)
+			require.Error(t, err)
+			after, ok := svc.store.get(session.ID)
+			require.True(t, ok)
+			require.Equal(t, before.Version, after.Version)
+			require.Equal(t, before.Status, after.Status)
+			require.Nil(t, after.ActiveOperation)
+			require.Nil(t, after.LastOperation)
+		})
+	}
+}
+
+func TestFormalPoolAmbiguousExternalCallFailuresBecomeUnknownAcrossFamilies(t *testing.T) {
+	ambiguous := errors.New("external call outcome unavailable")
+	tests := []struct {
+		name      string
+		status    string
+		configure func(*FormalPoolOnboardingService, *formalPoolOnboardingSessionRecord)
+		call      func(*FormalPoolOnboardingService, context.Context, *formalPoolOnboardingSessionRecord) error
+	}{
+		{
+			name: "oauth_url", status: FormalPoolOnboardingStatusBrowserEgressVerified,
+			configure: func(s *FormalPoolOnboardingService, _ *formalPoolOnboardingSessionRecord) {
+				s.oauth = &formalGenerateErrorOAuth{formalOAuthFake: &formalOAuthFake{}, err: ambiguous}
+			},
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) error {
+				_, err := s.GenerateAuthURL(ctx, rec.ID)
+				return err
+			},
+		},
+		{
+			name: "oauth_exchange", status: FormalPoolOnboardingStatusOAuthURLGenerated,
+			configure: func(s *FormalPoolOnboardingService, _ *formalPoolOnboardingSessionRecord) {
+				s.oauth = &formalOAuthFake{err: ambiguous}
+				s.accounts = &formalAccountFake{}
+			},
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) error {
+				_, err := s.ExchangeCodeAndCreate(ctx, rec.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "valid-code"})
+				return err
+			},
+		},
+		{
+			name: "acceptance", status: FormalPoolOnboardingStatusImported,
+			configure: func(s *FormalPoolOnboardingService, rec *formalPoolOnboardingSessionRecord) {
+				rec.AccountID = 77
+				account := formalAmbiguousFailureAccount(rec, FormalPoolStageImported)
+				s.accounts = &formalAccountFake{account: account, stateUpdateErr: ambiguous}
+				s.acceptance = formalAcceptanceFake{}
+				s.ccGateway = formalCCFake{}
+			},
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) error {
+				_, err := s.RunAcceptance(ctx, rec.ID)
+				return err
+			},
+		},
+		{
+			name: "account_healthcheck", status: FormalPoolOnboardingStatusRuntimeRegistered,
+			configure: func(s *FormalPoolOnboardingService, rec *formalPoolOnboardingSessionRecord) {
+				rec.AccountID = 77
+				s.accounts = &formalAccountFake{account: formalAmbiguousFailureAccount(rec, FormalPoolStageRuntimeRegistered)}
+				s.healthcheck = &formalHealthcheckFake{err: ambiguous}
+			},
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) error {
+				_, err := s.RunAccountHealthcheck(ctx, rec.AccountID)
+				return err
+			},
+		},
+		{
+			name: "activation", status: FormalPoolOnboardingStatusHealthcheckPassed,
+			configure: func(s *FormalPoolOnboardingService, rec *formalPoolOnboardingSessionRecord) {
+				rec.AccountID = 77
+				rec.AcceptancePassed = true
+				s.accounts = &formalAccountFake{account: formalAmbiguousFailureAccount(rec, FormalPoolStageHealthcheckPassed), activateErr: ambiguous}
+			},
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) error {
+				_, err := s.Activate(ctx, rec.ID)
+				return err
+			},
+		},
+		{
+			name: "refresh", status: FormalPoolOnboardingStatusImported,
+			configure: func(s *FormalPoolOnboardingService, rec *formalPoolOnboardingSessionRecord) {
+				rec.AccountID = 77
+				s.accounts = &formalAccountFake{account: formalAmbiguousFailureAccount(rec, FormalPoolStageImported)}
+				s.refresh = &formalOAuthFake{refreshErr: ambiguous}
+			},
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) error {
+				_, err := s.RefreshOnly(ctx, rec.ID)
+				return err
+			},
+		},
+		{
+			name: "runtime", status: FormalPoolOnboardingStatusRefreshed,
+			configure: func(s *FormalPoolOnboardingService, rec *formalPoolOnboardingSessionRecord) {
+				rec.AccountID = 77
+				rec.AccountRef = "hmac-sha256:" + strings.Repeat("b", 64)
+				rec.NormalizedProxyURL = "socks5h://proxy.local:1080"
+				s.ccGatewayRuntime = &formalRuntimeFake{err: ambiguous}
+			},
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) error {
+				_, err := s.RegisterRuntime(ctx, rec.ID)
+				return err
+			},
+		},
+		{
+			name: "promotion", status: FormalPoolOnboardingStatusWarming,
+			configure: func(s *FormalPoolOnboardingService, rec *formalPoolOnboardingSessionRecord) {
+				rec.AccountID = 77
+				s.accounts = &formalAccountFake{account: formalAmbiguousFailureAccount(rec, FormalPoolStageWarming), stateUpdateErr: ambiguous}
+			},
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) error {
+				_, err := s.PromoteProduction(ctx, rec.ID)
+				return err
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, session, _ := newAuthorizedOnboardingFixture(t)
+			rec, ok := svc.store.get(session.ID)
+			require.True(t, ok)
+			rec.Status = tc.status
+			tc.configure(svc, rec)
+			svc.store.save(rec)
+			before, ok := svc.store.get(session.ID)
+			require.True(t, ok)
+			ctx := authorizedOnboardingContext("ambiguous-family-key", before.Version)
+
+			err := tc.call(svc, ctx, before)
+			require.ErrorIs(t, err, ambiguous)
+			after, ok := svc.store.get(session.ID)
+			require.True(t, ok)
+			require.Equal(t, before.Version+2, after.Version)
+			require.Equal(t, FormalPoolOnboardingStatusOperationOutcomeUnknown, after.Status)
+			require.Nil(t, after.ActiveOperation)
+		})
+	}
+}
+
+type formalGenerateErrorOAuth struct {
+	*formalOAuthFake
+	err error
+}
+
+func (f *formalGenerateErrorOAuth) GenerateFormalAuthURL(context.Context, int64) (FormalPoolOAuthURL, error) {
+	return FormalPoolOAuthURL{}, f.err
+}
+
+func formalAmbiguousFailureAccount(rec *formalPoolOnboardingSessionRecord, stage string) *Account {
+	accountRef := "hmac-sha256:" + strings.Repeat("c", 64)
+	runtimeIdentity := formalPoolRuntimeIdentityExtra(accountRef, rec.ProxyRef, map[string]any{
+		"access_token": "test-access", "refresh_token": "test-refresh",
+	}, "test-binding-secret", "1")
+	extra := formalPoolDefaultExtra(rec, accountRef, runtimeIdentity)
+	formalPoolMarkRuntimeRegisteredExtra(extra, true, time.Now())
+	extra["onboarding_state"] = stage
+	extra[FormalPoolExtraOnboardingStage] = stage
+	extra[FormalPoolExtraHealthcheckStatus] = "passed"
+	extra[FormalPoolExtraHealthcheckStatusCodeBucket] = "status_2xx"
+	extra[FormalPoolExtraHealthcheckRawRef] = "hmac-sha256:" + strings.Repeat("d", 64)
+	extra[FormalPoolExtraHealthcheckCCGatewaySeen] = true
+	extra[FormalPoolExtraHealthcheckFallbackDetected] = false
+	extra[FormalPoolExtraHealthcheckProxyMismatch] = false
+	extra[FormalPoolExtraHealthcheckRiskTextDetected] = false
+	proxyID := rec.ProxyID
+	return &Account{
+		ID: rec.AccountID, Name: rec.AccountName, Platform: PlatformAnthropic, Type: AccountTypeOAuth,
+		Status: StatusActive, Schedulable: false, ProxyID: &proxyID, GroupIDs: []int64{rec.GroupID},
+		Credentials: map[string]any{
+			"access_token": "test-access", "refresh_token": "test-refresh",
+			"scope": "user:profile user:inference user:sessions:claude_code",
+		},
+		Extra: extra,
+	}
+}
+
+func TestFormalPoolSideEffectFamiliesHoldReservationWhileDependencyIsBlocked(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    string
+		configure func(*FormalPoolOnboardingService, *formalPoolOnboardingSessionRecord, *formalBlockingDependencyGate)
+		call      func(*FormalPoolOnboardingService, context.Context, *formalPoolOnboardingSessionRecord) (*FormalPoolOnboardingSession, error)
+	}{
+		{
+			name: "proxy", status: FormalPoolOnboardingStatusDraft,
+			configure: func(s *FormalPoolOnboardingService, _ *formalPoolOnboardingSessionRecord, gate *formalBlockingDependencyGate) {
+				s.proxy = &formalBlockingProxyDependency{gate: gate}
+			},
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) (*FormalPoolOnboardingSession, error) {
+				return s.TestProxy(ctx, rec.ID)
+			},
+		},
+		{
+			name: "oauth", status: FormalPoolOnboardingStatusBrowserEgressVerified,
+			configure: func(s *FormalPoolOnboardingService, _ *formalPoolOnboardingSessionRecord, gate *formalBlockingDependencyGate) {
+				s.oauth = &formalBlockingOAuthDependency{formalOAuthFake: &formalOAuthFake{}, gate: gate, blockGenerate: true}
+			},
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) (*FormalPoolOnboardingSession, error) {
+				return s.GenerateAuthURL(ctx, rec.ID)
+			},
+		},
+		{
+			name: "account_persistence", status: FormalPoolOnboardingStatusHealthcheckPassed,
+			configure: func(s *FormalPoolOnboardingService, rec *formalPoolOnboardingSessionRecord, gate *formalBlockingDependencyGate) {
+				rec.AccountID = 77
+				rec.AcceptancePassed = true
+				s.accounts = &formalBlockingAccountDependency{formalAccountFake: &formalAccountFake{account: formalAmbiguousFailureAccount(rec, FormalPoolStageHealthcheckPassed)}, gate: gate, blockActivate: true}
+			},
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) (*FormalPoolOnboardingSession, error) {
+				return s.Activate(ctx, rec.ID)
+			},
+		},
+		{
+			name: "refresh", status: FormalPoolOnboardingStatusImported,
+			configure: func(s *FormalPoolOnboardingService, rec *formalPoolOnboardingSessionRecord, gate *formalBlockingDependencyGate) {
+				rec.AccountID = 77
+				s.accounts = &formalAccountFake{account: formalAmbiguousFailureAccount(rec, FormalPoolStageImported)}
+				s.refresh = &formalBlockingRefreshDependency{gate: gate}
+			},
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) (*FormalPoolOnboardingSession, error) {
+				return s.RefreshOnly(ctx, rec.ID)
+			},
+		},
+		{
+			name: "runtime", status: FormalPoolOnboardingStatusRefreshed,
+			configure: func(s *FormalPoolOnboardingService, rec *formalPoolOnboardingSessionRecord, gate *formalBlockingDependencyGate) {
+				rec.AccountID = 77
+				rec.AccountRef = "hmac-sha256:" + strings.Repeat("e", 64)
+				rec.NormalizedProxyURL = "socks5h://proxy.local:1080"
+				s.ccGatewayRuntime = &formalBlockingRuntimeDependency{gate: gate}
+			},
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) (*FormalPoolOnboardingSession, error) {
+				return s.RegisterRuntime(ctx, rec.ID)
+			},
+		},
+		{
+			name: "healthcheck", status: FormalPoolOnboardingStatusRuntimeRegistered,
+			configure: func(s *FormalPoolOnboardingService, rec *formalPoolOnboardingSessionRecord, gate *formalBlockingDependencyGate) {
+				rec.AccountID = 77
+				s.accounts = &formalAccountFake{account: formalAmbiguousFailureAccount(rec, FormalPoolStageRuntimeRegistered)}
+				s.healthcheck = &formalBlockingHealthcheckDependency{gate: gate}
+			},
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) (*FormalPoolOnboardingSession, error) {
+				result, err := s.RunAccountHealthcheck(ctx, rec.AccountID)
+				if result == nil {
+					return nil, err
+				}
+				return &FormalPoolOnboardingSession{Version: result.Version}, err
+			},
+		},
+		{
+			name: "cache", status: FormalPoolOnboardingStatusImported,
+			configure: func(s *FormalPoolOnboardingService, rec *formalPoolOnboardingSessionRecord, gate *formalBlockingDependencyGate) {
+				rec.AccountID = 77
+				s.accounts = &formalAccountFake{account: formalAmbiguousFailureAccount(rec, FormalPoolStageImported)}
+				s.refresh = &formalOAuthFake{}
+				s.cacheInvalidator = &formalBlockingCacheDependency{gate: gate}
+			},
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) (*FormalPoolOnboardingSession, error) {
+				return s.RefreshOnly(ctx, rec.ID)
+			},
+		},
+		{
+			name: "scheduler", status: FormalPoolOnboardingStatusImported,
+			configure: func(s *FormalPoolOnboardingService, rec *formalPoolOnboardingSessionRecord, gate *formalBlockingDependencyGate) {
+				rec.AccountID = 77
+				s.accounts = &formalAccountFake{account: formalAmbiguousFailureAccount(rec, FormalPoolStageImported)}
+				s.refresh = &formalOAuthFake{}
+				s.schedulerCache = &formalBlockingSchedulerDependency{gate: gate}
+			},
+			call: func(s *FormalPoolOnboardingService, ctx context.Context, rec *formalPoolOnboardingSessionRecord) (*FormalPoolOnboardingSession, error) {
+				return s.RefreshOnly(ctx, rec.ID)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, session, _ := newAuthorizedOnboardingFixture(t)
+			rec, ok := svc.store.get(session.ID)
+			require.True(t, ok)
+			rec.Status = tc.status
+			gate := newFormalBlockingDependencyGate()
+			tc.configure(svc, rec, gate)
+			svc.store.save(rec)
+			before, ok := svc.store.get(session.ID)
+			require.True(t, ok)
+			ctx := authorizedOnboardingContext("blocking-family-key", before.Version)
+			type result struct {
+				session *FormalPoolOnboardingSession
+				err     error
+			}
+			firstResult := make(chan result, 1)
+			go func() {
+				got, err := tc.call(svc, ctx, before)
+				firstResult <- result{session: got, err: err}
+			}()
+			<-gate.entered
+
+			reserved, ok := svc.store.get(before.ID)
+			require.True(t, ok)
+			require.Equal(t, before.Version+1, reserved.Version)
+			require.NotNil(t, reserved.ActiveOperation)
+			_, secondErr := tc.call(svc, ctx, before)
+			require.ErrorIs(t, secondErr, ErrFormalPoolOnboardingVersionConflict)
+			require.Equal(t, int64(1), gate.calls.Load())
+
+			close(gate.release)
+			first := <-firstResult
+			require.NoError(t, first.err)
+			require.NotNil(t, first.session)
+			require.Equal(t, before.Version+2, first.session.Version)
+			final, ok := svc.store.get(before.ID)
+			require.True(t, ok)
+			require.Nil(t, final.ActiveOperation)
+		})
+	}
+}
+
+type formalBlockingDependencyGate struct {
+	entered chan struct{}
+	release chan struct{}
+	calls   atomic.Int64
+}
+
+func newFormalBlockingDependencyGate() *formalBlockingDependencyGate {
+	return &formalBlockingDependencyGate{entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (g *formalBlockingDependencyGate) wait() {
+	if g.calls.Add(1) == 1 {
+		close(g.entered)
+		<-g.release
+	}
+}
+
+type formalBlockingProxyDependency struct{ gate *formalBlockingDependencyGate }
+
+func (f *formalBlockingProxyDependency) ResolveOrCreateProxy(context.Context, FormalPoolOnboardingStartRequest) (FormalPoolProxyResolution, error) {
+	return FormalPoolProxyResolution{}, nil
+}
+func (f *formalBlockingProxyDependency) TestProxy(context.Context, int64) (FormalPoolProxyTestSummary, error) {
+	f.gate.wait()
+	return FormalPoolProxyTestSummary{Success: true}, nil
+}
+func (f *formalBlockingProxyDependency) GetRawEgressIP(context.Context, int64, string) (string, error) {
+	return "198.51.100.1", nil
+}
+
+type formalBlockingOAuthDependency struct {
+	*formalOAuthFake
+	gate          *formalBlockingDependencyGate
+	blockGenerate bool
+	blockExchange bool
+}
+
+func (f *formalBlockingOAuthDependency) GenerateFormalAuthURL(ctx context.Context, proxyID int64) (FormalPoolOAuthURL, error) {
+	if f.blockGenerate {
+		f.gate.wait()
+	}
+	return f.formalOAuthFake.GenerateFormalAuthURL(ctx, proxyID)
+}
+func (f *formalBlockingOAuthDependency) ExchangeCode(ctx context.Context, sessionID, code string, proxyID int64) (FormalPoolOAuthTokenSummary, map[string]any, error) {
+	if f.blockExchange {
+		f.gate.wait()
+	}
+	return f.formalOAuthFake.ExchangeCode(ctx, sessionID, code, proxyID)
+}
+
+type formalBlockingAccountDependency struct {
+	*formalAccountFake
+	gate          *formalBlockingDependencyGate
+	blockActivate bool
+	blockUpdate   bool
+}
+
+func (f *formalBlockingAccountDependency) ActivateFormalPoolAccount(ctx context.Context, id int64, extra map[string]any) (*Account, error) {
+	if f.blockActivate {
+		f.gate.wait()
+	}
+	return f.formalAccountFake.ActivateFormalPoolAccount(ctx, id, extra)
+}
+func (f *formalBlockingAccountDependency) UpdateFormalPoolAccountState(ctx context.Context, id int64, schedulable bool, status string, extra map[string]any) (*Account, error) {
+	if f.blockUpdate {
+		f.gate.wait()
+	}
+	return f.formalAccountFake.UpdateFormalPoolAccountState(ctx, id, schedulable, status, extra)
+}
+
+type formalBlockingRefreshDependency struct{ gate *formalBlockingDependencyGate }
+
+func (f *formalBlockingRefreshDependency) RefreshFormalPoolAccount(context.Context, *Account) (FormalPoolOAuthTokenSummary, map[string]any, error) {
+	f.gate.wait()
+	return FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true}, map[string]any{"access_token": "new-access", "refresh_token": "new-refresh"}, nil
+}
+
+type formalBlockingRuntimeDependency struct{ gate *formalBlockingDependencyGate }
+
+func (f *formalBlockingRuntimeDependency) RegisterCCGatewayRuntime(context.Context, FormalPoolCCGatewayRuntimeRegistration) error {
+	f.gate.wait()
+	return nil
+}
+
+type formalBlockingHealthcheckDependency struct{ gate *formalBlockingDependencyGate }
+
+func (f *formalBlockingHealthcheckDependency) RunHealthcheck(context.Context, FormalPoolAcceptanceInput) (*FormalPoolAcceptanceResult, error) {
+	f.gate.wait()
+	return &FormalPoolAcceptanceResult{Status: FormalPoolOnboardingStatusHealthcheckPassed, StatusCodeBucket: "status_2xx", CCGatewaySeen: true, RawCapturePresent: true}, nil
+}
+
+type formalBlockingCacheDependency struct{ gate *formalBlockingDependencyGate }
+
+func (f *formalBlockingCacheDependency) InvalidateToken(context.Context, *Account) error {
+	f.gate.wait()
+	return nil
+}
+
+type formalBlockingSchedulerDependency struct {
+	SchedulerCache
+	gate *formalBlockingDependencyGate
+}
+
+func (f *formalBlockingSchedulerDependency) SetAccount(context.Context, *Account) error {
+	f.gate.wait()
+	return nil
+}
+
+func TestFormalPoolExchangeDuplicateReplaysPendingAndCompletedWithOneDependencyCall(t *testing.T) {
+	svc, _, session, _ := newAuthorizedOnboardingFixture(t)
+	rec, ok := svc.store.get(session.ID)
+	require.True(t, ok)
+	rec.Status = FormalPoolOnboardingStatusOAuthURLGenerated
+	rec.OAuthSessionID = "oauth-session"
+	gate := newFormalBlockingDependencyGate()
+	svc.oauth = &formalBlockingOAuthDependency{
+		formalOAuthFake: &formalOAuthFake{
+			summary: FormalPoolOAuthTokenSummary{ScopeContainsUserInference: true, ScopeContainsClaudeCode: true},
+			creds:   map[string]any{"access_token": "access", "refresh_token": "refresh"},
+		},
+		gate: gate, blockExchange: true,
+	}
+	svc.accounts = &formalAccountFake{}
+	svc.store.save(rec)
+	before, ok := svc.store.get(session.ID)
+	require.True(t, ok)
+	ctx := authorizedOnboardingContext("duplicate-exchange-key", before.Version)
+	req := FormalPoolExchangeCodeAndCreateRequest{Code: "same-code"}
+	type result struct {
+		session *FormalPoolOnboardingSession
+		err     error
+	}
+	firstResult := make(chan result, 1)
+	go func() {
+		got, err := svc.ExchangeCodeAndCreate(ctx, before.ID, req)
+		firstResult <- result{session: got, err: err}
+	}()
+	<-gate.entered
+
+	pending, err := svc.ExchangeCodeAndCreate(ctx, before.ID, req)
+	require.NoError(t, err)
+	require.Equal(t, before.Version+1, pending.Version)
+	require.Equal(t, int64(1), gate.calls.Load())
+
+	close(gate.release)
+	first := <-firstResult
+	require.NoError(t, first.err)
+	require.Equal(t, before.Version+2, first.session.Version)
+	completed, err := svc.ExchangeCodeAndCreate(ctx, before.ID, req)
+	require.NoError(t, err)
+	require.Equal(t, first.session.Version, completed.Version)
+	require.Equal(t, int64(1), gate.calls.Load())
+
+	_, err = svc.ExchangeCodeAndCreate(ctx, before.ID, FormalPoolExchangeCodeAndCreateRequest{Code: "changed-code"})
+	require.ErrorIs(t, err, ErrFormalPoolOnboardingVersionConflict)
+	stored, ok := svc.store.get(before.ID)
+	require.True(t, ok)
+	require.Nil(t, stored.ActiveOperation)
+	require.NotNil(t, stored.LastOperation)
+	require.NotContains(t, stored.LastOperation.IdempotencyKeySafeRef, "duplicate-exchange-key")
+}
+
+func TestFormalPoolPromotionDuplicateReplaysPendingAndCompletedWithOneDependencyCall(t *testing.T) {
+	svc, _, session, _ := newAuthorizedOnboardingFixture(t)
+	rec, ok := svc.store.get(session.ID)
+	require.True(t, ok)
+	rec.Status = FormalPoolOnboardingStatusWarming
+	rec.AccountID = 77
+	gate := newFormalBlockingDependencyGate()
+	svc.accounts = &formalBlockingAccountDependency{
+		formalAccountFake: &formalAccountFake{account: formalAmbiguousFailureAccount(rec, FormalPoolStageWarming)},
+		gate:              gate,
+		blockUpdate:       true,
+	}
+	svc.store.save(rec)
+	before, ok := svc.store.get(session.ID)
+	require.True(t, ok)
+	ctx := authorizedOnboardingContext("duplicate-promote-key", before.Version)
+	type result struct {
+		session *FormalPoolOnboardingSession
+		err     error
+	}
+	firstResult := make(chan result, 1)
+	go func() {
+		got, err := svc.PromoteProduction(ctx, before.ID)
+		firstResult <- result{session: got, err: err}
+	}()
+	<-gate.entered
+
+	pending, err := svc.PromoteProduction(ctx, before.ID)
+	require.NoError(t, err)
+	require.Equal(t, before.Version+1, pending.Version)
+	require.Equal(t, int64(1), gate.calls.Load())
+
+	close(gate.release)
+	first := <-firstResult
+	require.NoError(t, first.err)
+	require.Equal(t, before.Version+2, first.session.Version)
+	completed, err := svc.PromoteProduction(ctx, before.ID)
+	require.NoError(t, err)
+	require.Equal(t, first.session.Version, completed.Version)
+	require.Equal(t, int64(1), gate.calls.Load())
+	stored, ok := svc.store.get(before.ID)
+	require.True(t, ok)
+	require.Nil(t, stored.ActiveOperation)
+	require.NotNil(t, stored.LastOperation)
 }
 
 func TestFormalPoolAuthorizeSessionMapsRoleAndOwnerEnvelopeMismatchToForbidden(t *testing.T) {

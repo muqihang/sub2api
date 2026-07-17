@@ -199,7 +199,58 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     adminApiMock.proxies.getAll.mockResolvedValue([proxyFixture()])
     adminApiMock.groups.getAll.mockResolvedValue([groupFixture()])
     adminApiMock.groups.getCapacitySummary.mockResolvedValue([])
-  })
+	})
+
+	it('reuses a create operation key after an ambiguous failure', async () => {
+		const wrapper = mountWizard()
+		await flushPromises()
+		onboardingApi.createSession.mockRejectedValueOnce(new Error('network unavailable')).mockResolvedValueOnce(sessionFixture())
+		await wrapper.find('[data-testid="account-name-input"]').setValue('claude-safe-name')
+		await wrapper.find('[data-testid="proxy-card-7"]').trigger('click')
+		await wrapper.find('[data-testid="group-card-9"]').trigger('click')
+
+		await wrapper.find('[data-testid="start-session"]').trigger('click')
+		await flushPromises()
+		await wrapper.find('[data-testid="start-session"]').trigger('click')
+		await flushPromises()
+
+		expect(onboardingApi.createSession).toHaveBeenCalledTimes(2)
+		expect(onboardingApi.createSession.mock.calls[1][1]).toBe(onboardingApi.createSession.mock.calls[0][1])
+	})
+
+	it('rotates a create operation key after a definitive failure', async () => {
+		const wrapper = mountWizard()
+		await flushPromises()
+		onboardingApi.createSession.mockRejectedValueOnce({ response: { status: 400, data: { message: 'invalid request' } } }).mockResolvedValueOnce(sessionFixture())
+		await wrapper.find('[data-testid="account-name-input"]').setValue('claude-safe-name')
+		await wrapper.find('[data-testid="proxy-card-7"]').trigger('click')
+		await wrapper.find('[data-testid="group-card-9"]').trigger('click')
+
+		await wrapper.find('[data-testid="start-session"]').trigger('click')
+		await flushPromises()
+		await wrapper.find('[data-testid="start-session"]').trigger('click')
+		await flushPromises()
+
+		expect(onboardingApi.createSession).toHaveBeenCalledTimes(2)
+		expect(onboardingApi.createSession.mock.calls[1][1]).not.toBe(onboardingApi.createSession.mock.calls[0][1])
+	})
+
+	it('refetches on 409 and rejects a stale reconciliation snapshot', async () => {
+		const wrapper = mountWizard()
+		await startSession(wrapper, { version: 5 })
+		onboardingApi.getSession.mockResolvedValueOnce(sessionFixture({ version: 4, status: 'stale' }))
+		onboardingApi.testProxy.mockRejectedValueOnce({ response: { status: 409, data: { message: 'conflict' } } })
+
+		await wrapper.find('[data-testid="test-proxy"]').trigger('click')
+		await flushPromises()
+		expect(onboardingApi.getSession).toHaveBeenCalledWith('session-1')
+
+		onboardingApi.testProxy.mockResolvedValueOnce(sessionFixture({ version: 6, status: 'proxy_verified' }))
+		await wrapper.find('[data-testid="test-proxy"]').trigger('click')
+		await flushPromises()
+		expect(onboardingApi.testProxy.mock.calls[0][0].version).toBe(5)
+		expect(onboardingApi.testProxy.mock.calls[1][0].version).toBe(5)
+	})
 
   it('does not show numeric proxy_id or group_id inputs in existing mode', async () => {
     const wrapper = mountWizard()
@@ -974,11 +1025,12 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     expect(wrapper.find('[data-testid="stage-healthcheck_passed"]').text()).toContain('上游可用性已通过')
     expect(recommendedButton().text()).toContain('继续下一步：进入低权重预热')
 
-    onboardingApi.startWarming.mockResolvedValueOnce(sessionFixture({ status: 'warming', account_id: 42, healthcheck_passed: true }))
-    await recommendedButton().trigger('click')
-    await flushPromises()
+		onboardingApi.startWarming.mockResolvedValueOnce(sessionFixture({ version: 3, status: 'warming', account_id: 42, healthcheck_passed: true }))
+		await recommendedButton().trigger('click')
+		await flushPromises()
 
-    expect(recommendedButton().text()).toContain('切换到生产调度')
+		expect(onboardingApi.startWarming.mock.calls[0][0].version).toBe(2)
+		expect(recommendedButton().text()).toContain('切换到生产调度')
     expect(wrapper.text()).toContain('账号已在低权重预热期，可按策略切换到生产调度')
   })
 

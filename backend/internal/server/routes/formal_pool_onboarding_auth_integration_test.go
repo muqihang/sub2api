@@ -139,6 +139,39 @@ func TestFormalPoolOnboardingProductionRouteRevalidatesAllRoutes(t *testing.T) {
 	}
 }
 
+func TestFormalPoolOnboardingCombinedOwnerStaleAndWrongStateDeniesBeforeDependencies(t *testing.T) {
+	for _, operation := range formalPoolProductionRouteOperations {
+		operation := operation
+		if operation.name == "CreateSession" || operation.name == "GetSession" {
+			continue
+		}
+		t.Run(operation.name, func(t *testing.T) {
+			wrongStage := "warming"
+			if operation.name == "Promotion" || operation.name == "Abort" {
+				wrongStage = "accepted"
+			}
+			fixture := newFormalPoolProductionRouteFixture(t, wrongStage, true, "tenant-one")
+			fixture.userRepo.user.ID++
+			fixture.userRepo.user.Email = "cross-owner-admin@example.test"
+			fixture.token = fixture.generateToken(t)
+			settings := service.NewSettingService(fixture.settings, &config.Config{})
+			_, err := settings.AcceptAdminCompliance(context.Background(), service.AdminComplianceAcceptInput{
+				AdminUserID: fixture.userRepo.user.ID, Language: "en", Phrase: service.AdminComplianceAckPhraseEN,
+			})
+			require.NoError(t, err)
+			fixture.version = 0
+			fixture.resetObservedCalls()
+
+			rec := fixture.request(operation.method, operation.path(fixture), operation.body, fixture.token, "")
+			require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+			require.Contains(t, rec.Body.String(), "FORMAL_POOL_FORBIDDEN")
+			require.Equal(t, 1, fixture.settings.getCalls)
+			require.Equal(t, 0, fixture.revalidator.calls)
+			require.Equal(t, 0, fixture.dependencies.calls)
+		})
+	}
+}
+
 func TestFormalPoolOnboardingProductionRouteCreateRevalidatesAfterGroupLookup(t *testing.T) {
 	for _, mutation := range formalPoolProductionAuthorityMutations() {
 		mutation := mutation
