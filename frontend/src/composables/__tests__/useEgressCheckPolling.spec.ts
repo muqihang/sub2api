@@ -19,6 +19,49 @@ function sessionFixture(overrides: Partial<FormalPoolSession> = {}): FormalPoolS
   }
 }
 
+const canonicalProof = `nonce_${'a'.repeat(32)}`
+const canonicalPath = `/api/v1/claude-onboarding/browser-egress-check/${canonicalProof}`
+const noncanonicalBrowserEgressURLs = [
+  ['empty', ''],
+  ['empty final segment', '/api/v1/claude-onboarding/browser-egress-check/'],
+  ['short proof', `/api/v1/claude-onboarding/browser-egress-check/nonce_${'a'.repeat(31)}`],
+  ['long proof', `/api/v1/claude-onboarding/browser-egress-check/nonce_${'a'.repeat(33)}`],
+  ['uppercase prefix', `/api/v1/claude-onboarding/browser-egress-check/NONCE_${'a'.repeat(32)}`],
+  ['uppercase hex', `/api/v1/claude-onboarding/browser-egress-check/nonce_${'A'.repeat(32)}`],
+  ['wrong proof prefix', `/api/v1/claude-onboarding/browser-egress-check/proof_${'a'.repeat(32)}`],
+  ['plain parent traversal', `https://safe.example/api/v1/claude-onboarding/browser-egress-check/../${canonicalProof}`],
+  ['plain current traversal', `https://safe.example/api/v1/claude-onboarding/browser-egress-check/./${canonicalProof}`],
+  ['encoded parent traversal', `https://safe.example/api/v1/claude-onboarding/browser-egress-check/%2e%2e/${canonicalProof}`],
+  ['mixed-case encoded parent traversal', `https://safe.example/api/v1/claude-onboarding/browser-egress-check/.%2E/${canonicalProof}`],
+  ['mixed encoded parent traversal', `https://safe.example/api/v1/claude-onboarding/browser-egress-check/%2e./${canonicalProof}`],
+  ['backslash delimiter', `https://safe.example/api/v1/claude-onboarding/browser-egress-check\\${canonicalProof}`],
+  ['encoded slash delimiter', `https://safe.example/api/v1/claude-onboarding/browser-egress-check/%2f${canonicalProof}`],
+  ['encoded backslash delimiter', `https://safe.example/api/v1/claude-onboarding/browser-egress-check/%5C${canonicalProof}`],
+  ['credentials', `https://operator:secret@safe.example${canonicalPath}`],
+  ['malformed percent short', `https://safe.example${canonicalPath}%2`],
+  ['malformed percent nonhex', `https://safe.example${canonicalPath}%GG`],
+  ['bare percent', `https://safe.example${canonicalPath}%`],
+  ['arbitrary prefix', `https://safe.example/any/unreviewed/prefix/${canonicalProof}`],
+  ['missing endpoint prefix', `https://safe.example/${canonicalProof}`],
+  ['duplicated endpoint prefix', `/api/v1/claude-onboarding/browser-egress-check/api/v1/claude-onboarding/browser-egress-check/${canonicalProof}`],
+  ['leading extra segment', `/extra${canonicalPath}`],
+  ['trailing extra segment', `${canonicalPath}/extra`],
+  ['trailing slash', `${canonicalPath}/`],
+  ['query ambiguity', `${canonicalPath}?source=query`],
+  ['fragment ambiguity', `${canonicalPath}#fragment`],
+  ['query-only proof', `/api/v1/claude-onboarding/browser-egress-check?proof=${canonicalProof}`],
+  ['fragment-only proof', `/api/v1/claude-onboarding/browser-egress-check#${canonicalProof}`],
+  ['non-HTTP javascript scheme', `javascript:${canonicalProof}`],
+  ['non-HTTP ftp scheme', `ftp://safe.example${canonicalPath}`],
+  ['protocol-relative URL', `//safe.example${canonicalPath}`],
+  ['bare relative URL', canonicalPath.slice(1)],
+  ['double-slash endpoint', `/api/v1/claude-onboarding//browser-egress-check/${canonicalProof}`],
+] as const
+
+function canonicalURL(proof: string): string {
+  return `/api/v1/claude-onboarding/browser-egress-check/${proof}`
+}
+
 function mountHarness(
   fetchSession: (id: string, signal: AbortSignal) => Promise<FormalPoolSession>,
   attestBrowserEgress?: (session: FormalPoolSession, proof: string) => Promise<FormalPoolSession>,
@@ -154,7 +197,7 @@ describe('useEgressCheckPolling', () => {
       version: 2,
       browser_egress_check_status: 'verified_pending_finalize',
       browser_egress_verified: false,
-      browser_egress_check_url: `https://safe.example/browser-egress-check/${proof}`,
+      browser_egress_check_url: canonicalURL(proof),
     })
     const finalized = sessionFixture({
       version: 3,
@@ -179,29 +222,36 @@ describe('useEgressCheckPolling', () => {
     expect(poller.session.value).toEqual(finalized)
   })
 
-  it.each([
-    ['', 'empty'],
-    ['https://safe.example/browser-egress-check/', 'empty final segment'],
-    [`https://safe.example/browser-egress-check/nonce_${'a'.repeat(31)}`, 'short proof'],
-    [`https://safe.example/browser-egress-check/nonce_${'a'.repeat(33)}`, 'long proof'],
-    [`https://safe.example/browser-egress-check/NONCE_${'a'.repeat(32)}`, 'uppercase prefix'],
-    [`https://safe.example/browser-egress-check/nonce_${'A'.repeat(32)}`, 'uppercase hex'],
-    [`https://safe.example/browser-egress-check/proof_${'a'.repeat(32)}`, 'wrong prefix'],
-    [`https://safe.example/browser-egress-check/nonce_${'a'.repeat(32)}/extra`, 'extra path'],
-    [`https://safe.example/browser-egress-check?proof=nonce_${'a'.repeat(32)}`, 'query-only proof'],
-    [`https://safe.example/browser-egress-check#nonce_${'a'.repeat(32)}`, 'fragment-only proof'],
-    [`https://safe.example/browser-egress-check/nonce_${'a'.repeat(32)}?source=query`, 'query ambiguity'],
-    [`https://safe.example/browser-egress-check/nonce_${'a'.repeat(32)}#fragment`, 'fragment ambiguity'],
-    [`javascript:nonce_${'a'.repeat(32)}`, 'non-HTTP scheme'],
-    ['not a valid URL %', 'invalid URL'],
-  ])('rejects %s as a server proof (%s)', (raw) => {
+  it.each(noncanonicalBrowserEgressURLs)('rejects %s as a server proof', (_name, raw) => {
     expect(serverProofFromBrowserURL(raw)).toBe('')
   })
 
-  it('accepts only an exact nonce in the final URL path segment', () => {
-    const proof = `nonce_${'b'.repeat(32)}`
-    expect(serverProofFromBrowserURL(`https://safe.example/api/browser-egress-check/${proof}`)).toBe(proof)
-    expect(serverProofFromBrowserURL(`/api/browser-egress-check/${proof}`)).toBe(proof)
+  it.each([
+    ['root-relative', canonicalPath],
+    ['HTTPS absolute', `https://safe.example${canonicalPath}`],
+    ['HTTP absolute', `http://127.0.0.1:8080${canonicalPath}`],
+  ])('accepts the exact canonical endpoint in %s form', (_name, raw) => {
+    expect(serverProofFromBrowserURL(raw)).toBe(canonicalProof)
+  })
+
+  it.each(noncanonicalBrowserEgressURLs)('never attests for noncanonical URL: %s', async (_name, raw) => {
+    const pending = sessionFixture({
+      version: 2,
+      browser_egress_check_status: 'verified_pending_finalize',
+      browser_egress_verified: false,
+      browser_egress_check_url: raw,
+    })
+    const attestBrowserEgress = vi.fn().mockResolvedValue(sessionFixture({ version: 3 }))
+    const { wrapper, poller } = mountHarness(
+      vi.fn().mockResolvedValue(pending),
+      attestBrowserEgress,
+    )
+
+    poller.start('session-1')
+    await flush()
+
+    expect(attestBrowserEgress).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it('does not retry a failed tuple but allows a new version and proof', async () => {
@@ -210,12 +260,12 @@ describe('useEgressCheckPolling', () => {
     const first = sessionFixture({
       version: 2,
       browser_egress_check_status: 'verified_pending_finalize',
-      browser_egress_check_url: `/check/${firstProof}`,
+      browser_egress_check_url: canonicalURL(firstProof),
     })
     const second = sessionFixture({
       version: 3,
       browser_egress_check_status: 'verified_pending_finalize',
-      browser_egress_check_url: `/check/${secondProof}`,
+      browser_egress_check_url: canonicalURL(secondProof),
     })
     const finalized = sessionFixture({
       version: 4,
@@ -254,7 +304,7 @@ describe('useEgressCheckPolling', () => {
     const pending = sessionFixture({
       version: 5,
       browser_egress_check_status: 'verified_pending_finalize',
-      browser_egress_check_url: `/check/${proof}`,
+      browser_egress_check_url: canonicalURL(proof),
     })
     const stale = sessionFixture({
       version: 4,
@@ -278,7 +328,7 @@ describe('useEgressCheckPolling', () => {
     const pending = sessionFixture({
       version: 2,
       browser_egress_check_status: 'verified_pending_finalize',
-      browser_egress_check_url: `/check/${proof}`,
+      browser_egress_check_url: canonicalURL(proof),
     })
     const attestBrowserEgress = vi.fn().mockRejectedValue(new Error('retry after restart'))
     const { poller } = mountHarness(vi.fn().mockResolvedValue(pending), attestBrowserEgress)
@@ -296,7 +346,7 @@ describe('useEgressCheckPolling', () => {
     const pending = sessionFixture({
       version: 2,
       browser_egress_check_status: 'verified_pending_finalize',
-      browser_egress_check_url: `/check/${proof}`,
+      browser_egress_check_url: canonicalURL(proof),
     })
     let resolveFinalization!: (value: FormalPoolSession) => void
     const finalization = new Promise<FormalPoolSession>((resolve) => {

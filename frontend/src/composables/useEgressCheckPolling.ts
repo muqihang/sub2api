@@ -15,17 +15,26 @@ export interface UseEgressCheckPollingOptions {
   ) => Promise<FormalPoolSession>
 }
 
-const SERVER_BROWSER_EGRESS_PROOF = /^nonce_[0-9a-f]{32}$/
+const CANONICAL_BROWSER_EGRESS_PATH = /^\/api\/v1\/claude-onboarding\/browser-egress-check\/(nonce_[0-9a-f]{32})$/
+const ABSOLUTE_BROWSER_EGRESS_URL = /^https?:\/\//
+const RAW_URL_AMBIGUITY = /[%\\\u0000-\u001f\u007f]/
 
 export function serverProofFromBrowserURL(raw: string | undefined): string {
-  if (!raw) return ''
+  if (!raw || raw !== raw.trim() || RAW_URL_AMBIGUITY.test(raw)) return ''
   try {
     const base = globalThis.location?.origin || 'http://localhost'
+    const absolute = ABSOLUTE_BROWSER_EGRESS_URL.test(raw)
+    if (!absolute && (!raw.startsWith('/') || raw.startsWith('//'))) return ''
     const parsed = new URL(raw, base)
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return ''
+    if (parsed.username || parsed.password) return ''
     if (parsed.search || parsed.hash) return ''
-    const proof = parsed.pathname.slice(parsed.pathname.lastIndexOf('/') + 1)
-    return SERVER_BROWSER_EGRESS_PROOF.test(proof) ? proof : ''
+
+    const rawPath = absolute
+      ? raw.slice(raw.indexOf('/', raw.indexOf('://') + 3))
+      : raw
+    if (!rawPath || rawPath !== parsed.pathname) return ''
+    return CANONICAL_BROWSER_EGRESS_PATH.exec(rawPath)?.[1] ?? ''
   } catch {
     return ''
   }

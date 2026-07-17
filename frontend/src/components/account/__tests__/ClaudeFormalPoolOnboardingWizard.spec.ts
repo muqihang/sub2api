@@ -111,7 +111,7 @@ describe('ClaudeFormalPoolOnboardingWizard mutation retries', () => {
 			status: 'proxy_tested',
 			browser_egress_check_status: 'verified_pending_finalize',
 			browser_egress_verified: false,
-			browser_egress_check_url: `https://safe.example/browser-egress-check/${proof}`,
+			browser_egress_check_url: `https://safe.example/api/v1/claude-onboarding/browser-egress-check/${proof}`,
 		})
 		const finalized = sessionFixture({
 			version: 3,
