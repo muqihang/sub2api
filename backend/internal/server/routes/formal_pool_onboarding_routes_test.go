@@ -18,7 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestFormalPoolOnboardingAdminRoutesDeriveAbsoluteBrowserEgressURLFromForwardedHost(t *testing.T) {
+func TestFormalPoolOnboardingAdminRoutesIgnoreRequestDerivedPublicOrigin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc := service.NewFormalPoolOnboardingService(formalPoolOnboardingRoutesDeps(service.FormalPoolOnboardingDeps{Proxy: &formalPoolOnboardingRoutesProxy{rawIP: "198.51.100.10"}}))
 	router := newFormalPoolOnboardingRoutesRouter(adminhandler.NewFormalPoolOnboardingHandler(svc), func(c *gin.Context) { c.Next() })
@@ -41,7 +41,8 @@ func TestFormalPoolOnboardingAdminRoutesDeriveAbsoluteBrowserEgressURLFromForwar
 	router.ServeHTTP(testRec, testReq)
 
 	require.Equal(t, http.StatusOK, testRec.Code, testRec.Body.String())
-	require.Contains(t, testRec.Body.String(), `"browser_egress_check_url":"https://admin.example.test/api/v1/claude-onboarding/browser-egress-check/`)
+	require.Contains(t, testRec.Body.String(), `"browser_egress_check_url":"/api/v1/claude-onboarding/browser-egress-check/`)
+	require.NotContains(t, testRec.Body.String(), "admin.example.test")
 }
 
 func extractFormalPoolOnboardingSessionID(t *testing.T, body string) string {

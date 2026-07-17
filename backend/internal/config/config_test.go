@@ -2572,6 +2572,7 @@ func TestLoadDefaultFormalPoolRuntimeConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, 5*time.Minute, cfg.FormalPool.NonceTTL)
+	require.Empty(t, cfg.FormalPool.PublicOrigin)
 	require.Empty(t, cfg.FormalPool.EgressMatchCIDRWhitelist)
 	require.Equal(t, 60*time.Second, cfg.FormalPool.ProxyEgressCacheSuccessTTL)
 	require.Equal(t, 15*time.Second, cfg.FormalPool.ProxyEgressCacheFailureTTL)

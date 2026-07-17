@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -196,7 +195,6 @@ func TestFormalPoolOnboardingAuthorizationDimensionsAreIndependent(t *testing.T)
 }
 
 func TestFormalPoolOnboardingPublicOriginAuthority(t *testing.T) {
-	t.Skip("Task 5 owns public-origin authority hardening")
 	gin.SetMode(gin.TestMode)
 
 	t.Run("configured public origin remains authoritative", func(t *testing.T) {
@@ -211,30 +209,47 @@ func TestFormalPoolOnboardingPublicOriginAuthority(t *testing.T) {
 	})
 
 	for _, tc := range []struct {
-		name                                   string
-		hostA, forwardedHostA, forwardedProtoA string
-		hostB, forwardedHostB, forwardedProtoB string
+		name   string
+		mutate func(*http.Request)
 	}{
-		{name: "host is untrusted", hostA: "hostile-host-a.example.invalid", hostB: "hostile-host-b.example.invalid"},
-		{name: "forwarded host is untrusted", hostA: "service.internal", forwardedHostA: "hostile-forwarded-a.example.invalid", hostB: "service.internal", forwardedHostB: "hostile-forwarded-b.example.invalid"},
-		{name: "forwarded proto is untrusted", hostA: "service.internal", forwardedProtoA: "http", hostB: "service.internal", forwardedProtoB: "https"},
+		{name: "host is untrusted", mutate: func(req *http.Request) { req.Host = "hostile-host.example.invalid" }},
+		{name: "forwarded is untrusted", mutate: func(req *http.Request) {
+			req.Header.Set("Forwarded", `for=192.0.2.44;host=hostile-forwarded.example.invalid;proto=http`)
+		}},
+		{name: "forwarded host is untrusted", mutate: func(req *http.Request) { req.Header.Set("X-Forwarded-Host", "hostile-forwarded.example.invalid") }},
+		{name: "forwarded proto is untrusted", mutate: func(req *http.Request) { req.Header.Set("X-Forwarded-Proto", "http") }},
+		{name: "forwarded scheme is untrusted", mutate: func(req *http.Request) { req.Header.Set("X-Forwarded-Scheme", "http") }},
+		{name: "forwarded ssl is untrusted", mutate: func(req *http.Request) { req.Header.Set("X-Forwarded-Ssl", "on") }},
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			request := func(host, forwardedHost, forwardedProto string) *httptest.ResponseRecorder {
-				svc := service.NewFormalPoolOnboardingService(formalPoolOnboardingRoutesDeps(service.FormalPoolOnboardingDeps{Proxy: &formalPoolOnboardingRoutesProxy{rawIP: "198.51.100.10"}}))
-				router := newFormalPoolOnboardingRoutesRouter(adminhandler.NewFormalPoolOnboardingHandler(svc), func(c *gin.Context) { c.Next() })
-				return phase0CreateAndTestProxyWithOrigin(t, router, host, forwardedHost, forwardedProto)
+			svc := service.NewFormalPoolOnboardingService(formalPoolOnboardingRoutesDeps(service.FormalPoolOnboardingDeps{Proxy: &formalPoolOnboardingRoutesProxy{rawIP: "198.51.100.10"}}))
+			router := newFormalPoolOnboardingRoutesRouter(adminhandler.NewFormalPoolOnboardingHandler(svc), func(c *gin.Context) { c.Next() })
+			testProxyRec := phase0CreateAndTestProxyWithOrigin(t, router, "service.internal", "", "")
+			sessionID := extractFormalPoolOnboardingSessionID(t, testProxyRec.Body.String())
+			baseline := phase0BrowserURL(t, phase0GetSessionWithRequestMutation(t, router, sessionID, nil))
+			mutated := phase0BrowserURL(t, phase0GetSessionWithRequestMutation(t, router, sessionID, tc.mutate))
+			require.Equal(t, baseline, mutated, "request-derived authority must not change a stored browser URL")
+			for _, browserURL := range []string{baseline, mutated} {
+				require.True(t, strings.HasPrefix(browserURL, "/api/v1/claude-onboarding/browser-egress-check/"),
+					"without configured origin the browser URL must remain relative across request mutations: %q", browserURL)
+				require.NotContains(t, browserURL, "://")
+				require.NotContains(t, browserURL, "hostile-")
 			}
-			authorityA, acceptedA := phase0BrowserURLAuthority(t, request(tc.hostA, tc.forwardedHostA, tc.forwardedProtoA))
-			authorityB, acceptedB := phase0BrowserURLAuthority(t, request(tc.hostB, tc.forwardedHostB, tc.forwardedProtoB))
-			if acceptedA || acceptedB {
-				return
-			}
-			require.Equal(t, authorityA, authorityB,
-				"without configured origin or trusted ingress, changing one request-derived origin dimension must not change the returned authority")
 		})
 	}
+}
+
+func phase0GetSessionWithRequestMutation(t *testing.T, router *gin.Engine, sessionID string, mutate func(*http.Request)) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/claude-onboarding/sessions/"+sessionID, nil)
+	req.Host = "service.internal"
+	if mutate != nil {
+		mutate(req)
+	}
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
 }
 
 type phase0AuthorizationFixture struct {
@@ -467,11 +482,10 @@ func phase0CreateAndTestProxyWithOrigin(t *testing.T, router *gin.Engine, host, 
 	return testRec
 }
 
-func phase0BrowserURLAuthority(t *testing.T, rec *httptest.ResponseRecorder) (authority string, accepted bool) {
+func phase0BrowserURL(t *testing.T, rec *httptest.ResponseRecorder) string {
 	t.Helper()
-	if rec.Code < http.StatusOK || rec.Code >= http.StatusMultipleChoices {
-		return "", true
-	}
+	require.GreaterOrEqual(t, rec.Code, http.StatusOK, rec.Body.String())
+	require.Less(t, rec.Code, http.StatusMultipleChoices, rec.Body.String())
 	var envelope struct {
 		Data struct {
 			BrowserURL string `json:"browser_egress_check_url"`
@@ -479,12 +493,7 @@ func phase0BrowserURLAuthority(t *testing.T, rec *httptest.ResponseRecorder) (au
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &envelope), rec.Body.String())
 	require.NotEmpty(t, envelope.Data.BrowserURL, "a successful response must expose the browser URL")
-	parsed, err := url.Parse(envelope.Data.BrowserURL)
-	require.NoError(t, err)
-	if !parsed.IsAbs() {
-		return "", true
-	}
-	return parsed.Scheme + "://" + parsed.Host, false
+	return envelope.Data.BrowserURL
 }
 
 type phase0ProxyFake struct{}

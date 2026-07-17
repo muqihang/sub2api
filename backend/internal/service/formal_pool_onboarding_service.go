@@ -308,7 +308,10 @@ func NewFormalPoolOnboardingService(deps FormalPoolOnboardingDeps) *FormalPoolOn
 	if store == nil {
 		store = NewFormalPoolOnboardingStore(FormalPoolOnboardingDefaultTTL, time.Now)
 	}
-	prefix := strings.TrimRight(strings.TrimSpace(deps.PublicURLPrefix), "/")
+	prefix, err := NormalizeFormalPoolPublicOrigin(deps.PublicURLPrefix)
+	if err != nil {
+		prefix = ""
+	}
 	cfg := formalPoolOnboardingConfigWithDefaults(deps.Config)
 	return &FormalPoolOnboardingService{store: store, oauth: deps.OAuth, proxy: deps.Proxy, accounts: deps.Accounts, ccGateway: deps.CCGateway, ccGatewayRuntime: deps.CCGatewayRuntime, acceptance: deps.Acceptance, healthcheck: deps.Healthcheck, refresh: deps.Refresh, risk: deps.Risk, cacheInvalidator: deps.CacheInvalidator, schedulerCache: deps.SchedulerCache, publicURLPrefix: prefix, config: cfg, groups: deps.Groups, principalRevalidator: deps.PrincipalRevalidator}
 }

@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -270,57 +269,13 @@ func (h *FormalPoolOnboardingHandler) GenerateAuthURL(c *gin.Context) {
 }
 
 func (h *FormalPoolOnboardingHandler) withAbsoluteBrowserEgressURL(c *gin.Context, res *service.FormalPoolOnboardingSession) {
+	_ = c
 	if res == nil || strings.TrimSpace(res.BrowserEgressCheckURL) == "" {
 		return
 	}
-	if parsed, err := url.Parse(res.BrowserEgressCheckURL); err == nil && parsed.IsAbs() {
-		return
+	if err := service.ValidateFormalPoolBrowserEgressURL(res.BrowserEgressCheckURL); err != nil {
+		res.BrowserEgressCheckURL = ""
 	}
-	base := formalPoolRequestPublicBaseURL(c)
-	if base == "" {
-		return
-	}
-	path := "/" + strings.TrimLeft(res.BrowserEgressCheckURL, "/")
-	res.BrowserEgressCheckURL = base + path
-}
-
-func formalPoolRequestPublicBaseURL(c *gin.Context) string {
-	if c == nil || c.Request == nil {
-		return ""
-	}
-	scheme := firstForwardedHeaderValue(c.GetHeader("X-Forwarded-Proto"))
-	if scheme == "" {
-		scheme = firstForwardedHeaderValue(c.GetHeader("X-Forwarded-Scheme"))
-	}
-	if scheme == "" && strings.EqualFold(c.GetHeader("X-Forwarded-Ssl"), "on") {
-		scheme = "https"
-	}
-	if scheme == "" {
-		if c.Request.TLS != nil {
-			scheme = "https"
-		} else {
-			scheme = "http"
-		}
-	}
-	scheme = strings.ToLower(strings.TrimSpace(scheme))
-	if scheme != "https" && scheme != "http" {
-		return ""
-	}
-	host := firstForwardedHeaderValue(c.GetHeader("X-Forwarded-Host"))
-	if host == "" {
-		host = strings.TrimSpace(c.Request.Host)
-	}
-	if host == "" {
-		return ""
-	}
-	return scheme + "://" + host
-}
-
-func firstForwardedHeaderValue(value string) string {
-	if idx := strings.Index(value, ","); idx >= 0 {
-		value = value[:idx]
-	}
-	return strings.TrimSpace(value)
 }
 
 func (h *FormalPoolOnboardingHandler) ExchangeCodeAndCreate(c *gin.Context) {

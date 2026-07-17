@@ -97,6 +97,7 @@ func ProvideFormalPoolOnboardingService(adminService AdminService, oauthService 
 		SchedulerCache:       schedulerCache,
 		Groups:               groupRepo,
 		PrincipalRevalidator: principalRevalidator,
+		PublicURLPrefix:      formalPoolCfg.PublicOrigin,
 	})
 }
 
@@ -106,6 +107,11 @@ func formalPoolConfigFromAppConfig(cfg *config.Config) (FormalPoolConfig, error)
 		return formalPoolCfg, nil
 	}
 	runtimeCfg := cfg.FormalPool
+	publicOrigin, err := NormalizeFormalPoolPublicOrigin(runtimeCfg.PublicOrigin)
+	if err != nil {
+		return FormalPoolConfig{}, fmt.Errorf("invalid formal_pool public_origin")
+	}
+	formalPoolCfg.PublicOrigin = publicOrigin
 	if runtimeCfg.NonceTTL > 0 {
 		formalPoolCfg.NonceTTL = runtimeCfg.NonceTTL
 	}
