@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -45,9 +44,53 @@ func NewFormalPoolOnboardingHandlerWithPublicDeps(svc *service.FormalPoolOnboard
 	return h
 }
 
+func parseFormalPoolIfMatch(c *gin.Context, required bool) (*int64, error) {
+	raw := strings.TrimSpace(c.GetHeader("If-Match"))
+	if raw == "" && !required {
+		return nil, nil
+	}
+	if len(raw) < 3 || raw[0] != '"' || raw[len(raw)-1] != '"' {
+		return nil, service.ErrFormalPoolOnboardingVersionRequired
+	}
+	version, err := strconv.ParseInt(raw[1:len(raw)-1], 10, 64)
+	if err != nil || version < 0 {
+		return nil, service.ErrFormalPoolOnboardingVersionRequired
+	}
+	return &version, nil
+}
+
+func formalPoolRequestContext(c *gin.Context, requireVersion, requireIdempotency bool) (context.Context, error) {
+	principal, ok := FormalPoolOnboardingPrincipalFromGin(c)
+	if !ok || c == nil || c.Request == nil {
+		return nil, service.ErrFormalPoolOnboardingAuthenticationRequired
+	}
+	expectedVersion, err := parseFormalPoolIfMatch(c, requireVersion)
+	if err != nil {
+		return nil, err
+	}
+	authority := service.FormalPoolRequestAuthority{Principal: principal, ExpectedVersion: expectedVersion}
+	if requireIdempotency {
+		authority.IdempotencyKey = c.GetHeader("Idempotency-Key")
+	}
+	return service.WithFormalPoolRequestAuthority(c.Request.Context(), authority), nil
+}
+
+func formalPoolHandlerContext(c *gin.Context, requireVersion, requireIdempotency bool) (context.Context, bool) {
+	ctx, err := formalPoolRequestContext(c, requireVersion, requireIdempotency)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return nil, false
+	}
+	return ctx, true
+}
+
 func (h *FormalPoolOnboardingHandler) CreateSession(c *gin.Context) {
 	if h == nil || h.svc == nil {
 		response.InternalError(c, "formal pool onboarding unavailable")
+		return
+	}
+	ctx, ok := formalPoolHandlerContext(c, true, true)
+	if !ok {
 		return
 	}
 	var req service.FormalPoolOnboardingStartRequest
@@ -55,7 +98,7 @@ func (h *FormalPoolOnboardingHandler) CreateSession(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	res, err := h.svc.StartSession(c.Request.Context(), req)
+	res, err := h.svc.StartSession(ctx, req)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -69,7 +112,11 @@ func (h *FormalPoolOnboardingHandler) GetSession(c *gin.Context) {
 		response.InternalError(c, "formal pool onboarding unavailable")
 		return
 	}
-	res, err := h.svc.GetSession(c.Request.Context(), c.Param("id"))
+	ctx, ok := formalPoolHandlerContext(c, false, false)
+	if !ok {
+		return
+	}
+	res, err := h.svc.GetSession(ctx, c.Param("id"))
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -83,7 +130,11 @@ func (h *FormalPoolOnboardingHandler) TestProxy(c *gin.Context) {
 		response.InternalError(c, "formal pool onboarding unavailable")
 		return
 	}
-	res, err := h.svc.TestProxy(c.Request.Context(), c.Param("id"))
+	ctx, ok := formalPoolHandlerContext(c, true, false)
+	if !ok {
+		return
+	}
+	res, err := h.svc.TestProxy(ctx, c.Param("id"))
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -97,12 +148,16 @@ func (h *FormalPoolOnboardingHandler) BrowserEgressAttestation(c *gin.Context) {
 		response.InternalError(c, "formal pool onboarding unavailable")
 		return
 	}
+	ctx, ok := formalPoolHandlerContext(c, true, false)
+	if !ok {
+		return
+	}
 	var req service.FormalPoolBrowserEgressAttestationRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	res, err := h.svc.AttestBrowserEgress(c.Request.Context(), c.Param("id"), req)
+	res, err := h.svc.AttestBrowserEgress(ctx, c.Param("id"), req)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -200,7 +255,11 @@ func (h *FormalPoolOnboardingHandler) GenerateAuthURL(c *gin.Context) {
 		response.InternalError(c, "formal pool onboarding unavailable")
 		return
 	}
-	res, err := h.svc.GenerateAuthURL(c.Request.Context(), c.Param("id"))
+	ctx, ok := formalPoolHandlerContext(c, true, false)
+	if !ok {
+		return
+	}
+	res, err := h.svc.GenerateAuthURL(ctx, c.Param("id"))
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -210,57 +269,13 @@ func (h *FormalPoolOnboardingHandler) GenerateAuthURL(c *gin.Context) {
 }
 
 func (h *FormalPoolOnboardingHandler) withAbsoluteBrowserEgressURL(c *gin.Context, res *service.FormalPoolOnboardingSession) {
+	_ = c
 	if res == nil || strings.TrimSpace(res.BrowserEgressCheckURL) == "" {
 		return
 	}
-	if parsed, err := url.Parse(res.BrowserEgressCheckURL); err == nil && parsed.IsAbs() {
-		return
+	if err := service.ValidateFormalPoolBrowserEgressURL(res.BrowserEgressCheckURL); err != nil {
+		res.BrowserEgressCheckURL = ""
 	}
-	base := formalPoolRequestPublicBaseURL(c)
-	if base == "" {
-		return
-	}
-	path := "/" + strings.TrimLeft(res.BrowserEgressCheckURL, "/")
-	res.BrowserEgressCheckURL = base + path
-}
-
-func formalPoolRequestPublicBaseURL(c *gin.Context) string {
-	if c == nil || c.Request == nil {
-		return ""
-	}
-	scheme := firstForwardedHeaderValue(c.GetHeader("X-Forwarded-Proto"))
-	if scheme == "" {
-		scheme = firstForwardedHeaderValue(c.GetHeader("X-Forwarded-Scheme"))
-	}
-	if scheme == "" && strings.EqualFold(c.GetHeader("X-Forwarded-Ssl"), "on") {
-		scheme = "https"
-	}
-	if scheme == "" {
-		if c.Request.TLS != nil {
-			scheme = "https"
-		} else {
-			scheme = "http"
-		}
-	}
-	scheme = strings.ToLower(strings.TrimSpace(scheme))
-	if scheme != "https" && scheme != "http" {
-		return ""
-	}
-	host := firstForwardedHeaderValue(c.GetHeader("X-Forwarded-Host"))
-	if host == "" {
-		host = strings.TrimSpace(c.Request.Host)
-	}
-	if host == "" {
-		return ""
-	}
-	return scheme + "://" + host
-}
-
-func firstForwardedHeaderValue(value string) string {
-	if idx := strings.Index(value, ","); idx >= 0 {
-		value = value[:idx]
-	}
-	return strings.TrimSpace(value)
 }
 
 func (h *FormalPoolOnboardingHandler) ExchangeCodeAndCreate(c *gin.Context) {
@@ -268,12 +283,16 @@ func (h *FormalPoolOnboardingHandler) ExchangeCodeAndCreate(c *gin.Context) {
 		response.InternalError(c, "formal pool onboarding unavailable")
 		return
 	}
+	ctx, ok := formalPoolHandlerContext(c, true, true)
+	if !ok {
+		return
+	}
 	var req service.FormalPoolExchangeCodeAndCreateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	res, err := h.svc.ExchangeCodeAndCreate(c.Request.Context(), c.Param("id"), req)
+	res, err := h.svc.ExchangeCodeAndCreate(ctx, c.Param("id"), req)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -287,12 +306,16 @@ func (h *FormalPoolOnboardingHandler) SetupTokenCookieAuthAndCreate(c *gin.Conte
 		response.InternalError(c, "formal pool onboarding unavailable")
 		return
 	}
+	ctx, ok := formalPoolHandlerContext(c, true, false)
+	if !ok {
+		return
+	}
 	var req service.FormalPoolSetupTokenCookieAuthAndCreateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
-	res, err := h.svc.SetupTokenCookieAuthAndCreate(c.Request.Context(), c.Param("id"), req)
+	res, err := h.svc.SetupTokenCookieAuthAndCreate(ctx, c.Param("id"), req)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -306,7 +329,11 @@ func (h *FormalPoolOnboardingHandler) Acceptance(c *gin.Context) {
 		response.InternalError(c, "formal pool onboarding unavailable")
 		return
 	}
-	res, err := h.svc.RunAcceptance(c.Request.Context(), c.Param("id"))
+	ctx, ok := formalPoolHandlerContext(c, true, false)
+	if !ok {
+		return
+	}
+	res, err := h.svc.RunAcceptance(ctx, c.Param("id"))
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -319,7 +346,11 @@ func (h *FormalPoolOnboardingHandler) Activate(c *gin.Context) {
 		response.InternalError(c, "formal pool onboarding unavailable")
 		return
 	}
-	res, err := h.svc.Activate(c.Request.Context(), c.Param("id"))
+	ctx, ok := formalPoolHandlerContext(c, true, false)
+	if !ok {
+		return
+	}
+	res, err := h.svc.Activate(ctx, c.Param("id"))
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -333,7 +364,11 @@ func (h *FormalPoolOnboardingHandler) Abort(c *gin.Context) {
 		response.InternalError(c, "formal pool onboarding unavailable")
 		return
 	}
-	res, err := h.svc.AbortSession(c.Request.Context(), c.Param("id"))
+	ctx, ok := formalPoolHandlerContext(c, true, false)
+	if !ok {
+		return
+	}
+	res, err := h.svc.AbortSession(ctx, c.Param("id"))
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -347,7 +382,11 @@ func (h *FormalPoolOnboardingHandler) RefreshOnly(c *gin.Context) {
 		response.InternalError(c, "formal pool onboarding unavailable")
 		return
 	}
-	res, err := h.svc.RefreshOnly(c.Request.Context(), c.Param("id"))
+	ctx, ok := formalPoolHandlerContext(c, true, false)
+	if !ok {
+		return
+	}
+	res, err := h.svc.RefreshOnly(ctx, c.Param("id"))
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -361,7 +400,11 @@ func (h *FormalPoolOnboardingHandler) RuntimeRegister(c *gin.Context) {
 		response.InternalError(c, "formal pool onboarding unavailable")
 		return
 	}
-	res, err := h.svc.RegisterRuntime(c.Request.Context(), c.Param("id"))
+	ctx, ok := formalPoolHandlerContext(c, true, false)
+	if !ok {
+		return
+	}
+	res, err := h.svc.RegisterRuntime(ctx, c.Param("id"))
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -375,7 +418,11 @@ func (h *FormalPoolOnboardingHandler) Healthcheck(c *gin.Context) {
 		response.InternalError(c, "formal pool onboarding unavailable")
 		return
 	}
-	res, err := h.svc.RunAcceptance(c.Request.Context(), c.Param("id"))
+	ctx, ok := formalPoolHandlerContext(c, true, false)
+	if !ok {
+		return
+	}
+	res, err := h.svc.RunAcceptance(ctx, c.Param("id"))
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -388,12 +435,16 @@ func (h *FormalPoolOnboardingHandler) AccountHealthcheck(c *gin.Context) {
 		response.InternalError(c, "formal pool onboarding unavailable")
 		return
 	}
+	ctx, ok := formalPoolHandlerContext(c, true, false)
+	if !ok {
+		return
+	}
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || accountID <= 0 {
 		response.BadRequest(c, "Invalid account ID")
 		return
 	}
-	res, err := h.svc.RunAccountHealthcheck(c.Request.Context(), accountID)
+	res, err := h.svc.RunAccountHealthcheck(ctx, accountID)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -406,7 +457,11 @@ func (h *FormalPoolOnboardingHandler) StartWarming(c *gin.Context) {
 		response.InternalError(c, "formal pool onboarding unavailable")
 		return
 	}
-	res, err := h.svc.StartWarming(c.Request.Context(), c.Param("id"))
+	ctx, ok := formalPoolHandlerContext(c, true, false)
+	if !ok {
+		return
+	}
+	res, err := h.svc.StartWarming(ctx, c.Param("id"))
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -420,7 +475,11 @@ func (h *FormalPoolOnboardingHandler) PromoteProduction(c *gin.Context) {
 		response.InternalError(c, "formal pool onboarding unavailable")
 		return
 	}
-	res, err := h.svc.PromoteProduction(c.Request.Context(), c.Param("id"))
+	ctx, ok := formalPoolHandlerContext(c, true, true)
+	if !ok {
+		return
+	}
+	res, err := h.svc.PromoteProduction(ctx, c.Param("id"))
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

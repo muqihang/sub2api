@@ -56,6 +56,7 @@ export type BrowserEgressErrorCode = KnownBrowserEgressErrorCode | string
 
 export interface FormalPoolSession {
   id: string
+  version: number
   status: string
   proxy_id?: number
   proxy_ref?: string
@@ -84,8 +85,12 @@ export interface FormalPoolSession {
   production_ready?: boolean
 }
 
-export interface FormalPoolAcceptanceResult {
+export interface FormalPoolMutationResult {
+  version: number
   status: string
+}
+
+export interface FormalPoolAcceptanceResult extends FormalPoolMutationResult {
   account_id: number
   account_ref: string
   proxy_ref: string
@@ -109,8 +114,18 @@ export interface FormalPoolSetupTokenCookieRequest {
   proxy_id?: number
 }
 
-export async function createSession(payload: FormalPoolStartRequest): Promise<FormalPoolSession> {
-  const { data } = await apiClient.post<FormalPoolSession>('/admin/claude-onboarding/sessions', payload)
+function versionHeaders(session: Pick<FormalPoolSession, 'version'>) {
+  return { headers: { 'If-Match': `"${session.version}"` } }
+}
+
+function idempotencyHeaders(session: Pick<FormalPoolSession, 'version'>, key: string) {
+  return { headers: { ...versionHeaders(session).headers, 'Idempotency-Key': key } }
+}
+
+export async function createSession(payload: FormalPoolStartRequest, idempotencyKey: string): Promise<FormalPoolSession> {
+  const { data } = await apiClient.post<FormalPoolSession>('/admin/claude-onboarding/sessions', payload, {
+    headers: { 'If-Match': '"0"', 'Idempotency-Key': idempotencyKey }
+  })
   return data
 }
 
@@ -119,73 +134,73 @@ export async function getSession(id: string, signal?: AbortSignal): Promise<Form
   return data
 }
 
-export async function testProxy(id: string): Promise<FormalPoolSession> {
-  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${id}/test-proxy`)
+export async function testProxy(session: FormalPoolSession): Promise<FormalPoolSession> {
+  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${session.id}/test-proxy`, {}, versionHeaders(session))
   return data
 }
 
-export async function attestBrowserEgress(id: string, verificationCode: string): Promise<FormalPoolSession> {
-  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${id}/browser-egress-attestation`, {
+export async function attestBrowserEgress(session: FormalPoolSession, verificationCode: string): Promise<FormalPoolSession> {
+  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${session.id}/browser-egress-attestation`, {
     confirmed: true,
     verification_code: verificationCode
-  })
+  }, versionHeaders(session))
   return data
 }
 
-export async function generateAuthUrl(id: string): Promise<FormalPoolSession> {
-  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${id}/generate-auth-url`)
+export async function generateAuthUrl(session: FormalPoolSession): Promise<FormalPoolSession> {
+  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${session.id}/generate-auth-url`, {}, versionHeaders(session))
   return data
 }
 
-export async function exchangeCodeAndCreate(id: string, code: string): Promise<FormalPoolSession> {
-  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${id}/exchange-code-and-create`, { code })
+export async function exchangeCodeAndCreate(session: FormalPoolSession, code: string, idempotencyKey: string): Promise<FormalPoolSession> {
+  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${session.id}/exchange-code-and-create`, { code }, idempotencyHeaders(session, idempotencyKey))
   return data
 }
 
-export async function setupTokenCookieAuthAndCreate(id: string, sessionKey: string): Promise<FormalPoolSession> {
-  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${id}/setup-token-cookie-auth-and-create`, {
+export async function setupTokenCookieAuthAndCreate(session: FormalPoolSession, sessionKey: string): Promise<FormalPoolSession> {
+  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${session.id}/setup-token-cookie-auth-and-create`, {
     session_key: sessionKey
-  })
+  }, versionHeaders(session))
   return data
 }
 
-export async function runAcceptance(id: string): Promise<FormalPoolAcceptanceResult> {
-  const { data } = await apiClient.post<FormalPoolAcceptanceResult>(`/admin/claude-onboarding/sessions/${id}/acceptance`)
+export async function runAcceptance(session: FormalPoolSession): Promise<FormalPoolAcceptanceResult> {
+  const { data } = await apiClient.post<FormalPoolAcceptanceResult>(`/admin/claude-onboarding/sessions/${session.id}/acceptance`, {}, versionHeaders(session))
   return data
 }
 
-export async function activate(id: string): Promise<FormalPoolSession> {
-  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${id}/activate`)
+export async function activate(session: FormalPoolSession): Promise<FormalPoolSession> {
+  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${session.id}/activate`, {}, versionHeaders(session))
   return data
 }
 
-export async function refreshOnly(id: string): Promise<FormalPoolSession> {
-  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${id}/refresh-only`)
+export async function refreshOnly(session: FormalPoolSession): Promise<FormalPoolSession> {
+  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${session.id}/refresh-only`, {}, versionHeaders(session))
   return data
 }
 
-export async function runtimeRegister(id: string): Promise<FormalPoolSession> {
-  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${id}/runtime-register`)
+export async function runtimeRegister(session: FormalPoolSession): Promise<FormalPoolSession> {
+  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${session.id}/runtime-register`, {}, versionHeaders(session))
   return data
 }
 
-export async function healthcheck(id: string): Promise<FormalPoolAcceptanceResult> {
-  const { data } = await apiClient.post<FormalPoolAcceptanceResult>(`/admin/claude-onboarding/sessions/${id}/healthcheck`)
+export async function healthcheck(session: FormalPoolSession): Promise<FormalPoolAcceptanceResult> {
+  const { data } = await apiClient.post<FormalPoolAcceptanceResult>(`/admin/claude-onboarding/sessions/${session.id}/healthcheck`, {}, versionHeaders(session))
   return data
 }
 
-export async function startWarming(id: string): Promise<FormalPoolSession> {
-  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${id}/start-warming`)
+export async function startWarming(session: FormalPoolSession): Promise<FormalPoolSession> {
+  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${session.id}/start-warming`, {}, versionHeaders(session))
   return data
 }
 
-export async function promoteProduction(id: string): Promise<FormalPoolSession> {
-  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${id}/promote-production`)
+export async function promoteProduction(session: FormalPoolSession, idempotencyKey: string): Promise<FormalPoolSession> {
+  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${session.id}/promote-production`, {}, idempotencyHeaders(session, idempotencyKey))
   return data
 }
 
-export async function abort(id: string): Promise<FormalPoolSession> {
-  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${id}/abort`)
+export async function abort(session: FormalPoolSession): Promise<FormalPoolSession> {
+  const { data } = await apiClient.post<FormalPoolSession>(`/admin/claude-onboarding/sessions/${session.id}/abort`, {}, versionHeaders(session))
   return data
 }
 

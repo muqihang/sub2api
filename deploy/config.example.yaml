@@ -66,6 +66,15 @@ server:
 # - simple: 隐藏 SaaS 功能，跳过计费和余额校验
 run_mode: "standard"
 
+# Formal-pool onboarding public URL authority. Leave empty to return relative
+# browser-egress URLs. Production origins must use HTTPS; HTTP is accepted only
+# for localhost and loopback IP addresses.
+formal_pool:
+  # Required for admin onboarding. Use one stable deployment-owned tenant ID;
+  # request headers and payloads cannot override this authority boundary.
+  authority_tenant_id: ""
+  public_origin: ""
+
 # =============================================================================
 # CORS Configuration
 # 跨域资源共享 (CORS) 配置

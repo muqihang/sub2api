@@ -167,6 +167,8 @@ type UpdateConfig struct {
 }
 
 type FormalPoolRuntimeConfig struct {
+	AuthorityTenantID           string        `mapstructure:"authority_tenant_id"`
+	PublicOrigin                string        `mapstructure:"public_origin"`
 	NonceTTL                    time.Duration `mapstructure:"nonce_ttl"`
 	EgressMatchCIDRWhitelist    []string      `mapstructure:"egress_match_cidr_whitelist"`
 	ProxyEgressCacheSuccessTTL  time.Duration `mapstructure:"proxy_egress_cache_success_ttl"`

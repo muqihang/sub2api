@@ -3,6 +3,7 @@ package routes
 
 import (
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	adminhandler "github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -116,9 +117,6 @@ func RegisterAdminRoutes(
 
 		// Claude formal pool status dashboard
 		registerFormalPoolStatusDashboardRoutes(admin, h)
-
-		// Claude formal pool onboarding
-		registerFormalPoolOnboardingAdminRoutes(admin, h)
 
 		// Augment Gateway 管理
 		registerAugmentGatewayAdminRoutes(admin, h)
@@ -784,6 +782,23 @@ func registerFormalPoolOnboardingAdminRoutes(admin *gin.RouterGroup, h *handler.
 			accounts.POST("/:id/healthcheck", h.Admin.FormalPoolOnboarding.AccountHealthcheck)
 		}
 	}
+}
+
+func RegisterFormalPoolOnboardingAdminRoutes(
+	v1 *gin.RouterGroup,
+	h *handler.Handlers,
+	jwtAuth middleware.FormalPoolOnboardingJWTAuthMiddleware,
+	principalResolver adminhandler.FormalPoolOnboardingPrincipalResolver,
+	settingService *service.SettingService,
+) {
+	if h == nil || h.Admin == nil || h.Admin.FormalPoolOnboarding == nil {
+		return
+	}
+	admin := v1.Group("/admin")
+	admin.Use(gin.HandlerFunc(jwtAuth))
+	admin.Use(adminhandler.FormalPoolOnboardingPrincipalGuard(principalResolver))
+	admin.Use(middleware.AdminComplianceGuard(settingService))
+	registerFormalPoolOnboardingAdminRoutes(admin, h)
 }
 
 func RegisterFormalPoolOnboardingPublicRoutes(v1 *gin.RouterGroup, h *handler.Handlers) {

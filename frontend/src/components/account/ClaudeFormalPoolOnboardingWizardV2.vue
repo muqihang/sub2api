@@ -467,6 +467,7 @@ import claudeOnboarding, {
 } from '@/api/admin/claudeOnboarding'
 import { adminAPI } from '@/api/admin'
 import { useEgressCheckPolling } from '@/composables/useEgressCheckPolling'
+import { classifyFormalPoolMutationError, mergeFormalPoolMutationResult, monotonicFormalPoolSession } from '@/utils/formalPoolMutation'
 import { scrubFormalPoolDisplayText } from '@/utils/formalPoolStatusDashboard'
 import type { AdminGroup, Proxy } from '@/types'
 
@@ -492,6 +493,9 @@ const pendingPromoteProductionConfirm = ref(false)
 const authMode = ref<'oauth' | 'setup-token-cookie'>('oauth')
 const oauthCode = ref('')
 const setupSessionKey = ref('')
+const createIdempotencyKey = ref('')
+const exchangeIdempotencyKey = ref('')
+const promoteIdempotencyKey = ref('')
 const copyStatus = ref('')
 const oauthCopyStatus = ref('')
 const proxyOptions = ref<Proxy[]>([])
@@ -569,13 +573,14 @@ const safeSession = computed(() => JSON.stringify(sanitizeForDisplay({
 }), null, 2))
 
 watch(() => egressPolling.session.value, (nextSession) => {
-  if (nextSession && nextSession.id === session.value?.id) {
-    const mergedSession: FormalPoolSession = {
+	if (nextSession && nextSession.id === session.value?.id) {
+		if (nextSession.version < session.value.version) return
+		const mergedSession: FormalPoolSession = {
       ...(session.value as FormalPoolSession),
       ...(nextSession as FormalPoolSession),
       browser_egress_check_url: nextSession.browser_egress_check_url || session.value.browser_egress_check_url,
     }
-    session.value = mergedSession
+		acceptSession(mergedSession)
   }
 })
 
@@ -1180,12 +1185,31 @@ function stageClass(stage: string) {
     : 'border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400'
 }
 
-async function run<T>(fn: () => Promise<T>): Promise<T | null> {
+function acceptSession(next: FormalPoolSession): boolean {
+	const current = session.value
+	if (current && current.id === next.id && next.version < current.version) return false
+	session.value = monotonicFormalPoolSession(current, next)
+	return true
+}
+
+async function reconcileSession(id: string) {
+	try {
+		acceptSession(await claudeOnboarding.getSession(id))
+	} catch {
+		// Keep the last known safe snapshot when reconciliation also fails.
+	}
+}
+
+async function run<T>(fn: () => Promise<T>, clearOperationKey?: () => void): Promise<T | null> {
   busy.value = true
   error.value = ''
   try {
-    return await fn()
-  } catch (err: any) {
+		return await fn()
+	} catch (err: any) {
+		const classification = classifyFormalPoolMutationError(err)
+		if (!classification.retainOperationKey) clearOperationKey?.()
+		const id = session.value?.id
+		if (id && classification.reconcile) await reconcileSession(id)
     error.value = err?.response?.data?.message || err?.message || '操作失败'
     return null
   } finally {
@@ -1203,11 +1227,18 @@ function sessionPayload() {
 }
 
 async function startSession() {
-  egressPolling.stop()
-  acceptance.value = null
-  const res = await run(() => claudeOnboarding.createSession(sessionPayload()))
-  if (res) {
-    session.value = res
+	egressPolling.stop()
+	acceptance.value = null
+	if (session.value) {
+		createIdempotencyKey.value = ''
+		exchangeIdempotencyKey.value = ''
+		promoteIdempotencyKey.value = ''
+	}
+	if (!createIdempotencyKey.value) createIdempotencyKey.value = crypto.randomUUID()
+	const res = await run(() => claudeOnboarding.createSession(sessionPayload(), createIdempotencyKey.value), () => { createIdempotencyKey.value = '' })
+	if (res) {
+		acceptSession(res)
+    createIdempotencyKey.value = ''
     activeStep.value = 'proxy'
   }
 }
@@ -1215,9 +1246,9 @@ async function startSession() {
 async function testProxyStep() {
   if (!session.value) return
   egressPolling.stop()
-  const res = await run(() => claudeOnboarding.testProxy(session.value!.id))
-  if (res) {
-    session.value = res
+	const res = await run(() => claudeOnboarding.testProxy(session.value!))
+	if (res) {
+		acceptSession(res)
     if (requiresBrowserEgress.value) {
       if (res.browser_egress_check_url) egressPolling.start(res.id)
     } else {
@@ -1228,24 +1259,26 @@ async function testProxyStep() {
 
 async function generateOAuth() {
   if (!session.value) return
-  const res = await run(() => claudeOnboarding.generateAuthUrl(session.value!.id))
-  if (res) session.value = res
+	const res = await run(() => claudeOnboarding.generateAuthUrl(session.value!))
+	if (res) acceptSession(res)
 }
 
 async function exchangeCreate() {
   if (!session.value) return
-  const res = await run(() => claudeOnboarding.exchangeCodeAndCreate(session.value!.id, oauthCode.value))
-  if (res) {
-    session.value = res
+  if (!exchangeIdempotencyKey.value) exchangeIdempotencyKey.value = crypto.randomUUID()
+	const res = await run(() => claudeOnboarding.exchangeCodeAndCreate(session.value!, oauthCode.value, exchangeIdempotencyKey.value), () => { exchangeIdempotencyKey.value = '' })
+	if (res) {
+		acceptSession(res)
+    exchangeIdempotencyKey.value = ''
     activeStep.value = 'gates'
   }
 }
 
 async function setupTokenCreate() {
   if (!session.value) return
-  const res = await run(() => claudeOnboarding.setupTokenCookieAuthAndCreate(session.value!.id, setupSessionKey.value))
-  if (res) {
-    session.value = res
+	const res = await run(() => claudeOnboarding.setupTokenCookieAuthAndCreate(session.value!, setupSessionKey.value))
+	if (res) {
+		acceptSession(res)
     setupSessionKey.value = ''
     activeStep.value = 'gates'
   }
@@ -1253,14 +1286,14 @@ async function setupTokenCreate() {
 
 async function refreshOnlyStep() {
   if (!session.value) return
-  const res = await run(() => claudeOnboarding.refreshOnly(session.value!.id))
-  if (res) session.value = res
+	const res = await run(() => claudeOnboarding.refreshOnly(session.value!))
+	if (res) acceptSession(res)
 }
 
 async function runtimeRegisterStep() {
   if (!session.value) return
-  const res = await run(() => claudeOnboarding.runtimeRegister(session.value!.id))
-  if (res) session.value = res
+	const res = await run(() => claudeOnboarding.runtimeRegister(session.value!))
+	if (res) acceptSession(res)
 }
 
 async function healthcheckStep() {
@@ -1271,10 +1304,10 @@ async function healthcheckStep() {
 async function confirmHealthcheckStep() {
   pendingHealthcheckConfirm.value = false
   if (!session.value) return
-  const res = await run(() => claudeOnboarding.healthcheck(session.value!.id))
-  if (res) {
-    acceptance.value = res
-    session.value = { ...session.value, healthcheck_passed: res.status === 'healthcheck_passed', status: res.status }
+  const res = await run(() => claudeOnboarding.healthcheck(session.value!))
+	if (res && res.version >= session.value.version) {
+		acceptance.value = res
+		session.value = mergeFormalPoolMutationResult(session.value, res)
   }
 }
 
@@ -1284,8 +1317,8 @@ function cancelHealthcheckConfirm() {
 
 async function startWarmingStep() {
   if (!session.value) return
-  const res = await run(() => claudeOnboarding.startWarming(session.value!.id))
-  if (res) session.value = res
+	const res = await run(() => claudeOnboarding.startWarming(session.value!))
+	if (res) acceptSession(res)
 }
 
 async function runRecommendedGateAction() {
@@ -1319,8 +1352,12 @@ async function promoteProductionStep() {
 async function confirmPromoteProductionStep() {
   pendingPromoteProductionConfirm.value = false
   if (!session.value) return
-  const res = await run(() => claudeOnboarding.promoteProduction(session.value!.id))
-  if (res) session.value = res
+  if (!promoteIdempotencyKey.value) promoteIdempotencyKey.value = crypto.randomUUID()
+	const res = await run(() => claudeOnboarding.promoteProduction(session.value!, promoteIdempotencyKey.value), () => { promoteIdempotencyKey.value = '' })
+	if (res) {
+		acceptSession(res)
+    promoteIdempotencyKey.value = ''
+  }
 }
 
 function cancelPromoteProductionConfirm() {

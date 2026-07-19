@@ -50,8 +50,9 @@ const egressPollingActions = vi.hoisted(() => ({
   abort: vi.fn(),
 }))
 
+const egressPollingSession = ref<FormalPoolSession | null>(null)
 const egressPollingMock = {
-  session: readonly(ref(null)),
+  session: readonly(egressPollingSession),
   status: readonly(ref('idle')),
   running: readonly(ref(false)),
   error: readonly(ref('')),
@@ -90,6 +91,7 @@ function mountWizard() {
 function sessionFixture(overrides: Partial<FormalPoolSession> = {}): FormalPoolSession {
   return {
     id: 'session-1',
+    version: 1,
     status: 'idle',
     pool_profile: 'normal',
     group_id: 9,
@@ -103,11 +105,13 @@ function sessionFixture(overrides: Partial<FormalPoolSession> = {}): FormalPoolS
 
 function acceptanceFixture(overrides: Partial<FormalPoolAcceptanceResult> = {}): FormalPoolAcceptanceResult {
   return {
+    version: 2,
     status: 'healthcheck_passed',
     account_id: 42,
     account_ref: 'acct_bucket_42',
     proxy_ref: 'proxy_bucket_1',
     egress_bucket: 'egress_bucket_1',
+    pool_profile: 'normal',
     checks: [],
     no_real_messages_request_performed: false,
     activation_required: false,
@@ -187,6 +191,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     egressPollingMock.start.mockReset()
     egressPollingMock.stop.mockReset()
     egressPollingMock.abort.mockReset()
+    egressPollingSession.value = null
     onboardingApi.getSession.mockResolvedValue(sessionFixture())
     adminApiMock.proxies.getAllWithCount.mockReset()
     adminApiMock.proxies.getAll.mockReset()
@@ -196,7 +201,58 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     adminApiMock.proxies.getAll.mockResolvedValue([proxyFixture()])
     adminApiMock.groups.getAll.mockResolvedValue([groupFixture()])
     adminApiMock.groups.getCapacitySummary.mockResolvedValue([])
-  })
+	})
+
+	it('reuses a create operation key after an ambiguous failure', async () => {
+		const wrapper = mountWizard()
+		await flushPromises()
+		onboardingApi.createSession.mockRejectedValueOnce(new Error('network unavailable')).mockResolvedValueOnce(sessionFixture())
+		await wrapper.find('[data-testid="account-name-input"]').setValue('claude-safe-name')
+		await wrapper.find('[data-testid="proxy-card-7"]').trigger('click')
+		await wrapper.find('[data-testid="group-card-9"]').trigger('click')
+
+		await wrapper.find('[data-testid="start-session"]').trigger('click')
+		await flushPromises()
+		await wrapper.find('[data-testid="start-session"]').trigger('click')
+		await flushPromises()
+
+		expect(onboardingApi.createSession).toHaveBeenCalledTimes(2)
+		expect(onboardingApi.createSession.mock.calls[1][1]).toBe(onboardingApi.createSession.mock.calls[0][1])
+	})
+
+	it('rotates a create operation key after a definitive failure', async () => {
+		const wrapper = mountWizard()
+		await flushPromises()
+		onboardingApi.createSession.mockRejectedValueOnce({ response: { status: 400, data: { message: 'invalid request' } } }).mockResolvedValueOnce(sessionFixture())
+		await wrapper.find('[data-testid="account-name-input"]').setValue('claude-safe-name')
+		await wrapper.find('[data-testid="proxy-card-7"]').trigger('click')
+		await wrapper.find('[data-testid="group-card-9"]').trigger('click')
+
+		await wrapper.find('[data-testid="start-session"]').trigger('click')
+		await flushPromises()
+		await wrapper.find('[data-testid="start-session"]').trigger('click')
+		await flushPromises()
+
+		expect(onboardingApi.createSession).toHaveBeenCalledTimes(2)
+		expect(onboardingApi.createSession.mock.calls[1][1]).not.toBe(onboardingApi.createSession.mock.calls[0][1])
+	})
+
+	it('refetches on 409 and rejects a stale reconciliation snapshot', async () => {
+		const wrapper = mountWizard()
+		await startSession(wrapper, { version: 5 })
+		onboardingApi.getSession.mockResolvedValueOnce(sessionFixture({ version: 4, status: 'stale' }))
+		onboardingApi.testProxy.mockRejectedValueOnce({ response: { status: 409, data: { message: 'conflict' } } })
+
+		await wrapper.find('[data-testid="test-proxy"]').trigger('click')
+		await flushPromises()
+		expect(onboardingApi.getSession).toHaveBeenCalledWith('session-1')
+
+		onboardingApi.testProxy.mockResolvedValueOnce(sessionFixture({ version: 6, status: 'proxy_verified' }))
+		await wrapper.find('[data-testid="test-proxy"]').trigger('click')
+		await flushPromises()
+		expect(onboardingApi.testProxy.mock.calls[0][0].version).toBe(5)
+		expect(onboardingApi.testProxy.mock.calls[1][0].version).toBe(5)
+	})
 
   it('does not show numeric proxy_id or group_id inputs in existing mode', async () => {
     const wrapper = mountWizard()
@@ -223,7 +279,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
       proxy_id: 7,
       group_id: 9,
       account_name: 'claude-safe-name',
-    }))
+    }), expect.any(String))
   })
 
   it('selects an Anthropic group card and submits its group_id', async () => {
@@ -245,7 +301,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     expect(onboardingApi.createSession).toHaveBeenCalledWith(expect.objectContaining({
       proxy_id: 7,
       group_id: 12,
-    }))
+    }), expect.any(String))
   })
 
   it('shows management guidance when proxy and group lists are empty', async () => {
@@ -555,7 +611,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
         host: 'proxy.example.net',
         port: 18080,
       }),
-    }))
+    }), expect.any(String))
   })
 
   it('does not render undefined capacity fragments when group capacity fields are incomplete', async () => {
@@ -752,6 +808,38 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     expect(wrapper.find('input[placeholder*="校验码"]').exists()).toBe(false)
   })
 
+  it('monotonically consumes the shared poller finalization result', async () => {
+    const proof = `nonce_${'a'.repeat(32)}`
+    const wrapper = mountWizard()
+    await startSession(wrapper)
+    const pending = sessionFixture({
+      version: 2,
+      status: 'proxy_tested',
+      browser_egress_check_status: 'verified_pending_finalize',
+      browser_egress_verified: false,
+      browser_egress_check_url: `https://safe.example/api/v1/claude-onboarding/browser-egress-check/${proof}`,
+    })
+    onboardingApi.testProxy.mockResolvedValueOnce(pending)
+
+    await wrapper.find('[data-testid="test-proxy"]').trigger('click')
+    await flushPromises()
+    expect(egressPollingMock.start).toHaveBeenCalledWith('session-1')
+
+    egressPollingSession.value = sessionFixture({
+      version: 3,
+      status: 'proxy_verified',
+      browser_egress_check_status: 'verified',
+      browser_egress_verified: true,
+    })
+    await flushPromises()
+    egressPollingSession.value = pending
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="stepper-auth"]').attributes('data-step-status')).toBe('available')
+    await wrapper.find('[data-testid="stepper-auth"]').trigger('click')
+    expect(wrapper.find('[data-testid="generate-oauth-url"]').attributes('disabled')).toBeUndefined()
+  })
+
   it('labels expired nonce recovery as starting a new onboarding session and triggers createSession', async () => {
     const wrapper = mountWizard()
     await startSession(wrapper, {
@@ -851,7 +939,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     await createButton.trigger('click')
     await flushPromises()
 
-    expect(onboardingApi.setupTokenCookieAuthAndCreate).toHaveBeenCalledWith('session-1', 'safe-test-token')
+    expect(onboardingApi.setupTokenCookieAuthAndCreate).toHaveBeenCalledWith(expect.objectContaining({ id: 'session-1' }), 'safe-test-token')
     expect(wrapper.find('[data-testid="stepper-gates"]').attributes('data-step-status')).toBe('active')
     expect(wrapper.text()).toContain('完成上号检查，进入预热期')
   })
@@ -938,7 +1026,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     await recommendedButton.trigger('click')
     await flushPromises()
 
-    expect(onboardingApi.refreshOnly).toHaveBeenCalledWith('session-1')
+    expect(onboardingApi.refreshOnly).toHaveBeenCalledWith(expect.objectContaining({ id: 'session-1' }))
     expect(onboardingApi.runtimeRegister).not.toHaveBeenCalled()
     expect(wrapper.find('[data-testid="recommended-gate-action"]').text()).toContain('继续下一步：接入调度器')
   })
@@ -971,11 +1059,12 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     expect(wrapper.find('[data-testid="stage-healthcheck_passed"]').text()).toContain('上游可用性已通过')
     expect(recommendedButton().text()).toContain('继续下一步：进入低权重预热')
 
-    onboardingApi.startWarming.mockResolvedValueOnce(sessionFixture({ status: 'warming', account_id: 42, healthcheck_passed: true }))
-    await recommendedButton().trigger('click')
-    await flushPromises()
+		onboardingApi.startWarming.mockResolvedValueOnce(sessionFixture({ version: 3, status: 'warming', account_id: 42, healthcheck_passed: true }))
+		await recommendedButton().trigger('click')
+		await flushPromises()
 
-    expect(recommendedButton().text()).toContain('切换到生产调度')
+		expect(onboardingApi.startWarming.mock.calls[0][0].version).toBe(2)
+		expect(recommendedButton().text()).toContain('切换到生产调度')
     expect(wrapper.text()).toContain('账号已在低权重预热期，可按策略切换到生产调度')
   })
 
@@ -1062,7 +1151,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     await wrapper.find('[data-testid="confirm-dialog-stub-confirm"]').trigger('click')
     await flushPromises()
 
-    expect(onboardingApi.promoteProduction).toHaveBeenCalledWith('session-1')
+    expect(onboardingApi.promoteProduction).toHaveBeenCalledWith(expect.objectContaining({ id: 'session-1' }), expect.any(String))
     expect(wrapper.find('[data-testid="recommended-gate-action"]').text()).toContain('查看诊断状态')
   })
 
@@ -1098,7 +1187,7 @@ describe('ClaudeFormalPoolOnboardingWizardV2', () => {
     await wrapper.find('[data-testid="confirm-dialog-stub-confirm"]').trigger('click')
     await flushPromises()
 
-    expect(onboardingApi.promoteProduction).toHaveBeenCalledWith('session-1')
+    expect(onboardingApi.promoteProduction).toHaveBeenCalledWith(expect.objectContaining({ id: 'session-1' }), expect.any(String))
   })
 
   it('renders browser egress statuses in Chinese without raw status codes', async () => {

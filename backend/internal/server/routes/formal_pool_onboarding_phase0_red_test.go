@@ -1,5 +1,3 @@
-//go:build phase0red
-
 package routes
 
 import (
@@ -8,11 +6,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	ihandler "github.com/Wei-Shaw/sub2api/internal/handler"
 	adminhandler "github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -48,46 +47,91 @@ type phase0Operation struct {
 	stage  string
 }
 
+var formalPoolAdminOperationCases = []phase0Operation{
+	{name: "GetSession", method: http.MethodGet, path: phase0SessionPath(""), stage: "created"},
+	{name: "TestProxy", method: http.MethodPost, path: phase0SessionPath("/test-proxy"), stage: "created"},
+	{name: "BrowserEgressAttestation", method: http.MethodPost, path: phase0SessionPath("/browser-egress-attestation"), body: `{"confirmed":true,"verification_code":"owner-proof"}`, stage: "proxy-tested"},
+	{name: "GenerateOAuth", method: http.MethodPost, path: phase0SessionPath("/generate-auth-url"), stage: "attested"},
+	{name: "ExchangeOAuth", method: http.MethodPost, path: phase0SessionPath("/exchange-code-and-create"), body: `{"code":"owner-code"}`, stage: "oauth-url"},
+	{name: "ExchangeSetupToken", method: http.MethodPost, path: phase0SessionPath("/setup-token-cookie-auth-and-create"), body: `{"session_key":"owner-session-key"}`, stage: "setup-token-ready"},
+	{name: "Acceptance", method: http.MethodPost, path: phase0SessionPath("/acceptance"), stage: "imported"},
+	{name: "RefreshOnly", method: http.MethodPost, path: phase0SessionPath("/refresh-only"), stage: "imported"},
+	{name: "RuntimeRegistration", method: http.MethodPost, path: phase0SessionPath("/runtime-register"), stage: "refreshed"},
+	{name: "SessionHealthcheck", method: http.MethodPost, path: phase0SessionPath("/healthcheck"), stage: "imported"},
+	{name: "AccountHealthcheck", method: http.MethodPost, path: func(f *phase0AuthorizationFixture) string {
+		return "/api/v1/admin/claude-onboarding/accounts/" + strconv.FormatInt(f.accountID, 10) + "/healthcheck"
+	}, stage: "imported"},
+	{name: "StartWarming", method: http.MethodPost, path: phase0SessionPath("/start-warming"), stage: "accepted"},
+	{name: "Abort", method: http.MethodPost, path: phase0SessionPath("/abort"), stage: "created"},
+	{name: "Activation", method: http.MethodPost, path: phase0SessionPath("/activate"), stage: "accepted"},
+	{name: "Promotion", method: http.MethodPost, path: phase0SessionPath("/promote-production"), stage: "warming"},
+}
+
+type formalPoolAuthorityCase struct {
+	name           string
+	principal      func() phase0OnboardingPrincipal
+	resolverErr    error
+	revalidatorErr error
+	wantStatus     int
+	staleVersion   bool
+}
+
+func phase0Principal(mutators ...func(*phase0OnboardingPrincipal)) func() phase0OnboardingPrincipal {
+	return func() phase0OnboardingPrincipal {
+		principal := phase0Owner
+		for _, mutate := range mutators {
+			mutate(&principal)
+		}
+		return principal
+	}
+}
+
+var formalPoolAuthorityCases = []formalPoolAuthorityCase{
+	{name: "authorized system administrator owner", principal: phase0Principal(), wantStatus: http.StatusOK},
+	{name: "unauthenticated", principal: phase0Principal(), resolverErr: service.ErrFormalPoolOnboardingAuthenticationRequired, wantStatus: http.StatusUnauthorized},
+	{name: "ordinary user creator", principal: phase0Principal(func(p *phase0OnboardingPrincipal) { p.role = service.RoleUser }), wantStatus: http.StatusForbidden},
+	{name: "ordinary user non creator", principal: phase0Principal(func(p *phase0OnboardingPrincipal) { p.role = service.RoleUser; p.creatorID++ }), wantStatus: http.StatusForbidden},
+	{name: "would-be group administrator allowed same group", principal: phase0Principal(func(p *phase0OnboardingPrincipal) { p.role = service.RoleUser }), wantStatus: http.StatusForbidden},
+	{name: "would-be group administrator cross group", principal: phase0Principal(func(p *phase0OnboardingPrincipal) { p.role = service.RoleUser; p.groupID++ }), wantStatus: http.StatusForbidden},
+	{name: "would-be group administrator cross tenant", principal: phase0Principal(func(p *phase0OnboardingPrincipal) { p.role = service.RoleUser; p.tenantID = "tenant-two" }), wantStatus: http.StatusForbidden},
+	{name: "would-be tenant administrator same tenant label", principal: phase0Principal(func(p *phase0OnboardingPrincipal) { p.role = service.RoleUser }), wantStatus: http.StatusForbidden},
+	{name: "would-be tenant administrator cross tenant label", principal: phase0Principal(func(p *phase0OnboardingPrincipal) { p.role = service.RoleUser; p.tenantID = "tenant-two" }), wantStatus: http.StatusForbidden},
+	{name: "initially revoked JWT", principal: phase0Principal(), resolverErr: service.ErrFormalPoolOnboardingAuthenticationRequired, wantStatus: http.StatusUnauthorized},
+	{name: "initially expired JWT", principal: phase0Principal(), resolverErr: service.ErrFormalPoolOnboardingAuthenticationRequired, wantStatus: http.StatusUnauthorized},
+	{name: "service caller admin API key", principal: phase0Principal(), resolverErr: service.ErrFormalPoolOnboardingAuthenticationRequired, wantStatus: http.StatusUnauthorized},
+	{name: "post-guard inactive or token drift", principal: phase0Principal(), revalidatorErr: service.ErrFormalPoolOnboardingAuthenticationRequired, wantStatus: http.StatusUnauthorized},
+	{name: "post-guard role loss", principal: phase0Principal(), revalidatorErr: service.ErrFormalPoolOnboardingForbidden, wantStatus: http.StatusForbidden},
+	{name: "stale browser tab", principal: phase0Principal(), wantStatus: http.StatusConflict, staleVersion: true},
+}
+
 func TestFormalPoolOnboardingAuthorizationRejectsCrossBoundaryOperations(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	require.Len(t, formalPoolAdminOperationCases, 15)
+	require.Len(t, formalPoolAuthorityCases, 15)
 
-	operations := []phase0Operation{
-		{name: "GetSession", method: http.MethodGet, path: phase0SessionPath(""), stage: "created"},
-		{name: "TestProxy", method: http.MethodPost, path: phase0SessionPath("/test-proxy"), stage: "created"},
-		{name: "BrowserEgressAttestation", method: http.MethodPost, path: phase0SessionPath("/browser-egress-attestation"), body: `{"confirmed":true,"verification_code":"owner-proof"}`, stage: "proxy-tested"},
-		{name: "GenerateOAuth", method: http.MethodPost, path: phase0SessionPath("/generate-auth-url"), stage: "attested"},
-		{name: "ExchangeOAuth", method: http.MethodPost, path: phase0SessionPath("/exchange-code-and-create"), body: `{"code":"owner-code"}`, stage: "oauth-url"},
-		{name: "ExchangeSetupToken", method: http.MethodPost, path: phase0SessionPath("/setup-token-cookie-auth-and-create"), body: `{"session_key":"owner-session-key"}`, stage: "setup-token-ready"},
-		{name: "Acceptance", method: http.MethodPost, path: phase0SessionPath("/acceptance"), stage: "imported"},
-		{name: "RefreshOnly", method: http.MethodPost, path: phase0SessionPath("/refresh-only"), stage: "imported"},
-		{name: "RuntimeRegistration", method: http.MethodPost, path: phase0SessionPath("/runtime-register"), stage: "refreshed"},
-		{name: "SessionHealthcheck", method: http.MethodPost, path: phase0SessionPath("/healthcheck"), stage: "imported"},
-		{name: "AccountHealthcheck", method: http.MethodPost, path: func(f *phase0AuthorizationFixture) string {
-			return "/api/v1/admin/claude-onboarding/accounts/" + strconv.FormatInt(f.accountID, 10) + "/healthcheck"
-		}, stage: "imported"},
-		{name: "StartWarming", method: http.MethodPost, path: phase0SessionPath("/start-warming"), stage: "accepted"},
-		{name: "Abort", method: http.MethodPost, path: phase0SessionPath("/abort"), stage: "created"},
-		{name: "Activation", method: http.MethodPost, path: phase0SessionPath("/activate"), stage: "accepted"},
-		{name: "Promotion", method: http.MethodPost, path: phase0SessionPath("/promote-production"), stage: "warming"},
-	}
-
-	for _, operation := range operations {
+	for _, operation := range formalPoolAdminOperationCases {
 		operation := operation
-		t.Run(operation.name, func(t *testing.T) {
-			t.Run("owner positive", func(t *testing.T) {
+		for _, authorityCase := range formalPoolAuthorityCases {
+			authorityCase := authorityCase
+			t.Run(operation.name+"/"+authorityCase.name, func(t *testing.T) {
 				fixture := newPhase0AuthorizationFixture(t, operation.stage)
-				rec := fixture.request(phase0Owner, operation.method, operation.path(fixture), operation.body, `"`+strconv.FormatInt(fixture.version, 10)+`"`)
-				require.Equal(t, http.StatusOK, rec.Code, "owner fixture must reach and complete the operation; body=%s", rec.Body.String())
+				fixture.resolver.err = authorityCase.resolverErr
+				fixture.revalidator.err = authorityCase.revalidatorErr
+				version := fixture.version
+				wantStatus := authorityCase.wantStatus
+				if operation.method == http.MethodGet && authorityCase.staleVersion {
+					wantStatus = http.StatusOK
+				} else if authorityCase.staleVersion {
+					version = 0
+				}
+				body := operation.body
+				if operation.name == "BrowserEgressAttestation" {
+					body = `{"confirmed":true,"verification_code":` + strconv.Quote(fixture.browserProof) + `}`
+				}
+				rec := fixture.request(authorityCase.principal(), operation.method, operation.path(fixture), body, `"`+strconv.FormatInt(version, 10)+`"`)
+				require.Equal(t, wantStatus, rec.Code, rec.Body.String())
 			})
-
-			t.Run("different authenticated principal only", func(t *testing.T) {
-				fixture := newPhase0AuthorizationFixture(t, operation.stage)
-				other := phase0Owner
-				other.subjectID++
-				rec := fixture.request(other, operation.method, operation.path(fixture), operation.body, `"`+strconv.FormatInt(fixture.version, 10)+`"`)
-				requireAuthorizationDenial(t, rec, http.StatusForbidden)
-			})
-		})
+		}
 	}
 }
 
@@ -100,22 +144,18 @@ func TestFormalPoolOnboardingAuthorizationDimensionsAreIndependent(t *testing.T)
 		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	})
 
-	creationCases := []struct {
-		name       string
-		principal  func() phase0OnboardingPrincipal
-		groupID    int64
-		wantStatus int
-	}{
-		{name: "missing authenticated principal only", principal: func() phase0OnboardingPrincipal { p := phase0Owner; p.authenticated = false; return p }, groupID: phase0Owner.groupID, wantStatus: http.StatusUnauthorized},
-		{name: "non-administrator role only", principal: func() phase0OnboardingPrincipal { p := phase0Owner; p.role = service.RoleUser; return p }, groupID: phase0Owner.groupID, wantStatus: http.StatusForbidden},
-		{name: "different group only", principal: func() phase0OnboardingPrincipal { return phase0Owner }, groupID: phase0Owner.groupID + 1, wantStatus: http.StatusForbidden},
-	}
-	for _, tc := range creationCases {
+	for _, tc := range formalPoolAuthorityCases {
 		tc := tc
-		t.Run("session creation "+tc.name, func(t *testing.T) {
+		t.Run("CreateSession/"+tc.name, func(t *testing.T) {
 			fixture := newPhase0AuthorizationFixture(t, "none")
-			rec := fixture.request(tc.principal(), http.MethodPost, "/api/v1/admin/claude-onboarding/sessions", phase0CreateBody(tc.groupID), `"0"`)
-			requireAuthorizationDenial(t, rec, tc.wantStatus)
+			fixture.resolver.err = tc.resolverErr
+			fixture.revalidator.err = tc.revalidatorErr
+			wantStatus := tc.wantStatus
+			if tc.staleVersion {
+				wantStatus = http.StatusOK
+			}
+			rec := fixture.request(tc.principal(), http.MethodPost, "/api/v1/admin/claude-onboarding/sessions", phase0CreateBody(phase0Owner.groupID), `"0"`)
+			require.Equal(t, wantStatus, rec.Code, rec.Body.String())
 		})
 	}
 
@@ -127,7 +167,6 @@ func TestFormalPoolOnboardingAuthorizationDimensionsAreIndependent(t *testing.T)
 		{name: "missing authenticated principal only", mutate: func(p *phase0OnboardingPrincipal) { p.authenticated = false }, wantStatus: http.StatusUnauthorized},
 		{name: "different administrator only", mutate: func(p *phase0OnboardingPrincipal) { p.adminID++ }, wantStatus: http.StatusForbidden},
 		{name: "different tenant only", mutate: func(p *phase0OnboardingPrincipal) { p.tenantID = "tenant-two" }, wantStatus: http.StatusForbidden},
-		{name: "different group only", mutate: func(p *phase0OnboardingPrincipal) { p.groupID++ }, wantStatus: http.StatusForbidden},
 		{name: "different creator owner only", mutate: func(p *phase0OnboardingPrincipal) { p.creatorID++ }, wantStatus: http.StatusForbidden},
 		{name: "non-administrator role only", mutate: func(p *phase0OnboardingPrincipal) { p.role = service.RoleUser }, wantStatus: http.StatusForbidden},
 	}
@@ -159,9 +198,9 @@ func TestFormalPoolOnboardingPublicOriginAuthority(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	t.Run("configured public origin remains authoritative", func(t *testing.T) {
-		svc := service.NewFormalPoolOnboardingService(service.FormalPoolOnboardingDeps{
+		svc := service.NewFormalPoolOnboardingService(formalPoolOnboardingRoutesDeps(service.FormalPoolOnboardingDeps{
 			Proxy: &formalPoolOnboardingRoutesProxy{rawIP: "198.51.100.10"}, PublicURLPrefix: "https://public.example.test",
-		})
+		}))
 		router := newFormalPoolOnboardingRoutesRouter(adminhandler.NewFormalPoolOnboardingHandler(svc), func(c *gin.Context) { c.Next() })
 		rec := phase0CreateAndTestProxyWithOrigin(t, router, "hostile-host.example.invalid", "hostile-forwarded.example.invalid", "http")
 		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
@@ -170,38 +209,58 @@ func TestFormalPoolOnboardingPublicOriginAuthority(t *testing.T) {
 	})
 
 	for _, tc := range []struct {
-		name                                   string
-		hostA, forwardedHostA, forwardedProtoA string
-		hostB, forwardedHostB, forwardedProtoB string
+		name   string
+		mutate func(*http.Request)
 	}{
-		{name: "host is untrusted", hostA: "hostile-host-a.example.invalid", hostB: "hostile-host-b.example.invalid"},
-		{name: "forwarded host is untrusted", hostA: "service.internal", forwardedHostA: "hostile-forwarded-a.example.invalid", hostB: "service.internal", forwardedHostB: "hostile-forwarded-b.example.invalid"},
-		{name: "forwarded proto is untrusted", hostA: "service.internal", forwardedProtoA: "http", hostB: "service.internal", forwardedProtoB: "https"},
+		{name: "host is untrusted", mutate: func(req *http.Request) { req.Host = "hostile-host.example.invalid" }},
+		{name: "forwarded is untrusted", mutate: func(req *http.Request) {
+			req.Header.Set("Forwarded", `for=192.0.2.44;host=hostile-forwarded.example.invalid;proto=http`)
+		}},
+		{name: "forwarded host is untrusted", mutate: func(req *http.Request) { req.Header.Set("X-Forwarded-Host", "hostile-forwarded.example.invalid") }},
+		{name: "forwarded proto is untrusted", mutate: func(req *http.Request) { req.Header.Set("X-Forwarded-Proto", "http") }},
+		{name: "forwarded scheme is untrusted", mutate: func(req *http.Request) { req.Header.Set("X-Forwarded-Scheme", "http") }},
+		{name: "forwarded ssl is untrusted", mutate: func(req *http.Request) { req.Header.Set("X-Forwarded-Ssl", "on") }},
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			request := func(host, forwardedHost, forwardedProto string) *httptest.ResponseRecorder {
-				svc := service.NewFormalPoolOnboardingService(service.FormalPoolOnboardingDeps{Proxy: &formalPoolOnboardingRoutesProxy{rawIP: "198.51.100.10"}})
-				router := newFormalPoolOnboardingRoutesRouter(adminhandler.NewFormalPoolOnboardingHandler(svc), func(c *gin.Context) { c.Next() })
-				return phase0CreateAndTestProxyWithOrigin(t, router, host, forwardedHost, forwardedProto)
+			svc := service.NewFormalPoolOnboardingService(formalPoolOnboardingRoutesDeps(service.FormalPoolOnboardingDeps{Proxy: &formalPoolOnboardingRoutesProxy{rawIP: "198.51.100.10"}}))
+			router := newFormalPoolOnboardingRoutesRouter(adminhandler.NewFormalPoolOnboardingHandler(svc), func(c *gin.Context) { c.Next() })
+			testProxyRec := phase0CreateAndTestProxyWithOrigin(t, router, "service.internal", "", "")
+			sessionID := extractFormalPoolOnboardingSessionID(t, testProxyRec.Body.String())
+			baseline := phase0BrowserURL(t, phase0GetSessionWithRequestMutation(t, router, sessionID, nil))
+			mutated := phase0BrowserURL(t, phase0GetSessionWithRequestMutation(t, router, sessionID, tc.mutate))
+			require.Equal(t, baseline, mutated, "request-derived authority must not change a stored browser URL")
+			for _, browserURL := range []string{baseline, mutated} {
+				require.True(t, strings.HasPrefix(browserURL, "/api/v1/claude-onboarding/browser-egress-check/"),
+					"without configured origin the browser URL must remain relative across request mutations: %q", browserURL)
+				require.NotContains(t, browserURL, "://")
+				require.NotContains(t, browserURL, "hostile-")
 			}
-			authorityA, acceptedA := phase0BrowserURLAuthority(t, request(tc.hostA, tc.forwardedHostA, tc.forwardedProtoA))
-			authorityB, acceptedB := phase0BrowserURLAuthority(t, request(tc.hostB, tc.forwardedHostB, tc.forwardedProtoB))
-			if acceptedA || acceptedB {
-				return
-			}
-			require.Equal(t, authorityA, authorityB,
-				"without configured origin or trusted ingress, changing one request-derived origin dimension must not change the returned authority")
 		})
 	}
 }
 
+func phase0GetSessionWithRequestMutation(t *testing.T, router *gin.Engine, sessionID string, mutate func(*http.Request)) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/claude-onboarding/sessions/"+sessionID, nil)
+	req.Host = "service.internal"
+	if mutate != nil {
+		mutate(req)
+	}
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
 type phase0AuthorizationFixture struct {
-	router    *gin.Engine
-	svc       *service.FormalPoolOnboardingService
-	sessionID string
-	accountID int64
-	version   int64
+	router       *gin.Engine
+	svc          *service.FormalPoolOnboardingService
+	resolver     *phase0PrincipalResolver
+	revalidator  *phase0PrincipalRevalidator
+	sessionID    string
+	accountID    int64
+	version      int64
+	browserProof string
 }
 
 func newPhase0AuthorizationFixture(t *testing.T, stage string) *phase0AuthorizationFixture {
@@ -209,43 +268,55 @@ func newPhase0AuthorizationFixture(t *testing.T, stage string) *phase0Authorizat
 	accounts := &phase0AccountReader{}
 	oauth := &phase0OAuthFake{fullScope: true}
 	runtime := &phase0RuntimeFake{}
+	revalidator := &phase0PrincipalRevalidator{}
 	svc := service.NewFormalPoolOnboardingService(service.FormalPoolOnboardingDeps{
-		Proxy:            &phase0ProxyFake{},
-		OAuth:            oauth,
-		Refresh:          oauth,
-		Accounts:         accounts,
-		CCGateway:        phase0CCGatewayFake{},
-		CCGatewayRuntime: runtime,
-		Acceptance:       phase0AcceptanceFake{},
-		Healthcheck:      phase0HealthcheckFake{},
+		Proxy:                &phase0ProxyFake{},
+		OAuth:                oauth,
+		Refresh:              oauth,
+		Accounts:             accounts,
+		CCGateway:            phase0CCGatewayFake{},
+		CCGatewayRuntime:     runtime,
+		Acceptance:           phase0AcceptanceFake{},
+		Healthcheck:          phase0HealthcheckFake{},
+		Groups:               phase0GroupReader{},
+		PrincipalRevalidator: revalidator,
 	})
-	fixture := &phase0AuthorizationFixture{svc: svc}
-	fixture.router = newFormalPoolOnboardingRoutesRouter(adminhandler.NewFormalPoolOnboardingHandler(svc), phase0PrincipalMiddleware)
+	resolver := &phase0PrincipalResolver{principal: phase0Owner}
+	fixture := &phase0AuthorizationFixture{svc: svc, resolver: resolver, revalidator: revalidator}
+	fixture.router = newPhase0FormalPoolOnboardingRoutesRouter(adminhandler.NewFormalPoolOnboardingHandler(svc), resolver)
 	if stage == "none" {
 		return fixture
 	}
 
-	created, err := svc.StartSession(context.Background(), service.FormalPoolOnboardingStartRequest{
+	created, err := svc.StartSession(phase0AuthorityContext(phase0Owner, 0), service.FormalPoolOnboardingStartRequest{
 		ProxyMode: "existing", ProxyID: phase0Int64Ptr(7), GroupID: phase0Owner.groupID, AccountName: "owner-account",
 	})
 	require.NoError(t, err)
 	fixture.sessionID = created.ID
+	fixture.version = created.Version
 
 	advance := func(call func() (*service.FormalPoolOnboardingSession, error)) {
 		result, err := call()
 		require.NoError(t, err)
-		fixture.version++
+		fixture.version = result.Version
 		if result.AccountID > 0 {
 			fixture.accountID = result.AccountID
 		}
 	}
-	fixture.version = 1
 	if stage == "created" {
 		return fixture
 	}
+	var tested *service.FormalPoolOnboardingSession
 	advance(func() (*service.FormalPoolOnboardingSession, error) {
-		return svc.TestProxy(context.Background(), fixture.sessionID)
+		var testErr error
+		tested, testErr = svc.TestProxy(phase0AuthorityContext(phase0Owner, fixture.version), fixture.sessionID)
+		return tested, testErr
 	})
+	parts := strings.Split(strings.TrimRight(tested.BrowserEgressCheckURL, "/"), "/")
+	fixture.browserProof = parts[len(parts)-1]
+	observed, err := svc.VerifyBrowserEgressByNonce(context.Background(), fixture.browserProof, "198.51.100.10")
+	require.NoError(t, err)
+	fixture.version = observed.Version
 	if stage == "proxy-tested" || stage == "setup-token-ready" {
 		if stage == "setup-token-ready" {
 			oauth.fullScope = false
@@ -253,72 +324,110 @@ func newPhase0AuthorizationFixture(t *testing.T, stage string) *phase0Authorizat
 		return fixture
 	}
 	advance(func() (*service.FormalPoolOnboardingSession, error) {
-		return svc.AttestBrowserEgress(context.Background(), fixture.sessionID, service.FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: "owner-proof"})
+		return svc.AttestBrowserEgress(phase0AuthorityContext(phase0Owner, fixture.version), fixture.sessionID, service.FormalPoolBrowserEgressAttestationRequest{Confirmed: true, VerificationCode: fixture.browserProof})
 	})
 	if stage == "attested" {
 		return fixture
 	}
 	advance(func() (*service.FormalPoolOnboardingSession, error) {
-		return svc.GenerateAuthURL(context.Background(), fixture.sessionID)
+		return svc.GenerateAuthURL(phase0AuthorityContext(phase0Owner, fixture.version), fixture.sessionID)
 	})
 	if stage == "oauth-url" {
 		return fixture
 	}
 	advance(func() (*service.FormalPoolOnboardingSession, error) {
-		return svc.ExchangeCodeAndCreate(context.Background(), fixture.sessionID, service.FormalPoolExchangeCodeAndCreateRequest{Code: "owner-code"})
+		return svc.ExchangeCodeAndCreate(phase0AuthorityContext(phase0Owner, fixture.version), fixture.sessionID, service.FormalPoolExchangeCodeAndCreateRequest{Code: "owner-code"})
 	})
 	if stage == "imported" {
 		return fixture
 	}
 	advance(func() (*service.FormalPoolOnboardingSession, error) {
-		return svc.RefreshOnly(context.Background(), fixture.sessionID)
+		return svc.RefreshOnly(phase0AuthorityContext(phase0Owner, fixture.version), fixture.sessionID)
 	})
 	if stage == "refreshed" {
 		return fixture
 	}
 	advance(func() (*service.FormalPoolOnboardingSession, error) {
-		return svc.RegisterRuntime(context.Background(), fixture.sessionID)
+		return svc.RegisterRuntime(phase0AuthorityContext(phase0Owner, fixture.version), fixture.sessionID)
 	})
-	_, err = svc.RunAcceptance(context.Background(), fixture.sessionID)
+	accepted, err := svc.RunAcceptance(phase0AuthorityContext(phase0Owner, fixture.version), fixture.sessionID)
 	require.NoError(t, err)
-	fixture.version++
+	fixture.version = accepted.Version
 	if stage == "accepted" {
 		return fixture
 	}
 	advance(func() (*service.FormalPoolOnboardingSession, error) {
-		return svc.StartWarming(context.Background(), fixture.sessionID)
+		return svc.StartWarming(phase0AuthorityContext(phase0Owner, fixture.version), fixture.sessionID)
 	})
 	require.Equal(t, "warming", stage)
 	return fixture
 }
 
 func (f *phase0AuthorizationFixture) request(principal phase0OnboardingPrincipal, method, path, body, expectedVersion string) *httptest.ResponseRecorder {
+	f.resolver.principal = principal
 	req := httptest.NewRequest(method, path, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
-	if principal.authenticated {
-		req.Header.Set("X-Phase0-Subject", strconv.FormatInt(principal.subjectID, 10))
-	}
-	req.Header.Set("X-Phase0-Admin", strconv.FormatInt(principal.adminID, 10))
-	req.Header.Set("X-Phase0-Role", principal.role)
-	req.Header.Set("X-Phase0-Tenant", principal.tenantID)
-	req.Header.Set("X-Phase0-Group", strconv.FormatInt(principal.groupID, 10))
-	req.Header.Set("X-Phase0-Creator", strconv.FormatInt(principal.creatorID, 10))
 	req.Header.Set("If-Match", expectedVersion)
+	idempotencyKey := "phase0-stable-operation-key"
+	if strings.HasSuffix(path, "/promote-production") {
+		idempotencyKey = "phase0-promote-operation-key"
+	}
+	req.Header.Set("Idempotency-Key", idempotencyKey)
 	rec := httptest.NewRecorder()
 	f.router.ServeHTTP(rec, req)
 	return rec
 }
 
-func phase0PrincipalMiddleware(c *gin.Context) {
-	if id, err := strconv.ParseInt(c.GetHeader("X-Phase0-Subject"), 10, 64); err == nil && id > 0 {
-		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: id})
+type phase0PrincipalResolver struct {
+	principal phase0OnboardingPrincipal
+	err       error
+}
+
+func (r *phase0PrincipalResolver) Resolve(*gin.Context) (service.FormalPoolOnboardingPrincipal, error) {
+	if r != nil && r.err != nil {
+		return service.FormalPoolOnboardingPrincipal{}, r.err
 	}
-	c.Set(string(middleware.ContextKeyUserRole), c.GetHeader("X-Phase0-Role"))
-	c.Set("phase0_admin_id", c.GetHeader("X-Phase0-Admin"))
-	c.Set("phase0_tenant_id", c.GetHeader("X-Phase0-Tenant"))
-	c.Set("phase0_group_id", c.GetHeader("X-Phase0-Group"))
-	c.Set("phase0_creator_id", c.GetHeader("X-Phase0-Creator"))
-	c.Next()
+	if r == nil || !r.principal.authenticated {
+		return service.FormalPoolOnboardingPrincipal{}, service.ErrFormalPoolOnboardingAuthenticationRequired
+	}
+	if r.principal.role != service.RoleAdmin {
+		return service.FormalPoolOnboardingPrincipal{}, service.ErrFormalPoolOnboardingForbidden
+	}
+	return phase0ServicePrincipal(r.principal), nil
+}
+
+type phase0PrincipalRevalidator struct{ err error }
+
+func (r *phase0PrincipalRevalidator) Revalidate(context.Context, service.FormalPoolOnboardingPrincipal) error {
+	return r.err
+}
+
+type phase0GroupReader struct{}
+
+func (phase0GroupReader) GetByID(_ context.Context, id int64) (*service.Group, error) {
+	return &service.Group{ID: id, Status: service.StatusActive}, nil
+}
+
+func phase0ServicePrincipal(principal phase0OnboardingPrincipal) service.FormalPoolOnboardingPrincipal {
+	return service.FormalPoolOnboardingPrincipal{
+		SubjectID: principal.subjectID, AdministratorID: principal.adminID, TenantID: principal.tenantID,
+		CreatorID: principal.creatorID, Role: principal.role, CallerKind: service.CallerKindHumanJWT,
+		AuthorityRevision: 1, ExpiresAtUnix: time.Now().Add(time.Hour).Unix(), Active: true, SystemAdmin: principal.role == service.RoleAdmin,
+	}
+}
+
+func phase0AuthorityContext(principal phase0OnboardingPrincipal, version int64) context.Context {
+	return service.WithFormalPoolRequestAuthority(context.Background(), service.FormalPoolRequestAuthority{
+		Principal: phase0ServicePrincipal(principal), ExpectedVersion: &version, IdempotencyKey: "phase0-stable-operation-key",
+	})
+}
+
+func newPhase0FormalPoolOnboardingRoutesRouter(h *adminhandler.FormalPoolOnboardingHandler, resolver adminhandler.FormalPoolOnboardingPrincipalResolver) *gin.Engine {
+	router := gin.New()
+	v1 := router.Group("/api/v1")
+	handlers := &ihandler.Handlers{Admin: &ihandler.AdminHandlers{FormalPoolOnboarding: h}}
+	RegisterFormalPoolOnboardingAdminRoutes(v1, handlers, middleware.FormalPoolOnboardingJWTAuthMiddleware(func(c *gin.Context) { c.Next() }), resolver, nil)
+	return router
 }
 
 func phase0SessionPath(suffix string) func(*phase0AuthorizationFixture) string {
@@ -350,12 +459,15 @@ func phase0CreateAndTestProxyWithOrigin(t *testing.T, router *gin.Engine, host, 
 	t.Helper()
 	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/claude-onboarding/sessions", bytes.NewBufferString(phase0CreateBody(101)))
 	createReq.Header.Set("Content-Type", "application/json")
+	createReq.Header.Set("If-Match", `"0"`)
+	createReq.Header.Set("Idempotency-Key", "phase0-origin-create-key")
 	createRec := httptest.NewRecorder()
 	router.ServeHTTP(createRec, createReq)
 	require.Equal(t, http.StatusOK, createRec.Code, createRec.Body.String())
 	sessionID := extractFormalPoolOnboardingSessionID(t, createRec.Body.String())
 
 	testReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/claude-onboarding/sessions/"+sessionID+"/test-proxy", nil)
+	testReq.Header.Set("If-Match", `"2"`)
 	if host != "" {
 		testReq.Host = host
 	}
@@ -370,11 +482,10 @@ func phase0CreateAndTestProxyWithOrigin(t *testing.T, router *gin.Engine, host, 
 	return testRec
 }
 
-func phase0BrowserURLAuthority(t *testing.T, rec *httptest.ResponseRecorder) (authority string, accepted bool) {
+func phase0BrowserURL(t *testing.T, rec *httptest.ResponseRecorder) string {
 	t.Helper()
-	if rec.Code < http.StatusOK || rec.Code >= http.StatusMultipleChoices {
-		return "", true
-	}
+	require.GreaterOrEqual(t, rec.Code, http.StatusOK, rec.Body.String())
+	require.Less(t, rec.Code, http.StatusMultipleChoices, rec.Body.String())
 	var envelope struct {
 		Data struct {
 			BrowserURL string `json:"browser_egress_check_url"`
@@ -382,12 +493,7 @@ func phase0BrowserURLAuthority(t *testing.T, rec *httptest.ResponseRecorder) (au
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &envelope), rec.Body.String())
 	require.NotEmpty(t, envelope.Data.BrowserURL, "a successful response must expose the browser URL")
-	parsed, err := url.Parse(envelope.Data.BrowserURL)
-	require.NoError(t, err)
-	if !parsed.IsAbs() {
-		return "", true
-	}
-	return parsed.Scheme + "://" + parsed.Host, false
+	return envelope.Data.BrowserURL
 }
 
 type phase0ProxyFake struct{}

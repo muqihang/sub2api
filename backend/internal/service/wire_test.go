@@ -88,6 +88,35 @@ func TestFormalPoolConfigFromAppConfigParsesValidCIDRAllowlist(t *testing.T) {
 	}
 }
 
+func TestFormalPoolConfigFromAppConfigNormalizesPublicOrigin(t *testing.T) {
+	got, err := formalPoolConfigFromAppConfig(&config.Config{FormalPool: config.FormalPoolRuntimeConfig{
+		PublicOrigin: " https://public.example.test:8443/ ",
+	}})
+	if err != nil {
+		t.Fatalf("formalPoolConfigFromAppConfig() error = %v", err)
+	}
+	if got.PublicOrigin != "https://public.example.test:8443" {
+		t.Fatalf("PublicOrigin = %q, want normalized origin", got.PublicOrigin)
+	}
+}
+
+func TestFormalPoolConfigFromAppConfigInvalidPublicOriginFailsClosedAndSanitizesError(t *testing.T) {
+	rawInvalid := "http://public.example.test/sensitive-origin"
+	_, err := formalPoolConfigFromAppConfig(&config.Config{FormalPool: config.FormalPoolRuntimeConfig{
+		PublicOrigin: rawInvalid,
+	}})
+	if err == nil {
+		t.Fatal("formalPoolConfigFromAppConfig() error = nil, want invalid public origin error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "invalid formal_pool public_origin") {
+		t.Fatalf("error %q missing sanitized reason", msg)
+	}
+	if strings.Contains(msg, rawInvalid) || strings.Contains(msg, "sensitive-origin") {
+		t.Fatalf("error leaked raw public origin: %q", msg)
+	}
+}
+
 func TestFormalPoolConfigFromAppConfigInvalidCIDRFailsClosedAndSanitizesError(t *testing.T) {
 	rawInvalid := "203.0.113.7/not-a-prefix"
 	_, err := formalPoolConfigFromAppConfig(&config.Config{FormalPool: config.FormalPoolRuntimeConfig{

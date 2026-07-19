@@ -80,21 +80,24 @@ func ProvideFormalPoolEgressRateLimiter(formalPoolCfg FormalPoolConfig) FormalPo
 	return NewFormalPoolEgressRateLimiter(formalPoolCfg, time.Now)
 }
 
-func ProvideFormalPoolOnboardingService(adminService AdminService, oauthService *OAuthService, cfg *config.Config, formalPoolCfg FormalPoolConfig, riskWriter FormalPoolRiskEventWriter, accountRepo AccountRepository, httpUpstream HTTPUpstream, cacheInvalidator TokenCacheInvalidator, schedulerCache SchedulerCache) *FormalPoolOnboardingService {
+func ProvideFormalPoolOnboardingService(adminService AdminService, oauthService *OAuthService, cfg *config.Config, formalPoolCfg FormalPoolConfig, riskWriter FormalPoolRiskEventWriter, accountRepo AccountRepository, groupRepo GroupRepository, httpUpstream HTTPUpstream, cacheInvalidator TokenCacheInvalidator, schedulerCache SchedulerCache, principalRevalidator FormalPoolOnboardingPrincipalRevalidator) *FormalPoolOnboardingService {
 	oauthFacade := NewFormalPoolClaudeOAuthFacade(oauthService)
 	quarantine := NewAccountQuarantineService(accountRepo, newDefaultSessionBudgetObserveSink())
 	return NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{
-		Config:           formalPoolCfg,
-		OAuth:            oauthFacade,
-		Refresh:          oauthFacade,
-		Proxy:            NewFormalPoolAdminProxyVerifier(adminService),
-		Accounts:         NewFormalPoolAdminAccountManager(adminService),
-		CCGateway:        NewFormalPoolStaticCCGatewayReadinessVerifier(),
-		CCGatewayRuntime: NewFormalPoolHTTPCCGatewayRuntimeRegistrar(cfg),
-		Healthcheck:      NewFormalPoolGatewayHealthcheckRunner(accountRepo, httpUpstream, cfg, quarantine),
-		Risk:             riskWriter,
-		CacheInvalidator: cacheInvalidator,
-		SchedulerCache:   schedulerCache,
+		Config:               formalPoolCfg,
+		OAuth:                oauthFacade,
+		Refresh:              oauthFacade,
+		Proxy:                NewFormalPoolAdminProxyVerifier(adminService),
+		Accounts:             NewFormalPoolAdminAccountManager(adminService),
+		CCGateway:            NewFormalPoolStaticCCGatewayReadinessVerifier(),
+		CCGatewayRuntime:     NewFormalPoolHTTPCCGatewayRuntimeRegistrar(cfg),
+		Healthcheck:          NewFormalPoolGatewayHealthcheckRunner(accountRepo, httpUpstream, cfg, quarantine),
+		Risk:                 riskWriter,
+		CacheInvalidator:     cacheInvalidator,
+		SchedulerCache:       schedulerCache,
+		Groups:               groupRepo,
+		PrincipalRevalidator: principalRevalidator,
+		PublicURLPrefix:      formalPoolCfg.PublicOrigin,
 	})
 }
 
@@ -104,6 +107,11 @@ func formalPoolConfigFromAppConfig(cfg *config.Config) (FormalPoolConfig, error)
 		return formalPoolCfg, nil
 	}
 	runtimeCfg := cfg.FormalPool
+	publicOrigin, err := NormalizeFormalPoolPublicOrigin(runtimeCfg.PublicOrigin)
+	if err != nil {
+		return FormalPoolConfig{}, fmt.Errorf("invalid formal_pool public_origin")
+	}
+	formalPoolCfg.PublicOrigin = publicOrigin
 	if runtimeCfg.NonceTTL > 0 {
 		formalPoolCfg.NonceTTL = runtimeCfg.NonceTTL
 	}
@@ -343,6 +351,73 @@ func ProvideOpenAIGatewayService(
 		openAITokenProvider,
 		deps...,
 	)
+}
+
+func ProvideOpenAIGatewayServiceForWire(
+	accountRepo AccountRepository,
+	usageLogRepo UsageLogRepository,
+	usageBillingRepo UsageBillingRepository,
+	userRepo UserRepository,
+	userSubRepo UserSubscriptionRepository,
+	userGroupRateRepo UserGroupRateRepository,
+	cache GatewayCache,
+	cfg *config.Config,
+	schedulerSnapshot *SchedulerSnapshotService,
+	concurrencyService *ConcurrencyService,
+	billingService *BillingService,
+	rateLimitService *RateLimitService,
+	billingCacheService *BillingCacheService,
+	httpUpstream HTTPUpstream,
+	deferredService *DeferredService,
+	openAITokenProvider *OpenAITokenProvider,
+	grokTokenProvider *GrokTokenProvider,
+	gatewayCoreService *OpenAIGatewayCoreService,
+	resolver *ModelPricingResolver,
+	channelService *ChannelService,
+	balanceNotifyService *BalanceNotifyService,
+	settingService *SettingService,
+	entityRegistryRepo EntityRegistryRepository,
+	entityRateLimitService *EntityRateLimitService,
+	userPlatformQuotaRepo UserPlatformQuotaRepository,
+) *OpenAIGatewayService {
+	return NewOpenAIGatewayService(
+		accountRepo,
+		usageLogRepo,
+		usageBillingRepo,
+		userRepo,
+		userSubRepo,
+		userGroupRateRepo,
+		cache,
+		cfg,
+		schedulerSnapshot,
+		concurrencyService,
+		billingService,
+		rateLimitService,
+		billingCacheService,
+		httpUpstream,
+		deferredService,
+		openAITokenProvider,
+		grokTokenProvider,
+		gatewayCoreService,
+		resolver,
+		channelService,
+		balanceNotifyService,
+		settingService,
+		entityRegistryRepo,
+		entityRateLimitService,
+		userPlatformQuotaRepo,
+	)
+}
+
+func ProvideCodexEntryCenterService(
+	repo CodexAgentRepository,
+	apiKeyReader codexManagedAPIKeyReader,
+	apiKeyCreator codexAPIKeyCreator,
+	cfg *CodexEntryCenterConfig,
+	modelRegistry *CodexGatewayModelRegistry,
+	pricingResolver *ModelPricingResolver,
+) *CodexEntryCenterServiceImpl {
+	return NewCodexEntryCenterService(repo, apiKeyReader, apiKeyCreator, cfg, modelRegistry, pricingResolver)
 }
 
 // ProvideClaudeTokenProvider creates ClaudeTokenProvider with OAuthRefreshAPI injection
@@ -1049,7 +1124,7 @@ var ProviderSet = wire.NewSet(
 	ProvideCodexGatewayService,
 	ProvideCodexGatewayAdminServiceWithVariantChecker,
 	ProvideCodexEntryCenterConfig,
-	NewCodexEntryCenterService,
+	ProvideCodexEntryCenterService,
 	wire.Bind(new(CodexEntryCenterService), new(*CodexEntryCenterServiceImpl)),
 	NewAugmentGatewayReasoningTurnStore,
 	NewAugmentGatewayProviderExecutor,
@@ -1074,7 +1149,7 @@ var ProviderSet = wire.NewSet(
 	NewGatewayService,
 	ProvideOpenAIGatewayCoreService,
 	NewEntityRateLimitService,
-	ProvideOpenAIGatewayService,
+	ProvideOpenAIGatewayServiceForWire,
 	ProvideBatchImageModelPricingResolver,
 	NewBatchImagePublicService,
 	NewBatchImageDownloadService,
@@ -1106,6 +1181,7 @@ var ProviderSet = wire.NewSet(
 	ProvideOpenAITokenProvider,
 	ProvideOpenAIQuotaService,
 	ProvideGrokQuotaService,
+	NewGrokQuotaFetcher,
 	ProvideOpenAISecretProtector,
 	ProvideClaudeTokenProvider,
 	NewAntigravityGatewayService,
