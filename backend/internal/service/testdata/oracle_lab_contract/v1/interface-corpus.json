@@ -1,0 +1,23 @@
+{
+  "schema_id": "oracle.compatibility",
+  "schema_major": 1,
+  "schema_revision": 0,
+  "cases": [
+    { "id": "readiness-compatible", "kind": "readiness", "expected_code": "interface_allow" },
+    { "id": "readiness-live-not-ready", "kind": "readiness", "expected_code": "interface_not_ready" },
+    { "id": "readiness-contract-mismatch", "kind": "readiness", "expected_code": "interface_contract_mismatch" },
+    { "id": "readiness-revision-unsupported", "kind": "readiness", "expected_code": "interface_schema_unsupported" },
+    { "id": "lifecycle-register", "kind": "lifecycle", "expected_code": "interface_allow" },
+    { "id": "lifecycle-stale-cas", "kind": "lifecycle", "expected_code": "interface_stale_state" },
+    { "id": "lifecycle-generation-regression", "kind": "lifecycle", "expected_code": "interface_generation_regression" },
+    { "id": "lineage-valid-child", "kind": "lineage", "expected_code": "interface_allow" },
+    { "id": "lineage-root-mismatch", "kind": "lineage", "expected_code": "interface_lineage_mismatch" },
+    { "id": "migration-sequence-stale", "kind": "lineage", "expected_code": "interface_migration_stale" },
+    { "id": "outcome-partial-tool-side-effect", "kind": "outcome", "expected_code": "interface_terminal_no_retry" },
+    { "id": "outcome-rate-limit-sub2api-retry", "kind": "outcome", "expected_code": "interface_sub2api_retry" },
+    { "id": "replay-reserve", "kind": "replay", "expected_code": "replay_reserved" },
+    { "id": "replay-commit", "kind": "replay", "expected_code": "replay_committed" },
+    { "id": "replay-reuse", "kind": "replay", "expected_code": "replay_rejected" },
+    { "id": "replay-stale-replica", "kind": "replay", "expected_code": "replay_replica_conflict" }
+  ]
+}

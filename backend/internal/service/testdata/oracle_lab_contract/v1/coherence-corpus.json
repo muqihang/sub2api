@@ -1,0 +1,69 @@
+{
+  "schema_id": "oracle.compatibility",
+  "schema_major": 1,
+  "schema_revision": 0,
+  "target_roles": {
+    "reference": "2.1.207",
+    "active": "2.1.215",
+    "active_artifact_sha256": "1a5cf8e491689154264c0b2f28371bf645cdee2903b45c497915868308502d7b",
+    "behavior_authority_claimed": false
+  },
+  "base_certificate": {
+    "schema_id": "oracle.compatibility",
+    "schema_major": 1,
+    "schema_revision": 0,
+    "kind": "behavior_coherence_certificate",
+    "certificate_id": "certificate:fixture:active-215",
+    "package_name": "@anthropic-ai/claude-code",
+    "package_version": "2.1.215",
+    "package_artifact_sha256": "1a5cf8e491689154264c0b2f28371bf645cdee2903b45c497915868308502d7b",
+    "build_identity_ref": "build:fixture:active-215",
+    "platform": "darwin",
+    "architecture": "arm64",
+    "entrypoint": "cli",
+    "auth_mode": "local-fixture",
+    "environment_profile_ref": "environment:local-fixture",
+    "persona_ref": "persona:fixture",
+    "request_ast_profile_ref": "request:fixture",
+    "response_profile_ref": "response:fixture",
+    "cch_policy_ref": "cch:fixture",
+    "tls_http_profile_ref": "tls-http:fixture",
+    "proxy_generation": 1,
+    "credential_generation": 1,
+    "retry_policy_ref": "retry:fixture",
+    "state_sequence_ref": "state:fixture",
+    "failure_semantics_ref": "failure:fixture",
+    "model_capability_set_ref": "models:fixture",
+    "contract_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+    "manifest_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+    "profile_generation": 1,
+    "sidecar_protocol_generation": 1,
+    "replay_ledger_generation": 1,
+    "gates": {
+      "wire": { "status": "pass", "evidence_ref": "evidence:synthetic:wire", "authority_signal_id": "signal:local-fixture" },
+      "semantic": { "status": "pass", "evidence_ref": "evidence:synthetic:semantic", "authority_signal_id": "signal:local-fixture" },
+      "state_sequence": { "status": "pass", "evidence_ref": "evidence:synthetic:state", "authority_signal_id": "signal:local-fixture" },
+      "failure_semantics": { "status": "pass", "evidence_ref": "evidence:synthetic:failure", "authority_signal_id": "signal:local-fixture" }
+    },
+    "dependency_digests": ["3333333333333333333333333333333333333333333333333333333333333333"]
+  },
+  "negative_capabilities": {
+    "models": ["model:unsupported"],
+    "beta_tokens": ["beta:unsupported"],
+    "transports": ["transport:direct"],
+    "entrypoints": ["entrypoint:unknown"],
+    "fallbacks": ["fallback:direct"],
+    "feature_combinations": ["combination:unsupported"],
+    "authority_states": ["unverified"]
+  },
+  "cases": [
+    { "id": "coherence-valid", "mutation": null, "expected_code": "admission_allow" },
+    { "id": "coherence-absent-field", "mutation": { "remove": "persona_ref" }, "expected_code": "admission_schema_invalid" },
+    { "id": "coherence-unknown-field", "mutation": { "add": "unknown_field" }, "expected_code": "admission_schema_invalid" },
+    { "id": "coherence-wire-unobserved", "mutation": { "set": "gates.wire.status", "value": "unobserved" }, "expected_code": "admission_gate_unobserved" },
+    { "id": "coherence-semantic-fail", "mutation": { "set": "gates.semantic.status", "value": "fail" }, "expected_code": "admission_gate_failed" },
+    { "id": "coherence-state-unsupported", "mutation": { "set": "gates.state_sequence.status", "value": "unsupported" }, "expected_code": "admission_gate_unsupported" },
+    { "id": "coherence-cross-tuple", "mutation": { "set": "proxy_generation", "value": 2 }, "expected_code": "admission_tuple_mismatch" },
+    { "id": "coherence-negative-transport", "mutation": { "set": "tls_http_profile_ref", "value": "transport:direct" }, "expected_code": "admission_negative_capability" }
+  ]
+}

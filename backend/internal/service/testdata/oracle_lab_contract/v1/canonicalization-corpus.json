@@ -1,0 +1,113 @@
+{
+  "schema_id": "oracle.compatibility",
+  "schema_major": 1,
+  "schema_revision": 0,
+  "json_cases": [
+    {
+      "id": "json-object-order-unicode",
+      "input_json": "{\"unicode\":\"\\u20ac\",\"b\":2,\"a\":1}",
+      "valid": true,
+      "expected_canonical_hex": "7b2261223a312c2262223a322c22756e69636f6465223a22e282ac227d",
+      "expected_sha256": "741498b6db89312e120a524545c10ab29366ca061619d8351ab0ef8d80889111"
+    },
+    {
+      "id": "json-empty-null-array",
+      "input_json": "{\"z\":[],\"n\":null,\"e\":\"\"}",
+      "valid": true
+    },
+    {
+      "id": "json-duplicate-root",
+      "input_json": "{\"a\":1,\"a\":2}",
+      "valid": false,
+      "expected_code": "json_duplicate_key"
+    },
+    {
+      "id": "json-duplicate-nested",
+      "input_json": "{\"outer\":{\"a\":1,\"a\":2}}",
+      "valid": false,
+      "expected_code": "json_duplicate_key"
+    },
+    {
+      "id": "json-negative-zero",
+      "input_json": "{\"n\":-0}",
+      "valid": false,
+      "expected_code": "json_negative_zero"
+    },
+    {
+      "id": "json-unsafe-integer",
+      "input_json": "{\"n\":9007199254740992}",
+      "valid": false,
+      "expected_code": "json_number_unsafe"
+    },
+    {
+      "id": "json-lone-surrogate",
+      "input_json": "{\"s\":\"\\ud800\"}",
+      "valid": false,
+      "expected_code": "json_lone_surrogate"
+    },
+    {
+      "id": "json-trailing-data",
+      "input_json": "{\"a\":1} true",
+      "valid": false,
+      "expected_code": "json_trailing_data"
+    },
+    {
+      "id": "json-invalid-utf8",
+      "input_hex": "7b2273223a22ff227d",
+      "valid": false,
+      "expected_code": "json_invalid_utf8"
+    }
+  ],
+  "cbor_cases": [
+    {
+      "id": "cbor-object-order",
+      "value": { "b": 2, "a": 1 },
+      "valid": true,
+      "expected_hex": "a2616101616202"
+    },
+    {
+      "id": "cbor-duplicate-map-key",
+      "input_hex": "a2616101616102",
+      "valid": false,
+      "expected_code": "cbor_duplicate_key"
+    },
+    {
+      "id": "cbor-indefinite-map",
+      "input_hex": "bf616101ff",
+      "valid": false,
+      "expected_code": "cbor_indefinite_length"
+    },
+    {
+      "id": "cbor-float",
+      "input_hex": "f93c00",
+      "valid": false,
+      "expected_code": "cbor_float_forbidden"
+    },
+    {
+      "id": "cbor-trailing-item",
+      "input_hex": "a1616101f6",
+      "valid": false,
+      "expected_code": "cbor_trailing_data"
+    }
+  ],
+  "normalization_cases": [
+    {
+      "id": "query-duplicates-order-empty-unicode",
+      "path": "/v1/messages",
+      "query_pairs": [["z", ""], ["a", "2"], ["a", "1"], ["u", "\\u20ac"]],
+      "expected_path_query": "/v1/messages?a=2&a=1&u=%5Cu20ac&z="
+    },
+    {
+      "id": "ipv6-authority",
+      "host": "2001:db8::1",
+      "port": 443,
+      "expected_authority": "[2001:db8::1]:443"
+    },
+    {
+      "id": "repeated-headers-compression",
+      "headers": [["content-encoding", "gzip"], ["x-test", "a"], ["x-test", "b"]],
+      "content_encoding": "gzip",
+      "body_representation": "compressed_wire_bytes"
+    }
+  ]
+}

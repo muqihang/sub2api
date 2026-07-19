@@ -1,0 +1,34 @@
+{
+  "schema_id": "oracle.compatibility",
+  "schema_major": 1,
+  "schema_revision": 0,
+  "domain_separator": "oracle-manifest-v1\\u0000",
+  "limits": {
+    "maximum_clock_rollback_ms": 300000,
+    "maximum_keys": 64,
+    "maximum_lineage_depth": 64,
+    "maximum_manifest_bytes": 1048576,
+    "maximum_signatures": 64
+  },
+  "cases": [
+    { "id": "authority-valid-threshold", "expected_code": "authority_allow" },
+    { "id": "authority-insufficient-threshold", "expected_code": "authority_threshold_insufficient" },
+    { "id": "authority-duplicate-signer", "expected_code": "authority_duplicate_signer" },
+    { "id": "authority-wrong-role", "expected_code": "authority_wrong_role" },
+    { "id": "authority-expired", "expected_code": "authority_expired" },
+    { "id": "authority-parent-mismatch", "expected_code": "authority_parent_mismatch" },
+    { "id": "authority-policy-rollback", "expected_code": "authority_policy_rollback" },
+    { "id": "authority-revoked-key", "expected_code": "authority_key_revoked" },
+    { "id": "authority-root-rotation-dual-threshold", "expected_code": "authority_allow" },
+    { "id": "authority-root-rotation-old-only", "expected_code": "authority_rotation_threshold" },
+    { "id": "authority-stale-checkpoint", "expected_code": "authority_checkpoint_stale" },
+    { "id": "authority-freeze", "expected_code": "authority_freeze" },
+    { "id": "authority-mix-and-match", "expected_code": "authority_mix_and_match" },
+    { "id": "authority-split-view", "expected_code": "authority_split_view" },
+    { "id": "authority-witness-mismatch", "expected_code": "authority_witness_mismatch" },
+    { "id": "authority-clock-rollback", "expected_code": "authority_clock_rollback" },
+    { "id": "authority-dependency-invalidated", "expected_code": "authority_dependency_invalidated" },
+    { "id": "authority-restart-snapshot", "expected_code": "authority_allow" },
+    { "id": "authority-replica-generation-conflict", "expected_code": "authority_replica_conflict" }
+  ]
+}
