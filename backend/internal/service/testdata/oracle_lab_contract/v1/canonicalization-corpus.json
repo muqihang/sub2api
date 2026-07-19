@@ -94,8 +94,8 @@
     {
       "id": "query-duplicates-order-empty-unicode",
       "path": "/v1/messages",
-      "query_pairs": [["z", ""], ["a", "2"], ["a", "1"], ["u", "\\u20ac"]],
-      "expected_path_query": "/v1/messages?a=2&a=1&u=%5Cu20ac&z="
+      "query_pairs": [["z", ""], ["a", "2"], ["a", "1"], ["u", "\u20ac"]],
+      "expected_path_query": "/v1/messages?a=2&a=1&u=%E2%82%AC&z="
     },
     {
       "id": "ipv6-authority",
