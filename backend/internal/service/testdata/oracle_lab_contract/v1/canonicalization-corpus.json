@@ -90,6 +90,40 @@
       "expected_code": "cbor_trailing_data"
     }
   ],
+  "sidecar_unsigned_envelope": {
+    "schema_id": "oracle.sidecar.capability",
+    "schema_major": 1,
+    "schema_revision": 0,
+    "key_epoch": 11,
+    "capability_id": "capability:fixture:1",
+    "attempt_id": "attempt:fixture:1",
+    "nonce": "nonce:fixture:1",
+    "issued_at_ms": 1800000000000,
+    "deadline_ms": 1800000060000,
+    "method": "POST",
+    "authority": "[2001:db8::1]:443",
+    "normalized_path_query": "/v1/messages?a=2&a=1",
+    "ordered_headers_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "body_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "content_length": 17,
+    "content_encoding": "gzip",
+    "profile_generation": 3,
+    "proxy_generation": 7,
+    "credential_generation": 5,
+    "transport_cell_generation": 9,
+    "contract_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "manifest_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "destination_policy_generation": 4,
+    "destination_class": "approved_proxy",
+    "allowed_destinations": [
+      { "host": "2001:db8::1", "port": 443 },
+      { "host": "198.51.100.40", "port": 8080 }
+    ],
+    "response_policy_ref": "response-policy:fixture:1",
+    "retry_owner": "cc_gateway",
+    "key_id": "sidecar-key-11",
+    "key_role": "sidecar_capability"
+  },
   "normalization_cases": [
     {
       "id": "query-duplicates-order-empty-unicode",
