@@ -26,6 +26,8 @@
     "authority_policy_rollback",
     "authority_replica_conflict",
     "authority_rotation_threshold",
+    "authority_revocation_invalid",
+    "authority_revocation_stale",
     "authority_split_view",
     "authority_threshold_insufficient",
     "authority_witness_mismatch",

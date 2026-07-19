@@ -10,6 +10,12 @@
     "maximum_manifest_bytes": 1048576,
     "maximum_signatures": 64
   },
+  "expected_next_state_digests": {
+    "authority-valid-threshold": "dc2ef195b450203d778ef864f414b43c1f8c542898f96f6b828ac5f091c4e514",
+    "authority-root-rotation-dual-threshold": "93af83a0997196a0b1fc1712ddbe3d538333fdb215af93350194aae6bdc5b2cf",
+    "authority-emergency-revocation": "f6704efff8ec432c4f352604ea8b924f1fba47c9d2699452432364b0073b11f6",
+    "authority-restart-snapshot": "dc2ef195b450203d778ef864f414b43c1f8c542898f96f6b828ac5f091c4e514"
+  },
   "cases": [
     { "id": "authority-valid-threshold", "expected_code": "authority_allow" },
     { "id": "authority-insufficient-threshold", "expected_code": "authority_threshold_insufficient" },
@@ -21,6 +27,8 @@
     { "id": "authority-revoked-key", "expected_code": "authority_key_revoked" },
     { "id": "authority-root-rotation-dual-threshold", "expected_code": "authority_allow" },
     { "id": "authority-root-rotation-old-only", "expected_code": "authority_rotation_threshold" },
+    { "id": "authority-root-rotation-new-only", "expected_code": "authority_rotation_threshold" },
+    { "id": "authority-emergency-revocation", "expected_code": "authority_allow" },
     { "id": "authority-stale-checkpoint", "expected_code": "authority_checkpoint_stale" },
     { "id": "authority-freeze", "expected_code": "authority_freeze" },
     { "id": "authority-mix-and-match", "expected_code": "authority_mix_and_match" },
