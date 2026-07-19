@@ -70,6 +70,9 @@ run_mode: "standard"
 # browser-egress URLs. Production origins must use HTTPS; HTTP is accepted only
 # for localhost and loopback IP addresses.
 formal_pool:
+  # Required for admin onboarding. Use one stable deployment-owned tenant ID;
+  # request headers and payloads cannot override this authority boundary.
+  authority_tenant_id: ""
   public_origin: ""
 
 # =============================================================================
