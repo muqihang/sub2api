@@ -44,8 +44,6 @@ func TestFormalPoolOnboardingPrincipalProvidersReturnNarrowInterfaces(t *testing
 	revalidator := ProvideFormalPoolOnboardingPrincipalRevalidator(nil, cfg)
 	require.NotNil(t, resolver)
 	require.NotNil(t, revalidator)
-	var _ adminhandler.FormalPoolOnboardingPrincipalResolver = resolver
-	var _ service.FormalPoolOnboardingPrincipalRevalidator = revalidator
 
 	constructedResolver := adminhandler.NewFormalPoolOnboardingPrincipalResolver(nil, cfg.FormalPool.AuthorityTenantID, time.Now)
 	constructedRevalidator := adminhandler.NewFormalPoolOnboardingPrincipalRevalidator(nil, cfg.FormalPool.AuthorityTenantID, time.Now)

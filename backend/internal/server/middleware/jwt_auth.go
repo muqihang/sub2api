@@ -89,7 +89,7 @@ func jwtAuthWithFailure(authService *service.AuthService, userService jwtUserRea
 		}
 		expiresAtUnix := int64(0)
 		if claims.ExpiresAt != nil {
-			expiresAtUnix = claims.ExpiresAt.Time.Unix()
+			expiresAtUnix = claims.ExpiresAt.Unix()
 		}
 
 		c.Set(string(ContextKeyUser), AuthSubject{

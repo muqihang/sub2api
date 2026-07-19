@@ -234,18 +234,6 @@ func (s *FormalPoolOnboardingService) reserveAuthorizedMutationWithIdempotency(s
 	return updated, reservation, nil
 }
 
-func (s *FormalPoolOnboardingService) beginIdempotentReservedMutation(ctx context.Context, id, operationKind, requestFingerprint string, allowedStates ...string) (*formalPoolOnboardingSessionRecord, *FormalPoolOperationReservation, bool, error) {
-	rec, keySafeRef, replay, err := s.prepareIdempotentMutation(ctx, id, operationKind, requestFingerprint, allowedStates...)
-	if err != nil || replay {
-		return rec, nil, replay, err
-	}
-	reserved, reservation, err := s.reserveAuthorizedMutationWithIdempotency(rec, operationKind, keySafeRef, requestFingerprint)
-	if err != nil {
-		return nil, nil, false, err
-	}
-	return reserved, reservation, false, nil
-}
-
 func (s *FormalPoolOnboardingService) prepareIdempotentMutation(ctx context.Context, id, operationKind, requestFingerprint string, allowedStates ...string) (*formalPoolOnboardingSessionRecord, string, bool, error) {
 	authority, err := s.authorityFromContext(ctx)
 	if err != nil {

@@ -17,10 +17,17 @@ export interface UseEgressCheckPollingOptions {
 
 const CANONICAL_BROWSER_EGRESS_PATH = /^\/api\/v1\/claude-onboarding\/browser-egress-check\/(nonce_[0-9a-f]{32})$/
 const ABSOLUTE_BROWSER_EGRESS_URL = /^https?:\/\//
-const RAW_URL_AMBIGUITY = /[%\\\u0000-\u001f\u007f]/
+
+function hasRawURLAmbiguity(raw: string): boolean {
+  for (const character of raw) {
+    const code = character.charCodeAt(0)
+    if (character === '%' || character === '\\' || code <= 0x1f || code === 0x7f) return true
+  }
+  return false
+}
 
 export function serverProofFromBrowserURL(raw: string | undefined): string {
-  if (!raw || raw !== raw.trim() || RAW_URL_AMBIGUITY.test(raw)) return ''
+  if (!raw || raw !== raw.trim() || hasRawURLAmbiguity(raw)) return ''
   try {
     const base = globalThis.location?.origin || 'http://localhost'
     const absolute = ABSOLUTE_BROWSER_EGRESS_URL.test(raw)
