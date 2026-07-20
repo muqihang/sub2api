@@ -107,6 +107,12 @@ func TestOracleContractAdmission(t *testing.T) {
 				t.Fatal(err)
 			}
 			context.NegativeCapabilities = corpus.NegativeCapabilities
+			payloadDigest, payloadErr := OracleAdmissionPayloadDigest(certificateRaw, context.Signals, context.NegativeCapabilities)
+			if payloadErr == nil {
+				context.Expected.ManifestPayloadDigest = payloadDigest
+			} else if fixture.ExpectedCode != "admission_schema_invalid" {
+				t.Fatal(payloadErr)
+			}
 			boundaryCalls := 0
 			decision := DecideOracleBehaviorAdmission(certificateRaw, context, func() { boundaryCalls++ })
 			if decision.Code != fixture.ExpectedCode {
@@ -117,5 +123,35 @@ func TestOracleContractAdmission(t *testing.T) {
 				t.Fatalf("unexpected boundary decision: %+v calls=%d", decision, boundaryCalls)
 			}
 		})
+	}
+}
+
+func TestOracleAdmissionRejectsUnboundManifestPayload(t *testing.T) {
+	raw, err := os.ReadFile("testdata/oracle_lab_contract/v1/coherence-corpus.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus oracleAdmissionCorpus
+	if err := json.Unmarshal(raw, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	certificate := oracleCloneMap(t, corpus.BaseCertificate)
+	contextMap := oracleCloneMap(t, corpus.BaseContext)
+	contextRaw, _ := json.Marshal(contextMap)
+	var context OracleAdmissionContext
+	if err := json.Unmarshal(contextRaw, &context); err != nil {
+		t.Fatal(err)
+	}
+	context.NegativeCapabilities = corpus.NegativeCapabilities
+	certificateRaw, _ := json.Marshal(certificate)
+	context.Expected.ManifestPayloadDigest, err = OracleAdmissionPayloadDigest(certificateRaw, context.Signals, context.NegativeCapabilities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate["persona_ref"] = "persona:attacker-selected"
+	certificateRaw, _ = json.Marshal(certificate)
+	decision := DecideOracleBehaviorAdmission(certificateRaw, context, nil)
+	if decision.Allowed || decision.Code != "admission_manifest_payload_mismatch" {
+		t.Fatalf("unbound payload returned %+v", decision)
 	}
 }

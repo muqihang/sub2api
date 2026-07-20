@@ -1,5 +1,35 @@
 package service
 
+import "encoding/json"
+
+func oracleAdmissionPayloadDigest(certificate OracleBehaviorCoherenceCertificate, signals []OracleAuthoritySignal, negative OracleNegativeCapabilities) (string, error) {
+	payload := struct {
+		Certificate          OracleBehaviorCoherenceCertificate `json:"certificate"`
+		NegativeCapabilities OracleNegativeCapabilities         `json:"negative_capabilities"`
+		Signals              []OracleAuthoritySignal            `json:"signals"`
+	}{certificate, negative, signals}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	canonical, err := CanonicalizeOracleJSON(raw)
+	if err != nil {
+		return "", err
+	}
+	return canonical.SHA256, nil
+}
+
+func OracleAdmissionPayloadDigest(certificateRaw []byte, signals []OracleAuthoritySignal, negative OracleNegativeCapabilities) (string, error) {
+	var certificate OracleBehaviorCoherenceCertificate
+	if err := decodeOracleStrictJSON(certificateRaw, &certificate); err != nil {
+		return "", err
+	}
+	if err := validateOracleBehaviorCertificate(certificate); err != nil {
+		return "", err
+	}
+	return oracleAdmissionPayloadDigest(certificate, signals, negative)
+}
+
 func oracleAdmissionDeny(code, action, gate, signalID, detail string) OracleAdmissionDecision {
 	if action == "" {
 		action = "disable"
@@ -125,6 +155,10 @@ func DecideOracleBehaviorAdmission(raw []byte, context OracleAdmissionContext, o
 	var certificate OracleBehaviorCoherenceCertificate
 	if err := decodeOracleStrictJSON(raw, &certificate); err != nil || validateOracleBehaviorCertificate(certificate) != nil {
 		return oracleAdmissionDeny("admission_schema_invalid", "disable", "", "", "")
+	}
+	payloadDigest, err := oracleAdmissionPayloadDigest(certificate, context.Signals, context.NegativeCapabilities)
+	if err != nil || payloadDigest != context.Expected.ManifestPayloadDigest {
+		return oracleAdmissionDeny("admission_manifest_payload_mismatch", "disable", "", "", "")
 	}
 	if decision := oracleAdmissionTuple(certificate, context); decision != nil {
 		return *decision

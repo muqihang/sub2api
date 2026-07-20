@@ -3,6 +3,7 @@ package service
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -11,7 +12,8 @@ import (
 )
 
 type oracleAuthorityCorpus struct {
-	ExpectedNextStateDigests map[string]string `json:"expected_next_state_digests"`
+	ExpectedNextStateDigests map[string]string       `json:"expected_next_state_digests"`
+	ManifestAuthorityFixture OracleAuthorityManifest `json:"manifest_authority_fixture"`
 	Cases                    []struct {
 		ID           string `json:"id"`
 		ExpectedCode string `json:"expected_code"`
@@ -33,10 +35,9 @@ type oracleAuthorityFixture struct {
 
 func newOracleRuntimeAuthorityKey(t *testing.T, keyID, role string, epoch int64) oracleRuntimeAuthorityKey {
 	t.Helper()
-	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
+	seed := sha256.Sum256([]byte(keyID))
+	privateKey := ed25519.NewKeyFromSeed(seed[:])
+	publicKey := privateKey.Public().(ed25519.PublicKey)
 	return oracleRuntimeAuthorityKey{OracleTrustKey: OracleTrustKey{KeyID: keyID, Role: role, Epoch: epoch, PublicKey: publicKey}, PrivateKey: privateKey}
 }
 
@@ -73,14 +74,15 @@ func newOracleAuthorityFixture(t *testing.T) oracleAuthorityFixture {
 	}
 	state := OracleTrustState{
 		RootEpoch: 1, PolicyVersion: 10, RollbackFloor: 10, RevocationVersion: 1,
-		ManifestDigest: repeatOracleHex("a"), CheckpointVersion: 5, CheckpointDigest: repeatOracleHex("b"),
+		ManifestDigest: repeatOracleHex("a"), ManifestPayloadDigest: repeatOracleHex("d"), CheckpointVersion: 5, CheckpointDigest: repeatOracleHex("b"),
 		ReplicaGeneration: 7, LastWallClockMS: 1799999999000, Keys: trustKeys,
-		Thresholds: OracleAuthorityThresholds{Root: 2, Manifest: 2, Checkpoint: 1, Revocation: 1},
+		Thresholds:      OracleAuthorityThresholds{Root: 2, Manifest: 2, Checkpoint: 1, Revocation: 1},
+		RollbackTargets: map[string]OracleRollbackTarget{},
 	}
 	manifest := OracleAuthorityManifest{
 		SchemaID: "oracle.compatibility", SchemaMajor: 1, SchemaRevision: 0, Kind: "manifest_authority",
 		ManifestID: "manifest:fixture:11", PolicyVersion: 11, ParentDigest: state.ManifestDigest,
-		RollbackDigest: state.ManifestDigest, ContractDigest: repeatOracleHex("1"), IssuedAtMS: 1799999999500,
+		RollbackDigest: state.ManifestDigest, ContractDigest: repeatOracleHex("1"), ManifestPayloadDigest: repeatOracleHex("4"), IssuedAtMS: 1799999999500,
 		ExpiresAtMS: 1800003600000, SourcePackageDigests: []string{repeatOracleHex("2")},
 		PromotionRefs: []string{}, WitnessCheckpointDigest: repeatOracleHex("c"),
 		InvalidatingDependencyDigests: []string{repeatOracleHex("3")},
@@ -286,5 +288,113 @@ func TestOracleContractAuthority(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestOracleTrustStateDigestBindsPublicKeyBytes(t *testing.T) {
+	fixture := newOracleAuthorityFixture(t)
+	before, err := OracleTrustStateDigest(fixture.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := fixture.State.Keys["manifest-1"]
+	key.PublicKey = publicKey
+	fixture.State.Keys["manifest-1"] = key
+	after, err := OracleTrustStateDigest(fixture.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before == after {
+		t.Fatal("trust-state digest did not bind public-key bytes")
+	}
+}
+
+func TestOracleAuthorityRejectsZeroThresholds(t *testing.T) {
+	fixture := newOracleAuthorityFixture(t)
+	fixture.State.Thresholds.Manifest = 0
+	fixture.State.Thresholds.Checkpoint = 0
+	update := oracleSignedAuthorityUpdate(t, fixture)
+	update.ManifestSignatures = nil
+	update.CheckpointSignatures = nil
+	if code := VerifyOracleManifestAuthorityUpdate(fixture.State, update, fixture.Context).Code; code != "authority_threshold_insufficient" {
+		t.Fatalf("zero thresholds returned %s", code)
+	}
+}
+
+func TestOracleManifestAuthorityFixtureMatchesRuntimeAndRejectsMixedEpochZeroThenOne(t *testing.T) {
+	raw, err := os.ReadFile("testdata/oracle_lab_contract/v1/authority-corpus.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus oracleAuthorityCorpus
+	if err := json.Unmarshal(raw, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	fixture := newOracleAuthorityFixture(t)
+	expected, err := json.Marshal(corpus.ManifestAuthorityFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual, err := json.Marshal(fixture.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(actual) != string(expected) {
+		t.Fatalf("runtime manifest differs from shared fixture: %s != %s", actual, expected)
+	}
+
+	epochZero := newOracleRuntimeAuthorityKey(t, "manifest-zero", "manifest", 0)
+	epochOne := newOracleRuntimeAuthorityKey(t, "manifest-one", "manifest", 1)
+	fixture.Keys[epochZero.KeyID] = epochZero
+	fixture.Keys[epochOne.KeyID] = epochOne
+	fixture.State.Keys[epochZero.KeyID] = epochZero.OracleTrustKey
+	fixture.State.Keys[epochOne.KeyID] = epochOne.OracleTrustKey
+	update := oracleSignedAuthorityUpdate(t, fixture)
+	update.ManifestSignatures = []OracleAuthoritySignature{
+		oracleAuthoritySignature(t, epochZero, OracleManifestAuthorityDomain, fixture.Manifest),
+		oracleAuthoritySignature(t, epochOne, OracleManifestAuthorityDomain, fixture.Manifest),
+	}
+	if code := VerifyOracleManifestAuthorityUpdate(fixture.State, update, fixture.Context).Code; code != "authority_wrong_role" {
+		t.Fatalf("mixed epoch zero then one returned %s", code)
+	}
+}
+
+func TestOracleRootRotationRetainsOnlineRoleEpochs(t *testing.T) {
+	fixture := newOracleAuthorityFixture(t)
+	rotation, oldSignatures, newSignatures := oracleRootRotation(t, fixture)
+	rotated := VerifyOracleRootRotation(fixture.State, rotation, oldSignatures, newSignatures)
+	if !rotated.Allowed || rotated.NextState == nil {
+		t.Fatalf("rotation failed: %+v", rotated)
+	}
+	fixture.Context.ExpectedReplicaGeneration = 8
+	if code := VerifyOracleManifestAuthorityUpdate(*rotated.NextState, oracleSignedAuthorityUpdate(t, fixture), fixture.Context).Code; code != "authority_allow" {
+		t.Fatalf("retained online key failed after rotation: %s", code)
+	}
+}
+
+func TestOracleExplicitRollbackTarget(t *testing.T) {
+	fixture := newOracleAuthorityFixture(t)
+	targetDigest := repeatOracleHex("9")
+	fixture.State.RollbackTargets = map[string]OracleRollbackTarget{targetDigest: {PolicyVersion: 9}}
+	fixture.State.RollbackFloor = 9
+	fixture.Manifest.PolicyVersion = 9
+	fixture.Manifest.RollbackDigest = targetDigest
+	manifestDigest, err := OracleAuthorityObjectDigest(OracleManifestAuthorityDomain, fixture.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.Checkpoint.ManifestDigest = manifestDigest
+	if code := VerifyOracleManifestAuthorityUpdate(fixture.State, oracleSignedAuthorityUpdate(t, fixture), fixture.Context).Code; code != "authority_allow" {
+		t.Fatalf("explicit rollback returned %s", code)
+	}
+	target := fixture.State.RollbackTargets[targetDigest]
+	target.Revoked = true
+	fixture.State.RollbackTargets[targetDigest] = target
+	if code := VerifyOracleManifestAuthorityUpdate(fixture.State, oracleSignedAuthorityUpdate(t, fixture), fixture.Context).Code; code != "authority_policy_rollback" {
+		t.Fatalf("revoked rollback target returned %s", code)
 	}
 }

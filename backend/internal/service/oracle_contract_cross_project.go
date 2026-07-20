@@ -2,6 +2,55 @@ package service
 
 import "encoding/json"
 
+const oracleMaximumGeneration int64 = 9007199254740991
+
+func oracleSafeRef(value string) bool {
+	if len(value) < 1 || len(value) > 200 {
+		return false
+	}
+	for index := 0; index < len(value); index++ {
+		current := value[index]
+		if current >= 'A' && current <= 'Z' || current >= 'a' && current <= 'z' || current >= '0' && current <= '9' || current == '.' || current == '_' || current == ':' || current == '/' || current == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func oracleSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for index := 0; index < len(value); index++ {
+		if value[index] < '0' || value[index] > '9' && value[index] < 'a' || value[index] > 'f' {
+			return false
+		}
+	}
+	return true
+}
+
+func oracleGeneration(value int64) bool {
+	return value >= 0 && value <= oracleMaximumGeneration
+}
+
+func oracleUniqueSafeRefs(values []string, maximum int) bool {
+	if len(values) > maximum {
+		return false
+	}
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if !oracleSafeRef(value) {
+			return false
+		}
+		if _, exists := seen[value]; exists {
+			return false
+		}
+		seen[value] = struct{}{}
+	}
+	return true
+}
+
 type OracleSupportedContractRange struct {
 	SchemaMajor     int `json:"schema_major"`
 	MinimumRevision int `json:"minimum_revision"`
@@ -47,7 +96,38 @@ type OracleCrossProjectDecision struct {
 	NextStateDigest string
 }
 
+func oracleExactInterfaceSchema(schemaID string, schemaMajor, schemaRevision int, kind, expectedKind string) bool {
+	return schemaID == "oracle.compatibility" && schemaMajor == 1 && schemaRevision == 0 && kind == expectedKind
+}
+
+func oracleSupportedRangesValid(ranges []OracleSupportedContractRange) bool {
+	if len(ranges) == 0 || len(ranges) > 16 {
+		return false
+	}
+	for index, current := range ranges {
+		if current.SchemaMajor < 0 || current.MinimumRevision < 0 || current.MaximumRevision < current.MinimumRevision {
+			return false
+		}
+		if index > 0 {
+			previous := ranges[index-1]
+			if current.SchemaMajor < previous.SchemaMajor || current.SchemaMajor == previous.SchemaMajor && current.MinimumRevision <= previous.MaximumRevision {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func oracleReadinessShapeValid(handshake OracleReadinessHandshake) bool {
+	return oracleSHA256(handshake.BuildDigest) && oracleSHA256(handshake.ContractDigest) && oracleSHA256(handshake.ManifestDigest) &&
+		oracleGeneration(handshake.ProfileGeneration) && oracleGeneration(handshake.SidecarGeneration) && oracleGeneration(handshake.ReplayLedgerGeneration) &&
+		oracleSupportedRangesValid(handshake.SupportedContracts) && oracleUniqueSafeRefs(handshake.DisabledCapabilities, 128) && oracleGeneration(handshake.ExpiresAtMS)
+}
+
 func DecideOracleReadiness(handshake OracleReadinessHandshake, expected OracleReadinessExpected, onReady func()) OracleCrossProjectDecision {
+	if !oracleExactInterfaceSchema(handshake.SchemaID, handshake.SchemaMajor, handshake.SchemaRevision, handshake.Kind, "readiness_handshake") || !oracleReadinessShapeValid(handshake) {
+		return OracleCrossProjectDecision{Code: "interface_schema_unsupported"}
+	}
 	supported := false
 	for _, candidate := range handshake.SupportedContracts {
 		if candidate.SchemaMajor == expected.SchemaMajor && candidate.MinimumRevision <= expected.SchemaRevision && candidate.MaximumRevision >= expected.SchemaRevision && candidate.MinimumRevision <= candidate.MaximumRevision {
@@ -101,6 +181,13 @@ type OracleLifecycleOperation struct {
 	IdempotencyKey       string `json:"idempotency_key"`
 }
 
+func oracleLifecycleOperationShapeValid(operation OracleLifecycleOperation) bool {
+	return oracleContains([]string{"register", "replace", "freeze", "drain", "revoke", "delete", "query", "reconcile"}, operation.Operation) &&
+		oracleContains([]string{"sub2api", "cc_gateway"}, operation.Owner) && oracleSafeRef(operation.AccountRef) && oracleSafeRef(operation.IdempotencyKey) &&
+		oracleGeneration(operation.AccountGeneration) && oracleGeneration(operation.CredentialGeneration) && oracleGeneration(operation.ProxyGeneration) &&
+		oracleGeneration(operation.ProfileGeneration) && oracleGeneration(operation.ExpectedStateVersion) && oracleGeneration(operation.NextStateVersion)
+}
+
 func oracleCrossProjectStateDigest(value any) string {
 	raw, _ := json.Marshal(value)
 	canonical, err := CanonicalizeOracleJSON(raw)
@@ -111,6 +198,9 @@ func oracleCrossProjectStateDigest(value any) string {
 }
 
 func TransitionOracleLifecycle(state OracleLifecycleState, operation OracleLifecycleOperation) OracleCrossProjectDecision {
+	if !oracleExactInterfaceSchema(operation.SchemaID, operation.SchemaMajor, operation.SchemaRevision, operation.Kind, "lifecycle_operation") || !oracleLifecycleOperationShapeValid(operation) {
+		return OracleCrossProjectDecision{Code: "interface_schema_unsupported"}
+	}
 	if operation.Owner != "sub2api" || state.Owner != "sub2api" || operation.AccountRef != state.AccountRef {
 		return OracleCrossProjectDecision{Code: "interface_owner_mismatch"}
 	}
@@ -156,7 +246,16 @@ type OracleTaskLineage struct {
 	IdempotencyKey    string `json:"idempotency_key"`
 }
 
+func oracleTaskLineageShapeValid(candidate OracleTaskLineage) bool {
+	return oracleSafeRef(candidate.RootTaskRef) && oracleSafeRef(candidate.ParentTaskRef) && oracleSafeRef(candidate.CurrentTaskRef) &&
+		oracleSafeRef(candidate.AttemptID) && oracleSafeRef(candidate.IdempotencyKey) && oracleGeneration(candidate.ClientGeneration) &&
+		oracleGeneration(candidate.ProfileGeneration) && oracleGeneration(candidate.MigrationSequence) && oracleGeneration(candidate.DeadlineMS)
+}
+
 func DecideOracleTaskLineage(state OracleTaskLineageState, candidate OracleTaskLineage, nowMS int64) OracleCrossProjectDecision {
+	if !oracleExactInterfaceSchema(candidate.SchemaID, candidate.SchemaMajor, candidate.SchemaRevision, candidate.Kind, "task_lineage") || !oracleTaskLineageShapeValid(candidate) {
+		return OracleCrossProjectDecision{Code: "interface_schema_unsupported"}
+	}
 	if candidate.RootTaskRef != state.RootTaskRef || candidate.ParentTaskRef != state.CurrentTaskRef || candidate.CurrentTaskRef == state.CurrentTaskRef {
 		return OracleCrossProjectDecision{Code: "interface_lineage_mismatch"}
 	}
@@ -186,7 +285,17 @@ type OracleOutcomeEnvelope struct {
 	FinalBodySHA256    string `json:"final_body_sha256"`
 }
 
+func oracleOutcomeShapeValid(outcome OracleOutcomeEnvelope) bool {
+	return oracleSafeRef(outcome.AttemptID) && oracleSHA256(outcome.FinalHeadersSHA256) && oracleSHA256(outcome.FinalBodySHA256) &&
+		oracleContains([]string{"not_attempted", "connected", "reset", "timeout", "rejected"}, outcome.TransportFact) &&
+		oracleContains([]string{"none", "success", "client_error", "rate_limited", "capacity", "server_error", "malformed", "cancelled"}, outcome.SemanticOutcome) &&
+		oracleContains([]string{"none", "cc_gateway", "sub2api"}, outcome.RetryOwner)
+}
+
 func DecideOracleOutcome(outcome OracleOutcomeEnvelope) OracleCrossProjectDecision {
+	if !oracleExactInterfaceSchema(outcome.SchemaID, outcome.SchemaMajor, outcome.SchemaRevision, outcome.Kind, "outcome_envelope") || !oracleOutcomeShapeValid(outcome) {
+		return OracleCrossProjectDecision{Code: "interface_schema_unsupported"}
+	}
 	if outcome.PartialOutput || outcome.ToolSideEffect || outcome.Terminal {
 		return OracleCrossProjectDecision{Allowed: true, Code: "interface_terminal_no_retry"}
 	}

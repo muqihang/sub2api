@@ -10,11 +10,29 @@
     "maximum_manifest_bytes": 1048576,
     "maximum_signatures": 64
   },
+  "manifest_authority_fixture": {
+    "schemaId": "oracle.compatibility",
+    "schemaMajor": 1,
+    "schemaRevision": 0,
+    "kind": "manifest_authority",
+    "manifestId": "manifest:fixture:11",
+    "policyVersion": 11,
+    "parentDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "rollbackDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "contractDigest": "1111111111111111111111111111111111111111111111111111111111111111",
+    "manifestPayloadDigest": "4444444444444444444444444444444444444444444444444444444444444444",
+    "issuedAtMs": 1799999999500,
+    "expiresAtMs": 1800003600000,
+    "sourcePackageDigests": ["2222222222222222222222222222222222222222222222222222222222222222"],
+    "promotionRefs": [],
+    "witnessCheckpointDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "invalidatingDependencyDigests": ["3333333333333333333333333333333333333333333333333333333333333333"]
+  },
   "expected_next_state_digests": {
-    "authority-valid-threshold": "dc2ef195b450203d778ef864f414b43c1f8c542898f96f6b828ac5f091c4e514",
-    "authority-root-rotation-dual-threshold": "93af83a0997196a0b1fc1712ddbe3d538333fdb215af93350194aae6bdc5b2cf",
-    "authority-emergency-revocation": "f6704efff8ec432c4f352604ea8b924f1fba47c9d2699452432364b0073b11f6",
-    "authority-restart-snapshot": "dc2ef195b450203d778ef864f414b43c1f8c542898f96f6b828ac5f091c4e514"
+    "authority-valid-threshold": "59dc05c00accb7ea2561fe5c666a8dfbeefa62b1be700e5cb1d1a5cec7bca5c5",
+    "authority-root-rotation-dual-threshold": "1b57d4319ebb3df7234265e9404e2c8a708f89dbc9099e16ea8ff481bb3ff340",
+    "authority-emergency-revocation": "376a9c58b71294d136ea90f417c465f2effb44482730f230d49b96a73b46f891",
+    "authority-restart-snapshot": "59dc05c00accb7ea2561fe5c666a8dfbeefa62b1be700e5cb1d1a5cec7bca5c5"
   },
   "cases": [
     { "id": "authority-valid-threshold", "expected_code": "authority_allow" },

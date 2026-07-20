@@ -88,6 +88,7 @@ type OracleNegativeCapabilities struct {
 type OracleAdmissionExpectedTuple struct {
 	ContractDigest            string `json:"contract_digest"`
 	ManifestDigest            string `json:"manifest_digest"`
+	ManifestPayloadDigest     string `json:"manifest_payload_digest"`
 	PackageArtifactSHA256     string `json:"package_artifact_sha256"`
 	PackageVersion            string `json:"package_version"`
 	ProxyGeneration           int64  `json:"proxy_generation"`

@@ -117,3 +117,50 @@ func TestOracleContractCrossProject(t *testing.T) {
 		})
 	}
 }
+
+func TestOracleCrossProjectRejectsInvalidSchemasRangesAndOperations(t *testing.T) {
+	raw, err := os.ReadFile("testdata/oracle_lab_contract/v1/interface-corpus.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus oracleCrossProjectCorpus
+	if err := json.Unmarshal(raw, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	handshake := corpus.Fixtures.Readiness
+	handshake.SchemaID = "oracle.attacker"
+	if code := DecideOracleReadiness(handshake, corpus.Fixtures.ReadinessExpected, nil).Code; code != "interface_schema_unsupported" {
+		t.Fatalf("wrong readiness schema returned %s", code)
+	}
+	handshake = corpus.Fixtures.Readiness
+	handshake.SupportedContracts = []OracleSupportedContractRange{{SchemaMajor: 1, MinimumRevision: 0, MaximumRevision: 2}, {SchemaMajor: 1, MinimumRevision: 2, MaximumRevision: 3}}
+	if code := DecideOracleReadiness(handshake, corpus.Fixtures.ReadinessExpected, nil).Code; code != "interface_schema_unsupported" {
+		t.Fatalf("overlapping ranges returned %s", code)
+	}
+	operation := corpus.Fixtures.LifecycleOperation
+	operation.Operation = "attacker_operation"
+	if code := TransitionOracleLifecycle(corpus.Fixtures.LifecycleState, operation).Code; code != "interface_schema_unsupported" {
+		t.Fatalf("unknown lifecycle operation returned %s", code)
+	}
+	operation = corpus.Fixtures.LifecycleOperation
+	operation.SchemaID = "oracle.attacker"
+	if code := TransitionOracleLifecycle(corpus.Fixtures.LifecycleState, operation).Code; code != "interface_schema_unsupported" {
+		t.Fatalf("wrong lifecycle schema returned %s", code)
+	}
+	operation = corpus.Fixtures.LifecycleOperation
+	operation.IdempotencyKey = ""
+	if code := TransitionOracleLifecycle(corpus.Fixtures.LifecycleState, operation).Code; code != "interface_schema_unsupported" {
+		t.Fatalf("empty idempotency key returned %s", code)
+	}
+	outcome := corpus.Fixtures.OutcomeRateLimit
+	outcome.AttemptID = ""
+	if code := DecideOracleOutcome(outcome).Code; code != "interface_schema_unsupported" {
+		t.Fatalf("empty outcome attempt returned %s", code)
+	}
+	outcome = corpus.Fixtures.OutcomeRateLimit
+	outcome.FinalHeadersSHA256 = "x"
+	outcome.FinalBodySHA256 = "x"
+	if code := DecideOracleOutcome(outcome).Code; code != "interface_schema_unsupported" {
+		t.Fatalf("bad outcome digests returned %s", code)
+	}
+}
