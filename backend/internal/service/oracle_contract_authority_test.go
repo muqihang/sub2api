@@ -37,7 +37,10 @@ func newOracleRuntimeAuthorityKey(t *testing.T, keyID, role string, epoch int64)
 	t.Helper()
 	seed := sha256.Sum256([]byte(keyID))
 	privateKey := ed25519.NewKeyFromSeed(seed[:])
-	publicKey := privateKey.Public().(ed25519.PublicKey)
+	publicKey, ok := privateKey.Public().(ed25519.PublicKey)
+	if !ok {
+		t.Fatal("Ed25519 private key returned an unexpected public key type")
+	}
 	return oracleRuntimeAuthorityKey{OracleTrustKey: OracleTrustKey{KeyID: keyID, Role: role, Epoch: epoch, PublicKey: publicKey}, PrivateKey: privateKey}
 }
 

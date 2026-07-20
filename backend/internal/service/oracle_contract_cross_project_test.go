@@ -96,13 +96,25 @@ func TestOracleContractCrossProject(t *testing.T) {
 					code = reserved.Code
 				case "replay-commit":
 					identity.Operation, identity.ExpectedGeneration, identity.NowMS = "commit", 1, 1800000000100
-					code = TransitionOracleInterfaceReplay(reserved.NextState.(OracleInterfaceReplayState), identity).Code
+					reservedState, ok := reserved.NextState.(OracleInterfaceReplayState)
+					if !ok {
+						t.Fatal("reserve did not return an interface replay state")
+					}
+					code = TransitionOracleInterfaceReplay(reservedState, identity).Code
 				case "replay-reuse":
 					identity.ExpectedGeneration, identity.NowMS = 1, 1800000000100
-					code = TransitionOracleInterfaceReplay(reserved.NextState.(OracleInterfaceReplayState), identity).Code
+					reservedState, ok := reserved.NextState.(OracleInterfaceReplayState)
+					if !ok {
+						t.Fatal("reserve did not return an interface replay state")
+					}
+					code = TransitionOracleInterfaceReplay(reservedState, identity).Code
 				case "replay-stale-replica":
 					identity.Operation, identity.ExpectedGeneration, identity.NowMS = "commit", 0, 1800000000100
-					code = TransitionOracleInterfaceReplay(reserved.NextState.(OracleInterfaceReplayState), identity).Code
+					reservedState, ok := reserved.NextState.(OracleInterfaceReplayState)
+					if !ok {
+						t.Fatal("reserve did not return an interface replay state")
+					}
+					code = TransitionOracleInterfaceReplay(reservedState, identity).Code
 				}
 			}
 			if code != fixture.ExpectedCode {

@@ -57,7 +57,11 @@ func oracleMutationParent(t *testing.T, root map[string]any, dotted string) (map
 			t.Fatalf("invalid mutation path %s", dotted)
 		}
 	}
-	return current.(map[string]any), key
+	parent, ok := current.(map[string]any)
+	if !ok {
+		t.Fatalf("mutation path %s does not resolve to an object", dotted)
+	}
+	return parent, key
 }
 
 func applyOracleMutation(t *testing.T, root map[string]any, mutation struct {

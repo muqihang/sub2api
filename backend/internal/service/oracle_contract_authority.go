@@ -228,20 +228,6 @@ func oracleAuthorityDeny(code string) OracleAuthorityDecision {
 	return OracleAuthorityDecision{Code: code}
 }
 
-func oracleAuthorityThresholdValue(thresholds OracleAuthorityThresholds, role string) int {
-	switch role {
-	case "root":
-		return thresholds.Root
-	case "manifest":
-		return thresholds.Manifest
-	case "checkpoint":
-		return thresholds.Checkpoint
-	case "revocation":
-		return thresholds.Revocation
-	}
-	return 0
-}
-
 func verifyOracleAuthorityThreshold(signed any, signatures []OracleAuthoritySignature, role string, epoch int64, keys map[string]OracleTrustKey, threshold int, domain []byte) string {
 	if len(signatures) > 64 || len(keys) > 64 {
 		return "authority_resource_limit"
