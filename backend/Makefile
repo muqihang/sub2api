@@ -19,7 +19,9 @@ test:
 
 test-unit:
 	go test -tags=unit ./internal/handler
-	go test -tags=unit $$(go list ./... | grep -v '^github.com/Wei-Shaw/sub2api/internal/handler$$')
+	@packages="$$(go list -f '{{if ne .ImportPath "github.com/Wei-Shaw/sub2api/internal/handler"}}{{.ImportPath}}{{end}}' ./...)" || exit $$?; \
+	test -n "$$packages" || exit 1; \
+	go test -tags=unit $$packages
 
 test-integration:
 	go test -tags=integration ./...
