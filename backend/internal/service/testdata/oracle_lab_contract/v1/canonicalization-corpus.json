@@ -1,0 +1,147 @@
+{
+  "schema_id": "oracle.compatibility",
+  "schema_major": 1,
+  "schema_revision": 0,
+  "json_cases": [
+    {
+      "id": "json-object-order-unicode",
+      "input_json": "{\"unicode\":\"\\u20ac\",\"b\":2,\"a\":1}",
+      "valid": true,
+      "expected_canonical_hex": "7b2261223a312c2262223a322c22756e69636f6465223a22e282ac227d",
+      "expected_sha256": "741498b6db89312e120a524545c10ab29366ca061619d8351ab0ef8d80889111"
+    },
+    {
+      "id": "json-empty-null-array",
+      "input_json": "{\"z\":[],\"n\":null,\"e\":\"\"}",
+      "valid": true
+    },
+    {
+      "id": "json-duplicate-root",
+      "input_json": "{\"a\":1,\"a\":2}",
+      "valid": false,
+      "expected_code": "json_duplicate_key"
+    },
+    {
+      "id": "json-duplicate-nested",
+      "input_json": "{\"outer\":{\"a\":1,\"a\":2}}",
+      "valid": false,
+      "expected_code": "json_duplicate_key"
+    },
+    {
+      "id": "json-negative-zero",
+      "input_json": "{\"n\":-0}",
+      "valid": false,
+      "expected_code": "json_negative_zero"
+    },
+    {
+      "id": "json-unsafe-integer",
+      "input_json": "{\"n\":9007199254740992}",
+      "valid": false,
+      "expected_code": "json_number_unsafe"
+    },
+    {
+      "id": "json-lone-surrogate",
+      "input_json": "{\"s\":\"\\ud800\"}",
+      "valid": false,
+      "expected_code": "json_lone_surrogate"
+    },
+    {
+      "id": "json-trailing-data",
+      "input_json": "{\"a\":1} true",
+      "valid": false,
+      "expected_code": "json_trailing_data"
+    },
+    {
+      "id": "json-invalid-utf8",
+      "input_hex": "7b2273223a22ff227d",
+      "valid": false,
+      "expected_code": "json_invalid_utf8"
+    }
+  ],
+  "cbor_cases": [
+    {
+      "id": "cbor-object-order",
+      "value": { "b": 2, "a": 1 },
+      "valid": true,
+      "expected_hex": "a2616101616202"
+    },
+    {
+      "id": "cbor-duplicate-map-key",
+      "input_hex": "a2616101616102",
+      "valid": false,
+      "expected_code": "cbor_duplicate_key"
+    },
+    {
+      "id": "cbor-indefinite-map",
+      "input_hex": "bf616101ff",
+      "valid": false,
+      "expected_code": "cbor_indefinite_length"
+    },
+    {
+      "id": "cbor-float",
+      "input_hex": "f93c00",
+      "valid": false,
+      "expected_code": "cbor_float_forbidden"
+    },
+    {
+      "id": "cbor-trailing-item",
+      "input_hex": "a1616101f6",
+      "valid": false,
+      "expected_code": "cbor_trailing_data"
+    }
+  ],
+  "sidecar_unsigned_envelope": {
+    "schema_id": "oracle.sidecar.capability",
+    "schema_major": 1,
+    "schema_revision": 0,
+    "key_epoch": 11,
+    "capability_id": "capability:fixture:1",
+    "attempt_id": "attempt:fixture:1",
+    "nonce": "nonce:fixture:1",
+    "issued_at_ms": 1800000000000,
+    "deadline_ms": 1800000060000,
+    "method": "POST",
+    "authority": "[2001:db8::1]:443",
+    "normalized_path_query": "/v1/messages?a=2&a=1",
+    "ordered_headers_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "body_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "content_length": 17,
+    "content_encoding": "gzip",
+    "profile_generation": 3,
+    "proxy_generation": 7,
+    "credential_generation": 5,
+    "transport_cell_generation": 9,
+    "contract_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "manifest_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "destination_policy_generation": 4,
+    "destination_class": "approved_proxy",
+    "allowed_destinations": [
+      { "host": "2001:db8::1", "port": 443 },
+      { "host": "198.51.100.40", "port": 8080 }
+    ],
+    "response_policy_ref": "response-policy:fixture:1",
+    "retry_owner": "cc_gateway",
+    "key_id": "sidecar-key-11",
+    "key_role": "sidecar_capability"
+  },
+  "normalization_cases": [
+    {
+      "id": "query-duplicates-order-empty-unicode",
+      "path": "/v1/messages",
+      "query_pairs": [["z", ""], ["a", "2"], ["a", "1"], ["u", "\u20ac"]],
+      "expected_path_query": "/v1/messages?a=2&a=1&u=%E2%82%AC&z="
+    },
+    {
+      "id": "ipv6-authority",
+      "host": "2001:db8::1",
+      "port": 443,
+      "expected_authority": "[2001:db8::1]:443"
+    },
+    {
+      "id": "repeated-headers-compression",
+      "headers": [["content-encoding", "gzip"], ["x-test", "a"], ["x-test", "b"]],
+      "content_encoding": "gzip",
+      "body_representation": "compressed_wire_bytes"
+    }
+  ]
+}
