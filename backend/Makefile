@@ -18,7 +18,8 @@ test:
 	golangci-lint run ./...
 
 test-unit:
-	go test -tags=unit ./...
+	go test -tags=unit ./internal/handler
+	go test -tags=unit $$(go list ./... | grep -v '^github.com/Wei-Shaw/sub2api/internal/handler$$')
 
 test-integration:
 	go test -tags=integration ./...
