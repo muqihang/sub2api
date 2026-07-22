@@ -156,7 +156,9 @@ func (s *OpenAIGatewayService) buildNativeSearchRequest(
 	}
 	req.Header.Del("x-api-key")
 	req.Header.Del("x-goog-api-key")
-	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
+	if err := s.applyOpenAIRequestAuth(ctx, req, account, strings.TrimSpace(token)); err != nil {
+		return nil, fmt.Errorf("apply native Search authentication: %w", err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	enforceCodexIdentityHeaders(req.Header)

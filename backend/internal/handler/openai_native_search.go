@@ -138,16 +138,11 @@ func (h *OpenAIGatewayHandler) NativeSearch(c *gin.Context) {
 	routingStart := time.Now()
 
 	for {
-		selection, decision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
+		selection, decision, err := h.gatewayService.SelectAccountWithSchedulerForNativeSearch(
 			c.Request.Context(),
 			apiKey.GroupID,
-			"",
 			sessionHash,
-			reqModel,
 			failedAccountIDs,
-			service.OpenAIUpstreamTransportHTTPSSE,
-			service.OpenAIEndpointCapabilitySearch,
-			false,
 		)
 		if err != nil {
 			reqLog.Warn("openai_native_search.account_select_failed", zap.Error(err), zap.Int("excluded_account_count", len(failedAccountIDs)))

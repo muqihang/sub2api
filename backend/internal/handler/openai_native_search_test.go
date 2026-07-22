@@ -82,6 +82,18 @@ func (r nativeSearchHandlerAccountRepo) ListSchedulableUngroupedByPlatform(_ con
 	return r.forPlatform(platform), nil
 }
 
+func (r nativeSearchHandlerAccountRepo) ListOpenAINativeSearchCandidatesByPlatform(_ context.Context, platform string) ([]service.Account, error) {
+	return r.forPlatform(platform), nil
+}
+
+func (r nativeSearchHandlerAccountRepo) ListOpenAINativeSearchCandidatesByGroupIDAndPlatform(_ context.Context, _ int64, platform string) ([]service.Account, error) {
+	return r.forPlatform(platform), nil
+}
+
+func (r nativeSearchHandlerAccountRepo) ListOpenAINativeSearchCandidatesUngroupedByPlatform(_ context.Context, platform string) ([]service.Account, error) {
+	return r.forPlatform(platform), nil
+}
+
 func (r nativeSearchHandlerAccountRepo) forPlatform(platform string) []service.Account {
 	var result []service.Account
 	for _, account := range r.accounts {
@@ -200,6 +212,66 @@ func TestNativeSearch_FailsOverAndReleasesConcurrencySlots(t *testing.T) {
 	require.Equal(t, int32(1), atomic.LoadInt32(&cache.releaseUserCalled))
 	require.Equal(t, int32(2), atomic.LoadInt32(&cache.releaseAccountCalled))
 	require.Equal(t, int32(1), atomic.LoadInt32(&cache.releaseAPIKeyCalled))
+}
+
+func TestNativeSearch_ResponsesRateLimitDoesNotBlockSearch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(551)
+	rateLimitResetAt := time.Now().Add(time.Hour)
+	account := service.Account{
+		ID:               2,
+		Name:             "search-responses-rate-limited",
+		Platform:         service.PlatformOpenAI,
+		Type:             service.AccountTypeOAuth,
+		Status:           service.StatusActive,
+		Schedulable:      true,
+		Concurrency:      1,
+		RateLimitResetAt: &rateLimitResetAt,
+		Credentials:      map[string]any{"access_token": "token-2", "chatgpt_account_id": "acct-2"},
+		Extra: map[string]any{
+			"codex_7d_used_percent":   100.0,
+			"auto_pause_7d_threshold": 0.9,
+		},
+	}
+	repo := nativeSearchHandlerAccountRepo{accounts: []service.Account{account}}
+	upstream := &nativeSearchHandlerUpstream{}
+	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Gateway.OpenAICore.Enabled = true
+	cache := &concurrencyCacheMock{
+		acquireUserSlotFn:    func(context.Context, int64, int, string) (bool, error) { return true, nil },
+		acquireAccountSlotFn: func(context.Context, int64, int, string) (bool, error) { return true, nil },
+	}
+	concurrencyService := service.NewConcurrencyService(cache)
+	billingCache := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	t.Cleanup(billingCache.Stop)
+	h := NewOpenAIGatewayHandler(
+		service.NewOpenAIGatewayService(
+			repo, nil, nil, nil, nil, nil, nil, cfg, nil, concurrencyService, nil, nil,
+			billingCache, upstream, nil, nil,
+		),
+		concurrencyService,
+		service.NewOpenAIGatewayCoreService(repo, cfg, nil),
+		billingCache,
+		service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg),
+		cfg,
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/alpha/search", bytes.NewBufferString(`{"id":"session","model":"gpt-5.6-sol","commands":{}}`))
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		ID:      552,
+		GroupID: &groupID,
+		Group:   &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive},
+		User:    &service.User{ID: 553, Status: service.StatusActive},
+	})
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 553, Concurrency: 1})
+
+	h.NativeSearch(c)
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, []int64{2}, upstream.calls())
 }
 
 func TestNativeSearch_RechecksSubscriptionAfterUserSlotWait(t *testing.T) {

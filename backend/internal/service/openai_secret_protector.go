@@ -19,10 +19,11 @@ const openAISecretProtectorPrefix = "enc:v1:"
 var errOpenAIEncryptedCredentialUnavailable = errors.New("encrypted openai credentials require credential protection to be configured")
 
 var openAIProtectedCredentialFields = map[string]struct{}{
-	"access_token":  {},
-	"refresh_token": {},
-	"id_token":      {},
-	"api_key":       {},
+	"access_token":      {},
+	"refresh_token":     {},
+	"id_token":          {},
+	"api_key":           {},
+	"agent_private_key": {},
 }
 
 type OpenAISecretProtector struct {

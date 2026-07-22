@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"time"
 
@@ -18,8 +19,9 @@ const (
 	OpenAIAuthStateTerminal = "terminal"
 	OpenAIAuthStateATOnly   = "at_only"
 
-	OpenAITokenSourceRTManaged = "rt_managed"
-	OpenAITokenSourceATOnly    = "at_only"
+	OpenAITokenSourceRTManaged     = "rt_managed"
+	OpenAITokenSourceATOnly        = "at_only"
+	OpenAITokenSourceAgentIdentity = "agent_identity"
 
 	OpenAIValidationOutcomeRTValidated                   = "rt_validated"
 	OpenAIValidationOutcomeRTValidationRetryableFailure  = "rt_validation_retryable_failure"
@@ -27,6 +29,8 @@ const (
 	OpenAIValidationOutcomeRTValidationScopeInsufficient = "rt_validation_scope_insufficient"
 	OpenAIValidationOutcomeATOnlyAccepted                = "at_only_accepted"
 	OpenAIValidationOutcomeATOnlyQuarantined             = "at_only_quarantined"
+	OpenAIValidationOutcomeAgentIdentityValidated        = "agent_identity_validated"
+	OpenAIValidationOutcomeAgentIdentityQuarantined      = "agent_identity_quarantined"
 
 	openAIAuthErrorCodeUnknown               = "oauth_refresh_failed"
 	openAIAuthErrorCodeTokenInvalidated      = "token_invalidated"
@@ -114,6 +118,16 @@ func EvaluateOpenAIImportLifecycleWithExtra(
 			return nil, protectErr
 		}
 		protectedNormalized = protected
+	}
+
+	if isImportedOpenAIAgentIdentity(normalized) {
+		return evaluateOpenAIAgentIdentityImportLifecycle(
+			ctx,
+			proxyURL,
+			normalized,
+			protectedNormalized,
+			openAIAgentIdentityAuthAPIBaseURL,
+		)
 	}
 
 	if strings.TrimSpace(stringValue(normalized["refresh_token"])) == "" {
@@ -221,6 +235,80 @@ func EvaluateOpenAIImportLifecycleWithExtra(
 		Credentials:       validated,
 		RefreshErrorCode:  "",
 		Extra:             decisionExtra,
+	}, nil
+}
+
+func isImportedOpenAIAgentIdentity(credentials map[string]any) bool {
+	authMode := strings.ToLower(strings.TrimSpace(stringValue(credentials["auth_mode"])))
+	return authMode == "agentidentity" || authMode == "agent_identity"
+}
+
+func evaluateOpenAIAgentIdentityImportLifecycle(
+	ctx context.Context,
+	proxyURL string,
+	normalized map[string]any,
+	protected map[string]any,
+	authAPIBaseURL string,
+) (*OpenAIImportLifecycleDecision, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	quarantined := func(code string) *OpenAIImportLifecycleDecision {
+		return &OpenAIImportLifecycleDecision{
+			PoolRole:          OpenAIPoolRoleQuarantine,
+			AuthState:         OpenAIAuthStateTerminal,
+			TokenSource:       OpenAITokenSourceAgentIdentity,
+			ValidationOutcome: OpenAIValidationOutcomeAgentIdentityQuarantined,
+			Status:            StatusDisabled,
+			Schedulable:       false,
+			Credentials:       protected,
+			RefreshErrorCode:  code,
+			Extra: map[string]any{
+				"openai_pool_role":               OpenAIPoolRoleQuarantine,
+				"openai_auth_state":              OpenAIAuthStateTerminal,
+				"openai_token_source":            OpenAITokenSourceAgentIdentity,
+				"openai_validation_outcome":      OpenAIValidationOutcomeAgentIdentityQuarantined,
+				"openai_last_refresh_error_code": code,
+				"openai_last_validated_at":       "",
+			},
+		}
+	}
+	for _, field := range []string{"agent_runtime_id", "agent_private_key", "chatgpt_account_id", "chatgpt_user_id"} {
+		if strings.TrimSpace(stringValue(normalized[field])) == "" {
+			return quarantined("agent_identity_missing_" + field), nil
+		}
+	}
+
+	manager := newOpenAIAgentIdentityManager(directOpenAIAgentIdentityUpstream{proxyURL: proxyURL}, nil)
+	manager.authAPIBaseURL = authAPIBaseURL
+	account := &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Credentials: normalized,
+		Concurrency: 1,
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := manager.Apply(ctx, request, account); err != nil {
+		return quarantined("agent_identity_registration_failed"), nil
+	}
+
+	return &OpenAIImportLifecycleDecision{
+		PoolRole:          OpenAIPoolRoleMain,
+		AuthState:         OpenAIAuthStateHealthy,
+		TokenSource:       OpenAITokenSourceAgentIdentity,
+		ValidationOutcome: OpenAIValidationOutcomeAgentIdentityValidated,
+		Status:            StatusActive,
+		Schedulable:       true,
+		Credentials:       protected,
+		Extra: map[string]any{
+			"openai_pool_role":               OpenAIPoolRoleMain,
+			"openai_auth_state":              OpenAIAuthStateHealthy,
+			"openai_token_source":            OpenAITokenSourceAgentIdentity,
+			"openai_validation_outcome":      OpenAIValidationOutcomeAgentIdentityValidated,
+			"openai_last_refresh_error_code": "",
+			"openai_last_validated_at":       now,
+		},
 	}, nil
 }
 
@@ -353,16 +441,20 @@ func FindMatchingOpenAIOAuthAccountWithAccessor(accounts []Account, credentials 
 	}
 
 	accountID := strings.TrimSpace(stringValue(credentials["chatgpt_account_id"]))
-	if accountID != "" {
+	userID := strings.TrimSpace(stringValue(credentials["chatgpt_user_id"]))
+	if accountID != "" && userID != "" {
+		for i := range accounts {
+			if accounts[i].GetChatGPTAccountID() == accountID && accounts[i].GetChatGPTUserID() == userID {
+				return &accounts[i], "chatgpt_account_user_id"
+			}
+		}
+	} else if accountID != "" {
 		for i := range accounts {
 			if accounts[i].GetChatGPTAccountID() == accountID {
 				return &accounts[i], "chatgpt_account_id"
 			}
 		}
-	}
-
-	userID := strings.TrimSpace(stringValue(credentials["chatgpt_user_id"]))
-	if userID != "" {
+	} else if userID != "" {
 		for i := range accounts {
 			if accounts[i].GetChatGPTUserID() == userID {
 				return &accounts[i], "chatgpt_user_id"
@@ -413,6 +505,9 @@ func ShouldOverwriteMatchedOpenAIAccount(existing *Account, matchKey string, dec
 
 	if decision.TokenSource == OpenAITokenSourceATOnly {
 		return !existing.IsOpenAIRTManaged()
+	}
+	if decision.TokenSource == OpenAITokenSourceAgentIdentity {
+		return decision.ValidationOutcome == OpenAIValidationOutcomeAgentIdentityValidated
 	}
 
 	if decision.ValidationOutcome != OpenAIValidationOutcomeRTValidated {

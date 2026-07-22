@@ -50,6 +50,7 @@ type dataAccount struct {
 	ProxyKey    *string        `json:"proxy_key"`
 	Concurrency int            `json:"concurrency"`
 	Priority    int            `json:"priority"`
+	GroupIDs    []int64        `json:"group_ids"`
 }
 
 func setupAccountDataRouter() (*gin.Engine, *stubAdminService) {
@@ -163,6 +164,7 @@ func TestExportDataIncludesSecrets(t *testing.T) {
 			Concurrency: 3,
 			Priority:    50,
 			Status:      service.StatusDisabled,
+			GroupIDs:    []int64{2, 9, 10},
 		},
 	}
 
@@ -180,6 +182,7 @@ func TestExportDataIncludesSecrets(t *testing.T) {
 	require.Equal(t, "pass", resp.Data.Proxies[0].Password)
 	require.Len(t, resp.Data.Accounts, 1)
 	require.Equal(t, "secret", resp.Data.Accounts[0].Credentials["token"])
+	require.Equal(t, []int64{2, 9, 10}, resp.Data.Accounts[0].GroupIDs)
 }
 
 func TestExportDataWithoutProxies(t *testing.T) {
@@ -367,6 +370,95 @@ func TestImportDataReusesProxyAndSkipsDefaultGroup(t *testing.T) {
 	require.Len(t, adminSvc.createdProxies, 0)
 	require.Len(t, adminSvc.createdAccounts, 1)
 	require.True(t, adminSvc.createdAccounts[0].SkipDefaultGroupBind)
+}
+
+func TestImportDataPreservesExplicitGroupIDs(t *testing.T) {
+	router, adminSvc := setupAccountDataRouter()
+
+	dataPayload := map[string]any{
+		"data": map[string]any{
+			"type":    dataType,
+			"version": dataVersion,
+			"proxies": []map[string]any{},
+			"accounts": []map[string]any{
+				{
+					"name":        "openai-key",
+					"platform":    service.PlatformOpenAI,
+					"type":        service.AccountTypeAPIKey,
+					"credentials": map[string]any{"api_key": "sk-test"},
+					"concurrency": 3,
+					"priority":    50,
+					"group_ids":   []int64{2, 9, 10},
+				},
+			},
+		},
+		"skip_default_group_bind": true,
+	}
+
+	body, _ := json.Marshal(dataPayload)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/data", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Len(t, adminSvc.createdAccounts, 1)
+	require.Equal(t, []int64{2, 9, 10}, adminSvc.createdAccounts[0].GroupIDs)
+}
+
+func TestImportDataUpdatesExplicitGroupIDsOnMatchedOpenAIAccount(t *testing.T) {
+	router, adminSvc := setupAccountDataRouterWithOpenAIClient(&accountDataOpenAIClientStub{})
+	adminSvc.accounts = []service.Account{
+		{
+			ID:       215,
+			Name:     "existing-k12-member",
+			Platform: service.PlatformOpenAI,
+			Type:     service.AccountTypeOAuth,
+			Status:   service.StatusDisabled,
+			Credentials: map[string]any{
+				"chatgpt_account_id": "workspace-1",
+				"chatgpt_user_id":    "user-1",
+				"id_token":           "synthetic-id-token",
+			},
+		},
+	}
+
+	dataPayload := map[string]any{
+		"data": map[string]any{
+			"type":    dataType,
+			"version": dataVersion,
+			"proxies": []map[string]any{},
+			"accounts": []map[string]any{
+				{
+					"name":     "existing-k12-member",
+					"platform": service.PlatformOpenAI,
+					"type":     service.AccountTypeOAuth,
+					"credentials": map[string]any{
+						"chatgpt_account_id": "workspace-1",
+						"chatgpt_user_id":    "user-1",
+						"id_token":           "synthetic-id-token",
+					},
+					"concurrency": 3,
+					"priority":    50,
+					"group_ids":   []int64{2, 9, 10},
+				},
+			},
+		},
+		"skip_default_group_bind": true,
+	}
+
+	body, _ := json.Marshal(dataPayload)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/data", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Empty(t, adminSvc.createdAccounts)
+	require.NotEmpty(t, adminSvc.updatedAccounts)
+	require.Equal(t, int64(215), adminSvc.updatedAccounts[0].id)
+	require.NotNil(t, adminSvc.updatedAccounts[0].input.GroupIDs)
+	require.Equal(t, []int64{2, 9, 10}, *adminSvc.updatedAccounts[0].input.GroupIDs)
 }
 
 func TestImportData_OpenAIRTValidationPromotesToMainPool(t *testing.T) {

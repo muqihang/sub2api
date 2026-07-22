@@ -409,10 +409,12 @@ type OpenAIGatewayService struct {
 	openaiWSStateStoreOnce        sync.Once
 	openaiSchedulerOnce           sync.Once
 	openaiWSPassthroughDialerOnce sync.Once
+	openAIAgentIdentityOnce       sync.Once
 	openaiWSPool                  *openAIWSConnPool
 	openaiWSStateStore            OpenAIWSStateStore
 	openaiScheduler               OpenAIAccountScheduler
 	openaiWSPassthroughDialer     openAIWSClientDialer
+	openAIAgentIdentity           *openAIAgentIdentityManager
 	openaiAccountStats            *openAIAccountRuntimeStats
 
 	openaiWSFallbackUntil               sync.Map // key: int64(accountID), value: time.Time
@@ -1846,10 +1848,10 @@ func isOpenAIAccountEligibleBeforeCompactRecheck(ctx context.Context, account *A
 }
 
 func isOpenAIAccountEligibleForRequestWithCompactSupportCheck(ctx context.Context, account *Account, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability, checkCompactSupport bool) bool {
-	if account == nil || !account.IsOpenAI() || !account.IsSchedulableForModelWithContext(ctx, requestedModel) {
+	if account == nil || !account.IsOpenAI() || !isOpenAIAccountSchedulableForRequest(ctx, account, requestedModel, requiredCapability) {
 		return false
 	}
-	if paused, reason := shouldAutoPauseOpenAIAccountByQuota(ctx, account); paused {
+	if paused, reason := shouldAutoPauseOpenAIAccountByQuota(ctx, account); requiredCapability != OpenAIEndpointCapabilitySearch && paused {
 		// Debug level: this fires per-candidate on the scheduling hot path, so Info
 		// would amplify into log spam once several accounts cross the threshold.
 		slog.Debug("account_auto_paused_by_quota",
@@ -1873,6 +1875,25 @@ func isOpenAIAccountEligibleForRequestWithCompactSupportCheck(ctx context.Contex
 		return false
 	}
 	return true
+}
+
+func isOpenAIAccountSchedulableForRequest(ctx context.Context, account *Account, requestedModel string, requiredCapability OpenAIEndpointCapability) bool {
+	if account == nil {
+		return false
+	}
+	if requiredCapability != OpenAIEndpointCapabilitySearch {
+		return account.IsSchedulableForModelWithContext(ctx, requestedModel)
+	}
+	searchCandidate := *account
+	searchCandidate.RateLimitResetAt = nil
+	return searchCandidate.IsSchedulableForModelWithContext(ctx, "")
+}
+
+func shouldClearOpenAIStickySessionForRequest(ctx context.Context, account *Account, requestedModel string, requiredCapability OpenAIEndpointCapability) bool {
+	if requiredCapability == OpenAIEndpointCapabilitySearch {
+		return !isOpenAIAccountSchedulableForRequest(ctx, account, requestedModel, requiredCapability)
+	}
+	return shouldClearStickySession(account, requestedModel)
 }
 
 type openAIQuotaAutoPauseDecision struct {
@@ -2167,7 +2188,13 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 
 	// 2. 获取可调度的 OpenAI 账号
 	// Get schedulable OpenAI accounts
-	accounts, err := s.listSchedulableAccounts(ctx, groupID)
+	var accounts []Account
+	var err error
+	if requiredCapability == OpenAIEndpointCapabilitySearch {
+		accounts, err = s.listOpenAINativeSearchCandidateAccounts(ctx, groupID)
+	} else {
+		accounts, err = s.listSchedulableAccounts(ctx, groupID)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("query accounts failed: %w", err)
 	}
@@ -2225,7 +2252,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 
 	// 检查账号是否需要清理粘性会话
 	// Check if sticky session should be cleared
-	if shouldClearStickySession(account, requestedModel) {
+	if shouldClearOpenAIStickySessionForRequest(ctx, account, requestedModel, requiredCapability) {
 		_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 		return nil
 	}
@@ -2421,7 +2448,13 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		})
 	}
 
-	accounts, err := s.listSchedulableAccounts(ctx, groupID)
+	var accounts []Account
+	var err error
+	if requiredCapability == OpenAIEndpointCapabilitySearch {
+		accounts, err = s.listOpenAINativeSearchCandidateAccounts(ctx, groupID)
+	} else {
+		accounts, err = s.listSchedulableAccounts(ctx, groupID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -2443,7 +2476,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		if accountID > 0 && !isExcluded(accountID) {
 			account, err := s.getSchedulableAccount(ctx, accountID)
 			if err == nil {
-				clearSticky := shouldClearStickySession(account, requestedModel)
+				clearSticky := shouldClearOpenAIStickySessionForRequest(ctx, account, requestedModel, requiredCapability)
 				if clearSticky {
 					_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 				}
@@ -2767,6 +2800,28 @@ func (s *OpenAIGatewayService) listSchedulableAccountsForPlatform(ctx context.Co
 	return accounts, nil
 }
 
+func (s *OpenAIGatewayService) listOpenAINativeSearchCandidateAccounts(ctx context.Context, groupID *int64) ([]Account, error) {
+	repo, ok := s.accountRepo.(OpenAINativeSearchAccountRepository)
+	if !ok {
+		return s.listSchedulableAccountsForPlatform(ctx, groupID, PlatformOpenAI)
+	}
+	var (
+		accounts []Account
+		err      error
+	)
+	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
+		accounts, err = repo.ListOpenAINativeSearchCandidatesByPlatform(ctx, PlatformOpenAI)
+	} else if groupID != nil {
+		accounts, err = repo.ListOpenAINativeSearchCandidatesByGroupIDAndPlatform(ctx, *groupID, PlatformOpenAI)
+	} else {
+		accounts, err = repo.ListOpenAINativeSearchCandidatesUngroupedByPlatform(ctx, PlatformOpenAI)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query native Search candidate accounts failed: %w", err)
+	}
+	return accounts, nil
+}
+
 func (s *OpenAIGatewayService) tryAcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int) (*AcquireResult, error) {
 	if s.concurrencyService == nil {
 		return &AcquireResult{Acquired: true, ReleaseFunc: func() {}}, nil
@@ -2978,6 +3033,9 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 	credentials := NewOpenAIGatewayCredentials(s.cfg, nil)
 	switch account.Type {
 	case AccountTypeOAuth:
+		if account.IsOpenAIAgentIdentity() {
+			return "", "agent_identity", nil
+		}
 		// 使用 TokenProvider 获取缓存的 token
 		if s.openAITokenProvider != nil {
 			accessToken, err := s.openAITokenProvider.GetAccessToken(ctx, account)
@@ -3089,7 +3147,9 @@ func (s *OpenAIGatewayService) DoNativeResponsesRequest(ctx context.Context, acc
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	if err := s.applyOpenAIRequestAuth(ctx, req, account, token); err != nil {
+		return nil, err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	if stream {
 		req.Header.Set("Accept", "text/event-stream")
@@ -4593,7 +4653,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	req.Header.Del("authorization")
 	req.Header.Del("x-api-key")
 	req.Header.Del("x-goog-api-key")
-	req.Header.Set("authorization", "Bearer "+token)
+	if err := s.applyOpenAIRequestAuth(ctx, req, account, token); err != nil {
+		return nil, err
+	}
 
 	// OAuth 透传到 ChatGPT internal API 时补齐必要头。
 	if account.Type == AccountTypeOAuth {
@@ -5468,7 +5530,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
 
 	// Set authentication header
-	req.Header.Set("authorization", "Bearer "+token)
+	if err := s.applyOpenAIRequestAuth(ctx, req, account, token); err != nil {
+		return nil, err
+	}
 
 	// Set headers specific to OAuth accounts (ChatGPT internal API)
 	if account.Type == AccountTypeOAuth {
