@@ -185,6 +185,26 @@ func TestExportDataIncludesSecrets(t *testing.T) {
 	require.Equal(t, []int64{2, 9, 10}, resp.Data.Accounts[0].GroupIDs)
 }
 
+func TestFindMatchingImportedOpenAIAgentIdentityByNameDeduplicatesRepush(t *testing.T) {
+	accounts := []service.Account{
+		{
+			ID:       226,
+			Name:     "bizzellkinroth4765@hotmail.com",
+			Platform: service.PlatformOpenAI,
+			Type:     service.AccountTypeOAuth,
+			Credentials: map[string]any{
+				"auth_mode": "agentIdentity",
+			},
+		},
+		{ID: 37, Name: "unrelated", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey},
+	}
+
+	matched := findMatchingImportedOpenAIAgentIdentityByName(accounts, " BIZZELLKINROTH4765@HOTMAIL.COM ")
+	require.NotNil(t, matched)
+	require.Equal(t, int64(226), matched.ID)
+	require.Nil(t, findMatchingImportedOpenAIAgentIdentityByName(accounts, "new@example.com"))
+}
+
 func TestExportDataWithoutProxies(t *testing.T) {
 	router, adminSvc := setupAccountDataRouter()
 

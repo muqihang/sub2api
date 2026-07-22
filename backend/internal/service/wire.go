@@ -345,6 +345,23 @@ func ProvideOpenAIGatewayService(
 	)
 }
 
+// ProvideOpenAIAgentIdentityAdmissionWorker starts the isolated admission
+// pipeline for Agent Identity imports. Imported accounts remain quarantined
+// until Responses, Compact, and Native Search all pass.
+func ProvideOpenAIAgentIdentityAdmissionWorker(
+	accountRepo AccountRepository,
+	openAIGateway *OpenAIGatewayService,
+) *OpenAIAgentIdentityAdmissionWorker {
+	prober := NewOpenAIAgentIdentityAdmissionGatewayProber(openAIGateway)
+	worker := NewOpenAIAgentIdentityAdmissionWorker(
+		accountRepo,
+		prober,
+		OpenAIAgentIdentityAdmissionWorkerOptions{},
+	)
+	worker.Start()
+	return worker
+}
+
 // ProvideClaudeTokenProvider creates ClaudeTokenProvider with OAuthRefreshAPI injection
 func ProvideClaudeTokenProvider(
 	accountRepo AccountRepository,
@@ -1075,6 +1092,7 @@ var ProviderSet = wire.NewSet(
 	ProvideOpenAIGatewayCoreService,
 	NewEntityRateLimitService,
 	ProvideOpenAIGatewayService,
+	ProvideOpenAIAgentIdentityAdmissionWorker,
 	ProvideBatchImageModelPricingResolver,
 	NewBatchImagePublicService,
 	NewBatchImageDownloadService,

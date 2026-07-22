@@ -29,6 +29,7 @@ const (
 	OpenAIValidationOutcomeRTValidationScopeInsufficient = "rt_validation_scope_insufficient"
 	OpenAIValidationOutcomeATOnlyAccepted                = "at_only_accepted"
 	OpenAIValidationOutcomeATOnlyQuarantined             = "at_only_quarantined"
+	OpenAIValidationOutcomeAgentIdentityPending          = "agent_identity_pending"
 	OpenAIValidationOutcomeAgentIdentityValidated        = "agent_identity_validated"
 	OpenAIValidationOutcomeAgentIdentityQuarantined      = "agent_identity_quarantined"
 
@@ -294,20 +295,26 @@ func evaluateOpenAIAgentIdentityImportLifecycle(
 	}
 
 	return &OpenAIImportLifecycleDecision{
-		PoolRole:          OpenAIPoolRoleMain,
-		AuthState:         OpenAIAuthStateHealthy,
+		PoolRole:          OpenAIPoolRoleQuarantine,
+		AuthState:         OpenAIAuthStateCooling,
 		TokenSource:       OpenAITokenSourceAgentIdentity,
-		ValidationOutcome: OpenAIValidationOutcomeAgentIdentityValidated,
-		Status:            StatusActive,
-		Schedulable:       true,
+		ValidationOutcome: OpenAIValidationOutcomeAgentIdentityPending,
+		Status:            StatusDisabled,
+		Schedulable:       false,
 		Credentials:       protected,
 		Extra: map[string]any{
-			"openai_pool_role":               OpenAIPoolRoleMain,
-			"openai_auth_state":              OpenAIAuthStateHealthy,
+			"openai_pool_role":               OpenAIPoolRoleQuarantine,
+			"openai_auth_state":              OpenAIAuthStateCooling,
 			"openai_token_source":            OpenAITokenSourceAgentIdentity,
-			"openai_validation_outcome":      OpenAIValidationOutcomeAgentIdentityValidated,
+			"openai_validation_outcome":      OpenAIValidationOutcomeAgentIdentityPending,
 			"openai_last_refresh_error_code": "",
-			"openai_last_validated_at":       now,
+			"openai_last_validated_at":       "",
+			"openai_admission_state":         OpenAIAgentIdentityAdmissionStatePending,
+			"openai_admission_stage":         OpenAIAgentIdentityAdmissionStageRegistration,
+			"openai_admission_attempts":      0,
+			"openai_admission_registered_at": now,
+			"openai_admission_last_error":    "",
+			"openai_admission_next_retry_at": "",
 		},
 	}, nil
 }
@@ -507,7 +514,8 @@ func ShouldOverwriteMatchedOpenAIAccount(existing *Account, matchKey string, dec
 		return !existing.IsOpenAIRTManaged()
 	}
 	if decision.TokenSource == OpenAITokenSourceAgentIdentity {
-		return decision.ValidationOutcome == OpenAIValidationOutcomeAgentIdentityValidated
+		return decision.ValidationOutcome == OpenAIValidationOutcomeAgentIdentityPending ||
+			decision.ValidationOutcome == OpenAIValidationOutcomeAgentIdentityValidated
 	}
 
 	if decision.ValidationOutcome != OpenAIValidationOutcomeRTValidated {

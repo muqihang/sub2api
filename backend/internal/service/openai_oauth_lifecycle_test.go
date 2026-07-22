@@ -493,7 +493,7 @@ func TestShouldOverwriteMatchedOpenAIAccount(t *testing.T) {
 
 	agentIdentity := &OpenAIImportLifecycleDecision{
 		TokenSource:       OpenAITokenSourceAgentIdentity,
-		ValidationOutcome: OpenAIValidationOutcomeAgentIdentityValidated,
+		ValidationOutcome: OpenAIValidationOutcomeAgentIdentityPending,
 		Credentials: map[string]any{
 			"agent_runtime_id":   "agent-1",
 			"agent_private_key":  "private-key",
@@ -522,7 +522,7 @@ func TestEvaluateOpenAIImportLifecycle_TokenInvalidatedValidationFailureIsTermin
 	require.Equal(t, openAIAuthErrorCodeTokenInvalidated, decision.RefreshErrorCode)
 }
 
-func TestEvaluateOpenAIAgentIdentityImportLifecycle_RegisteredIdentityIsSchedulable(t *testing.T) {
+func TestEvaluateOpenAIAgentIdentityImportLifecycle_RegisteredIdentityIsQuarantinedPendingAdmission(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	privateDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
@@ -556,8 +556,10 @@ func TestEvaluateOpenAIAgentIdentityImportLifecycle_RegisteredIdentityIsSchedula
 	)
 
 	require.NoError(t, err)
-	require.Equal(t, StatusActive, decision.Status)
-	require.True(t, decision.Schedulable)
+	require.Equal(t, StatusDisabled, decision.Status)
+	require.False(t, decision.Schedulable)
+	require.Equal(t, OpenAIPoolRoleQuarantine, decision.PoolRole)
 	require.Equal(t, OpenAITokenSourceAgentIdentity, decision.TokenSource)
-	require.Equal(t, OpenAIValidationOutcomeAgentIdentityValidated, decision.ValidationOutcome)
+	require.Equal(t, OpenAIValidationOutcomeAgentIdentityPending, decision.ValidationOutcome)
+	require.Equal(t, OpenAIAgentIdentityAdmissionStatePending, decision.Extra["openai_admission_state"])
 }

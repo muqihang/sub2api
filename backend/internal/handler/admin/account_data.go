@@ -469,6 +469,12 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			skipBindForItem := skipDefaultGroupBind || decision.PoolRole != service.OpenAIPoolRoleMain
 
 			matched, matchKey := service.FindMatchingOpenAIOAuthAccountWithAccessor(openAIOAuthAccounts, item.Credentials, h.openaiOAuthService.CredentialAccessor())
+			if matched == nil && decision.TokenSource == service.OpenAITokenSourceAgentIdentity {
+				matched = findMatchingImportedOpenAIAgentIdentityByName(openAIOAuthAccounts, item.Name)
+				if matched != nil {
+					matchKey = "name"
+				}
+			}
 			if matched != nil && !service.ShouldOverwriteMatchedOpenAIAccount(matched, matchKey, decision) {
 				msg := "import rejected: newer RT-managed account already exists"
 				result.AccountFailed++
@@ -635,6 +641,19 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 	}
 
 	return result, nil
+}
+
+func findMatchingImportedOpenAIAgentIdentityByName(accounts []service.Account, name string) *service.Account {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	for i := range accounts {
+		if accounts[i].IsOpenAIAgentIdentity() && strings.EqualFold(strings.TrimSpace(accounts[i].Name), name) {
+			return &accounts[i]
+		}
+	}
+	return nil
 }
 
 func (h *AccountHandler) listAllProxies(ctx context.Context) ([]service.Proxy, error) {
