@@ -25,10 +25,11 @@ func swapMonitorHTTPClient(t *testing.T) {
 
 // captureHandler 把每次收到的请求 body 和 headers 存起来，测试断言用。
 type captureHandler struct {
-	lastBody    map[string]any
-	lastHeaders http.Header
-	respondText string // 写到 Anthropic content[0].text 里（校验用）
-	status      int
+	lastBody        map[string]any
+	lastHeaders     http.Header
+	respondText     string // 写到 Anthropic text block 里（校验用）
+	leadingThinking bool
+	status          int
 }
 
 func (h *captureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -43,11 +44,17 @@ func (h *captureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(h.status)
-	// 构造 Anthropic 格式的响应：content[0].text = h.respondText
+	content := []map[string]any{}
+	if h.leadingThinking {
+		content = append(content, map[string]any{
+			"type":      "thinking",
+			"thinking":  "The arithmetic is straightforward.",
+			"signature": "test-signature",
+		})
+	}
+	content = append(content, map[string]any{"type": "text", "text": h.respondText})
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"content": []map[string]any{
-			{"type": "text", "text": h.respondText},
-		},
+		"content": content,
 	})
 }
 
@@ -158,6 +165,33 @@ func TestRunCheckForModel_OffMode_PreservesDefaultBody(t *testing.T) {
 	}
 	if h.lastHeaders.Get("x-api-key") != "sk-fake" {
 		t.Errorf("expected adapter's x-api-key header, got %q", h.lastHeaders.Get("x-api-key"))
+	}
+}
+
+func TestCallProvider_AnthropicSkipsLeadingThinkingBlock(t *testing.T) {
+	h := &captureHandler{respondText: "29", leadingThinking: true}
+	endpoint := setupFakeAnthropic(t, h)
+
+	text, _, status, err := callProvider(
+		context.Background(),
+		MonitorProviderAnthropic,
+		endpoint,
+		"sk-fake",
+		"claude-haiku-4-5-20251001",
+		"What is 14 + 15? Reply with only the integer result.",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("callProvider returned error: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d", status)
+	}
+	if text != "29" {
+		t.Fatalf("expected text from the Anthropic text block, got %q", text)
+	}
+	if got := int(h.lastBody["max_tokens"].(float64)); got != monitorAnthropicChallengeMaxTokens {
+		t.Fatalf("expected Anthropic max_tokens=%d, got %d", monitorAnthropicChallengeMaxTokens, got)
 	}
 }
 

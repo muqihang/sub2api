@@ -173,7 +173,7 @@ var providerAdapters = map[string]providerAdapter{
 			return json.Marshal(map[string]any{
 				"model":      model,
 				"messages":   []map[string]string{{"role": "user", "content": prompt}},
-				"max_tokens": monitorChallengeMaxTokens,
+				"max_tokens": monitorAnthropicChallengeMaxTokens,
 			})
 		},
 		buildHeaders: func(apiKey string) map[string]string {
@@ -284,7 +284,31 @@ func callProvider(ctx context.Context, provider, endpoint, apiKey, model, prompt
 	if provider == MonitorProviderOpenAI && apiMode == MonitorAPIModeResponses {
 		return extractOpenAIResponsesText(respBytes), string(respBytes), status, nil
 	}
+	if provider == MonitorProviderAnthropic {
+		return extractAnthropicMessagesText(respBytes), string(respBytes), status, nil
+	}
 	return gjson.GetBytes(respBytes, adapter.textPath).String(), string(respBytes), status, nil
+}
+
+// extractAnthropicMessagesText aggregates text blocks while ignoring leading
+// thinking/tool blocks. Extended-thinking responses do not guarantee that the
+// first content item contains user-visible text.
+func extractAnthropicMessagesText(respBytes []byte) string {
+	var texts []string
+	content := gjson.GetBytes(respBytes, "content")
+	if !content.IsArray() {
+		return ""
+	}
+	content.ForEach(func(_, item gjson.Result) bool {
+		if item.Get("type").String() != "text" {
+			return true
+		}
+		if text := strings.TrimSpace(item.Get("text").String()); text != "" {
+			texts = append(texts, text)
+		}
+		return true
+	})
+	return strings.Join(texts, "\n")
 }
 
 // extractOpenAIResponsesText 聚合 Responses API 的最终 assistant 文本。
