@@ -25,6 +25,10 @@ case "$*" in
     if [[ "${FAKE_CADDY_ADAPT_FAIL:-0}" == "1" ]]; then
       exit 1
     fi
+    if [[ "${FAKE_CADDY_ADAPT_MISMATCH:-0}" == "1" ]]; then
+      cat "${FAKE_CADDY_V5_MUTATED:?}"
+      exit 0
+    fi
     if grep -Fq 'sub2api-next-v6:8080' "${FAKE_STDIN_CAPTURE}"; then
       cat "${FAKE_CADDY_V6:?}"
     else

@@ -29,6 +29,9 @@ Options:
   --candidate NAME         Candidate container name
   --active-container NAME  Override active application container discovery
   --config FILE            Load deployment settings from FILE
+  --recover-stale-host-caddyfile
+                           Recover a stale host file only when the mounted
+                           Caddyfile adapts exactly to the active Admin JSON
   --skip-api-smoke         Explicitly skip Responses, Compact, and Search smoke probes
   --dry-run                Validate input and print the intended deployment
   --help                   Show this help
@@ -64,6 +67,7 @@ apply_defaults() {
   CONFIG_FILE="${CONFIG_FILE:-}"
   DRY_RUN="${DRY_RUN:-false}"
   SKIP_API_SMOKE="${SKIP_API_SMOKE:-false}"
+  RECOVER_STALE_HOST_CADDYFILE="${RECOVER_STALE_HOST_CADDYFILE:-false}"
   SMOKE_API_KEY="${SMOKE_API_KEY:-}"
   LOCK_DIR="${LOCK_FILE}.d"
   LOCK_ACQUIRED=false
@@ -113,6 +117,10 @@ parse_args() {
         ;;
       --skip-api-smoke)
         SKIP_API_SMOKE=true
+        shift
+        ;;
+      --recover-stale-host-caddyfile)
+        RECOVER_STALE_HOST_CADDYFILE=true
         shift
         ;;
       --dry-run)
@@ -872,7 +880,51 @@ check_caddy_mount_consistency() {
   fi
   if ! cmp -s "${CADDYFILE}" "${mounted_file}"; then
     warn "host and mounted Caddyfile differ (stale bind inode); reload remains stdin-only"
+    if [[ "${RECOVER_STALE_HOST_CADDYFILE}" == "true" ]]; then
+      recover_stale_host_caddyfile "${mounted_file}"
+    fi
   fi
+}
+
+recover_stale_host_caddyfile() {
+  local mounted_file="$1"
+  local mounted_json="${STATE_DIR}/mounted-Caddyfile.adapted.json"
+  local active_recheck="${STATE_DIR}/caddy-before-host-recovery.json"
+  local mounted_upstream
+
+  log "Verifying mounted Caddyfile before stale host recovery"
+  validate_caddyfile "${mounted_file}" || {
+    printf 'mounted Caddyfile validation failed; host recovery refused\n' >&2
+    return 1
+  }
+  adapt_caddyfile "${mounted_file}" "${mounted_json}" || {
+    printf 'mounted Caddyfile adaptation failed; host recovery refused\n' >&2
+    return 1
+  }
+  mounted_upstream="$(extract_active_upstream "${mounted_json}")" || return 1
+  if [[ "${mounted_upstream}" != "${ORIGINAL_UPSTREAM}" ]]; then
+    printf 'mounted Caddyfile upstream does not match active upstream; host recovery refused\n' >&2
+    return 1
+  fi
+  if ! json_configs_equal "${CADDY_BEFORE_JSON}" "${mounted_json}"; then
+    printf 'mounted Caddyfile does not match active Caddy JSON; host recovery refused\n' >&2
+    return 1
+  fi
+
+  snapshot_caddy "${active_recheck}" || return 1
+  if ! json_configs_equal "${CADDY_BEFORE_JSON}" "${active_recheck}"; then
+    printf 'active Caddy configuration changed during host recovery\n' >&2
+    return 1
+  fi
+  if ! cmp -s "${CADDYFILE}" "${CADDYFILE_BACKUP}"; then
+    printf 'host Caddyfile changed during host recovery\n' >&2
+    return 1
+  fi
+
+  cp "${CADDYFILE_BACKUP}" "${STATE_DIR}/Caddyfile.stale-before-recovery"
+  write_file_in_place "${mounted_file}" "${CADDYFILE}" || return 1
+  cp "${mounted_file}" "${CADDYFILE_BACKUP}"
+  log "STALE HOST CADDYFILE RECOVERED: verified against active Admin JSON"
 }
 
 run_soak() {

@@ -147,6 +147,25 @@ validation, cutover, and rollback always use stdin, while the host Caddyfile is
 updated without changing its inode. Do not work around the warning with a
 manual container-mounted reload.
 
+If the inverse drift occurs, where the Caddy process and its mounted file still
+match but the host path was overwritten with older content, normal deployment
+stops before cutover. Recover that host baseline only through the guarded mode:
+
+```bash
+SMOKE_API_KEY='<production-canary-key>' \
+  deploy/hot-deploy.sh \
+  --image 'sub2api-zhumeng:<git-sha>' \
+  --recover-stale-host-caddyfile
+```
+
+This mode validates and adapts the mounted Caddyfile through stdin, requires its
+full canonical JSON and active upstream to match a fresh Caddy Admin API
+snapshot, confirms neither the active JSON nor host file changed during the
+check, then restores the host path with an in-place inode-preserving write. The
+overwritten bytes are retained in the deployment state directory as
+`Caddyfile.stale-before-recovery`. Any mismatch refuses recovery and leaves the
+host path unchanged.
+
 ## Explicit Exceptions
 
 `--skip-api-smoke` is available for a non-production environment without an API

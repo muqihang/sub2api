@@ -92,7 +92,7 @@ run_transaction_deploy() {
   local case_dir="$1"
   shift
   mkdir -p "${case_dir}/state"
-  cp "${FIXTURES}/Caddyfile" "${case_dir}/Caddyfile"
+  cp "${TRANSACTION_HOST_CADDYFILE:-${FIXTURES}/Caddyfile}" "${case_dir}/Caddyfile"
   cp "${FIXTURES}/caddy-active-v5.json" "${case_dir}/caddy-active.json"
   : >"${case_dir}/docker.log"
   : >"${case_dir}/curl.log"
@@ -114,7 +114,7 @@ run_transaction_deploy() {
     FAKE_CADDY_V7="${FIXTURES}/caddy-active-v7.json" \
     FAKE_CADDY_V5_MUTATED="${FIXTURES}/caddy-active-v5-mutated.json" \
     FAKE_CADDY_V6_MUTATED="${FIXTURES}/caddy-active-v6-mutated.json" \
-    FAKE_HOST_CADDYFILE="${case_dir}/Caddyfile" \
+    FAKE_HOST_CADDYFILE="${TRANSACTION_MOUNTED_CADDYFILE:-${case_dir}/Caddyfile}" \
     SMOKE_API_KEY="production-smoke-secret" \
     HEALTH_TIMEOUT_SECONDS=2 \
     HEALTH_POLL_INTERVAL_SECONDS=1 \
@@ -509,6 +509,64 @@ test_transaction_success_commits_cutover() {
   assert_file_contains "${case_dir}/docker.log" "update --restart unless-stopped sub2api-next-v6" "success promotes candidate restart policy only after final validation"
 }
 
+test_stale_host_caddyfile_requires_explicit_recovery() {
+  local case_dir="${TEST_ROOT}/transaction-stale-host-default"
+  mkdir -p "${case_dir}"
+  cp "${FIXTURES}/Caddyfile" "${case_dir}/mounted.Caddyfile"
+  sed 's/sub2api-next-v5:8080/sub2api:8080/' "${FIXTURES}/Caddyfile" >"${case_dir}/stale.Caddyfile"
+  TRANSACTION_HOST_CADDYFILE="${case_dir}/stale.Caddyfile" \
+    TRANSACTION_MOUNTED_CADDYFILE="${case_dir}/mounted.Caddyfile" \
+    run_transaction_deploy "${case_dir}"
+  local status=$?
+  local output
+  output="$(captured_output "${case_dir}")"
+  if [[ "${status}" -ne 0 ]]; then
+    pass "stale host Caddyfile blocks deployment by default"
+  else
+    fail "stale host Caddyfile blocks deployment by default"
+  fi
+  assert_contains "${output}" "host and mounted Caddyfile differ" "stale bind inode is reported"
+  assert_file_not_contains "${case_dir}/Caddyfile" "sub2api-next-v6:8080" "default mode does not overwrite stale host Caddyfile"
+}
+
+test_explicit_stale_host_recovery_requires_matching_active_json() {
+  local case_dir="${TEST_ROOT}/transaction-stale-host-mismatch"
+  mkdir -p "${case_dir}"
+  cp "${FIXTURES}/Caddyfile" "${case_dir}/mounted.Caddyfile"
+  sed 's/sub2api-next-v5:8080/sub2api:8080/' "${FIXTURES}/Caddyfile" >"${case_dir}/stale.Caddyfile"
+  TRANSACTION_HOST_CADDYFILE="${case_dir}/stale.Caddyfile" \
+    TRANSACTION_MOUNTED_CADDYFILE="${case_dir}/mounted.Caddyfile" \
+    FAKE_CADDY_ADAPT_MISMATCH=1 \
+    run_transaction_deploy "${case_dir}" --recover-stale-host-caddyfile
+  local status=$?
+  local output
+  output="$(captured_output "${case_dir}")"
+  if [[ "${status}" -ne 0 ]]; then
+    pass "stale host recovery rejects mismatched active JSON"
+  else
+    fail "stale host recovery rejects mismatched active JSON"
+  fi
+  assert_contains "${output}" "mounted Caddyfile does not match active Caddy JSON" "recovery mismatch is explicit"
+  assert_file_not_contains "${case_dir}/Caddyfile" "sub2api-next-v5:8080" "mismatched recovery leaves host Caddyfile untouched"
+}
+
+test_explicit_stale_host_recovery_commits_transaction() {
+  local case_dir="${TEST_ROOT}/transaction-stale-host-recovery"
+  mkdir -p "${case_dir}"
+  cp "${FIXTURES}/Caddyfile" "${case_dir}/mounted.Caddyfile"
+  sed 's/sub2api-next-v5:8080/sub2api:8080/' "${FIXTURES}/Caddyfile" >"${case_dir}/stale.Caddyfile"
+  TRANSACTION_HOST_CADDYFILE="${case_dir}/stale.Caddyfile" \
+    TRANSACTION_MOUNTED_CADDYFILE="${case_dir}/mounted.Caddyfile" \
+    run_transaction_deploy "${case_dir}" --recover-stale-host-caddyfile
+  local status=$?
+  local output
+  output="$(captured_output "${case_dir}")"
+  assert_status "${status}" 0 "verified stale host recovery completes deployment"
+  assert_contains "${output}" "STALE HOST CADDYFILE RECOVERED" "verified recovery is auditable"
+  assert_contains "${output}" "DEPLOYMENT SUCCEEDED" "recovered transaction reaches final commit"
+  assert_file_contains "${case_dir}/Caddyfile" "sub2api-next-v6:8080" "recovered host Caddyfile advances to candidate"
+}
+
 test_public_failure_rolls_back() {
   local case_dir="${TEST_ROOT}/transaction-public-fail"
   FAKE_PUBLIC_FAIL=1 run_transaction_deploy "${case_dir}"
@@ -679,6 +737,9 @@ test_signal_rolls_back() {
 
 run_transaction_tests() {
   test_transaction_success_commits_cutover
+  test_stale_host_caddyfile_requires_explicit_recovery
+  test_explicit_stale_host_recovery_requires_matching_active_json
+  test_explicit_stale_host_recovery_commits_transaction
   test_public_failure_rolls_back
   test_public_native_search_failure_rolls_back
   test_soak_failure_rolls_back
