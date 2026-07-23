@@ -621,6 +621,15 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 
+	// Remote compact v2 requests can carry multi-megabyte bodies. Mark the
+	// declared SSE compact stream before reading the body so ingress heartbeats
+	// can keep edge proxies alive while the upload is still in progress.
+	compactKeepaliveStarted := markOpenAICompactClientStreamFromHeaders(c)
+	stopCompactKeepalive := service.StartOpenAICompactSSEKeepalive(c, h.openAICompactKeepaliveInterval())
+	defer func() {
+		stopCompactKeepalive()
+	}()
+
 	// Read request body
 	bodyReadStartedAt := time.Now()
 	body, err := readLenientJSONRequestBodyWithPrealloc(c.Request, h.cfg)
@@ -657,8 +666,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	if !ok {
 		return
 	}
-	stopCompactKeepalive := service.StartOpenAICompactSSEKeepalive(c, h.openAICompactKeepaliveInterval())
-	defer stopCompactKeepalive()
+	if !compactKeepaliveStarted {
+		stopCompactKeepalive = service.StartOpenAICompactSSEKeepalive(c, h.openAICompactKeepaliveInterval())
+	}
 
 	// 校验请求体 JSON 合法性
 	if !gjson.ValidBytes(body) {
@@ -1087,6 +1097,27 @@ func (h *OpenAIGatewayHandler) normalizeOpenAIResponsesCompactRequest(c *gin.Con
 		body = normalizedCompactBody
 	}
 	return body, true
+}
+
+func markOpenAICompactClientStreamFromHeaders(c *gin.Context) bool {
+	if c == nil || c.Request == nil || !isBareOpenAIResponsesPath(c) {
+		return false
+	}
+	if !strings.Contains(strings.ToLower(c.GetHeader("Accept")), "text/event-stream") {
+		return false
+	}
+	metadata := strings.TrimSpace(c.GetHeader("X-Codex-Turn-Metadata"))
+	if metadata == "" || !gjson.Valid(metadata) {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(gjson.Get(metadata, "request_kind").String()), "compaction") {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(gjson.Get(metadata, "compaction.implementation").String()), "responses_compaction_v2") {
+		return false
+	}
+	service.MarkOpenAICompactClientStream(c)
+	return true
 }
 
 func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcome(c *gin.Context, startedAt time.Time) {

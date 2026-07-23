@@ -25,6 +25,10 @@ func StartOpenAICompactSSEKeepalive(c *gin.Context, interval time.Duration) func
 		return func() {}
 	}
 	originalWriter := c.Writer
+	// Caddy currently proxies to the application over HTTP/1.1. Without full
+	// duplex, net/http may wait for the entire request body before flushing the
+	// first heartbeat, which defeats ingress keepalive for large compact uploads.
+	_ = http.NewResponseController(originalWriter).EnableFullDuplex()
 	keepalive := &openAICompactSSEKeepalive{
 		writer: originalWriter,
 		stop:   make(chan struct{}),
