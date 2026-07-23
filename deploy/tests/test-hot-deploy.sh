@@ -329,6 +329,31 @@ test_restore_uses_native_json_stdin() {
   fi
 }
 
+test_stale_recovery_json_comparison_normalizes_only_caddy_source_hide_path() {
+  local case_dir="${TEST_ROOT}/caddy-stale-recovery-json"
+  mkdir -p "${case_dir}"
+  cat >"${case_dir}/stdin.json" <<'JSON'
+{"apps":{"http":{"servers":{"srv0":{"routes":[{"handle":[{"handler":"file_server","hide":["./-"]},{"handler":"reverse_proxy","upstreams":[{"dial":"sub2api-next-v5:8080"}]}]}]}}}}}
+JSON
+  cat >"${case_dir}/mounted.json" <<'JSON'
+{"apps":{"http":{"servers":{"srv0":{"routes":[{"handle":[{"handler":"file_server","hide":["/etc/caddy/Caddyfile"]},{"handler":"reverse_proxy","upstreams":[{"dial":"sub2api-next-v5:8080"}]}]}]}}}}}
+JSON
+  cat >"${case_dir}/external.json" <<'JSON'
+{"apps":{"http":{"servers":{"srv0":{"listen":[":443"],"routes":[{"handle":[{"handler":"file_server","hide":["/etc/caddy/Caddyfile"]},{"handler":"reverse_proxy","upstreams":[{"dial":"sub2api-next-v5:8080"}]}]}]}}}}}
+JSON
+
+  if json_configs_equal_for_stale_recovery "${case_dir}/stdin.json" "${case_dir}/mounted.json"; then
+    pass "stale recovery treats Caddy source hide paths as equivalent"
+  else
+    fail "stale recovery treats Caddy source hide paths as equivalent"
+  fi
+  if json_configs_equal_for_stale_recovery "${case_dir}/stdin.json" "${case_dir}/external.json"; then
+    fail "stale recovery still rejects unrelated JSON drift"
+  else
+    pass "stale recovery still rejects unrelated JSON drift"
+  fi
+}
+
 run_caddy_tests() {
   setup_caddy_case "${TEST_ROOT}/caddy-setup"
   test_extracts_active_caddy_upstream
@@ -337,6 +362,7 @@ run_caddy_tests() {
   test_caddy_operations_use_stdin_only
   test_snapshot_and_active_assertion
   test_restore_uses_native_json_stdin
+  test_stale_recovery_json_comparison_normalizes_only_caddy_source_hide_path
 }
 
 test_candidate_clones_runtime_without_ports() {

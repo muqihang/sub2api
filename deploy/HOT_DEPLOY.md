@@ -164,7 +164,9 @@ snapshot, confirms neither the active JSON nor host file changed during the
 check, then restores the host path with an in-place inode-preserving write. The
 overwritten bytes are retained in the deployment state directory as
 `Caddyfile.stale-before-recovery`. Any mismatch refuses recovery and leaves the
-host path unchanged.
+host path unchanged. The recovery-only comparison normalizes Caddy's equivalent
+auto-injected `file_server.hide` source paths (`./-` for stdin and
+`/etc/caddy/Caddyfile` for file startup); every other JSON field remains strict.
 
 ## Explicit Exceptions
 

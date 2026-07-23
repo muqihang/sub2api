@@ -906,7 +906,7 @@ recover_stale_host_caddyfile() {
     printf 'mounted Caddyfile upstream does not match active upstream; host recovery refused\n' >&2
     return 1
   fi
-  if ! json_configs_equal "${CADDY_BEFORE_JSON}" "${mounted_json}"; then
+  if ! json_configs_equal_for_stale_recovery "${CADDY_BEFORE_JSON}" "${mounted_json}"; then
     printf 'mounted Caddyfile does not match active Caddy JSON; host recovery refused\n' >&2
     return 1
   fi
@@ -962,6 +962,45 @@ json_configs_equal() {
   [[ -s "${left}" && -s "${right}" ]] || return 1
   left_digest="$(json_config_digest "${left}")" || return 1
   right_digest="$(json_config_digest "${right}")" || return 1
+  [[ "${left_digest}" == "${right_digest}" ]]
+}
+
+json_config_digest_for_stale_recovery() {
+  local config_file="$1"
+  python3 - "${config_file}" <<'PY'
+import hashlib
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+def normalize(value):
+    if isinstance(value, dict):
+        normalized = {key: normalize(child) for key, child in value.items()}
+        if normalized.get("handler") == "file_server" and isinstance(normalized.get("hide"), list):
+            normalized["hide"] = [
+                "<caddy-config-source>" if item in {"./-", "/etc/caddy/Caddyfile"} else item
+                for item in normalized["hide"]
+            ]
+        return normalized
+    if isinstance(value, list):
+        return [normalize(child) for child in value]
+    return value
+
+canonical = json.dumps(normalize(payload), sort_keys=True, separators=(",", ":")).encode("utf-8")
+print(hashlib.sha256(canonical).hexdigest())
+PY
+}
+
+json_configs_equal_for_stale_recovery() {
+  local left="$1"
+  local right="$2"
+  local left_digest
+  local right_digest
+  [[ -s "${left}" && -s "${right}" ]] || return 1
+  left_digest="$(json_config_digest_for_stale_recovery "${left}")" || return 1
+  right_digest="$(json_config_digest_for_stale_recovery "${right}")" || return 1
   [[ "${left_digest}" == "${right_digest}" ]]
 }
 
