@@ -785,6 +785,7 @@ test_repository_deployment_policy() {
   local agents_file="${DEPLOY_DIR}/../AGENTS.md"
   local runbook="${DEPLOY_DIR}/HOT_DEPLOY.md"
   local example_config="${DEPLOY_DIR}/hot-deploy.env.example"
+  local caddyfile="${DEPLOY_DIR}/Caddyfile.zhumeng"
   assert_file_contains "${agents_file}" "deploy/hot-deploy.sh" "project policy names the only production hot-deploy entry point"
   assert_file_contains "${agents_file}" "--config /etc/caddy/Caddyfile" "project policy prohibits mounted-file reload"
   assert_file_contains "${agents_file}" "PostgreSQL" "project policy protects production databases"
@@ -795,6 +796,11 @@ test_repository_deployment_policy() {
   assert_file_contains "${runbook}" "never written" "runbook documents native Search artifact privacy"
   assert_file_contains "${example_config}" "COMPACT_SMOKE_BYTES=1048576" "example config keeps the large compact canary"
   assert_file_contains "${DEPLOY_DIR}/Makefile" "test-hot-deploy" "deploy Makefile exposes the regression suite"
+  assert_file_contains "${caddyfile}" "@ai_gateway_paths" "API hostname uses an explicit gateway allowlist"
+  assert_file_contains "${caddyfile}" "path /v1/*" "API allowlist keeps versioned gateway routes"
+  assert_file_contains "${caddyfile}" "path /responses*" "API allowlist keeps direct Responses routes"
+  assert_file_contains "${caddyfile}" "handle @ai_gateway_paths" "only allowlisted API paths reach the application"
+  assert_file_not_contains "${caddyfile}" "@workbench_paths" "API hostname no longer relies on a workbench blacklist"
   local repository_root="${DEPLOY_DIR}/.."
   local required_file
   for required_file in \
