@@ -185,6 +185,8 @@ export interface LoginAgreementDocument {
   id: string
   title: string
   content_md: string
+  title_en?: string
+  content_md_en?: string
 }
 
 export interface PublicSettings {

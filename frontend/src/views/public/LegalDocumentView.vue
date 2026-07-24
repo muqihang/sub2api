@@ -10,12 +10,15 @@
             {{ siteName }}
           </span>
         </RouterLink>
-        <RouterLink
-          to="/login"
-          class="inline-flex flex-shrink-0 items-center justify-center rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-primary-600/20 transition hover:bg-primary-700"
-        >
-          {{ t('home.login') }}
-        </RouterLink>
+        <div class="flex flex-shrink-0 items-center gap-3">
+          <LocaleSwitcher />
+          <RouterLink
+            to="/login"
+            class="inline-flex items-center justify-center rounded-lg bg-primary-600 px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-primary-600/20 transition hover:bg-primary-700"
+          >
+            {{ t('home.login') }}
+          </RouterLink>
+        </div>
       </div>
     </header>
 
@@ -89,10 +92,11 @@ import { useRoute } from 'vue-router'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { useI18n } from 'vue-i18n'
+import LocaleSwitcher from '@/components/common/LocaleSwitcher.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { getPublicSettings } from '@/api/auth'
-import { getLocale } from '@/i18n'
 import { sanitizeUrl } from '@/utils/url'
+import { localizeLoginAgreementDocument } from '@/utils/legalDocument'
 import type { LoginAgreementDocument, PublicSettings } from '@/types'
 import zhAdminCompliance from '../../../../docs/legal/admin-compliance.zh.md?raw'
 import enAdminCompliance from '../../../../docs/legal/admin-compliance.en.md?raw'
@@ -100,7 +104,7 @@ import enAdminCompliance from '../../../../docs/legal/admin-compliance.en.md?raw
 type LegalDocumentIcon = 'document' | 'shield' | 'globe' | 'cog'
 
 const route = useRoute()
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const settings = ref<PublicSettings | null>(null)
 const loading = ref(true)
 const loadError = ref(false)
@@ -130,14 +134,15 @@ const currentDocument = computed<LoginAgreementDocument | null>(() => {
     return {
       id: 'admin-compliance',
       title: t('adminCompliance.title'),
-      content_md: getLocale() === 'zh' ? zhAdminCompliance : enAdminCompliance
+      content_md: locale.value.toLowerCase().startsWith('zh') ? zhAdminCompliance : enAdminCompliance
     }
   }
   const id = documentId.value
   if (!id) {
     return null
   }
-  return documents.value.find((doc) => doc.id === id) ?? null
+  const document = documents.value.find((doc) => doc.id === id)
+  return document ? localizeLoginAgreementDocument(document, locale.value) : null
 })
 
 const hasContent = computed(() => Boolean(currentDocument.value?.content_md?.trim()))
