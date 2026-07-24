@@ -34,6 +34,11 @@ function injectPublicSettings(backendUrl: string): Plugin {
   }
 }
 
+function safeChunkName(name: string): string {
+  // Common privacy filters block lazy-loaded files whose URL contains "usage".
+  return name.replace(/usage/gi, 'activity')
+}
+
 export default defineConfig(({ mode }) => {
   // 加载环境变量
   const env = loadEnv(mode, process.cwd(), '')
@@ -65,6 +70,7 @@ export default defineConfig(({ mode }) => {
     emptyOutDir: true,
     rollupOptions: {
       output: {
+        chunkFileNames: (chunkInfo) => `assets/${safeChunkName(chunkInfo.name)}-[hash].js`,
         /**
          * 手动分包配置
          * 分离第三方库并按功能合并应用代码，避免循环依赖
