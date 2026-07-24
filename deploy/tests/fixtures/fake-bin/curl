@@ -20,6 +20,14 @@ for argument in "$@"; do
   esac
 done
 
+write_headers() {
+  local status="$1"
+  if [[ -n "${dump_header}" ]]; then
+    printf 'HTTP/1.1 %s Fake\r\nContent-Type: application/json\r\n\r\n' \
+      "${status}" >"${dump_header}"
+  fi
+}
+
 while IFS= read -r config_line; do
   case "${config_line}" in
     'header = "Authorization:'*)
@@ -60,10 +68,12 @@ case "${HOT_DEPLOY_PROBE_KIND:-}" in
       fi
     fi
     [[ "${FAKE_HEALTH_FAIL:-0}" != "1" ]] || exit 22
+    write_headers 200
     printf '{"status":"ok"}\n'
     ;;
   responses)
     [[ "${FAKE_RESPONSES_FAIL:-0}" != "1" ]] || exit 22
+    write_headers 200
     if [[ "${FAKE_RESPONSES_INVALID:-0}" == "1" ]]; then
       printf '{}\n'
     elif [[ "${FAKE_RESPONSES_STATUS_MISSING:-0}" == "1" ]]; then
@@ -76,7 +86,16 @@ case "${HOT_DEPLOY_PROBE_KIND:-}" in
     ;;
   compact)
     [[ "${FAKE_COMPACT_FAIL:-0}" != "1" ]] || exit 22
-    if [[ "${FAKE_COMPACT_INVALID:-0}" == "1" ]]; then
+    compact_status=200
+    case "${HOT_DEPLOY_PROBE_SCOPE:-}" in
+      direct) compact_status="${FAKE_DIRECT_COMPACT_HTTP_STATUS:-200}" ;;
+      public) compact_status="${FAKE_PUBLIC_COMPACT_HTTP_STATUS:-200}" ;;
+      *-active-baseline) compact_status="${FAKE_BASELINE_COMPACT_HTTP_STATUS:-200}" ;;
+    esac
+    write_headers "${compact_status}"
+    if [[ "${compact_status}" != "200" ]]; then
+      printf '{"error":{"type":"upstream_error","message":"fake upstream unavailable"}}\n'
+    elif [[ "${FAKE_COMPACT_INVALID:-0}" == "1" ]]; then
       printf '{"id":"cmp_smoke","output":[]}\n'
     else
       printf 'event: response.output_item.done\n'

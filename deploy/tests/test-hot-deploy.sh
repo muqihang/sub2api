@@ -460,6 +460,44 @@ test_compact_requires_completed_status() {
   assert_status "${status}" 1 "Compact smoke rejects an incomplete terminal response"
 }
 
+test_compact_matched_upstream_degradation_allows_candidate() {
+  local case_dir="${TEST_ROOT}/candidate-compact-matched-upstream-degradation"
+  setup_candidate_case "${case_dir}"
+  FAKE_DIRECT_COMPACT_HTTP_STATUS=502 \
+    FAKE_BASELINE_COMPACT_HTTP_STATUS=503 \
+    probe_compact_with_active_baseline \
+      "http://172.18.0.99:8080" direct "http://172.18.0.98:8080" \
+      >"${case_dir}/probe.out" 2>"${case_dir}/probe.err"
+  local status=$?
+  assert_status "${status}" 0 "matching candidate/active upstream degradation does not require a fresh OAuth account"
+  assert_file_contains "${case_dir}/probe.err" "MATCHED UPSTREAM DEGRADATION" "matched degradation is explicit and auditable"
+  assert_file_contains "${case_dir}/curl.log" "scope=direct kind=compact" "candidate Compact is still exercised"
+  assert_file_contains "${case_dir}/curl.log" "scope=direct-active-baseline kind=compact" "active Compact baseline is exercised"
+}
+
+test_compact_candidate_only_failure_still_blocks() {
+  local case_dir="${TEST_ROOT}/candidate-compact-candidate-only-failure"
+  setup_candidate_case "${case_dir}"
+  FAKE_DIRECT_COMPACT_HTTP_STATUS=502 \
+    probe_compact_with_active_baseline \
+      "http://172.18.0.99:8080" direct "http://172.18.0.98:8080" \
+      >"${case_dir}/probe.out" 2>"${case_dir}/probe.err"
+  local status=$?
+  assert_status "${status}" 1 "candidate-only Compact failure remains blocking"
+}
+
+test_compact_non_upstream_failure_still_blocks() {
+  local case_dir="${TEST_ROOT}/candidate-compact-auth-failure"
+  setup_candidate_case "${case_dir}"
+  FAKE_DIRECT_COMPACT_HTTP_STATUS=401 \
+    FAKE_BASELINE_COMPACT_HTTP_STATUS=401 \
+    probe_compact_with_active_baseline \
+      "http://172.18.0.99:8080" direct "http://172.18.0.98:8080" \
+      >"${case_dir}/probe.out" 2>"${case_dir}/probe.err"
+  local status=$?
+  assert_status "${status}" 1 "matched authentication failure remains blocking"
+}
+
 test_candidate_probe_pair_succeeds_without_secret_artifacts() {
   local case_dir="${TEST_ROOT}/candidate-probes-pass"
   setup_candidate_case "${case_dir}"
@@ -516,6 +554,9 @@ run_candidate_tests() {
   test_compact_failure_blocks_candidate
   test_compact_requires_terminal_compaction_sse
   test_compact_requires_completed_status
+  test_compact_matched_upstream_degradation_allows_candidate
+  test_compact_candidate_only_failure_still_blocks
+  test_compact_non_upstream_failure_still_blocks
   test_candidate_probe_pair_succeeds_without_secret_artifacts
   test_native_search_rejects_invalid_contracts
 }
@@ -533,6 +574,23 @@ test_transaction_success_commits_cutover() {
   assert_file_not_contains "${case_dir}/docker.log" " stop sub2api-next-v5" "success does not stop the rollback container"
   assert_file_not_contains "${case_dir}/docker.log" " rm sub2api-next-v5" "success does not remove the rollback container"
   assert_file_contains "${case_dir}/docker.log" "update --restart unless-stopped sub2api-next-v6" "success promotes candidate restart policy only after final validation"
+}
+
+test_transaction_matched_compact_degradation_commits_cutover() {
+  local case_dir="${TEST_ROOT}/transaction-matched-compact-degradation"
+  FAKE_DIRECT_COMPACT_HTTP_STATUS=502 \
+    FAKE_PUBLIC_COMPACT_HTTP_STATUS=524 \
+    FAKE_BASELINE_COMPACT_HTTP_STATUS=503 \
+    run_transaction_deploy "${case_dir}"
+  local status=$?
+  local output
+  output="$(captured_output "${case_dir}")"
+  assert_status "${status}" 0 "matched Compact upstream degradation can complete a deployment"
+  assert_contains "${output}" "MATCHED UPSTREAM DEGRADATION" "degraded deployment records the baseline comparison"
+  assert_contains "${output}" "DEPLOYMENT SUCCEEDED" "degraded deployment still requires final commit"
+  assert_file_contains "${case_dir}/curl.log" "scope=direct-active-baseline kind=compact" "direct Compact compares the old production baseline"
+  assert_file_contains "${case_dir}/curl.log" "scope=public-active-baseline kind=compact" "public Compact compares the old production baseline"
+  assert_file_contains "${case_dir}/caddy-active.json" "sub2api-next-v6:8080" "matched degradation commits the candidate"
 }
 
 test_stale_host_caddyfile_requires_explicit_recovery() {
@@ -763,6 +821,7 @@ test_signal_rolls_back() {
 
 run_transaction_tests() {
   test_transaction_success_commits_cutover
+  test_transaction_matched_compact_degradation_commits_cutover
   test_stale_host_caddyfile_requires_explicit_recovery
   test_explicit_stale_host_recovery_requires_matching_active_json
   test_explicit_stale_host_recovery_commits_transaction
@@ -792,9 +851,11 @@ test_repository_deployment_policy() {
   assert_file_contains "${runbook}" "SMOKE_API_KEY" "runbook documents mandatory API smoke credentials"
   assert_file_contains "${runbook}" "ROLLBACK VERIFIED" "runbook documents verified rollback evidence"
   assert_file_contains "${runbook}" "/responses" "runbook documents the real Codex remote compact path"
+  assert_file_contains "${runbook}" "MATCHED UPSTREAM DEGRADATION" "runbook documents comparative upstream gating"
   assert_file_contains "${runbook}" "/alpha/search" "runbook documents native Search deployment gates"
   assert_file_contains "${runbook}" "never written" "runbook documents native Search artifact privacy"
   assert_file_contains "${example_config}" "COMPACT_SMOKE_BYTES=1048576" "example config keeps the large compact canary"
+  assert_file_contains "${example_config}" "ALLOW_MATCHED_UPSTREAM_DEGRADATION=true" "example config enables comparative Compact gating"
   assert_file_contains "${DEPLOY_DIR}/Makefile" "test-hot-deploy" "deploy Makefile exposes the regression suite"
   assert_file_contains "${caddyfile}" "@ai_gateway_paths" "API hostname uses an explicit gateway allowlist"
   assert_file_contains "${caddyfile}" "path /v1/*" "API allowlist keeps versioned gateway routes"

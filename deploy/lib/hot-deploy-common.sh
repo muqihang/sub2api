@@ -67,6 +67,7 @@ apply_defaults() {
   CONFIG_FILE="${CONFIG_FILE:-}"
   DRY_RUN="${DRY_RUN:-false}"
   SKIP_API_SMOKE="${SKIP_API_SMOKE:-false}"
+  ALLOW_MATCHED_UPSTREAM_DEGRADATION="${ALLOW_MATCHED_UPSTREAM_DEGRADATION:-true}"
   RECOVER_STALE_HOST_CADDYFILE="${RECOVER_STALE_HOST_CADDYFILE:-false}"
   SMOKE_API_KEY="${SMOKE_API_KEY:-}"
   LOCK_DIR="${LOCK_FILE}.d"
@@ -158,6 +159,10 @@ validate_config() {
   validate_positive_integer SOAK_INTERVAL_SECONDS "${SOAK_INTERVAL_SECONDS}"
   validate_positive_integer COMPACT_SMOKE_BYTES "${COMPACT_SMOKE_BYTES}"
   validate_positive_integer CANDIDATE_STOP_TIMEOUT_SECONDS "${CANDIDATE_STOP_TIMEOUT_SECONDS}"
+  case "${ALLOW_MATCHED_UPSTREAM_DEGRADATION}" in
+    true|false) ;;
+    *) die 2 "ALLOW_MATCHED_UPSTREAM_DEGRADATION must be true or false" ;;
+  esac
   case "${SOAK_SECONDS}" in
     ''|*[!0-9]*) die 2 "SOAK_SECONDS must be a non-negative integer" ;;
   esac
@@ -472,14 +477,20 @@ wait_candidate_ready() {
 }
 
 candidate_base_url() {
+  container_base_url "${CANDIDATE_CONTAINER}"
+}
+
+container_base_url() {
+  local container_name="$1"
   local network
   local address
   network="$(discover_docker_network)" || return 1
   address="$(docker inspect --format \
     "{{with index .NetworkSettings.Networks \"${network}\"}}{{.IPAddress}}{{end}}" \
-    "${CANDIDATE_CONTAINER}")" || return 1
+    "${container_name}")" || return 1
   [[ -n "${address}" ]] || {
-    printf 'candidate has no address on Docker network %s\n' "${network}" >&2
+    printf 'container %s has no address on Docker network %s\n' \
+      "${container_name}" "${network}" >&2
     return 1
   }
   printf 'http://%s:%s\n' "${address}" "${APP_PORT}"
@@ -637,11 +648,15 @@ run_probe() {
   local url="$3"
   local payload_file="${4:-}"
   local output_file="${STATE_DIR}/${scope}-${kind}-response.json"
+  local headers_file="${STATE_DIR}/${scope}-${kind}-response.headers"
+  local status_file="${STATE_DIR}/${scope}-${kind}-http-status"
   local escaped_key
+  local http_status
 
   if [[ "${kind}" == "health" ]]; then
     HOT_DEPLOY_PROBE_SCOPE="${scope}" HOT_DEPLOY_PROBE_KIND="${kind}" \
-      curl -fsS --max-time "${REQUEST_TIMEOUT_SECONDS}" --config - \
+      curl -sS --max-time "${REQUEST_TIMEOUT_SECONDS}" \
+      --dump-header "${headers_file}" --config - \
       >"${output_file}" <<EOF || return 1
 url = "${url}"
 EOF
@@ -661,7 +676,8 @@ EOF
         ;;
     esac
     HOT_DEPLOY_PROBE_SCOPE="${scope}" HOT_DEPLOY_PROBE_KIND="${kind}" \
-      curl -fsS --max-time "${REQUEST_TIMEOUT_SECONDS}" --config - \
+      curl -sS --max-time "${REQUEST_TIMEOUT_SECONDS}" \
+      --dump-header "${headers_file}" --config - \
       --data-binary "@${payload_file}" >"${output_file}" <<EOF || return 1
 url = "${url}"
 header = "Authorization: Bearer ${escaped_key}"
@@ -670,6 +686,21 @@ header = "User-Agent: ${SMOKE_USER_AGENT}"
 header = "originator: ${SMOKE_ORIGINATOR}"
 EOF
   fi
+  http_status="$(awk '
+    /^HTTP\// && $2 ~ /^[0-9][0-9][0-9]$/ { status=$2 }
+    END { if (status == "") exit 1; print status }
+  ' "${headers_file}")" || {
+    printf '%s probe returned no HTTP status\n' "${kind}" >&2
+    return 1
+  }
+  printf '%s\n' "${http_status}" >"${status_file}"
+  case "${http_status}" in
+    2??) ;;
+    *)
+      printf '%s probe returned HTTP %s\n' "${kind}" "${http_status}" >&2
+      return 1
+      ;;
+  esac
   case "${kind}" in
     compact) assert_compact_sse "${output_file}" ;;
     responses) assert_responses_json "${output_file}" ;;
@@ -824,6 +855,60 @@ probe_api_pair() {
   run_probe compact "${scope}" "${base_url}${COMPACT_PATH}" \
     "${COMPACT_SMOKE_PAYLOAD}" || return 1
   probe_native_search_pair "${base_url}" "${scope}"
+}
+
+is_upstream_degradation_status() {
+  case "$1" in
+    429|502|503|504|524) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+probe_compact_with_active_baseline() {
+  local candidate_base_url="${1%/}"
+  local candidate_scope="$2"
+  local active_base_url="${3%/}"
+  local baseline_scope="${candidate_scope}-active-baseline"
+  local candidate_status_file="${STATE_DIR}/${candidate_scope}-compact-http-status"
+  local baseline_status_file="${STATE_DIR}/${baseline_scope}-compact-http-status"
+  local candidate_status
+  local baseline_status
+
+  prepare_smoke_payloads || return 1
+  if run_probe compact "${candidate_scope}" "${candidate_base_url}${COMPACT_PATH}" \
+    "${COMPACT_SMOKE_PAYLOAD}"; then
+    return 0
+  fi
+
+  [[ "${ALLOW_MATCHED_UPSTREAM_DEGRADATION:-true}" == "true" ]] || return 1
+  [[ -s "${candidate_status_file}" ]] || return 1
+  candidate_status="$(cat "${candidate_status_file}")"
+  is_upstream_degradation_status "${candidate_status}" || return 1
+
+  warn "Compact candidate returned HTTP ${candidate_status}; probing the active production baseline"
+  if run_probe compact "${baseline_scope}" "${active_base_url}${COMPACT_PATH}" \
+    "${COMPACT_SMOKE_PAYLOAD}"; then
+    printf 'candidate Compact failed while active production passed\n' >&2
+    return 1
+  fi
+  [[ -s "${baseline_status_file}" ]] || return 1
+  baseline_status="$(cat "${baseline_status_file}")"
+  is_upstream_degradation_status "${baseline_status}" || return 1
+
+  warn "MATCHED UPSTREAM DEGRADATION: candidate HTTP ${candidate_status}, active HTTP ${baseline_status}; Compact request was exercised on both and deployment may continue"
+}
+
+probe_api_pair_with_active_baseline() {
+  local candidate_base_url="${1%/}"
+  local candidate_scope="$2"
+  local active_base_url="${3%/}"
+
+  prepare_smoke_payloads || return 1
+  run_probe responses "${candidate_scope}" "${candidate_base_url}${RESPONSES_PATH}" \
+    "${RESPONSES_SMOKE_PAYLOAD}" || return 1
+  probe_compact_with_active_baseline \
+    "${candidate_base_url}" "${candidate_scope}" "${active_base_url}" || return 1
+  probe_native_search_pair "${candidate_base_url}" "${candidate_scope}"
 }
 
 require_commands() {
@@ -1113,6 +1198,7 @@ handle_transaction_signal() {
 
 run_transaction() {
   local active_host
+  local active_base_url
   local direct_base_url
 
   require_commands
@@ -1139,6 +1225,7 @@ run_transaction() {
   fi
   ACTIVE_CONTAINER="${active_host}"
   export ACTIVE_CONTAINER
+  active_base_url="$(container_base_url "${ACTIVE_CONTAINER}")"
   CANDIDATE_UPSTREAM="${CANDIDATE_CONTAINER}:${APP_PORT}"
   check_caddy_mount_consistency
 
@@ -1152,7 +1239,8 @@ run_transaction() {
   if [[ "${SKIP_API_SMOKE}" == "true" ]]; then
     warn "API smoke: SKIPPED BY OPERATOR"
   else
-    probe_api_pair "${direct_base_url}" direct
+    probe_api_pair_with_active_baseline \
+      "${direct_base_url}" direct "${active_base_url}"
   fi
 
   log "Stage 4/7: render and validate candidate Caddyfile"
@@ -1183,7 +1271,8 @@ run_transaction() {
   log "Stage 6/7: probe public endpoint ${PUBLIC_BASE_URL}"
   probe_health "${PUBLIC_BASE_URL}" public
   if [[ "${SKIP_API_SMOKE}" != "true" ]]; then
-    probe_api_pair "${PUBLIC_BASE_URL}" public
+    probe_api_pair_with_active_baseline \
+      "${PUBLIC_BASE_URL}" public "${active_base_url}"
   fi
 
   log "Stage 7/7: soak and finalize"

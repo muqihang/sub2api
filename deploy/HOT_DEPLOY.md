@@ -80,6 +80,22 @@ The Compact canary reproduces the Codex remote compact v2 request shape. It
 sends streaming `POST /responses` input containing `type=compaction_trigger`,
 then requires both a `type=compaction` output item and a
 `response.completed` SSE event. A plain HTTP 200 is not enough.
+
+Compact availability is compared against the application that is already in
+production. If the candidate returns an upstream-capacity status (`429`,
+`502`, `503`, `504`, or `524`), the deployment sends the same real streaming
+Compact request directly to the active container. The gate continues only
+when the active container also returns an upstream-capacity status. This is
+recorded as `MATCHED UPSTREAM DEGRADATION`: the application path was exercised,
+but the shared external account pool was already degraded before deployment.
+It avoids requiring a newly purchased OAuth account for every release.
+
+This comparison does not accept authentication failures, malformed successful
+responses, transport failures, or a failure unique to the candidate. A
+candidate failure while the active container succeeds remains blocking. Set
+`ALLOW_MATCHED_UPSTREAM_DEGRADATION=false` to restore strict success-only
+Compact gating for a deployment.
+
 Both API probes send paired official-client identity headers (`User-Agent` and
 `originator`) so accounts with `codex_cli_only` exercise the real Codex path.
 The normal Responses probe also requires `status=completed` and an output text
