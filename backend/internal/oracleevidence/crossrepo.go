@@ -894,15 +894,6 @@ func frozenRequiredSetDigest(caseSpecs, mutationSpecs []frozenDecisionSpec) (str
 	return sha256HexImpl(append(canonical, '\n')), true
 }
 
-func sortedMirrorNames() []string {
-	names := make([]string, 0, len(mirrorDigests))
-	for name := range mirrorDigests {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
-}
-
 func validCommitDAG(value, authorityValue any) bool {
 	dag, ok := objectValue(value)
 	if !ok || !exactKeys(dag, "nodes", "edges") {
@@ -1001,8 +992,6 @@ func allDigestFields(value map[string]any, fields ...string) bool {
 }
 
 func nullableDigest(value any) bool { return value == nil || validDigest(value) }
-
-func nullableOID(value any) bool { return value == nil || validOID(value) }
 
 func nullableHex(value any) bool {
 	if value == nil {
