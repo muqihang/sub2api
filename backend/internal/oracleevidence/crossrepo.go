@@ -158,9 +158,11 @@ func openNoFollow(path string) (*os.File, error) {
 			return nil, openErr
 		}
 		after, afterErr := next.Stat(".")
-		directory.Close()
-		if afterErr != nil || !sameFileIdentity(before, after) {
-			next.Close()
+		directoryCloseErr := directory.Close()
+		if afterErr != nil || directoryCloseErr != nil || !sameFileIdentity(before, after) {
+			if closeErr := next.Close(); closeErr != nil {
+				return nil, contractErr("contract_file_digest_mismatch")
+			}
 			return nil, contractErr("contract_file_digest_mismatch")
 		}
 		directory = next
@@ -168,13 +170,21 @@ func openNoFollow(path string) (*os.File, error) {
 	leaf := segments[len(segments)-1]
 	before, statErr := directory.Lstat(leaf)
 	if statErr != nil || before.Mode()&os.ModeSymlink != 0 {
-		directory.Close()
+		if closeErr := directory.Close(); closeErr != nil {
+			return nil, contractErr("contract_file_digest_mismatch")
+		}
 		return nil, contractErr("contract_symlink")
 	}
 	file, openErr := directory.Open(leaf)
-	directory.Close()
+	directoryCloseErr := directory.Close()
 	if openErr != nil {
 		return nil, openErr
+	}
+	if directoryCloseErr != nil {
+		if closeErr := file.Close(); closeErr != nil {
+			return nil, contractErr("contract_file_digest_mismatch")
+		}
+		return nil, contractErr("contract_file_digest_mismatch")
 	}
 	opened, openedErr := file.Stat()
 	if openedErr != nil || !sameFileIdentity(before, opened) {

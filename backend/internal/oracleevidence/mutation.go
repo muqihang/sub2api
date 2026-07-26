@@ -721,17 +721,22 @@ func readBoundedSource(root string, binding SourceBinding) ([]byte, error) {
 	return data, nil
 }
 
-func readRegularFile(path string, maximum uint64) ([]byte, error) {
+func readRegularFile(path string, maximum uint64) (data []byte, err error) {
 	file, openErr := openNoFollow(path)
 	if openErr != nil {
 		return nil, contractErr(CodeMutationSource)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil && err == nil {
+			data = nil
+			err = contractErr(CodeMutationSource)
+		}
+	}()
 	opened, statErr := file.Stat()
 	if statErr != nil || !stableRegularFile(opened, maximum, false) {
 		return nil, contractErr(CodeMutationSource)
 	}
-	data, err := io.ReadAll(io.LimitReader(file, int64(maximum)+1))
+	data, err = io.ReadAll(io.LimitReader(file, int64(maximum)+1))
 	if err != nil || uint64(len(data)) > maximum {
 		return nil, contractErr(CodeMutationSource)
 	}
@@ -741,8 +746,8 @@ func readRegularFile(path string, maximum uint64) ([]byte, error) {
 		return nil, contractErr(CodeMutationSource)
 	}
 	pathAfter, pathErr := reopened.Stat()
-	reopened.Close()
-	if statErr != nil || pathErr != nil || !sameStableFile(opened, after) || !sameStableFile(after, pathAfter) {
+	reopenCloseErr := reopened.Close()
+	if statErr != nil || pathErr != nil || reopenCloseErr != nil || !sameStableFile(opened, after) || !sameStableFile(after, pathAfter) {
 		return nil, contractErr(CodeMutationSource)
 	}
 	return data, nil

@@ -331,7 +331,10 @@ func newAuthorityKey(t *testing.T, id, role string, epoch int64) testAuthorityKe
 	t.Helper()
 	seed := sha256.Sum256([]byte(id))
 	private := ed25519.NewKeyFromSeed(seed[:])
-	public := private.Public().(ed25519.PublicKey)
+	public, ok := private.Public().(ed25519.PublicKey)
+	if !ok {
+		t.Fatal("generated authority key is not Ed25519")
+	}
 	der, err := x509.MarshalPKIXPublicKey(public)
 	if err != nil {
 		t.Fatal(err)
