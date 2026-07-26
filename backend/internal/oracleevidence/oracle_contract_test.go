@@ -4,7 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 )
 
@@ -16,6 +19,8 @@ const (
 	receiptCCMirrorEnv    = "ORACLE_CONTRACT_RECEIPT_CC_MIRROR"
 	receiptSubMirrorEnv   = "ORACLE_CONTRACT_RECEIPT_SUB_MIRROR"
 	receiptPredecessorEnv = "ORACLE_CONTRACT_RECEIPT_PREDECESSOR"
+	receiptChildEnv       = "ORACLE_CONTRACT_RECEIPT_CHILD"
+	receiptTestSelector   = "^TestOracleContract(Scaffold|StrictJSON|JCS|Normalization|CBOR|Schema|Admission|ManifestAuthority|Interface|Replay|Sidecar|Mutation|CrossRepo)$"
 )
 
 func TestMain(m *testing.M) {
@@ -52,7 +57,7 @@ func writeCrossRepoReceiptFromEnv() error {
 
 	recordBytes, err := readRegularFile(values["record"], maxJSONBytes)
 	if err != nil {
-		return fmt.Errorf("read record: %w", err)
+		return errors.New("receipt_record_read_failed")
 	}
 	mirrorDecision := InspectMirror(values["cc_mirror"], values["sub_mirror"], values["predecessor"])
 	indexDecision := ValidateContractIndex(values["sub_mirror"])
@@ -86,14 +91,34 @@ func writeCrossRepoReceiptFromEnv() error {
 		return fmt.Errorf("canonicalize bundle: %w", err)
 	}
 
+	decisionTrace, mutationTrace, requiredTrace, err := receiptExecutionTrace()
+	if err != nil {
+		return err
+	}
+	decisionTraceBytes, err := CanonicalizeValue(decisionTrace)
+	if err != nil {
+		return errors.New("receipt_decision_trace_invalid")
+	}
+	mutationTraceBytes, err := CanonicalizeValue(mutationTrace)
+	if err != nil {
+		return errors.New("receipt_mutation_trace_invalid")
+	}
+	requiredTraceBytes, err := CanonicalizeValue(requiredTrace)
+	if err != nil {
+		return errors.New("receipt_required_trace_invalid")
+	}
+
 	receipt := map[string]any{
 		"schema_id":                 "oracle.sub_contract_receipt",
 		"schema_major":              1,
 		"schema_revision":           0,
 		"bundle_sha256":             SHA256Hex(append(bundleBytes, '\n')),
-		"decisions_sha256":          SHA256Hex(append(caseBytes, '\n')),
-		"mutation_results_sha256":   SHA256Hex(append(mutationBytes, '\n')),
+		"decisions_sha256":          SHA256Hex(append(decisionTraceBytes, '\n')),
+		"mutation_results_sha256":   SHA256Hex(append(mutationTraceBytes, '\n')),
 		"required_set_sha256":       requiredSetDigest,
+		"executed_required_sha256":  SHA256Hex(append(requiredTraceBytes, '\n')),
+		"declared_decisions_sha256": SHA256Hex(append(caseBytes, '\n')),
+		"declared_mutations_sha256": SHA256Hex(append(mutationBytes, '\n')),
 		"stable_code_count":         len(StableCodes),
 		"stable_code_set_sha256":    stableCodeDigest(),
 		"record_input_sha256":       SHA256Hex(recordBytes),
@@ -117,7 +142,7 @@ func writeCrossRepoReceiptFromEnv() error {
 
 	output, err := os.OpenFile(values["output"], os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return fmt.Errorf("create receipt: %w", err)
+		return errors.New("receipt_create_failed")
 	}
 	writeErr := error(nil)
 	if _, err := output.Write(encoded); err != nil {
@@ -129,13 +154,85 @@ func writeCrossRepoReceiptFromEnv() error {
 		writeErr = err
 	}
 	if writeErr != nil {
-		return fmt.Errorf("write receipt: %w", writeErr)
+		return errors.New("receipt_write_failed")
 	}
 	info, err := os.Lstat(values["output"])
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
 		return errors.New("receipt mode/type verification failed")
 	}
 	return nil
+}
+
+func receiptExecutionTrace() ([]any, []any, []any, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, nil, nil, errors.New("receipt_test_binary_unavailable")
+	}
+	command := exec.Command(executable, "-test.run="+receiptTestSelector, "-test.v=true", "-test.count=1")
+	environment := make([]string, 0, len(os.Environ())+1)
+	for _, item := range os.Environ() {
+		key := item
+		if index := strings.IndexByte(item, '='); index >= 0 {
+			key = item[:index]
+		}
+		switch key {
+		case receiptOutputEnv, receiptRecordEnv, receiptCCMirrorEnv, receiptSubMirrorEnv, receiptPredecessorEnv, receiptChildEnv:
+			continue
+		default:
+			environment = append(environment, item)
+		}
+	}
+	command.Env = append(environment, receiptChildEnv+"=1")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return nil, nil, nil, errors.New("receipt_execution_failed")
+	}
+	passed := make(map[string]bool)
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "--- PASS: ") {
+			continue
+		}
+		name := strings.TrimPrefix(line, "--- PASS: ")
+		if index := strings.Index(name, " ("); index >= 0 {
+			name = name[:index]
+		}
+		if strings.HasPrefix(name, "TestOracleContract") {
+			passed[name] = true
+		}
+	}
+	required := []string{
+		"TestOracleContractAdmission", "TestOracleContractCBOR", "TestOracleContractCrossRepo",
+		"TestOracleContractInterface", "TestOracleContractJCS", "TestOracleContractManifestAuthority",
+		"TestOracleContractMutation", "TestOracleContractNormalization", "TestOracleContractReplay",
+		"TestOracleContractScaffold", "TestOracleContractSchema", "TestOracleContractSidecar",
+		"TestOracleContractStrictJSON",
+	}
+	for _, name := range required {
+		if !passed[name] {
+			return nil, nil, nil, errors.New("receipt_execution_incomplete")
+		}
+	}
+	names := make([]string, 0, len(passed))
+	for name := range passed {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	decisions := make([]any, 0, len(names))
+	mutations := make([]any, 0, 1)
+	for _, name := range names {
+		row := map[string]any{"test_id": name, "status": "pass"}
+		if strings.HasPrefix(name, "TestOracleContractMutation") {
+			mutations = append(mutations, row)
+		} else {
+			decisions = append(decisions, row)
+		}
+	}
+	requiredRows := make([]any, len(required))
+	for index, name := range required {
+		requiredRows[index] = name
+	}
+	return decisions, mutations, requiredRows, nil
 }
 
 func receiptBundleRows(root string) ([]any, error) {
@@ -148,7 +245,7 @@ func receiptBundleRows(root string) ([]any, error) {
 	for _, name := range names {
 		data, err := readContractFile(filepath.Join(root, name), maxJSONBytes)
 		if err != nil {
-			return nil, fmt.Errorf("read mirror member: %w", err)
+			return nil, errors.New("receipt_mirror_read_failed")
 		}
 		digest := SHA256Hex(data)
 		if digest != mirrorDigests[name] {
@@ -194,6 +291,15 @@ func TestOracleContractReceipt(t *testing.T) {
 	if !ok || !stringEquals(receipt["schema_id"], "oracle.sub_contract_receipt") || !allowedOK || !allowed {
 		t.Fatalf("invalid receipt: %#v", value)
 	}
+	for _, field := range []string{
+		"bundle_sha256", "decisions_sha256", "mutation_results_sha256",
+		"required_set_sha256", "executed_required_sha256",
+		"declared_decisions_sha256", "declared_mutations_sha256",
+	} {
+		if digest, ok := stringValue(receipt[field]); !ok || len(digest) != 64 {
+			t.Fatalf("receipt field %s is not a SHA-256 digest", field)
+		}
+	}
 	digest, ok := stringValue(receipt["receipt_digest"])
 	if !ok {
 		t.Fatal("receipt digest missing")
@@ -203,8 +309,22 @@ func TestOracleContractReceipt(t *testing.T) {
 	if digest != SHA256Hex(append(mustBytes(t, unsigned), '\n')) {
 		t.Fatal("receipt digest mismatch")
 	}
-	if err := writeCrossRepoReceiptFromEnv(); err == nil {
+	overwriteErr := writeCrossRepoReceiptFromEnv()
+	if overwriteErr == nil {
 		t.Fatal("receipt output overwrite was allowed")
+	}
+	if strings.Contains(overwriteErr.Error(), temp) {
+		t.Fatal("receipt overwrite error leaked an authority path")
+	}
+
+	t.Setenv(receiptOutputEnv, filepath.Join(temp, "unused-receipt.json"))
+	t.Setenv(receiptRecordEnv, filepath.Join(temp, "missing-record.json"))
+	missingRecordErr := writeCrossRepoReceiptFromEnv()
+	if missingRecordErr == nil {
+		t.Fatal("missing receipt input was allowed")
+	}
+	if strings.Contains(missingRecordErr.Error(), temp) {
+		t.Fatal("receipt input error leaked an authority path")
 	}
 }
 
