@@ -216,13 +216,6 @@ func VerifyEmergencyRevocation(input AuthorityInput) Decision {
 	return verifyEmergencyRevocationImpl(input)
 }
 
-func reachedAuthority(input AuthorityInput) Decision {
-	if len(input.Candidate) == 0 {
-		return Decision{Code: "authority_signature_invalid"}
-	}
-	return notImplementedDecision()
-}
-
 func TrustStateDigest(state []byte) (string, error) {
 	return trustStateDigestImpl(state)
 }
@@ -245,13 +238,6 @@ func DecideOutcome(outcome []byte) Decision {
 
 func ExecuteReplay(state, command []byte) Decision {
 	return executeReplayImpl(state, command)
-}
-
-func reachedPair(left, right []byte, invalidCode string) Decision {
-	if len(left) == 0 || len(right) == 0 {
-		return Decision{Code: invalidCode}
-	}
-	return notImplementedDecision()
 }
 
 func ValidateSidecarEnvelope(envelope []byte, schemas *SchemaSet) Decision {
