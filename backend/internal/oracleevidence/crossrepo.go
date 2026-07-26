@@ -1007,7 +1007,7 @@ func validOID(value any) bool {
 		return false
 	}
 	for _, current := range []byte(oid) {
-		if !((current >= '0' && current <= '9') || (current >= 'a' && current <= 'f')) {
+		if (current < '0' || current > '9') && (current < 'a' || current > 'f') {
 			return false
 		}
 	}
@@ -1036,7 +1036,7 @@ func nullableHex(value any) bool {
 		return false
 	}
 	for _, current := range []byte(text) {
-		if !((current >= '0' && current <= '9') || (current >= 'a' && current <= 'f')) {
+		if (current < '0' || current > '9') && (current < 'a' || current > 'f') {
 			return false
 		}
 	}

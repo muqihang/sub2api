@@ -236,7 +236,10 @@ func (p *strictJSONParser) parseObject() (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		key := keyValue.(string)
+		key, ok := keyValue.(string)
+		if !ok {
+			return nil, jsonContractError(CodeJSONInvalid, "object key")
+		}
 		if _, exists := result[key]; exists {
 			return nil, jsonContractError("json_duplicate_key", "duplicate object key")
 		}
