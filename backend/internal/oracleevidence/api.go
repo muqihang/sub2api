@@ -3,11 +3,9 @@ package oracleevidence
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 )
 
 const (
@@ -142,27 +140,8 @@ type CrossRepoRecord struct {
 
 func contractErr(code string) error { return &ContractError{Code: code} }
 
-func notImplementedErr() error { return contractErr(CodeOracleNotImplemented) }
-
 func notImplementedDecision() Decision {
 	return Decision{Allowed: false, Code: CodeOracleNotImplemented}
-}
-
-func decodeReachedJSON(input []byte) (any, error) {
-	if len(input) == 0 || len(input) > 1<<20 {
-		return nil, contractErr(CodeJSONInvalid)
-	}
-	dec := json.NewDecoder(strings.NewReader(string(input)))
-	dec.UseNumber()
-	var value any
-	if err := dec.Decode(&value); err != nil {
-		return nil, contractErr(CodeJSONInvalid)
-	}
-	var extra any
-	if err := dec.Decode(&extra); err != io.EOF {
-		return nil, contractErr(CodeJSONInvalid)
-	}
-	return value, nil
 }
 
 func ParseStrictJSON(input []byte) (any, error) {
