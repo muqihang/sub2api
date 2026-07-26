@@ -57,14 +57,20 @@ func decideBehaviorAdmissionImpl(certificateBytes, contextBytes []byte) Decision
 	}
 	signals := context["signals"].([]any)
 	negative := context["negative_capabilities"].(map[string]any)
-	signalsBytes, _ := canonicalizeValueImpl(signals)
-	negativeBytes, _ := canonicalizeValueImpl(negative)
+	signalsBytes, signalsErr := canonicalizeValueImpl(signals)
+	negativeBytes, negativeErr := canonicalizeValueImpl(negative)
+	if signalsErr != nil || negativeErr != nil {
+		return Decision{Code: "admission_schema_invalid"}
+	}
 	digest, digestErr := admissionPayloadDigestImpl(certificateBytes, signalsBytes, negativeBytes)
 	if digestErr != nil {
 		return Decision{Code: "admission_schema_invalid"}
 	}
 	expected := context["expected"].(map[string]any)
-	manifestDigest, _ := stringValue(expected["manifest_payload_digest"])
+	manifestDigest, manifestDigestOK := stringValue(expected["manifest_payload_digest"])
+	if !manifestDigestOK {
+		return Decision{Code: "admission_schema_invalid"}
+	}
 	if digest != manifestDigest {
 		return Decision{Code: "admission_manifest_payload_mismatch"}
 	}
@@ -88,7 +94,11 @@ func decideBehaviorAdmissionImpl(certificateBytes, contextBytes []byte) Decision
 			return Decision{Code: "admission_tuple_mismatch", Detail: field}
 		}
 	}
-	if selectedNegativeCapability(certificate, context, negative) {
+	selectedNegative, negativeSelectionOK := selectedNegativeCapability(certificate, context, negative)
+	if !negativeSelectionOK {
+		return Decision{Code: "admission_schema_invalid"}
+	}
+	if selectedNegative {
 		return Decision{Code: "admission_negative_capability"}
 	}
 	signalMap := make(map[string]map[string]any, len(signals))
@@ -103,13 +113,19 @@ func decideBehaviorAdmissionImpl(certificateBytes, contextBytes []byte) Decision
 		}
 		signalMap[id] = signal
 	}
-	gates, _ := objectValue(certificate["gates"])
+	gates, gatesOK := objectValue(certificate["gates"])
+	if !gatesOK {
+		return Decision{Code: "admission_schema_invalid"}
+	}
 	for _, gateName := range []string{"wire", "semantic", "state_sequence", "failure_semantics"} {
 		gate, ok := objectValue(gates[gateName])
 		if !ok {
 			return Decision{Code: "admission_schema_invalid"}
 		}
-		status, _ := stringValue(gate["status"])
+		status, statusOK := stringValue(gate["status"])
+		if !statusOK {
+			return Decision{Code: "admission_schema_invalid"}
+		}
 		switch status {
 		case "fail":
 			return Decision{Code: "admission_gate_failed", Detail: gateName}
@@ -121,7 +137,10 @@ func decideBehaviorAdmissionImpl(certificateBytes, contextBytes []byte) Decision
 		default:
 			return Decision{Code: "admission_schema_invalid"}
 		}
-		signalID, _ := stringValue(gate["authority_signal_id"])
+		signalID, signalIDOK := stringValue(gate["authority_signal_id"])
+		if !signalIDOK {
+			return Decision{Code: "admission_schema_invalid"}
+		}
 		decision := admissionAuthorityDecision(signalMap[signalID], context, negative)
 		if decision.Code != "" {
 			decision.Detail = gateName
@@ -195,7 +214,7 @@ func validNegativeCapabilities(negative map[string]any) bool {
 	return true
 }
 
-func selectedNegativeCapability(certificate, context, negative map[string]any) bool {
+func selectedNegativeCapability(certificate, context, negative map[string]any) (bool, bool) {
 	denied := make(map[string]bool)
 	for _, field := range []string{"models", "beta_tokens", "transports", "entrypoints", "fallbacks", "feature_combinations"} {
 		values, _ := stringArray(negative[field], 4_096)
@@ -204,27 +223,30 @@ func selectedNegativeCapability(certificate, context, negative map[string]any) b
 		}
 	}
 	for _, field := range []string{"package_version", "entrypoint", "model_capability_set_ref", "tls_http_profile_ref", "persona_ref", "request_ast_profile_ref", "response_profile_ref"} {
-		value, _ := stringValue(certificate[field])
+		value, ok := stringValue(certificate[field])
+		if !ok {
+			return false, false
+		}
 		if denied[value] {
-			return true
+			return true, true
 		}
 	}
 	requested, _ := stringArray(context["requested_capabilities"], 4_096)
 	for _, value := range requested {
 		if denied[value] {
-			return true
+			return true, true
 		}
 	}
-	return false
+	return false, true
 }
 
 func admissionAuthorityDecision(signal map[string]any, context, negative map[string]any) Decision {
 	if signal == nil {
 		return Decision{Code: "admission_authority_insufficient"}
 	}
-	contradiction, _ := stringValue(signal["contradiction_status"])
+	contradiction, contradictionOK := stringValue(signal["contradiction_status"])
 	contradictory, contradictoryOK := stringArray(signal["contradictory_evidence"], 4_096)
-	if !contradictoryOK {
+	if !contradictionOK || !contradictoryOK {
 		return Decision{Code: "admission_schema_invalid"}
 	}
 	if contradiction == "open" || len(contradictory) > 0 {
@@ -246,8 +268,11 @@ func admissionAuthorityDecision(signal map[string]any, context, negative map[str
 		}
 	}
 	state, stateOK := stringValue(signal["authority_state"])
-	minimum, _ := stringValue(context["minimum_authority_state"])
-	if !stateOK || authorityRanks[state] < authorityRanks[minimum] {
+	minimum, minimumOK := stringValue(context["minimum_authority_state"])
+	if !stateOK || !minimumOK {
+		return Decision{Code: "admission_schema_invalid"}
+	}
+	if authorityRanks[state] < authorityRanks[minimum] {
 		return Decision{Code: "admission_authority_insufficient"}
 	}
 	serverDependent, serverOK := boolValue(signal["server_dependency"])

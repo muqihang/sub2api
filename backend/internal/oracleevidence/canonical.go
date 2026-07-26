@@ -36,64 +36,67 @@ func canonicalizeValueImpl(value any) ([]byte, error) {
 func appendCanonicalJSON(output *bytes.Buffer, value any) error {
 	switch typed := value.(type) {
 	case nil:
-		output.WriteString("null")
+		return writeCanonicalString(output, "null")
 	case bool:
 		if typed {
-			output.WriteString("true")
-		} else {
-			output.WriteString("false")
+			return writeCanonicalString(output, "true")
 		}
+		return writeCanonicalString(output, "false")
 	case string:
-		appendJSONString(output, typed)
+		return appendJSONString(output, typed)
 	case json.Number:
 		formatted, err := canonicalNumber(string(typed))
 		if err != nil {
 			return err
 		}
-		output.WriteString(formatted)
+		return writeCanonicalString(output, formatted)
 	case float64:
 		formatted, err := canonicalFloat(typed)
 		if err != nil {
 			return err
 		}
-		output.WriteString(formatted)
+		return writeCanonicalString(output, formatted)
 	case float32:
 		formatted, err := canonicalFloat(float64(typed))
 		if err != nil {
 			return err
 		}
-		output.WriteString(formatted)
+		return writeCanonicalString(output, formatted)
 	case int:
-		output.WriteString(strconv.FormatInt(int64(typed), 10))
+		return writeCanonicalString(output, strconv.FormatInt(int64(typed), 10))
 	case int8:
-		output.WriteString(strconv.FormatInt(int64(typed), 10))
+		return writeCanonicalString(output, strconv.FormatInt(int64(typed), 10))
 	case int16:
-		output.WriteString(strconv.FormatInt(int64(typed), 10))
+		return writeCanonicalString(output, strconv.FormatInt(int64(typed), 10))
 	case int32:
-		output.WriteString(strconv.FormatInt(int64(typed), 10))
+		return writeCanonicalString(output, strconv.FormatInt(int64(typed), 10))
 	case int64:
-		output.WriteString(strconv.FormatInt(typed, 10))
+		return writeCanonicalString(output, strconv.FormatInt(typed, 10))
 	case uint:
-		output.WriteString(strconv.FormatUint(uint64(typed), 10))
+		return writeCanonicalString(output, strconv.FormatUint(uint64(typed), 10))
 	case uint8:
-		output.WriteString(strconv.FormatUint(uint64(typed), 10))
+		return writeCanonicalString(output, strconv.FormatUint(uint64(typed), 10))
 	case uint16:
-		output.WriteString(strconv.FormatUint(uint64(typed), 10))
+		return writeCanonicalString(output, strconv.FormatUint(uint64(typed), 10))
 	case uint32:
-		output.WriteString(strconv.FormatUint(uint64(typed), 10))
+		return writeCanonicalString(output, strconv.FormatUint(uint64(typed), 10))
 	case uint64:
-		output.WriteString(strconv.FormatUint(typed, 10))
+		return writeCanonicalString(output, strconv.FormatUint(typed, 10))
 	case []any:
-		output.WriteByte('[')
+		if err := output.WriteByte('['); err != nil {
+			return err
+		}
 		for index, item := range typed {
 			if index > 0 {
-				output.WriteByte(',')
+				if err := output.WriteByte(','); err != nil {
+					return err
+				}
 			}
 			if err := appendCanonicalJSON(output, item); err != nil {
 				return err
 			}
 		}
-		output.WriteByte(']')
+		return output.WriteByte(']')
 	case []string:
 		items := make([]any, len(typed))
 		for index := range typed {
@@ -106,53 +109,94 @@ func appendCanonicalJSON(output *bytes.Buffer, value any) error {
 			keys = append(keys, key)
 		}
 		sort.Slice(keys, func(i, j int) bool { return utf16Less(keys[i], keys[j]) })
-		output.WriteByte('{')
+		if err := output.WriteByte('{'); err != nil {
+			return err
+		}
 		for index, key := range keys {
 			if index > 0 {
-				output.WriteByte(',')
+				if err := output.WriteByte(','); err != nil {
+					return err
+				}
 			}
-			appendJSONString(output, key)
-			output.WriteByte(':')
+			if err := appendJSONString(output, key); err != nil {
+				return err
+			}
+			if err := output.WriteByte(':'); err != nil {
+				return err
+			}
 			if err := appendCanonicalJSON(output, typed[key]); err != nil {
 				return err
 			}
 		}
-		output.WriteByte('}')
+		return output.WriteByte('}')
 	default:
 		return jsonContractError(CodeJSONTypeInvalid, "unsupported Go value")
 	}
-	return nil
 }
 
-func appendJSONString(output *bytes.Buffer, value string) {
+type stringByteWriter interface {
+	WriteByte(byte) error
+	WriteString(string) (int, error)
+}
+
+func writeCanonicalString(output stringByteWriter, value string) error {
+	_, err := output.WriteString(value)
+	return err
+}
+
+func appendJSONString(output *bytes.Buffer, value string) error {
 	const hexDigits = "0123456789abcdef"
-	output.WriteByte('"')
+	if err := output.WriteByte('"'); err != nil {
+		return err
+	}
 	for _, current := range []byte(value) {
 		switch current {
 		case '"', '\\':
-			output.WriteByte('\\')
-			output.WriteByte(current)
+			if err := output.WriteByte('\\'); err != nil {
+				return err
+			}
+			if err := output.WriteByte(current); err != nil {
+				return err
+			}
 		case '\b':
-			output.WriteString(`\b`)
+			if err := writeCanonicalString(output, `\b`); err != nil {
+				return err
+			}
 		case '\t':
-			output.WriteString(`\t`)
+			if err := writeCanonicalString(output, `\t`); err != nil {
+				return err
+			}
 		case '\n':
-			output.WriteString(`\n`)
+			if err := writeCanonicalString(output, `\n`); err != nil {
+				return err
+			}
 		case '\f':
-			output.WriteString(`\f`)
+			if err := writeCanonicalString(output, `\f`); err != nil {
+				return err
+			}
 		case '\r':
-			output.WriteString(`\r`)
+			if err := writeCanonicalString(output, `\r`); err != nil {
+				return err
+			}
 		default:
 			if current < 0x20 {
-				output.WriteString(`\u00`)
-				output.WriteByte(hexDigits[current>>4])
-				output.WriteByte(hexDigits[current&0x0f])
+				if err := writeCanonicalString(output, `\u00`); err != nil {
+					return err
+				}
+				if err := output.WriteByte(hexDigits[current>>4]); err != nil {
+					return err
+				}
+				if err := output.WriteByte(hexDigits[current&0x0f]); err != nil {
+					return err
+				}
 			} else {
-				output.WriteByte(current)
+				if err := output.WriteByte(current); err != nil {
+					return err
+				}
 			}
 		}
 	}
-	output.WriteByte('"')
+	return output.WriteByte('"')
 }
 
 func utf16Less(left, right string) bool {
@@ -253,33 +297,61 @@ func normalizePathQueryImpl(pathname string, pairs [][2]string) (string, error) 
 		return pathname, nil
 	}
 	var output strings.Builder
-	output.WriteString(pathname)
-	output.WriteByte('?')
+	if err := writeCanonicalString(&output, pathname); err != nil {
+		return "", contractErr("url_path_invalid")
+	}
+	if err := output.WriteByte('?'); err != nil {
+		return "", contractErr("url_path_invalid")
+	}
 	for index, pair := range ordered {
 		if index > 0 {
-			output.WriteByte('&')
+			if err := output.WriteByte('&'); err != nil {
+				return "", contractErr("url_path_invalid")
+			}
 		}
-		output.WriteString(percentEncodeComponent(pair.key))
-		output.WriteByte('=')
-		output.WriteString(percentEncodeComponent(pair.value))
+		encodedKey, err := percentEncodeComponent(pair.key)
+		if err != nil {
+			return "", contractErr("url_path_invalid")
+		}
+		if err := writeCanonicalString(&output, encodedKey); err != nil {
+			return "", contractErr("url_path_invalid")
+		}
+		if err := output.WriteByte('='); err != nil {
+			return "", contractErr("url_path_invalid")
+		}
+		encodedValue, err := percentEncodeComponent(pair.value)
+		if err != nil {
+			return "", contractErr("url_path_invalid")
+		}
+		if err := writeCanonicalString(&output, encodedValue); err != nil {
+			return "", contractErr("url_path_invalid")
+		}
 	}
 	return output.String(), nil
 }
 
-func percentEncodeComponent(value string) string {
+func percentEncodeComponent(value string) (string, error) {
 	const upperHex = "0123456789ABCDEF"
 	var output strings.Builder
 	for _, current := range []byte(value) {
 		if (current >= 'a' && current <= 'z') || (current >= 'A' && current <= 'Z') ||
 			(current >= '0' && current <= '9') || current == '-' || current == '_' || current == '.' || current == '~' {
-			output.WriteByte(current)
+			if err := output.WriteByte(current); err != nil {
+				return "", err
+			}
 			continue
 		}
-		output.WriteByte('%')
-		output.WriteByte(upperHex[current>>4])
-		output.WriteByte(upperHex[current&0x0f])
+		if err := output.WriteByte('%'); err != nil {
+			return "", err
+		}
+		if err := output.WriteByte(upperHex[current>>4]); err != nil {
+			return "", err
+		}
+		if err := output.WriteByte(upperHex[current&0x0f]); err != nil {
+			return "", err
+		}
 	}
-	return output.String()
+	return output.String(), nil
 }
 
 func parseAuthorityPortImpl(raw RawPort) (uint16, error) {
