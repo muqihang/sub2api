@@ -55,8 +55,11 @@ func decideBehaviorAdmissionImpl(certificateBytes, contextBytes []byte) Decision
 	if validateSchemaValue(schemas, mustSchemaDefinition(schemas, "behaviorCoherenceCertificate"), certificate, 0) != nil {
 		return Decision{Code: "admission_schema_invalid"}
 	}
-	signals := context["signals"].([]any)
-	negative := context["negative_capabilities"].(map[string]any)
+	signals, signalsOK := arrayValue(context["signals"])
+	negative, negativeOK := objectValue(context["negative_capabilities"])
+	if !signalsOK || !negativeOK {
+		return Decision{Code: "admission_schema_invalid"}
+	}
 	signalsBytes, signalsErr := canonicalizeValueImpl(signals)
 	negativeBytes, negativeErr := canonicalizeValueImpl(negative)
 	if signalsErr != nil || negativeErr != nil {

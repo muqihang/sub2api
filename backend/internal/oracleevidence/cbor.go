@@ -108,22 +108,27 @@ func appendDeterministicCBOR(output *bytes.Buffer, value any, depth int) error {
 	}
 	switch typed := value.(type) {
 	case nil:
-		output.WriteByte(0xf6)
+		return output.WriteByte(0xf6)
 	case bool:
 		if typed {
-			output.WriteByte(0xf5)
-		} else {
-			output.WriteByte(0xf4)
+			return output.WriteByte(0xf5)
 		}
+		return output.WriteByte(0xf4)
 	case string:
 		if !utf8.ValidString(typed) {
 			return cborError("cbor_invalid_utf8")
 		}
-		appendCBORArgument(output, 3, uint64(len([]byte(typed))))
-		output.WriteString(typed)
+		if err := appendCBORArgument(output, 3, uint64(len([]byte(typed)))); err != nil {
+			return err
+		}
+		_, err := output.WriteString(typed)
+		return err
 	case []byte:
-		appendCBORArgument(output, 2, uint64(len(typed)))
-		output.Write(typed)
+		if err := appendCBORArgument(output, 2, uint64(len(typed))); err != nil {
+			return err
+		}
+		_, err := output.Write(typed)
+		return err
 	case json.Number:
 		integer, err := strconv.ParseInt(string(typed), 10, 64)
 		if err != nil {
@@ -156,7 +161,9 @@ func appendDeterministicCBOR(output *bytes.Buffer, value any, depth int) error {
 		if len(typed) > maxCBORArrayItems {
 			return cborError("cbor_resource_limit")
 		}
-		appendCBORArgument(output, 4, uint64(len(typed)))
+		if err := appendCBORArgument(output, 4, uint64(len(typed))); err != nil {
+			return err
+		}
 		for _, item := range typed {
 			if err := appendDeterministicCBOR(output, item, depth+1); err != nil {
 				return err
@@ -179,9 +186,13 @@ func appendDeterministicCBOR(output *bytes.Buffer, value any, depth int) error {
 			entries = append(entries, encodedEntry{key: encodedKey.Bytes(), value: item})
 		}
 		sort.Slice(entries, func(i, j int) bool { return bytes.Compare(entries[i].key, entries[j].key) < 0 })
-		appendCBORArgument(output, 5, uint64(len(entries)))
+		if err := appendCBORArgument(output, 5, uint64(len(entries))); err != nil {
+			return err
+		}
 		for _, entry := range entries {
-			output.Write(entry.key)
+			if _, err := output.Write(entry.key); err != nil {
+				return err
+			}
 			if err := appendDeterministicCBOR(output, entry.value, depth+1); err != nil {
 				return err
 			}
@@ -200,41 +211,50 @@ func appendCBORInteger(output *bytes.Buffer, value int64) error {
 	if magnitude > maxSafeInteger {
 		return cborError("cbor_integer_unsafe")
 	}
-	appendCBORArgument(output, 1, magnitude)
-	return nil
+	return appendCBORArgument(output, 1, magnitude)
 }
 
 func appendCBORUnsigned(output *bytes.Buffer, value uint64) error {
 	if value > maxSafeInteger {
 		return cborError("cbor_integer_unsafe")
 	}
-	appendCBORArgument(output, 0, value)
-	return nil
+	return appendCBORArgument(output, 0, value)
 }
 
-func appendCBORArgument(output *bytes.Buffer, major byte, value uint64) {
+func appendCBORArgument(output *bytes.Buffer, major byte, value uint64) error {
 	prefix := major << 5
 	switch {
 	case value < 24:
-		output.WriteByte(prefix | byte(value))
+		return output.WriteByte(prefix | byte(value))
 	case value <= math.MaxUint8:
-		output.WriteByte(prefix | 24)
-		output.WriteByte(byte(value))
+		if err := output.WriteByte(prefix | 24); err != nil {
+			return err
+		}
+		return output.WriteByte(byte(value))
 	case value <= math.MaxUint16:
-		output.WriteByte(prefix | 25)
+		if err := output.WriteByte(prefix | 25); err != nil {
+			return err
+		}
 		var buffer [2]byte
 		binary.BigEndian.PutUint16(buffer[:], uint16(value))
-		output.Write(buffer[:])
+		_, err := output.Write(buffer[:])
+		return err
 	case value <= math.MaxUint32:
-		output.WriteByte(prefix | 26)
+		if err := output.WriteByte(prefix | 26); err != nil {
+			return err
+		}
 		var buffer [4]byte
 		binary.BigEndian.PutUint32(buffer[:], uint32(value))
-		output.Write(buffer[:])
+		_, err := output.Write(buffer[:])
+		return err
 	default:
-		output.WriteByte(prefix | 27)
+		if err := output.WriteByte(prefix | 27); err != nil {
+			return err
+		}
 		var buffer [8]byte
 		binary.BigEndian.PutUint64(buffer[:], value)
-		output.Write(buffer[:])
+		_, err := output.Write(buffer[:])
+		return err
 	}
 }
 

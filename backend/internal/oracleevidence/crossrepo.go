@@ -89,12 +89,17 @@ func inspectMirrorImpl(ccRoot, subRoot, predecessorPath string) Decision {
 	return Decision{Allowed: true}
 }
 
-func readContractFile(path string, maximum int64) ([]byte, error) {
+func readContractFile(path string, maximum int64) (data []byte, err error) {
 	file, openErr := openNoFollow(path)
 	if openErr != nil {
 		return nil, contractErr("contract_symlink")
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil && err == nil {
+			data = nil
+			err = contractErr("contract_file_digest_mismatch")
+		}
+	}()
 	opened, statErr := file.Stat()
 	if statErr != nil || !stableRegularFile(opened, uint64(maximum), true) {
 		return nil, contractErr("contract_file_digest_mismatch")
