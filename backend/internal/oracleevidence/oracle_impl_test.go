@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -125,6 +126,15 @@ func TestOracleContractStrictJSON(t *testing.T) {
 	}
 	requireCode(t, ValidateJSONValue(struct{}{}), CodeJSONTypeInvalid)
 	requireCode(t, ValidateJSONValue(uint64(maxSafeInteger+1)), "json_number_unsafe")
+	requireCode(t, ValidateJSONValue(string([]byte{0xff})), "json_invalid_utf8")
+	multiFault := map[string]any{"a": string([]byte{0xff}), "b": uint64(maxSafeInteger + 1)}
+	for iteration := 0; iteration < 32; iteration++ {
+		requireCode(t, ValidateJSONValue(multiFault), "json_invalid_utf8")
+	}
+	badKeys := map[string]any{string([]byte{0xff}): uint64(maxSafeInteger + 1), string([]byte{0xfe}): struct{}{}}
+	for iteration := 0; iteration < 32; iteration++ {
+		requireCode(t, ValidateJSONValue(badKeys), "json_invalid_utf8")
+	}
 }
 
 func TestOracleContractJCS(t *testing.T) {
@@ -498,6 +508,21 @@ func TestOracleContractManifestAuthority(t *testing.T) {
 			}
 		})
 	}
+	precedence := buildAuthorityFixture(t)
+	for index := 0; index < 65; index++ {
+		key := newAuthorityKey(t, "overflow-key-"+decimalKey(int64(index)), "manifest", 1)
+		mustObject(precedence.state["keys"])[key.id] = authorityKeyWire(key)
+	}
+	precedence.context["nowWallClockMs"] = int64(1_799_999_698_999)
+	update := signedAuthorityUpdate(t, precedence, []string{"manifest-1", "manifest-2"}, []string{"checkpoint-1"})
+	if decision := VerifyManifestAuthorityUpdate(AuthorityInput{State: mustBytes(t, precedence.state), Candidate: mustBytes(t, update), Context: mustBytes(t, precedence.context)}); decision.Code != "authority_clock_rollback" {
+		t.Fatalf("clock precedence = %+v", decision)
+	}
+	precedence.context["nowWallClockMs"] = int64(1_800_000_000_000)
+	precedence.context["expectedReplicaGeneration"] = 8
+	if decision := VerifyManifestAuthorityUpdate(AuthorityInput{State: mustBytes(t, precedence.state), Candidate: mustBytes(t, update), Context: mustBytes(t, precedence.context)}); decision.Code != "authority_replica_conflict" {
+		t.Fatalf("replica precedence = %+v", decision)
+	}
 }
 
 func TestOracleContractInterface(t *testing.T) {
@@ -738,6 +763,36 @@ func TestOracleContractMutation(t *testing.T) {
 	if err != nil || !bytes.Equal(mustBytes(t, mutationResultsValue(first)), mustBytes(t, mutationResultsValue(second))) {
 		t.Fatalf("mutation execution is not deterministic: %v", err)
 	}
+	if decision := executeAdmissionMutation([]byte(`{"kind":"synthetic-control","version":2}`)); decision.Allowed || decision.Code != "admission_schema_invalid" {
+		t.Fatalf("mutated admission control bypassed validator: %+v", decision)
+	}
+	linkRoot := t.TempDir()
+	regular := filepath.Join(linkRoot, "regular.json")
+	if err := os.WriteFile(regular, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hard := filepath.Join(linkRoot, "hard.json")
+	if err := os.Link(regular, hard); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readRegularFile(regular, 16); err == nil {
+		t.Fatal("multi-link mutation source accepted")
+	}
+	realDir := filepath.Join(linkRoot, "real")
+	if err := os.Mkdir(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	componentFile := filepath.Join(realDir, "source.json")
+	if err := os.WriteFile(componentFile, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkedDir := filepath.Join(linkRoot, "linked")
+	if err := os.Symlink(realDir, linkedDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readRegularFile(filepath.Join(linkedDir, "source.json"), 16); err == nil {
+		t.Fatal("symlink-component mutation source accepted")
+	}
 }
 
 func mutationResultsValue(results []MutationResult) []any {
@@ -760,13 +815,61 @@ func TestOracleContractCrossRepo(t *testing.T) {
 		t.Fatalf("missing mirror = %+v", decision)
 	}
 	record := validCrossRepoRecord(t)
-	if decision := ValidateCrossRepoRecord(mustBytes(t, record)); !decision.Allowed {
+	if decision := ValidateCrossRepoRecord(crossRecordBytes(t, record)); !decision.Allowed {
 		t.Fatalf("record = %+v", decision)
+	}
+	if decision := ValidateCrossRepoRecord(mustBytes(t, record)); decision.Allowed || decision.Code != "cross_repo_binding_mismatch" {
+		t.Fatalf("record without final LF = %+v", decision)
+	}
+	pretty, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision := ValidateCrossRepoRecord(append(pretty, '\n')); decision.Allowed || decision.Code != "cross_repo_binding_mismatch" {
+		t.Fatalf("non-JCS record = %+v", decision)
 	}
 	record["file_count"] = 3_064
 	bindCrossRepoDigest(t, record)
-	if decision := ValidateCrossRepoRecord(mustBytes(t, record)); decision.Code != "authority_diagnostic_promotion" {
+	if decision := ValidateCrossRepoRecord(crossRecordBytes(t, record)); decision.Code != "authority_diagnostic_promotion" {
 		t.Fatalf("diagnostic promotion = %+v", decision)
+	}
+	record = validCrossRepoRecord(t)
+	mustObject(mustObject(record["authority"])["cc"])["selected_remote_oid"] = strings.Repeat("0", 40)
+	bindCrossRepoDigest(t, record)
+	if decision := ValidateCrossRepoRecord(crossRecordBytes(t, record)); decision.Code != "cross_repo_binding_mismatch" {
+		t.Fatalf("unbound selected OID = %+v", decision)
+	}
+	record = validCrossRepoRecord(t)
+	result := mustObject(record["result"])
+	rows := mustArray(result["case_rows"])
+	result["case_rows"] = rows[:len(rows)-1]
+	result["decisions_sha256"] = SHA256Hex(append(mustBytes(t, rows[:len(rows)-1]), '\n'))
+	bindCrossRepoDigest(t, record)
+	if decision := ValidateCrossRepoRecord(crossRecordBytes(t, record)); decision.Code != "cross_repo_result_mismatch" {
+		t.Fatalf("incomplete result = %+v", decision)
+	}
+	record = validCrossRepoRecord(t)
+	mustObject(record["result"])["required_set_sha256"] = strings.Repeat("0", 64)
+	bindCrossRepoDigest(t, record)
+	if decision := ValidateCrossRepoRecord(crossRecordBytes(t, record)); decision.Code != "cross_repo_result_mismatch" {
+		t.Fatalf("caller-selected required set = %+v", decision)
+	}
+	record = validCrossRepoRecord(t)
+	mustObject(mustArray(mustObject(record["commit_dag"])["nodes"])[0])["head"] = nil
+	bindCrossRepoDigest(t, record)
+	if decision := ValidateCrossRepoRecord(crossRecordBytes(t, record)); decision.Code != "cross_repo_binding_mismatch" {
+		t.Fatalf("null DAG binding = %+v", decision)
+	}
+	record = validCrossRepoRecord(t)
+	mustObject(mustObject(record["authority"])["cc"])["selected_remote_oid"] = strings.Repeat("1", 64)
+	bindCrossRepoDigest(t, record)
+	if decision := ValidateCrossRepoRecord(crossRecordBytes(t, record)); decision.Code != "cross_repo_binding_mismatch" {
+		t.Fatalf("digest accepted as OID = %+v", decision)
+	}
+	for _, leak := range []string{"prefix Bearer secret-token", "x Basic dXNlcjpwYXNz", "-----BEGIN RSA PRIVATE KEY-----", "-----begin openssh private key-----", "api_key=secret", "access-token = secret", "password: secret"} {
+		if !containsLeakString(leak) {
+			t.Fatalf("leak not detected: %q", leak)
+		}
 	}
 }
 
@@ -781,11 +884,20 @@ func validCrossRepoRecord(t *testing.T) map[string]any {
 	for _, name := range names {
 		files = append(files, map[string]any{"relative_path": name, "sha256": mirrorDigests[name]})
 	}
-	caseRows := []any{map[string]any{"case_id": "coherence-valid", "allowed": true, "code": "admission_allow", "next_state_digest": nil, "canonical_hex": nil}}
-	mutationRows := []any{map[string]any{"case_id": "positive-admission-noop", "allowed": true, "code": "admission_allow", "next_state_digest": nil, "canonical_hex": nil}}
+	caseSpecs, mutationSpecs, ok := frozenResultSpecs()
+	if !ok {
+		t.Fatal("frozen result specs unavailable")
+	}
+	caseRows := rowsForSpecs(caseSpecs)
+	mutationRows := rowsForSpecs(mutationSpecs)
 	caseBytes := append(mustBytes(t, caseRows), '\n')
 	mutationBytes := append(mustBytes(t, mutationRows), '\n')
+	requiredDigest, ok := frozenRequiredSetDigest(caseSpecs, mutationSpecs)
+	if !ok {
+		t.Fatal("required-set digest unavailable")
+	}
 	ids := []string{"C0", "S0", "S1", "R1", "I1", "SR", "C1", "CR"}
+	roles := []string{"merge-this-cc-docs-amendment", "fresh-true-sub-mandatory-entry-and-docs-plan", "independent-review-and-merge-true-sub-docs-plan", "compileable-fail-closed-behavioral-red-scaffold", "single-implementation-wave", "independent-exact-head-true-sub-review", "cc-checker-integration", "cross-repo-exact-head-review-and-controller-decision"}
 	nodes := make([]any, 0, len(ids))
 	edges := make([]any, 0, len(ids)-1)
 	for index, id := range ids {
@@ -794,20 +906,31 @@ func validCrossRepoRecord(t *testing.T) map[string]any {
 			parents = []any{ids[index-1]}
 			edges = append(edges, []any{ids[index-1], id})
 		}
-		nodes = append(nodes, map[string]any{"id": id, "role": "role:" + strings.ToLower(id), "parent_ids": parents, "head": nil, "tree": nil})
+		head, tree := strings.Repeat(decimalKey(int64(index+1)), 40), strings.Repeat(decimalKey(int64(index+2)), 40)
+		if id == "C0" {
+			head, tree = "debe0360384132d6e66c0296219ea6066193e187", "ffca2a0a892b2292b486533089f3276f28b39d4e"
+		}
+		if id == "R1" {
+			head, tree = "795c1f810b5647840fec508951cfc3272066d8b6", "efb99a079e76817a38a9a48b053cdc6504e37025"
+		}
+		if id == "I1" {
+			head, tree = strings.Repeat("1", 40), strings.Repeat("2", 40)
+		}
+		nodes = append(nodes, map[string]any{"id": id, "role": roles[index], "parent_ids": parents, "head": head, "tree": tree})
 	}
 	now := time.Now().UnixMilli()
 	digest := strings.Repeat("1", 64)
+	oid := strings.Repeat("1", 40)
 	record := map[string]any{
 		"schema_id": "oracle.cross_repo_record", "schema_major": 1, "schema_revision": 0, "kind": "oracle_contract_rebaseline",
 		"authority": map[string]any{
 			"command_id": "command:boundary-a", "reviewer_model": "gpt-5.6-sol",
 			"cc":  map[string]any{"repository_url": "https://github.com/muqihang/cc-gateway.git", "selected_remote_name": "muqihang", "selected_remote_ref": "refs/remotes/muqihang/main", "selected_remote_oid": "debe0360384132d6e66c0296219ea6066193e187", "commit": "debe0360384132d6e66c0296219ea6066193e187", "tree": "ffca2a0a892b2292b486533089f3276f28b39d4e", "amendment_sha256": "eeaefeddbfe740003288f9d8ec8ba4673b57cca91f4fc3bf5cea5db02feaefaf"},
-			"sub": map[string]any{"repository_url": "https://github.com/Wei-Shaw/sub2api.git", "selected_local_ref": "refs/heads/codex/native-search-gateway", "selected_local_oid": "3ac410ea02edc53c3925f28eddcbc22b51c0a137", "commit": "3ac410ea02edc53c3925f28eddcbc22b51c0a137", "tree": "f7d51fb57c64fbaf6e2db3a7a2d423a491d5788d", "parent": "04e42ae0f6c556daad21ac393eb284585092e805", "ancestor": "fc0b1989d7ba9ce06ff151b17c94b50df4170a93", "go_mod_sha256": "e637999a38f974c9172c8f69c8fbb9c0d727bacf257558307e97e927cbb468de", "go_sum_sha256": "d3e1fd1510b41f218136b719fdf2c4ef239b05650d3b575fb93c18f25f3dc981", "go_directive": "1.26.5", "predecessor_relative_path": "backend/internal/service/testdata/cc_gateway_formal_pool_contract/vectors.json", "predecessor_sha256": predecessorSHA256, "codegraph_config_sha256": "a7f3ad7c17d655f9d2494b5b05e55ceb4ea9c7667456ff785c5f2a9291c3783a", "codegraph_version": "1.1.6", "codegraph_extraction_revision": 24, "selection": map[string]any{"mode": "total_controller_local_override", "selection_override_sha256": digest, "selection_override_controller_id": "controller:master", "selection_override_task_id": "task:boundary-a", "selection_override_issued_at_ms": now, "selection_override_decision": "authorize_refs/heads/codex/native-search-gateway_at_3ac410ea02edc53c3925f28eddcbc22b51c0a137"}, "sub_plan_commit": digest, "sub_plan_tree": digest, "sub_plan_sha256": digest, "r1_commit": "795c1f810b5647840fec508951cfc3272066d8b6", "r1_tree": "efb99a079e76817a38a9a48b053cdc6504e37025", "i1_commit": digest, "i1_tree": digest},
+			"sub": map[string]any{"repository_url": "https://github.com/Wei-Shaw/sub2api.git", "selected_local_ref": "refs/heads/codex/native-search-gateway", "selected_local_oid": "3ac410ea02edc53c3925f28eddcbc22b51c0a137", "commit": "3ac410ea02edc53c3925f28eddcbc22b51c0a137", "tree": "f7d51fb57c64fbaf6e2db3a7a2d423a491d5788d", "parent": "04e42ae0f6c556daad21ac393eb284585092e805", "ancestor": "fc0b1989d7ba9ce06ff151b17c94b50df4170a93", "go_mod_sha256": "e637999a38f974c9172c8f69c8fbb9c0d727bacf257558307e97e927cbb468de", "go_sum_sha256": "d3e1fd1510b41f218136b719fdf2c4ef239b05650d3b575fb93c18f25f3dc981", "go_directive": "1.26.5", "predecessor_relative_path": "backend/internal/service/testdata/cc_gateway_formal_pool_contract/vectors.json", "predecessor_sha256": predecessorSHA256, "codegraph_config_sha256": "a7f3ad7c17d655f9d2494b5b05e55ceb4ea9c7667456ff785c5f2a9291c3783a", "codegraph_version": "1.1.6", "codegraph_extraction_revision": 24, "selection": map[string]any{"mode": "total_controller_local_override", "selection_override_sha256": digest, "selection_override_controller_id": "controller:master", "selection_override_task_id": "task:boundary-a", "selection_override_issued_at_ms": now, "selection_override_decision": "authorize_refs/heads/codex/native-search-gateway_at_3ac410ea02edc53c3925f28eddcbc22b51c0a137"}, "sub_plan_commit": oid, "sub_plan_tree": oid, "sub_plan_sha256": digest, "r1_commit": "795c1f810b5647840fec508951cfc3272066d8b6", "r1_tree": "efb99a079e76817a38a9a48b053cdc6504e37025", "i1_commit": oid, "i1_tree": strings.Repeat("2", 40)},
 		},
 		"bundle":       map[string]any{"files": files, "contract_index_sha256": contractIndexSHA256, "predecessor_sha256": predecessorSHA256, "schema_range": "1:0-0", "mirror_root": "backend/internal/oracleevidence/testdata/oracle_lab_contract/v1", "framing": "core-raw-exact;record-jcs-final-lf"},
 		"commit_dag":   map[string]any{"nodes": nodes, "edges": edges},
-		"result":       map[string]any{"case_rows": caseRows, "mutation_rows": mutationRows, "decisions_sha256": SHA256Hex(caseBytes), "mutation_results_sha256": SHA256Hex(mutationBytes), "required_set_sha256": digest, "stable_code_count": 119, "stable_code_set_sha256": stableCodesSHA256, "semantic_surfaces": map[string]any{"strict_json": true, "jcs": true, "normalization": true, "cbor": true, "schema": true, "admission": true, "authority": true, "interface": true, "replay": true, "sidecar": true}, "protected_file_count": 0, "protected_node_count": 0, "egress_count": 0, "command_ids": []any{"cc-focused-contract-suite-v1", "sub-focused-oracleevidence-v1"}},
+		"result":       map[string]any{"case_rows": caseRows, "mutation_rows": mutationRows, "decisions_sha256": SHA256Hex(caseBytes), "mutation_results_sha256": SHA256Hex(mutationBytes), "required_set_sha256": requiredDigest, "stable_code_count": 119, "stable_code_set_sha256": stableCodesSHA256, "semantic_surfaces": map[string]any{"strict_json": true, "jcs": true, "normalization": true, "cbor": true, "schema": true, "admission": true, "authority": true, "interface": true, "replay": true, "sidecar": true}, "protected_file_count": 0, "protected_node_count": 0, "egress_count": 0, "command_ids": []any{"cc-focused-contract-suite-v1", "sub-focused-oracleevidence-v1"}},
 		"review":       map[string]any{"sub": map[string]any{"task_id": "task:sub-review", "model": "gpt-5.6-sol", "artifact_sha256": digest, "critical": 0, "important": 0, "verdict": "PLAN_REVIEW_PASS"}, "cross": map[string]any{"task_id": "task:cross-review", "model": "gpt-5.6-sol", "artifact_sha256": digest, "critical": 0, "important": 0, "verdict": "CROSS_REPO_PASS"}},
 		"issued_at_ms": now, "expires_at_ms": now + crossRepoLeaseMS, "record_digest": digest,
 	}
@@ -820,6 +943,22 @@ func bindCrossRepoDigest(t *testing.T, record map[string]any) {
 	unsigned := cloneMap(t, record)
 	delete(unsigned, "record_digest")
 	record["record_digest"] = SHA256Hex(append(mustBytes(t, unsigned), '\n'))
+}
+
+func rowsForSpecs(specs []frozenDecisionSpec) []any {
+	rows := make([]any, len(specs))
+	for index, spec := range specs {
+		rows[index] = map[string]any{
+			"case_id": spec.id, "allowed": spec.allowed, "code": spec.code,
+			"next_state_digest": spec.nextDigest, "canonical_hex": spec.canonicalHex,
+		}
+	}
+	return rows
+}
+
+func crossRecordBytes(t *testing.T, record map[string]any) []byte {
+	t.Helper()
+	return append(mustBytes(t, record), '\n')
 }
 
 func mustArray(value any) []any {

@@ -331,7 +331,10 @@ func inspectMirrorRoot(root string) error {
 	}
 	for _, entry := range entries {
 		expected, ok := mirrorDigests[entry.Name()]
-		if !ok || entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() {
+		if entry.Type()&os.ModeSymlink != 0 {
+			return contractErr("contract_symlink")
+		}
+		if !ok || !entry.Type().IsRegular() {
 			return contractErr("contract_file_set_invalid")
 		}
 		data, readErr := readContractFile(filepath.Join(root, entry.Name()), maxJSONBytes)

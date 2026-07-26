@@ -30,10 +30,6 @@ func verifyManifestAuthorityUpdateImpl(input AuthorityInput) Decision {
 	if !stateOK || !updateOK || !contextOK || !trustStateShape(state) || !manifestUpdateShape(update) || !manifestContextShape(context) {
 		return Decision{Code: "authority_signature_invalid"}
 	}
-	keys, keyErr := authorityKeys(state)
-	if keyErr != nil {
-		return decisionFromError(keyErr, "authority_signature_invalid")
-	}
 	now, _ := int64Value(context["nowWallClockMs"])
 	maximumRollback, _ := int64Value(context["maximumClockRollbackMs"])
 	lastWallClock, _ := int64Value(state["lastWallClockMs"])
@@ -45,6 +41,10 @@ func verifyManifestAuthorityUpdateImpl(input AuthorityInput) Decision {
 	replica, _ := int64Value(state["replicaGeneration"])
 	if expectedReplica != replica {
 		return Decision{Code: "authority_replica_conflict"}
+	}
+	keys, keyErr := authorityKeys(state)
+	if keyErr != nil {
+		return decisionFromError(keyErr, "authority_signature_invalid")
 	}
 	manifest, _ := objectValue(update["manifest"])
 	manifestBytes, canonicalErr := canonicalizeValueImpl(manifest)

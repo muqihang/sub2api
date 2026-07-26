@@ -3,6 +3,7 @@ package oracleevidence
 import (
 	"encoding/json"
 	"math"
+	"sort"
 	"strconv"
 	"unicode/utf8"
 )
@@ -58,8 +59,14 @@ func validateJSONAt(value any, depth int, count *int) error {
 	case nil, bool:
 		return nil
 	case string:
-		if !utf8.ValidString(typed) || hasLoneSurrogateString(typed) || len([]byte(typed)) > maxJSONString {
+		if !utf8.ValidString(typed) {
+			return jsonContractError("json_invalid_utf8", "string")
+		}
+		if hasLoneSurrogateString(typed) {
 			return jsonContractError("json_lone_surrogate", "string")
+		}
+		if len([]byte(typed)) > maxJSONString {
+			return jsonContractError(CodeJSONInvalid, "string length")
 		}
 		return nil
 	case json.Number:
@@ -116,11 +123,22 @@ func validateJSONAt(value any, depth int, count *int) error {
 		if *count > maxJSONMembers {
 			return jsonContractError(CodeJSONInvalid, "aggregate members")
 		}
-		for key, item := range typed {
-			if !utf8.ValidString(key) || hasLoneSurrogateString(key) || len([]byte(key)) > maxJSONString {
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			if !utf8.ValidString(key) {
+				return jsonContractError("json_invalid_utf8", "object key")
+			}
+			if hasLoneSurrogateString(key) {
 				return jsonContractError("json_lone_surrogate", "object key")
 			}
-			if err := validateJSONAt(item, depth+1, count); err != nil {
+			if len([]byte(key)) > maxJSONString {
+				return jsonContractError(CodeJSONInvalid, "object key length")
+			}
+			keys = append(keys, key)
+		}
+		sort.Slice(keys, func(i, j int) bool { return utf16Less(keys[i], keys[j]) })
+		for _, key := range keys {
+			if err := validateJSONAt(typed[key], depth+1, count); err != nil {
 				return err
 			}
 		}

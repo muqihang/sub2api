@@ -1,6 +1,7 @@
 package oracleevidence
 
 import (
+	_ "embed"
 	"encoding/base64"
 	"io"
 	"os"
@@ -8,6 +9,9 @@ import (
 	"sort"
 	"strings"
 )
+
+//go:embed testdata/oracle_lab_contract/v1/coherence-corpus.json
+var embeddedCoherenceCorpus []byte
 
 type virtualMutationFile struct {
 	data    []byte
@@ -267,23 +271,7 @@ func executeMutationSubject(subject string, input []byte, schemas *SchemaSet) De
 	case "schema":
 		return validateContractObjectImpl(schemas, "behaviorCoherenceCertificate", input)
 	case "admission":
-		value, err := parseStrictJSONImpl(input)
-		if err != nil {
-			return Decision{Code: "admission_schema_invalid"}
-		}
-		control, ok := objectValue(value)
-		if ok && exactKeys(control, "kind", "version") && stringEquals(control["kind"], "synthetic-control") && intEquals(control["version"], 1) {
-			return Decision{Allowed: true, Code: "admission_allow"}
-		}
-		if !ok || !exactKeys(control, "certificate", "context") {
-			return Decision{Code: "admission_schema_invalid"}
-		}
-		certificate, certificateErr := canonicalizeValueImpl(control["certificate"])
-		context, contextErr := canonicalizeValueImpl(control["context"])
-		if certificateErr != nil || contextErr != nil {
-			return Decision{Code: "admission_schema_invalid"}
-		}
-		return decideBehaviorAdmissionImpl(certificate, context)
+		return executeAdmissionMutation(input)
 	case "authority_record":
 		return validateCrossRepoRecordImpl(input)
 	case "cbor":
@@ -304,6 +292,56 @@ func executeMutationSubject(subject string, input []byte, schemas *SchemaSet) De
 	default:
 		return Decision{Code: "mutation_source_invalid"}
 	}
+}
+
+func executeAdmissionMutation(input []byte) Decision {
+	value, err := parseStrictJSONImpl(input)
+	if err != nil {
+		return Decision{Code: "admission_schema_invalid"}
+	}
+	control, ok := objectValue(value)
+	if !ok {
+		return Decision{Code: "admission_schema_invalid"}
+	}
+	if exactKeys(control, "certificate", "context") {
+		certificate, certificateErr := canonicalizeValueImpl(control["certificate"])
+		context, contextErr := canonicalizeValueImpl(control["context"])
+		if certificateErr != nil || contextErr != nil {
+			return Decision{Code: "admission_schema_invalid"}
+		}
+		return decideBehaviorAdmissionImpl(certificate, context)
+	}
+	if !exactKeys(control, "kind", "version") || !stringEquals(control["kind"], "synthetic-control") || !intEquals(control["version"], 1) {
+		return Decision{Code: "admission_schema_invalid"}
+	}
+	corpusValue, corpusErr := parseStrictJSONImpl(embeddedCoherenceCorpus)
+	corpus, corpusOK := objectValue(corpusValue)
+	if corpusErr != nil || !corpusOK {
+		return Decision{Code: "admission_schema_invalid"}
+	}
+	certificate, certificateOK := objectValue(corpus["base_certificate"])
+	baseContext, contextOK := objectValue(corpus["base_context"])
+	negative, negativeOK := objectValue(corpus["negative_capabilities"])
+	if !certificateOK || !contextOK || !negativeOK {
+		return Decision{Code: "admission_schema_invalid"}
+	}
+	context := cloneObject(baseContext)
+	context["negative_capabilities"] = negative
+	signals, _ := canonicalizeValueImpl(context["signals"])
+	negativeBytes, _ := canonicalizeValueImpl(negative)
+	certificateBytes, _ := canonicalizeValueImpl(certificate)
+	digest, digestErr := admissionPayloadDigestImpl(certificateBytes, signals, negativeBytes)
+	if digestErr != nil {
+		return Decision{Code: "admission_schema_invalid"}
+	}
+	expected := cloneObject(mustObject(context["expected"]))
+	expected["manifest_payload_digest"] = digest
+	context["expected"] = expected
+	contextBytes, contextErr := canonicalizeValueImpl(context)
+	if contextErr != nil {
+		return Decision{Code: "admission_schema_invalid"}
+	}
+	return decideBehaviorAdmissionImpl(certificateBytes, contextBytes)
 }
 
 func executeNormalizationMutation(input []byte) Decision {
@@ -678,17 +716,27 @@ func readBoundedSource(root string, binding SourceBinding) ([]byte, error) {
 }
 
 func readRegularFile(path string, maximum uint64) ([]byte, error) {
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o111 != 0 {
-		return nil, contractErr(CodeMutationSource)
-	}
-	file, err := os.Open(path)
-	if err != nil {
+	file, openErr := openNoFollow(path)
+	if openErr != nil {
 		return nil, contractErr(CodeMutationSource)
 	}
 	defer file.Close()
+	opened, statErr := file.Stat()
+	if statErr != nil || !stableRegularFile(opened, maximum, false) {
+		return nil, contractErr(CodeMutationSource)
+	}
 	data, err := io.ReadAll(io.LimitReader(file, int64(maximum)+1))
 	if err != nil || uint64(len(data)) > maximum {
+		return nil, contractErr(CodeMutationSource)
+	}
+	after, statErr := file.Stat()
+	reopened, reopenErr := openNoFollow(path)
+	if reopenErr != nil {
+		return nil, contractErr(CodeMutationSource)
+	}
+	pathAfter, pathErr := reopened.Stat()
+	reopened.Close()
+	if statErr != nil || pathErr != nil || !sameStableFile(opened, after) || !sameStableFile(after, pathAfter) {
 		return nil, contractErr(CodeMutationSource)
 	}
 	return data, nil

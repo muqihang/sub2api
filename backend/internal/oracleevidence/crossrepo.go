@@ -2,11 +2,14 @@ package oracleevidence
 
 import (
 	"bytes"
+	_ "embed"
+	"encoding/hex"
+	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -28,6 +31,35 @@ var indexFileOrder = []string{
 	"sidecar-envelope.schema.json",
 }
 
+//go:embed testdata/oracle_lab_contract/v1/canonicalization-corpus.json
+var embeddedCanonicalCorpus []byte
+
+//go:embed testdata/oracle_lab_contract/v1/coherence-corpus.json
+var embeddedCrossCoherenceCorpus []byte
+
+//go:embed testdata/oracle_lab_contract/v1/authority-corpus.json
+var embeddedAuthorityCorpus []byte
+
+//go:embed testdata/oracle_lab_contract/v1/interface-corpus.json
+var embeddedInterfaceCorpus []byte
+
+//go:embed testdata/oracle_lab_contract/v1/expected-results.json
+var embeddedExpectedResults []byte
+
+//go:embed testdata/oracle_lab_contract/v1/contract-index.json
+var embeddedContractIndex []byte
+
+//go:embed testdata/rebaseline/v1/mutation-corpus.json
+var embeddedMutationCorpus []byte
+
+type frozenDecisionSpec struct {
+	id           string
+	allowed      bool
+	code         string
+	nextDigest   any
+	canonicalHex any
+}
+
 func inspectMirrorImpl(ccRoot, subRoot, predecessorPath string) Decision {
 	if predecessorPath == "" {
 		return Decision{Code: "contract_predecessor_mismatch"}
@@ -46,6 +78,9 @@ func inspectMirrorImpl(ccRoot, subRoot, predecessorPath string) Decision {
 		if leftErr != nil || rightErr != nil || !bytes.Equal(left, right) {
 			return Decision{Code: "contract_mirror_mismatch"}
 		}
+		if containsLeakBytes(left) || containsLeakBytes(right) {
+			return Decision{Code: "leak_detected", Detail: name}
+		}
 	}
 	predecessor, err := readContractFile(predecessorPath, maxJSONBytes)
 	if err != nil || sha256HexImpl(predecessor) != predecessorSHA256 {
@@ -55,23 +90,170 @@ func inspectMirrorImpl(ccRoot, subRoot, predecessorPath string) Decision {
 }
 
 func readContractFile(path string, maximum int64) ([]byte, error) {
-	if err := rejectSymlinkComponents(path); err != nil {
-		return nil, err
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, contractErr(CodeContractBundle)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
+	file, openErr := openNoFollow(path)
+	if openErr != nil {
 		return nil, contractErr("contract_symlink")
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 != 0 || info.Size() < 1 || info.Size() > maximum {
-		return nil, contractErr("contract_file_set_invalid")
+	defer file.Close()
+	opened, statErr := file.Stat()
+	if statErr != nil || !stableRegularFile(opened, uint64(maximum), true) {
+		return nil, contractErr("contract_file_digest_mismatch")
 	}
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok && stat.Nlink != 1 {
-		return nil, contractErr("contract_file_set_invalid")
+	data, readErr := io.ReadAll(io.LimitReader(file, maximum+1))
+	if readErr != nil || int64(len(data)) > maximum {
+		return nil, contractErr("contract_file_digest_mismatch")
 	}
-	return os.ReadFile(path)
+	after, statErr := file.Stat()
+	reopened, reopenErr := openNoFollow(path)
+	if reopenErr != nil {
+		return nil, contractErr("contract_file_digest_mismatch")
+	}
+	pathAfter, pathErr := reopened.Stat()
+	reopened.Close()
+	if statErr != nil || pathErr != nil || !sameStableFile(opened, after) || !sameStableFile(after, pathAfter) {
+		return nil, contractErr("contract_file_digest_mismatch")
+	}
+	return data, nil
+}
+
+func openNoFollow(path string) (*os.File, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	volume := filepath.VolumeName(absolute)
+	root := volume + string(os.PathSeparator)
+	segments := strings.Split(strings.TrimPrefix(absolute, root), string(os.PathSeparator))
+	if len(segments) == 0 || segments[len(segments)-1] == "" {
+		return nil, contractErr("contract_index_path_invalid")
+	}
+	directory, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	for _, segment := range segments[:len(segments)-1] {
+		if segment == "" || segment == "." || segment == ".." {
+			directory.Close()
+			return nil, contractErr("contract_index_path_invalid")
+		}
+		before, statErr := directory.Lstat(segment)
+		if statErr != nil || !before.IsDir() || before.Mode()&os.ModeSymlink != 0 {
+			directory.Close()
+			return nil, contractErr("contract_symlink")
+		}
+		next, openErr := directory.OpenRoot(segment)
+		if openErr != nil {
+			directory.Close()
+			return nil, openErr
+		}
+		after, afterErr := next.Stat(".")
+		directory.Close()
+		if afterErr != nil || !sameFileIdentity(before, after) {
+			next.Close()
+			return nil, contractErr("contract_file_digest_mismatch")
+		}
+		directory = next
+	}
+	leaf := segments[len(segments)-1]
+	before, statErr := directory.Lstat(leaf)
+	if statErr != nil || before.Mode()&os.ModeSymlink != 0 {
+		directory.Close()
+		return nil, contractErr("contract_symlink")
+	}
+	file, openErr := directory.Open(leaf)
+	directory.Close()
+	if openErr != nil {
+		return nil, openErr
+	}
+	opened, openedErr := file.Stat()
+	if openedErr != nil || !sameFileIdentity(before, opened) {
+		file.Close()
+		return nil, contractErr("contract_file_digest_mismatch")
+	}
+	return file, nil
+}
+
+func stableRegularFile(info os.FileInfo, maximum uint64, requireNonempty bool) bool {
+	if info == nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o111 != 0 || info.Size() < 0 || uint64(info.Size()) > maximum || (requireNonempty && info.Size() == 0) {
+		return false
+	}
+	links, ok := statUintField(info, "Nlink")
+	return ok && links == 1
+}
+
+func sameStableFile(left, right os.FileInfo) bool {
+	if !sameFileIdentity(left, right) {
+		return false
+	}
+	leftLinks, leftOK := statUintField(left, "Nlink")
+	rightLinks, rightOK := statUintField(right, "Nlink")
+	return leftOK && rightOK && leftLinks == 1 && rightLinks == 1
+}
+
+func sameFileIdentity(left, right os.FileInfo) bool {
+	if left == nil || right == nil || !os.SameFile(left, right) || left.Mode() != right.Mode() || left.Size() != right.Size() || !left.ModTime().Equal(right.ModTime()) {
+		return false
+	}
+	leftDev, leftDevOK := statUintField(left, "Dev")
+	rightDev, rightDevOK := statUintField(right, "Dev")
+	leftInode, leftInodeOK := statUintField(left, "Ino")
+	rightInode, rightInodeOK := statUintField(right, "Ino")
+	leftSeconds, leftNanos, leftTimeOK := statChangeTime(left)
+	rightSeconds, rightNanos, rightTimeOK := statChangeTime(right)
+	return leftDevOK && rightDevOK && leftInodeOK && rightInodeOK && leftTimeOK && rightTimeOK &&
+		leftDev == rightDev && leftInode == rightInode && leftSeconds == rightSeconds && leftNanos == rightNanos
+}
+
+func statValue(info os.FileInfo) (reflect.Value, bool) {
+	if info == nil || info.Sys() == nil {
+		return reflect.Value{}, false
+	}
+	value := reflect.ValueOf(info.Sys())
+	if value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return reflect.Value{}, false
+		}
+		value = value.Elem()
+	}
+	return value, value.Kind() == reflect.Struct
+}
+
+func statUintField(info os.FileInfo, name string) (uint64, bool) {
+	value, ok := statValue(info)
+	if !ok {
+		return 0, false
+	}
+	field := value.FieldByName(name)
+	if !field.IsValid() {
+		return 0, false
+	}
+	switch field.Kind() {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return field.Uint(), true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		integer := field.Int()
+		return uint64(integer), integer >= 0
+	default:
+		return 0, false
+	}
+}
+
+func statChangeTime(info os.FileInfo) (int64, int64, bool) {
+	value, ok := statValue(info)
+	if !ok {
+		return 0, 0, false
+	}
+	for _, name := range []string{"Ctimespec", "Ctim"} {
+		field := value.FieldByName(name)
+		if field.IsValid() && field.Kind() == reflect.Struct {
+			seconds := field.FieldByName("Sec")
+			nanos := field.FieldByName("Nsec")
+			if seconds.IsValid() && nanos.IsValid() && seconds.CanInt() && nanos.CanInt() {
+				return seconds.Int(), nanos.Int(), true
+			}
+		}
+	}
+	return 0, 0, false
 }
 
 func rejectSymlinkComponents(path string) error {
@@ -164,9 +346,17 @@ func validateContractIndexImpl(bundleRoot string) Decision {
 }
 
 func validateCrossRepoRecordImpl(input []byte) Decision {
-	value, err := parseStrictJSONImpl(input)
+	if len(input) < 2 || input[len(input)-1] != '\n' || input[len(input)-2] == '\n' || input[len(input)-2] == '\r' || input[len(input)-2] == ' ' || input[len(input)-2] == '\t' {
+		return Decision{Code: "cross_repo_binding_mismatch"}
+	}
+	core := input[:len(input)-1]
+	value, err := parseStrictJSONImpl(core)
 	if err != nil {
 		return Decision{Code: "contract_json_invalid"}
+	}
+	canonicalRecord, err := canonicalizeValueImpl(value)
+	if err != nil || !bytes.Equal(core, canonicalRecord) {
+		return Decision{Code: "cross_repo_binding_mismatch"}
 	}
 	record, ok := objectValue(value)
 	if !ok {
@@ -175,7 +365,7 @@ func validateCrossRepoRecordImpl(input []byte) Decision {
 	if containsDiagnosticPromotion(record) {
 		return Decision{Code: "authority_diagnostic_promotion"}
 	}
-	if containsLeak(record) {
+	if containsLeak(record) || containsLeakString(string(core)) {
 		return Decision{Code: "leak_detected"}
 	}
 	if !exactKeys(record, "schema_id", "schema_major", "schema_revision", "kind", "authority", "bundle", "commit_dag", "result", "review", "issued_at_ms", "expires_at_ms", "record_digest") {
@@ -194,7 +384,7 @@ func validateCrossRepoRecordImpl(input []byte) Decision {
 	if time.Now().UnixMilli() > expires {
 		return Decision{Code: "cross_repo_record_expired"}
 	}
-	if !validCrossAuthority(record["authority"]) || !validCrossBundle(record["bundle"]) || !validCommitDAG(record["commit_dag"]) || !validCrossReview(record["review"]) {
+	if !validCrossAuthority(record["authority"]) || !validCrossBundle(record["bundle"]) || !validCommitDAG(record["commit_dag"], record["authority"]) || !validCrossReview(record["review"]) {
 		return Decision{Code: "cross_repo_binding_mismatch"}
 	}
 	if !validCrossResult(record["result"]) {
@@ -249,7 +439,7 @@ func containsLeak(value any) bool {
 	case map[string]any:
 		for key, child := range typed {
 			normalized := strings.ToLower(strings.ReplaceAll(key, "-", "_"))
-			if leakKeys[normalized] || containsLeak(child) {
+			if (leakKeys[normalized] && containsSensitiveValue(child)) || containsLeak(child) {
 				return true
 			}
 		}
@@ -260,10 +450,87 @@ func containsLeak(value any) bool {
 			}
 		}
 	case string:
-		lower := strings.ToLower(typed)
-		return strings.Contains(typed, "/Users/") || strings.Contains(typed, "/home/") || strings.Contains(typed, "/var/folders/") || strings.HasPrefix(typed, `\\`) ||
-			(len(typed) >= 3 && ((typed[0] >= 'A' && typed[0] <= 'Z') || (typed[0] >= 'a' && typed[0] <= 'z')) && typed[1] == ':' && (typed[2] == '\\' || typed[2] == '/')) ||
-			strings.HasPrefix(lower, "bearer ") || strings.HasPrefix(lower, "basic ") || strings.Contains(typed, "-----BEGIN PRIVATE KEY-----")
+		return containsLeakString(typed)
+	}
+	return false
+}
+
+func containsSensitiveValue(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed) != ""
+	case []any:
+		return len(typed) != 0
+	case nil:
+		return false
+	default:
+		_, isObject := typed.(map[string]any)
+		return !isObject
+	}
+}
+
+func containsLeakBytes(input []byte) bool {
+	if value, err := parseStrictJSONImpl(input); err == nil && containsLeak(value) {
+		return true
+	}
+	return containsLeakString(string(input))
+}
+
+func containsLeakString(value string) bool {
+	lower := strings.ToLower(value)
+	if strings.Contains(value, "/Users/") || strings.Contains(value, "/home/") || strings.Contains(value, "/var/folders/") || strings.HasPrefix(value, `\\`) ||
+		(len(value) >= 3 && ((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) && value[1] == ':' && (value[2] == '\\' || value[2] == '/')) ||
+		strings.Contains(lower, "bearer ") || strings.Contains(lower, "basic ") || containsPEMPrivateKeyOpener(value) {
+		return true
+	}
+	for _, key := range []string{"authorization", "proxy_authorization", "x_api_key", "api_key", "anthropic_api_key", "access_token", "refresh_token", "password", "cookie", "set_cookie", "credential", "credentials", "secret", "private_key"} {
+		if containsCredentialAssignment(lower, key) || containsCredentialAssignment(lower, strings.ReplaceAll(key, "_", "-")) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsCredentialAssignment(value, key string) bool {
+	for offset := 0; offset < len(value); {
+		index := strings.Index(value[offset:], key)
+		if index < 0 {
+			return false
+		}
+		index += offset
+		beforeOK := index == 0 || !isCredentialWordByte(value[index-1])
+		position := index + len(key)
+		for position < len(value) && (value[position] == ' ' || value[position] == '\t') {
+			position++
+		}
+		separatorOK := position < len(value) && value[position] == '='
+		if position < len(value) && value[position] == ':' {
+			separatorOK = position+1 < len(value) && (value[position+1] == ' ' || value[position+1] == '\t')
+		}
+		if beforeOK && separatorOK {
+			position++
+			for position < len(value) && (value[position] == ' ' || value[position] == '\t') {
+				position++
+			}
+			if position < len(value) && value[position] != '\r' && value[position] != '\n' {
+				return true
+			}
+		}
+		offset = index + len(key)
+	}
+	return false
+}
+
+func isCredentialWordByte(value byte) bool {
+	return (value >= 'a' && value <= 'z') || (value >= '0' && value <= '9') || value == '_'
+}
+
+func containsPEMPrivateKeyOpener(value string) bool {
+	value = strings.ToUpper(value)
+	for _, opener := range []string{"-----BEGIN PRIVATE KEY-----", "-----BEGIN ENCRYPTED PRIVATE KEY-----", "-----BEGIN RSA PRIVATE KEY-----", "-----BEGIN EC PRIVATE KEY-----", "-----BEGIN DSA PRIVATE KEY-----", "-----BEGIN OPENSSH PRIVATE KEY-----"} {
+		if strings.Contains(value, opener) {
+			return true
+		}
 	}
 	return false
 }
@@ -280,7 +547,7 @@ func validCrossAuthority(value any) bool {
 	if !stringEquals(cc["repository_url"], "https://github.com/muqihang/cc-gateway.git") || !stringEquals(cc["selected_remote_name"], "muqihang") || !stringEquals(cc["selected_remote_ref"], "refs/remotes/muqihang/main") || !validOID(cc["selected_remote_oid"]) || !validOID(cc["commit"]) || !validOID(cc["tree"]) || !validDigest(cc["amendment_sha256"]) {
 		return false
 	}
-	if !stringEquals(cc["commit"], "debe0360384132d6e66c0296219ea6066193e187") || !stringEquals(cc["tree"], "ffca2a0a892b2292b486533089f3276f28b39d4e") || !stringEquals(cc["amendment_sha256"], "eeaefeddbfe740003288f9d8ec8ba4673b57cca91f4fc3bf5cea5db02feaefaf") {
+	if !stringEquals(cc["selected_remote_oid"], "debe0360384132d6e66c0296219ea6066193e187") || !stringEquals(cc["commit"], "debe0360384132d6e66c0296219ea6066193e187") || !stringEquals(cc["tree"], "ffca2a0a892b2292b486533089f3276f28b39d4e") || !stringEquals(cc["amendment_sha256"], "eeaefeddbfe740003288f9d8ec8ba4673b57cca91f4fc3bf5cea5db02feaefaf") {
 		return false
 	}
 	sub, ok := objectValue(authority["sub"])
@@ -386,10 +653,12 @@ func validCrossResult(value any) bool {
 	}
 	caseRows, caseOK := arrayValue(result["case_rows"])
 	mutationRows, mutationOK := arrayValue(result["mutation_rows"])
-	if !caseOK || !mutationOK || len(caseRows) == 0 || len(mutationRows) == 0 {
+	caseSpecs, mutationSpecs, specsOK := frozenResultSpecs()
+	if !caseOK || !mutationOK || !specsOK || !validRowsAgainstSpecs(caseRows, caseSpecs) || !validRowsAgainstSpecs(mutationRows, mutationSpecs) {
 		return false
 	}
-	if !validDecisionRows(caseRows) || !validDecisionRows(mutationRows) {
+	requiredDigest, digestOK := frozenRequiredSetDigest(caseSpecs, mutationSpecs)
+	if !digestOK || !stringEquals(result["required_set_sha256"], requiredDigest) {
 		return false
 	}
 	caseCanonical, _ := canonicalizeValueImpl(caseRows)
@@ -397,28 +666,217 @@ func validCrossResult(value any) bool {
 	return stringEquals(result["decisions_sha256"], sha256HexImpl(append(caseCanonical, '\n'))) && stringEquals(result["mutation_results_sha256"], sha256HexImpl(append(mutationCanonical, '\n')))
 }
 
-func validDecisionRows(rows []any) bool {
+func validRowsAgainstSpecs(rows []any, specs []frozenDecisionSpec) bool {
+	if len(rows) != len(specs) {
+		return false
+	}
 	codes := make(map[string]bool, len(StableCodes))
 	for _, code := range StableCodes {
 		codes[code] = true
 	}
-	for _, raw := range rows {
+	seen := make(map[string]bool, len(rows))
+	for index, raw := range rows {
 		row, ok := objectValue(raw)
 		if !ok || !exactKeys(row, "case_id", "allowed", "code", "next_state_digest", "canonical_hex") || !safeRef(row["case_id"]) {
 			return false
 		}
-		if _, ok := boolValue(row["allowed"]); !ok {
+		caseID, _ := stringValue(row["case_id"])
+		allowed, allowedOK := boolValue(row["allowed"])
+		code, codeOK := stringValue(row["code"])
+		spec := specs[index]
+		if !allowedOK || !codeOK || seen[caseID] || caseID != spec.id || allowed != spec.allowed || code != spec.code || !codes[code] {
 			return false
 		}
-		code, ok := stringValue(row["code"])
-		if !ok || !codes[code] || !nullableDigest(row["next_state_digest"]) || !nullableHex(row["canonical_hex"]) {
+		seen[caseID] = true
+		if !jsonValuesEqual(row["next_state_digest"], spec.nextDigest) || !jsonValuesEqual(row["canonical_hex"], spec.canonicalHex) || !nullableDigest(row["next_state_digest"]) || !nullableHex(row["canonical_hex"]) {
 			return false
 		}
 	}
 	return true
 }
 
-func validCommitDAG(value any) bool {
+func frozenResultSpecs() ([]frozenDecisionSpec, []frozenDecisionSpec, bool) {
+	canonical, canonicalOK := embeddedObject(embeddedCanonicalCorpus)
+	coherence, coherenceOK := embeddedObject(embeddedCrossCoherenceCorpus)
+	authority, authorityOK := embeddedObject(embeddedAuthorityCorpus)
+	interfaces, interfaceOK := embeddedObject(embeddedInterfaceCorpus)
+	expected, expectedOK := embeddedObject(embeddedExpectedResults)
+	mutations, mutationOK := embeddedObject(embeddedMutationCorpus)
+	if !canonicalOK || !coherenceOK || !authorityOK || !interfaceOK || !expectedOK || !mutationOK {
+		return nil, nil, false
+	}
+	caseSpecs := make([]frozenDecisionSpec, 0, 69)
+	for _, raw := range mustArrayValue(canonical["json_cases"]) {
+		row, ok := objectValue(raw)
+		if !ok {
+			return nil, nil, false
+		}
+		id, _ := stringValue(row["id"])
+		valid, _ := boolValue(row["valid"])
+		code := "authority_allow"
+		var canonicalHex any
+		if valid {
+			var input []byte
+			if inputHex, ok := stringValue(row["input_hex"]); ok {
+				input, _ = hex.DecodeString(inputHex)
+			} else {
+				inputText, _ := stringValue(row["input_json"])
+				input = []byte(inputText)
+			}
+			encoded, err := canonicalizeJSONImpl(input)
+			if err != nil {
+				return nil, nil, false
+			}
+			canonicalHex = hex.EncodeToString(encoded)
+		} else {
+			code, _ = stringValue(row["expected_code"])
+		}
+		caseSpecs = append(caseSpecs, frozenDecisionSpec{id: id, allowed: valid, code: code, canonicalHex: canonicalHex})
+	}
+	for _, raw := range mustArrayValue(canonical["cbor_cases"]) {
+		row, ok := objectValue(raw)
+		if !ok {
+			return nil, nil, false
+		}
+		id, _ := stringValue(row["id"])
+		valid, _ := boolValue(row["valid"])
+		code := "authority_allow"
+		var canonicalHex any
+		if valid {
+			canonicalHex, _ = stringValue(row["expected_hex"])
+		} else {
+			code, _ = stringValue(row["expected_code"])
+		}
+		caseSpecs = append(caseSpecs, frozenDecisionSpec{id: id, allowed: valid, code: code, canonicalHex: canonicalHex})
+	}
+	for _, raw := range mustArrayValue(canonical["normalization_cases"]) {
+		row, _ := objectValue(raw)
+		id, _ := stringValue(row["id"])
+		caseSpecs = append(caseSpecs, frozenDecisionSpec{id: id, allowed: true, code: "authority_allow"})
+	}
+	appendExpectedCases := func(rows []any, digestMap map[string]any) bool {
+		for _, raw := range rows {
+			row, ok := objectValue(raw)
+			if !ok {
+				return false
+			}
+			id, idOK := stringValue(row["id"])
+			code, codeOK := stringValue(row["expected_code"])
+			if !idOK || !codeOK {
+				return false
+			}
+			allowed := code == "admission_allow" || code == "authority_allow" || code == "interface_allow" || code == "interface_terminal_no_retry" || code == "interface_sub2api_retry" || code == "interface_gateway_retry" || code == "replay_reserved" || code == "replay_committed" || code == "replay_expired" || code == "replay_revoked"
+			var next any
+			if digest, ok := stringValue(digestMap[id]); ok {
+				next = digest
+			}
+			caseSpecs = append(caseSpecs, frozenDecisionSpec{id: id, allowed: allowed, code: code, nextDigest: next})
+		}
+		return true
+	}
+	if !appendExpectedCases(mustArrayValue(coherence["cases"]), nil) || !appendExpectedCases(mustArrayValue(authority["cases"]), mustObject(authority["expected_next_state_digests"])) {
+		return nil, nil, false
+	}
+	interfaceDigests := cloneObject(mustObject(interfaces["expected_state_digests"]))
+	replayDigests := mustObject(expected["replay_state_digests"])
+	interfaceDigests["replay-reserve"] = replayDigests["reserved"]
+	interfaceDigests["replay-commit"] = replayDigests["committed"]
+	if !appendExpectedCases(mustArrayValue(interfaces["cases"]), interfaceDigests) {
+		return nil, nil, false
+	}
+	sidecarCanonical := mustObject(mustObject(expected["canonical_results"])["sidecar_unsigned_envelope"])
+	caseSpecs = append(caseSpecs, frozenDecisionSpec{id: "sidecar_unsigned_envelope", allowed: true, code: "sidecar_capability_allow", canonicalHex: sidecarCanonical["canonical_hex"]})
+	mutationSpecs := make([]frozenDecisionSpec, 0)
+	for _, raw := range mustArrayValue(mutations["cases"]) {
+		row, ok := objectValue(raw)
+		if !ok {
+			return nil, nil, false
+		}
+		expectedRow, ok := objectValue(row["expected"])
+		id, idOK := stringValue(row["case_id"])
+		allowed, allowedOK := boolValue(expectedRow["allowed"])
+		code, codeOK := stringValue(expectedRow["code"])
+		if !ok || !idOK || !allowedOK || !codeOK {
+			return nil, nil, false
+		}
+		mutationSpecs = append(mutationSpecs, frozenDecisionSpec{id: id, allowed: allowed, code: code})
+	}
+	return caseSpecs, mutationSpecs, len(caseSpecs) == 69 && len(mutationSpecs) > 0
+}
+
+func embeddedObject(input []byte) (map[string]any, bool) {
+	value, err := parseStrictJSONImpl(input)
+	if err != nil {
+		return nil, false
+	}
+	result, ok := objectValue(value)
+	return result, ok
+}
+
+func mustArrayValue(value any) []any {
+	result, _ := arrayValue(value)
+	return result
+}
+
+func frozenRequiredSetDigest(caseSpecs, mutationSpecs []frozenDecisionSpec) (string, bool) {
+	caseIDs := make([]any, len(caseSpecs))
+	for index, spec := range caseSpecs {
+		caseIDs[index] = spec.id
+	}
+	mutationIDs := make([]any, len(mutationSpecs))
+	for index, spec := range mutationSpecs {
+		mutationIDs[index] = spec.id
+	}
+	index, indexOK := embeddedObject(embeddedContractIndex)
+	indexFiles, filesOK := arrayValue(index["files"])
+	predecessor, predecessorOK := objectValue(index["predecessor"])
+	predecessorDigest, predecessorDigestOK := stringValue(predecessor["sha256"])
+	if !indexOK || !filesOK || !predecessorOK || !predecessorDigestOK || sha256HexImpl(embeddedContractIndex) != contractIndexSHA256 || predecessorDigest != predecessorSHA256 || len(indexFiles) != len(indexFileOrder) {
+		return "", false
+	}
+	bindings := make(map[string]string, len(indexFiles)+1)
+	bindings["contract-index.json"] = contractIndexSHA256
+	for position, raw := range indexFiles {
+		binding, bindingOK := objectValue(raw)
+		path, pathOK := stringValue(binding["relative_path"])
+		digest, digestOK := stringValue(binding["sha256"])
+		if !bindingOK || !pathOK || !digestOK || path != indexFileOrder[position] || digest != mirrorDigests[path] {
+			return "", false
+		}
+		bindings[path] = digest
+	}
+	names := make([]string, 0, len(bindings))
+	for name := range bindings {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	files := make([]any, 0, len(names))
+	for _, name := range names {
+		files = append(files, map[string]any{"relative_path": name, "sha256": bindings[name]})
+	}
+	value := map[string]any{
+		"case_ids": caseIDs, "mutation_case_ids": mutationIDs, "bundle_files": files,
+		"contract_index_sha256": contractIndexSHA256, "predecessor_sha256": predecessorSHA256,
+		"stable_codes": StableCodes, "command_ids": []string{"cc-focused-contract-suite-v1", "sub-focused-oracleevidence-v1"},
+		"semantic_surfaces": []string{"strict_json", "jcs", "normalization", "cbor", "schema", "admission", "authority", "interface", "replay", "sidecar"},
+	}
+	canonical, err := canonicalizeValueImpl(value)
+	if err != nil {
+		return "", false
+	}
+	return sha256HexImpl(append(canonical, '\n')), true
+}
+
+func sortedMirrorNames() []string {
+	names := make([]string, 0, len(mirrorDigests))
+	for name := range mirrorDigests {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func validCommitDAG(value, authorityValue any) bool {
 	dag, ok := objectValue(value)
 	if !ok || !exactKeys(dag, "nodes", "edges") {
 		return false
@@ -426,16 +884,32 @@ func validCommitDAG(value any) bool {
 	nodes, nodesOK := arrayValue(dag["nodes"])
 	edges, edgesOK := arrayValue(dag["edges"])
 	ids := []string{"C0", "S0", "S1", "R1", "I1", "SR", "C1", "CR"}
+	roles := []string{"merge-this-cc-docs-amendment", "fresh-true-sub-mandatory-entry-and-docs-plan", "independent-review-and-merge-true-sub-docs-plan", "compileable-fail-closed-behavioral-red-scaffold", "single-implementation-wave", "independent-exact-head-true-sub-review", "cc-checker-integration", "cross-repo-exact-head-review-and-controller-decision"}
 	if !nodesOK || !edgesOK || len(nodes) != len(ids) || len(edges) != len(ids)-1 {
+		return false
+	}
+	authority, authorityOK := objectValue(authorityValue)
+	cc, ccOK := objectValue(authority["cc"])
+	sub, subOK := objectValue(authority["sub"])
+	if !authorityOK || !ccOK || !subOK {
 		return false
 	}
 	for index, raw := range nodes {
 		node, ok := objectValue(raw)
-		if !ok || !exactKeys(node, "id", "role", "parent_ids", "head", "tree") || !stringEquals(node["id"], ids[index]) || !safeRef(node["role"]) || !nullableOID(node["head"]) || !nullableOID(node["tree"]) {
+		if !ok || !exactKeys(node, "id", "role", "parent_ids", "head", "tree") || !stringEquals(node["id"], ids[index]) || !stringEquals(node["role"], roles[index]) || !validOID(node["head"]) || !validOID(node["tree"]) {
 			return false
 		}
 		parents, ok := stringArray(node["parent_ids"], 2)
 		if !ok || (index == 0 && len(parents) != 0) || (index > 0 && !equalStrings(parents, []string{ids[index-1]})) {
+			return false
+		}
+		if ids[index] == "C0" && (!jsonValuesEqual(node["head"], cc["commit"]) || !jsonValuesEqual(node["tree"], cc["tree"])) {
+			return false
+		}
+		if ids[index] == "R1" && (!jsonValuesEqual(node["head"], sub["r1_commit"]) || !jsonValuesEqual(node["tree"], sub["r1_tree"])) {
+			return false
+		}
+		if ids[index] == "I1" && (!jsonValuesEqual(node["head"], sub["i1_commit"]) || !jsonValuesEqual(node["tree"], sub["i1_tree"])) {
 			return false
 		}
 	}
@@ -479,7 +953,7 @@ func validDigest(value any) bool {
 
 func validOID(value any) bool {
 	oid, ok := stringValue(value)
-	if !ok || (len(oid) != 40 && len(oid) != 64) {
+	if !ok || len(oid) != 40 {
 		return false
 	}
 	for _, current := range []byte(oid) {
