@@ -279,29 +279,6 @@ func statChangeTime(info os.FileInfo) (int64, int64, bool) {
 	return 0, 0, false
 }
 
-func rejectSymlinkComponents(path string) error {
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return contractErr("contract_index_path_invalid")
-	}
-	volume := filepath.VolumeName(absolute)
-	current := volume + string(os.PathSeparator)
-	for _, segment := range strings.Split(strings.TrimPrefix(absolute, current), string(os.PathSeparator)) {
-		if segment == "" {
-			continue
-		}
-		current = filepath.Join(current, segment)
-		info, statErr := os.Lstat(current)
-		if statErr != nil {
-			return contractErr(CodeContractBundle)
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return contractErr("contract_symlink")
-		}
-	}
-	return nil
-}
-
 func validateContractIndexImpl(bundleRoot string) Decision {
 	data, err := readContractFile(filepath.Join(bundleRoot, "contract-index.json"), maxJSONBytes)
 	if err != nil {

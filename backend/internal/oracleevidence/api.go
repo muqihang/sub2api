@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 )
 
 const (
@@ -324,12 +323,4 @@ func stableCodeDigest() string {
 		panic(fmt.Sprintf("marshal stable codes: %v", err))
 	}
 	return SHA256Hex(encoded)
-}
-
-func parseUint(segment string) (uint64, error) {
-	value, err := strconv.ParseUint(segment, 10, 64)
-	if err != nil {
-		return 0, contractErr(CodeMutationPointer)
-	}
-	return value, nil
 }
