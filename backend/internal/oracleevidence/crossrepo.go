@@ -456,16 +456,43 @@ func containsLeak(value any) bool {
 }
 
 func containsSensitiveValue(value any) bool {
+	members := 0
+	return containsSensitiveValueAt(value, 0, &members)
+}
+
+func containsSensitiveValueAt(value any, depth int, members *int) bool {
+	if depth > maxJSONDepth {
+		return true
+	}
 	switch typed := value.(type) {
 	case string:
 		return strings.TrimSpace(typed) != ""
 	case []any:
-		return len(typed) != 0
+		*members += len(typed)
+		if *members > maxJSONMembers {
+			return true
+		}
+		for _, child := range typed {
+			if containsSensitiveValueAt(child, depth+1, members) {
+				return true
+			}
+		}
+		return false
+	case map[string]any:
+		*members += len(typed)
+		if *members > maxJSONMembers {
+			return true
+		}
+		for _, child := range typed {
+			if containsSensitiveValueAt(child, depth+1, members) {
+				return true
+			}
+		}
+		return false
 	case nil:
 		return false
 	default:
-		_, isObject := typed.(map[string]any)
-		return !isObject
+		return true
 	}
 }
 
@@ -505,7 +532,7 @@ func containsCredentialAssignment(value, key string) bool {
 		}
 		separatorOK := position < len(value) && value[position] == '='
 		if position < len(value) && value[position] == ':' {
-			separatorOK = position+1 < len(value) && (value[position+1] == ' ' || value[position+1] == '\t')
+			separatorOK = true
 		}
 		if beforeOK && separatorOK {
 			position++

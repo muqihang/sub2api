@@ -866,9 +866,21 @@ func TestOracleContractCrossRepo(t *testing.T) {
 	if decision := ValidateCrossRepoRecord(crossRecordBytes(t, record)); decision.Code != "cross_repo_binding_mismatch" {
 		t.Fatalf("digest accepted as OID = %+v", decision)
 	}
-	for _, leak := range []string{"prefix Bearer secret-token", "x Basic dXNlcjpwYXNz", "-----BEGIN RSA PRIVATE KEY-----", "-----begin openssh private key-----", "api_key=secret", "access-token = secret", "password: secret"} {
+	record = validCrossRepoRecord(t)
+	record["credentials"] = map[string]any{"value": "opaque-token"}
+	bindCrossRepoDigest(t, record)
+	if decision := ValidateCrossRepoRecord(crossRecordBytes(t, record)); decision.Allowed || decision.Code != "leak_detected" {
+		t.Fatalf("nested credential leak code = %s", decision.Code)
+	}
+	record = validCrossRepoRecord(t)
+	record["note"] = "password:secret"
+	bindCrossRepoDigest(t, record)
+	if decision := ValidateCrossRepoRecord(crossRecordBytes(t, record)); decision.Allowed || decision.Code != "leak_detected" {
+		t.Fatalf("compact assignment leak code = %s", decision.Code)
+	}
+	for _, leak := range []string{"prefix Bearer secret-token", "x Basic dXNlcjpwYXNz", "-----BEGIN RSA PRIVATE KEY-----", "-----begin openssh private key-----", "api_key=secret", "access-token = secret", "password: secret", "password:secret"} {
 		if !containsLeakString(leak) {
-			t.Fatalf("leak not detected: %q", leak)
+			t.Fatal("synthetic leak not detected")
 		}
 	}
 }
