@@ -365,7 +365,13 @@ func buildAuthorityFixture(t *testing.T) authorityFixture {
 	t.Helper()
 	keys := make(map[string]testAuthorityKey)
 	for _, spec := range [][3]any{{"root-old-1", "root", int64(1)}, {"root-old-2", "root", int64(1)}, {"root-old-3", "root", int64(1)}, {"manifest-1", "manifest", int64(1)}, {"manifest-2", "manifest", int64(1)}, {"manifest-3", "manifest", int64(1)}, {"checkpoint-1", "checkpoint", int64(1)}, {"revocation-1", "revocation", int64(1)}} {
-		key := newAuthorityKey(t, spec[0].(string), spec[1].(string), spec[2].(int64))
+		id, idOK := spec[0].(string)
+		role, roleOK := spec[1].(string)
+		epoch, epochOK := spec[2].(int64)
+		if !idOK || !roleOK || !epochOK {
+			t.Fatal("invalid authority fixture key specification")
+		}
+		key := newAuthorityKey(t, id, role, epoch)
 		keys[key.id] = key
 	}
 	wireKeys := make(map[string]any)

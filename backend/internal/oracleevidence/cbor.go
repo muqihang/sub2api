@@ -392,11 +392,12 @@ func (decoder cborDecoder) readArgument(offset int, additional byte) (uint64, in
 		value = value<<8 | uint64(decoder.data[offset+index])
 	}
 	minimum := uint64(24)
-	if width == 2 {
+	switch width {
+	case 2:
 		minimum = 256
-	} else if width == 4 {
+	case 4:
 		minimum = 65_536
-	} else if width == 8 {
+	case 8:
 		minimum = 4_294_967_296
 	}
 	if value < minimum {

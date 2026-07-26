@@ -388,8 +388,8 @@ func formatAuthorityImpl(host string, rawPort RawPort) (string, error) {
 		return strings.ToLower(host) + ":" + strconv.Itoa(int(port)), nil
 	}
 	for _, current := range []byte(host) {
-		if !((current >= 'a' && current <= 'z') || (current >= 'A' && current <= 'Z') ||
-			(current >= '0' && current <= '9') || current == '.' || current == '-') {
+		if (current < 'a' || current > 'z') && (current < 'A' || current > 'Z') &&
+			(current < '0' || current > '9') && current != '.' && current != '-' {
 			return "", contractErr(CodeURLHostInvalid)
 		}
 	}

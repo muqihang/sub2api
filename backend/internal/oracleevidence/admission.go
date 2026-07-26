@@ -301,7 +301,7 @@ func isSHA256(value string) bool {
 		return false
 	}
 	for _, current := range []byte(value) {
-		if !((current >= '0' && current <= '9') || (current >= 'a' && current <= 'f')) {
+		if (current < '0' || current > '9') && (current < 'a' || current > 'f') {
 			return false
 		}
 	}
