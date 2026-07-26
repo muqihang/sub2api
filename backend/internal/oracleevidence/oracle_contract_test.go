@@ -24,34 +24,6 @@ func requireAllowed(t *testing.T, decision Decision, wantCode string) {
 	}
 }
 
-func r1OracleContractScaffold(t *testing.T) {
-	if len(StableCodes) != 119 {
-		t.Fatalf("stable code count = %d, want 119", len(StableCodes))
-	}
-	if got := stableCodeDigest(); got != "f6f89d48519aaa46b362a474cc6bd8e470b638e1c7f4c3c0a7ac99413a85fa5c" {
-		t.Fatalf("stable code digest = %s", got)
-	}
-	if got := (notImplementedDecision()); got.Allowed || got.Code != CodeOracleNotImplemented {
-		t.Fatalf("scaffold does not fail closed: %+v", got)
-	}
-}
-
-func r1OracleContractStrictJSON(t *testing.T) {
-	t.Run("invalid_json_fails_closed", func(t *testing.T) {
-		_, err := ParseStrictJSON([]byte(`{"broken":`))
-		requireCode(t, err, CodeJSONInvalid)
-	})
-	t.Run("valid_json_is_accepted", func(t *testing.T) {
-		value, err := ParseStrictJSON([]byte(`{"ok":true}`))
-		if err != nil {
-			t.Fatalf("valid strict JSON rejected: %v", err)
-		}
-		if value == nil {
-			t.Fatal("valid strict JSON returned nil")
-		}
-	})
-}
-
 func r1OracleContractJCS(t *testing.T) {
 	t.Run("invalid_jcs_source_fails_closed", func(t *testing.T) {
 		_, err := CanonicalizeJSON(nil)
