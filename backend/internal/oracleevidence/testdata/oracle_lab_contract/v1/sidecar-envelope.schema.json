@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oracle-lab.invalid/contracts/oracle.compatibility.v1/sidecar-envelope.schema.json",
+  "title": "Oracle Sidecar Capability Envelope v1 JSON Projection",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id", "schema_major", "schema_revision", "key_epoch", "capability_id",
+    "attempt_id", "nonce", "issued_at_ms", "deadline_ms", "method", "authority",
+    "normalized_path_query", "ordered_headers_sha256", "body_sha256", "content_length",
+    "content_encoding", "profile_generation", "proxy_generation", "credential_generation",
+    "transport_cell_generation", "contract_digest", "manifest_digest",
+    "destination_policy_generation", "destination_class", "allowed_destinations",
+    "response_policy_ref", "retry_owner", "key_id", "key_role", "signature"
+  ],
+  "properties": {
+    "schema_id": { "const": "oracle.sidecar.capability" },
+    "schema_major": { "const": 1 },
+    "schema_revision": { "const": 0 },
+    "key_epoch": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "capability_id": { "$ref": "#/$defs/safeRef" },
+    "attempt_id": { "$ref": "#/$defs/safeRef" },
+    "nonce": { "$ref": "#/$defs/safeRef" },
+    "issued_at_ms": { "$ref": "#/$defs/timestamp" },
+    "deadline_ms": { "$ref": "#/$defs/timestamp" },
+    "method": { "const": "POST" },
+    "authority": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "normalized_path_query": { "type": "string", "minLength": 1, "maxLength": 8192, "pattern": "^/" },
+    "ordered_headers_sha256": { "$ref": "#/$defs/sha256" },
+    "body_sha256": { "$ref": "#/$defs/sha256" },
+    "content_length": { "type": "integer", "minimum": 0, "maximum": 67108864 },
+    "content_encoding": { "enum": ["identity", "gzip", "br", "zstd"] },
+    "profile_generation": { "$ref": "#/$defs/generation" },
+    "proxy_generation": { "$ref": "#/$defs/generation" },
+    "credential_generation": { "$ref": "#/$defs/generation" },
+    "transport_cell_generation": { "$ref": "#/$defs/generation" },
+    "contract_digest": { "$ref": "#/$defs/sha256" },
+    "manifest_digest": { "$ref": "#/$defs/sha256" },
+    "destination_policy_generation": { "$ref": "#/$defs/generation" },
+    "destination_class": { "enum": ["public_provider", "approved_proxy"] },
+    "allowed_destinations": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["host", "port"],
+        "properties": {
+          "host": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        }
+      }
+    },
+    "response_policy_ref": { "$ref": "#/$defs/safeRef" },
+    "retry_owner": { "enum": ["none", "cc_gateway", "sub2api"] },
+    "key_id": { "$ref": "#/$defs/safeRef" },
+    "key_role": { "const": "sidecar_capability" },
+    "signature": { "type": "string", "pattern": "^[A-Za-z0-9_-]{86}$" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "safeRef": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[A-Za-z0-9._:/-]+$" },
+    "generation": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "timestamp": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+  }
+}

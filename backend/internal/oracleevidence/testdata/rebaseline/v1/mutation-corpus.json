@@ -1,0 +1,1 @@
+{"cases":[{"case_id":"positive-admission-noop","expected":{"allowed":true,"code":"admission_allow"},"operation":{"bytes_base64":"","delete_count":0,"kind":"replace_bytes","offset":0},"source":{"relative_path":"synthetic/control.json","sha256":"217ea37747bd4f42836b90b081988f51af3a1b70e62d38aa69d33abbe747af53"},"subject":"admission"}],"schema_major":1,"schema_revision":0}
