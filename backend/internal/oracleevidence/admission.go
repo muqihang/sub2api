@@ -69,7 +69,10 @@ func decideBehaviorAdmissionImpl(certificateBytes, contextBytes []byte) Decision
 	if digestErr != nil {
 		return Decision{Code: "admission_schema_invalid"}
 	}
-	expected := context["expected"].(map[string]any)
+	expected, expectedOK := objectValue(context["expected"])
+	if !expectedOK {
+		return Decision{Code: "admission_schema_invalid"}
+	}
 	manifestDigest, manifestDigestOK := stringValue(expected["manifest_payload_digest"])
 	if !manifestDigestOK {
 		return Decision{Code: "admission_schema_invalid"}

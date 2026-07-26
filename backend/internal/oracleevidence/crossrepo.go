@@ -114,8 +114,8 @@ func readContractFile(path string, maximum int64) (data []byte, err error) {
 		return nil, contractErr("contract_file_digest_mismatch")
 	}
 	pathAfter, pathErr := reopened.Stat()
-	reopened.Close()
-	if statErr != nil || pathErr != nil || !sameStableFile(opened, after) || !sameStableFile(after, pathAfter) {
+	reopenCloseErr := reopened.Close()
+	if statErr != nil || pathErr != nil || reopenCloseErr != nil || !sameStableFile(opened, after) || !sameStableFile(after, pathAfter) {
 		return nil, contractErr("contract_file_digest_mismatch")
 	}
 	return data, nil
@@ -138,17 +138,23 @@ func openNoFollow(path string) (*os.File, error) {
 	}
 	for _, segment := range segments[:len(segments)-1] {
 		if segment == "" || segment == "." || segment == ".." {
-			directory.Close()
+			if closeErr := directory.Close(); closeErr != nil {
+				return nil, contractErr("contract_file_digest_mismatch")
+			}
 			return nil, contractErr("contract_index_path_invalid")
 		}
 		before, statErr := directory.Lstat(segment)
 		if statErr != nil || !before.IsDir() || before.Mode()&os.ModeSymlink != 0 {
-			directory.Close()
+			if closeErr := directory.Close(); closeErr != nil {
+				return nil, contractErr("contract_file_digest_mismatch")
+			}
 			return nil, contractErr("contract_symlink")
 		}
 		next, openErr := directory.OpenRoot(segment)
 		if openErr != nil {
-			directory.Close()
+			if closeErr := directory.Close(); closeErr != nil {
+				return nil, contractErr("contract_file_digest_mismatch")
+			}
 			return nil, openErr
 		}
 		after, afterErr := next.Stat(".")
@@ -172,7 +178,9 @@ func openNoFollow(path string) (*os.File, error) {
 	}
 	opened, openedErr := file.Stat()
 	if openedErr != nil || !sameFileIdentity(before, opened) {
-		file.Close()
+		if closeErr := file.Close(); closeErr != nil {
+			return nil, contractErr("contract_file_digest_mismatch")
+		}
 		return nil, contractErr("contract_file_digest_mismatch")
 	}
 	return file, nil

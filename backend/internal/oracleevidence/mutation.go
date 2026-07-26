@@ -94,7 +94,9 @@ func decodeJSONPointer(pointer string) ([]string, error) {
 		var output strings.Builder
 		for offset := 0; offset < len(raw); offset++ {
 			if raw[offset] != '~' {
-				output.WriteByte(raw[offset])
+				if err := output.WriteByte(raw[offset]); err != nil {
+					return nil, contractErr(CodeMutationPointer)
+				}
 				continue
 			}
 			if offset+1 >= len(raw) {
@@ -103,9 +105,13 @@ func decodeJSONPointer(pointer string) ([]string, error) {
 			offset++
 			switch raw[offset] {
 			case '0':
-				output.WriteByte('~')
+				if err := output.WriteByte('~'); err != nil {
+					return nil, contractErr(CodeMutationPointer)
+				}
 			case '1':
-				output.WriteByte('/')
+				if err := output.WriteByte('/'); err != nil {
+					return nil, contractErr(CodeMutationPointer)
+				}
 			default:
 				return nil, contractErr(CodeMutationPointer)
 			}
