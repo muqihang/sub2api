@@ -286,6 +286,19 @@ func registerGatewayRoutes(
 			}
 			h.OpenAIGateway.Embeddings(c)
 		})
+		gateway.POST("/rerank", func(c *gin.Context) {
+			if getGroupPlatform(c) != service.PlatformOpenAI {
+				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
+				c.JSON(http.StatusNotFound, gin.H{
+					"error": gin.H{
+						"type":    "not_found_error",
+						"message": "Rerank API is not supported for this platform",
+					},
+				})
+				return
+			}
+			h.OpenAIGateway.Rerank(c)
+		})
 		gateway.POST("/images/generations", imagesHandler)
 		gateway.POST("/images/edits", imagesHandler)
 		gateway.POST("/images/batches", h.BatchImage.Submit)
@@ -358,6 +371,19 @@ func registerGatewayRoutes(
 		}
 		h.OpenAIGateway.Embeddings(c)
 	})
+	r.POST("/rerank", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
+		if getGroupPlatform(c) != service.PlatformOpenAI {
+			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": gin.H{
+					"type":    "not_found_error",
+					"message": "Rerank API is not supported for this platform",
+				},
+			})
+			return
+		}
+		h.OpenAIGateway.Rerank(c)
+	})
 	r.POST("/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, imagesHandler)
 	r.POST("/images/edits", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, imagesHandler)
 	r.POST("/videos/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, videoGenerationHandler)
@@ -376,6 +402,8 @@ func registerGatewayRoutes(
 		openaiGateway.POST("/responses/*subpath", openAIGatewayHandler(h.OpenAIGateway.Responses))
 		openaiGateway.GET("/responses", openAIGatewayHandler(h.OpenAIGateway.ResponsesWebSocket))
 		openaiGateway.POST("/chat/completions", openAIGatewayHandler(h.OpenAIGateway.ChatCompletions))
+		openaiGateway.POST("/embeddings", openAIGatewayHandler(h.OpenAIGateway.Embeddings))
+		openaiGateway.POST("/rerank", openAIGatewayHandler(h.OpenAIGateway.Rerank))
 		openaiGateway.POST("/images/generations", openAIGatewayHandler(h.OpenAIGateway.Images))
 		openaiGateway.POST("/images/edits", openAIGatewayHandler(h.OpenAIGateway.Images))
 	}

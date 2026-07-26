@@ -18,11 +18,9 @@ import (
 	"go.uber.org/zap"
 )
 
-const publicVectorModelUnavailableMessage = "Requested model is not available"
-
-// Embeddings handles the OpenAI-compatible Embeddings API.
-// POST /v1/embeddings
-func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
+// Rerank handles the OpenAI-group Rerank API.
+// POST /v1/rerank
+func (h *OpenAIGatewayHandler) Rerank(c *gin.Context) {
 	streamStarted := false
 	requestStart := time.Now()
 
@@ -31,7 +29,6 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
 		return
 	}
-
 	subject, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
 		h.errorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
@@ -39,7 +36,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 	}
 	reqLog := requestLogger(
 		c,
-		"handler.openai_gateway.embeddings",
+		"handler.openai_gateway.rerank",
 		zap.Int64("user_id", subject.UserID),
 		zap.Int64("api_key_id", apiKey.ID),
 		zap.Any("group_id", apiKey.GroupID),
@@ -78,7 +75,6 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 	setOpsEndpointContext(c, "", int16(service.RequestTypeSync))
 
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
-
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 
@@ -91,7 +87,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 	}
 
 	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
-		reqLog.Info("openai_embeddings.billing_check_failed", zap.Error(err))
+		reqLog.Info("openai_rerank.billing_check_failed", zap.Error(err))
 		status, code, message, retryAfter := billingErrorDetails(err)
 		if retryAfter > 0 {
 			c.Header("Retry-After", strconv.Itoa(retryAfter))
@@ -118,14 +114,11 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 			reqModel,
 			failedAccountIDs,
 			service.OpenAIUpstreamTransportHTTPSSE,
-			service.OpenAIEndpointCapabilityEmbeddings,
+			service.OpenAIEndpointCapabilityRerank,
 			false,
 		)
 		if err != nil {
-			reqLog.Warn("openai_embeddings.account_select_failed",
-				zap.Error(err),
-				zap.Int("excluded_account_count", len(failedAccountIDs)),
-			)
+			reqLog.Warn("openai_rerank.account_select_failed", zap.Error(err), zap.Int("excluded_account_count", len(failedAccountIDs)))
 			if len(failedAccountIDs) == 0 {
 				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, service.PlatformOpenAI)
 				if cls.ModelNotFound {
@@ -163,7 +156,6 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
-
 		forwardBody := body
 		if channelMapping.Mapped {
 			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
@@ -175,7 +167,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 					accountReleaseFunc()
 				}
 			}()
-			return h.gatewayService.ForwardEmbeddings(c.Request.Context(), c, account, forwardBody, "")
+			return h.gatewayService.ForwardRerank(c.Request.Context(), c, account, forwardBody, "")
 		}()
 
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
@@ -202,7 +194,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 					return
 				}
 				switchCount++
-				reqLog.Warn("openai_embeddings.upstream_failover_switching",
+				reqLog.Warn("openai_rerank.upstream_failover_switching",
 					zap.Int64("account_id", account.ID),
 					zap.Int("upstream_status", failoverErr.StatusCode),
 					zap.Int("switch_count", switchCount),
@@ -214,10 +206,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 			if c.Writer.Size() == writerSizeBeforeForward {
 				h.errorResponse(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
 			}
-			reqLog.Warn("openai_embeddings.forward_failed",
-				zap.Int64("account_id", account.ID),
-				zap.Error(err),
-			)
+			reqLog.Warn("openai_rerank.forward_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 			return
 		}
 
@@ -244,19 +233,16 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 				ChannelUsageFields: channelMapping.ToUsageFields(reqModel, result.UpstreamModel),
 			}); err != nil {
 				logger.L().With(
-					zap.String("component", "handler.openai_gateway.embeddings"),
+					zap.String("component", "handler.openai_gateway.rerank"),
 					zap.Int64("user_id", subject.UserID),
 					zap.Int64("api_key_id", apiKey.ID),
 					zap.Any("group_id", apiKey.GroupID),
 					zap.String("model", reqModel),
 					zap.Int64("account_id", account.ID),
-				).Error("openai_embeddings.record_usage_failed", zap.Error(err))
+				).Error("openai_rerank.record_usage_failed", zap.Error(err))
 			}
 		})
-		reqLog.Debug("openai_embeddings.request_completed",
-			zap.Int64("account_id", account.ID),
-			zap.Int("switch_count", switchCount),
-		)
+		reqLog.Debug("openai_rerank.request_completed", zap.Int64("account_id", account.ID), zap.Int("switch_count", switchCount))
 		return
 	}
 }

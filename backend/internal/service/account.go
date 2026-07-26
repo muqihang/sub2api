@@ -86,6 +86,7 @@ type OpenAIEndpointCapability string
 const (
 	OpenAIEndpointCapabilityChatCompletions OpenAIEndpointCapability = "chat_completions"
 	OpenAIEndpointCapabilityEmbeddings      OpenAIEndpointCapability = "embeddings"
+	OpenAIEndpointCapabilityRerank          OpenAIEndpointCapability = "rerank"
 	OpenAIEndpointCapabilitySearch          OpenAIEndpointCapability = "search"
 )
 
@@ -1415,7 +1416,7 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 	}
 	switch capability {
 	case OpenAIEndpointCapabilityChatCompletions:
-	case OpenAIEndpointCapabilityEmbeddings:
+	case OpenAIEndpointCapabilityEmbeddings, OpenAIEndpointCapabilityRerank:
 		if a.Type != AccountTypeAPIKey {
 			return false
 		}
