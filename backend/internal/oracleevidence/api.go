@@ -1,12 +1,9 @@
 package oracleevidence
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -93,6 +90,7 @@ type RawPort string
 type SchemaSet struct {
 	bundleRoot      string
 	authoritySHA256 string
+	root            map[string]any
 }
 
 type MutationOperation struct {
@@ -168,149 +166,76 @@ func decodeReachedJSON(input []byte) (any, error) {
 }
 
 func ParseStrictJSON(input []byte) (any, error) {
-	if _, err := decodeReachedJSON(input); err != nil {
-		return nil, err
-	}
-	return nil, notImplementedErr()
+	return parseStrictJSONImpl(input)
 }
 
 func ValidateJSONValue(value any) error {
-	encoded, err := json.Marshal(value)
-	if err != nil || !json.Valid(encoded) {
-		return contractErr(CodeJSONTypeInvalid)
-	}
-	return notImplementedErr()
+	return validateJSONValueImpl(value)
 }
 
 func CanonicalizeJSON(input []byte) ([]byte, error) {
-	if _, err := decodeReachedJSON(input); err != nil {
-		return nil, err
-	}
-	return nil, notImplementedErr()
+	return canonicalizeJSONImpl(input)
 }
 
 func CanonicalizeValue(value any) ([]byte, error) {
-	if err := ValidateJSONValue(value); err != nil {
-		if ce, ok := err.(*ContractError); ok && ce.Code == CodeJSONTypeInvalid {
-			return nil, err
-		}
-	}
-	return nil, notImplementedErr()
+	return canonicalizeValueImpl(value)
 }
 
 func NormalizePathQuery(pathname string, pairs [][2]string) (string, error) {
-	if pathname == "" || !strings.HasPrefix(pathname, "/") {
-		return "", contractErr("url_path_invalid")
-	}
-	return "", notImplementedErr()
+	return normalizePathQueryImpl(pathname, pairs)
 }
 
 func ParseAuthorityPort(raw RawPort) (uint16, error) {
-	s := string(raw)
-	if len(s) == 0 || len(s) > 5 || s[0] == '0' {
-		return 0, contractErr(CodeURLPortInvalid)
-	}
-	var value uint32
-	for i := 0; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
-			return 0, contractErr(CodeURLPortInvalid)
-		}
-		value = value*10 + uint32(s[i]-'0')
-		if value > math.MaxUint16 {
-			return 0, contractErr(CodeURLPortInvalid)
-		}
-	}
-	return 0, notImplementedErr()
+	return parseAuthorityPortImpl(raw)
 }
 
 func FormatAuthority(host string, rawPort RawPort) (string, error) {
-	if _, err := ParseAuthorityPort(rawPort); err != nil {
-		return "", err
-	}
-	if host == "" {
-		return "", contractErr(CodeURLHostInvalid)
-	}
-	return "", notImplementedErr()
+	return formatAuthorityImpl(host, rawPort)
 }
 
 func SHA256Hex(input []byte) string {
-	sum := sha256.Sum256(input)
-	return hex.EncodeToString(sum[:])
+	return sha256HexImpl(input)
 }
 
 func CanonicalizeCBOR(input []byte) ([]byte, error) {
-	if len(input) == 0 {
-		return nil, contractErr(CodeCBORInvalid)
-	}
-	return nil, notImplementedErr()
+	return canonicalizeCBORImpl(input)
 }
 
 func DecodeDeterministicCBOR(input []byte) (any, error) {
-	if len(input) == 0 {
-		return nil, contractErr(CodeCBORInvalid)
-	}
-	return nil, notImplementedErr()
+	return decodeDeterministicCBORImpl(input)
 }
 
 func EncodeCBORFrame(value any) ([]byte, error) {
-	if value == nil {
-		return nil, contractErr("cbor_type_invalid")
-	}
-	return nil, notImplementedErr()
+	return encodeCBORFrameImpl(value)
 }
 
 func DecodeCBORFrame(input []byte) (any, error) {
-	if len(input) == 0 {
-		return nil, contractErr("cbor_frame_truncated")
-	}
-	return nil, notImplementedErr()
+	return decodeCBORFrameImpl(input)
 }
 
 func LoadContractSchema(bundleRoot string) (*SchemaSet, error) {
-	path := filepath.Join(bundleRoot, "contract.schema.json")
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, contractErr(CodeContractBundle)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil || len(data) > 1<<20 {
-		return nil, contractErr(CodeContractBundle)
-	}
-	if SHA256Hex(data) != "380c7f3db80baa2d288838f3a550c3588abd19de11627d34ae90f5d3a0add4fe" {
-		return nil, contractErr("contract_file_digest_mismatch")
-	}
-	return nil, notImplementedErr()
+	return loadContractSchemaImpl(bundleRoot)
 }
 
-func ValidateContractObject(_ *SchemaSet, _ string, input []byte) Decision {
-	if _, err := decodeReachedJSON(input); err != nil {
-		return Decision{Code: "contract_json_invalid"}
-	}
-	return notImplementedDecision()
+func ValidateContractObject(schemas *SchemaSet, definition string, input []byte) Decision {
+	return validateContractObjectImpl(schemas, definition, input)
 }
 
 func AdmissionPayloadDigest(certificate, signals, negativeCapabilities []byte) (string, error) {
-	for _, input := range [][]byte{certificate, signals, negativeCapabilities} {
-		if _, err := decodeReachedJSON(input); err != nil {
-			return "", err
-		}
-	}
-	return "", notImplementedErr()
+	return admissionPayloadDigestImpl(certificate, signals, negativeCapabilities)
 }
 
 func DecideBehaviorAdmission(certificate, context []byte) Decision {
-	if _, err := decodeReachedJSON(certificate); err != nil {
-		return Decision{Code: "admission_schema_invalid"}
-	}
-	if _, err := decodeReachedJSON(context); err != nil {
-		return Decision{Code: "admission_schema_invalid"}
-	}
-	return notImplementedDecision()
+	return decideBehaviorAdmissionImpl(certificate, context)
 }
 
-func VerifyManifestAuthorityUpdate(input AuthorityInput) Decision { return reachedAuthority(input) }
-func VerifyRootRotation(input AuthorityInput) Decision            { return reachedAuthority(input) }
-func VerifyEmergencyRevocation(input AuthorityInput) Decision     { return reachedAuthority(input) }
+func VerifyManifestAuthorityUpdate(input AuthorityInput) Decision {
+	return verifyManifestAuthorityUpdateImpl(input)
+}
+func VerifyRootRotation(input AuthorityInput) Decision { return verifyRootRotationImpl(input) }
+func VerifyEmergencyRevocation(input AuthorityInput) Decision {
+	return verifyEmergencyRevocationImpl(input)
+}
 
 func reachedAuthority(input AuthorityInput) Decision {
 	if len(input.Candidate) == 0 {
@@ -320,33 +245,27 @@ func reachedAuthority(input AuthorityInput) Decision {
 }
 
 func TrustStateDigest(state []byte) (string, error) {
-	if _, err := decodeReachedJSON(state); err != nil {
-		return "", err
-	}
-	return "", notImplementedErr()
+	return trustStateDigestImpl(state)
 }
 
 func DecideReadiness(handshake, expected []byte) Decision {
-	return reachedPair(handshake, expected, "interface_not_ready")
+	return decideReadinessImpl(handshake, expected)
 }
 
 func DecideLifecycle(state, operation []byte) Decision {
-	return reachedPair(state, operation, "interface_state_transition_invalid")
+	return decideLifecycleImpl(state, operation)
 }
 
-func DecideTaskLineage(state, candidate []byte, _ int64) Decision {
-	return reachedPair(state, candidate, "interface_lineage_mismatch")
+func DecideTaskLineage(state, candidate []byte, nowMS int64) Decision {
+	return decideTaskLineageImpl(state, candidate, nowMS)
 }
 
 func DecideOutcome(outcome []byte) Decision {
-	if len(outcome) == 0 {
-		return Decision{Code: "interface_terminal_no_retry"}
-	}
-	return notImplementedDecision()
+	return decideOutcomeImpl(outcome)
 }
 
 func ExecuteReplay(state, command []byte) Decision {
-	return reachedPair(state, command, "replay_rejected")
+	return executeReplayImpl(state, command)
 }
 
 func reachedPair(left, right []byte, invalidCode string) Decision {
@@ -356,56 +275,24 @@ func reachedPair(left, right []byte, invalidCode string) Decision {
 	return notImplementedDecision()
 }
 
-func ValidateSidecarEnvelope(envelope []byte, _ *SchemaSet) Decision {
-	if len(envelope) == 0 {
-		return Decision{Code: "sidecar_capability_decode_invalid"}
-	}
-	return notImplementedDecision()
+func ValidateSidecarEnvelope(envelope []byte, schemas *SchemaSet) Decision {
+	return validateSidecarEnvelopeImpl(envelope, schemas)
 }
 
-func VerifySidecarCapability(envelope, capability, keyring []byte, _ int64) Decision {
-	if len(envelope) == 0 || len(capability) == 0 || len(keyring) == 0 {
-		return Decision{Code: "sidecar_capability_decode_invalid"}
-	}
-	return notImplementedDecision()
+func VerifySidecarCapability(envelope, capability, keyring []byte, nowMS int64) Decision {
+	return verifySidecarCapabilityImpl(envelope, capability, keyring, nowMS)
 }
 
 func ParseBoundedPointerIndex(segment string, length uint64, allowEnd bool) (uint64, error) {
-	if segment == "" || segment == "-" || (len(segment) > 1 && segment[0] == '0') {
-		return 0, contractErr(CodeMutationPointer)
-	}
-	var value uint64
-	for i := 0; i < len(segment); i++ {
-		if segment[i] < '0' || segment[i] > '9' {
-			return 0, contractErr(CodeMutationPointer)
-		}
-		digit := uint64(segment[i] - '0')
-		if value > (4096-digit)/10 {
-			return 0, contractErr(CodeMutationPointer)
-		}
-		value = value*10 + digit
-	}
-	if value > 4096 || value > length || (!allowEnd && value == length) {
-		return 0, contractErr(CodeMutationPointer)
-	}
-	return 0, notImplementedErr()
+	return parseBoundedPointerIndexImpl(segment, length, allowEnd)
 }
 
 func ApplyMutation(source []byte, operation MutationOperation) ([]byte, error) {
-	if len(source) == 0 || operation.Kind == "" {
-		return nil, contractErr(CodeMutationSource)
-	}
-	return nil, notImplementedErr()
+	return applyMutationImpl(source, operation)
 }
 
-func ExecuteMutationCorpus(root string, corpus []byte, _ *SchemaSet) ([]MutationResult, error) {
-	if root == "" {
-		return nil, contractErr(CodeMutationSource)
-	}
-	if _, err := decodeReachedJSON(corpus); err != nil {
-		return nil, contractErr("mutation_descriptor_invalid")
-	}
-	return nil, notImplementedErr()
+func ExecuteMutationCorpus(root string, corpus []byte, schemas *SchemaSet) ([]MutationResult, error) {
+	return executeMutationCorpusImpl(root, corpus, schemas)
 }
 
 var mirrorDigests = map[string]string{
@@ -421,21 +308,20 @@ var mirrorDigests = map[string]string{
 }
 
 func InspectMirror(ccRoot, subRoot, predecessorPath string) Decision {
-	if predecessorPath == "" {
-		return Decision{Code: "contract_predecessor_mismatch"}
-	}
-	for _, root := range []string{ccRoot, subRoot} {
-		if err := inspectMirrorRoot(root); err != nil {
-			if ce, ok := err.(*ContractError); ok {
-				return Decision{Code: ce.Code}
-			}
-			return Decision{Code: CodeContractBundle}
-		}
-	}
-	return notImplementedDecision()
+	return inspectMirrorImpl(ccRoot, subRoot, predecessorPath)
 }
 
 func inspectMirrorRoot(root string) error {
+	rootInfo, err := os.Lstat(root)
+	if err != nil {
+		return contractErr(CodeContractBundle)
+	}
+	if rootInfo.Mode()&os.ModeSymlink != 0 {
+		return contractErr("contract_symlink")
+	}
+	if !rootInfo.IsDir() {
+		return contractErr("contract_file_set_invalid")
+	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return contractErr(CodeContractBundle)
@@ -448,7 +334,7 @@ func inspectMirrorRoot(root string) error {
 		if !ok || entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() {
 			return contractErr("contract_file_set_invalid")
 		}
-		data, readErr := os.ReadFile(filepath.Join(root, entry.Name()))
+		data, readErr := readContractFile(filepath.Join(root, entry.Name()), maxJSONBytes)
 		if readErr != nil || SHA256Hex(data) != expected {
 			return contractErr("contract_file_digest_mismatch")
 		}
@@ -457,22 +343,11 @@ func inspectMirrorRoot(root string) error {
 }
 
 func ValidateContractIndex(bundleRoot string) Decision {
-	path := filepath.Join(bundleRoot, "contract-index.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return Decision{Code: CodeContractBundle}
-	}
-	if SHA256Hex(data) != mirrorDigests["contract-index.json"] {
-		return Decision{Code: "contract_index_not_canonical"}
-	}
-	return notImplementedDecision()
+	return validateContractIndexImpl(bundleRoot)
 }
 
 func ValidateCrossRepoRecord(input []byte) Decision {
-	if _, err := decodeReachedJSON(input); err != nil {
-		return Decision{Code: "contract_json_invalid"}
-	}
-	return notImplementedDecision()
+	return validateCrossRepoRecordImpl(input)
 }
 
 func stableCodeDigest() string {

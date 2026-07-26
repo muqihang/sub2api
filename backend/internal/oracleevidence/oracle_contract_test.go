@@ -24,7 +24,7 @@ func requireAllowed(t *testing.T, decision Decision, wantCode string) {
 	}
 }
 
-func TestOracleContractScaffold(t *testing.T) {
+func r1OracleContractScaffold(t *testing.T) {
 	if len(StableCodes) != 119 {
 		t.Fatalf("stable code count = %d, want 119", len(StableCodes))
 	}
@@ -36,7 +36,7 @@ func TestOracleContractScaffold(t *testing.T) {
 	}
 }
 
-func TestOracleContractStrictJSON(t *testing.T) {
+func r1OracleContractStrictJSON(t *testing.T) {
 	t.Run("invalid_json_fails_closed", func(t *testing.T) {
 		_, err := ParseStrictJSON([]byte(`{"broken":`))
 		requireCode(t, err, CodeJSONInvalid)
@@ -52,7 +52,7 @@ func TestOracleContractStrictJSON(t *testing.T) {
 	})
 }
 
-func TestOracleContractJCS(t *testing.T) {
+func r1OracleContractJCS(t *testing.T) {
 	t.Run("invalid_jcs_source_fails_closed", func(t *testing.T) {
 		_, err := CanonicalizeJSON(nil)
 		requireCode(t, err, CodeJSONInvalid)
@@ -68,7 +68,7 @@ func TestOracleContractJCS(t *testing.T) {
 	})
 }
 
-func TestOracleContractNormalization(t *testing.T) {
+func r1OracleContractNormalization(t *testing.T) {
 	t.Run("invalid_raw_port_fails_closed", func(t *testing.T) {
 		_, err := ParseAuthorityPort(RawPort("65536"))
 		requireCode(t, err, CodeURLPortInvalid)
@@ -84,7 +84,7 @@ func TestOracleContractNormalization(t *testing.T) {
 	})
 }
 
-func TestOracleContractCBOR(t *testing.T) {
+func r1OracleContractCBOR(t *testing.T) {
 	t.Run("empty_cbor_fails_closed", func(t *testing.T) {
 		_, err := CanonicalizeCBOR(nil)
 		requireCode(t, err, CodeCBORInvalid)
@@ -100,7 +100,7 @@ func TestOracleContractCBOR(t *testing.T) {
 	})
 }
 
-func TestOracleContractSchema(t *testing.T) {
+func r1OracleContractSchema(t *testing.T) {
 	t.Run("missing_schema_fails_closed", func(t *testing.T) {
 		_, err := LoadContractSchema(filepath.Join(t.TempDir(), "missing"))
 		requireCode(t, err, CodeContractBundle)
@@ -116,7 +116,7 @@ func TestOracleContractSchema(t *testing.T) {
 	})
 }
 
-func TestOracleContractAdmission(t *testing.T) {
+func r1OracleContractAdmission(t *testing.T) {
 	t.Run("malformed_certificate_fails_closed", func(t *testing.T) {
 		decision := DecideBehaviorAdmission(nil, []byte(`{}`))
 		if decision.Allowed {
@@ -129,7 +129,7 @@ func TestOracleContractAdmission(t *testing.T) {
 	})
 }
 
-func TestOracleContractManifestAuthority(t *testing.T) {
+func r1OracleContractManifestAuthority(t *testing.T) {
 	t.Run("missing_candidate_fails_closed", func(t *testing.T) {
 		if VerifyManifestAuthorityUpdate(AuthorityInput{}).Allowed {
 			t.Fatal("missing candidate allowed")
@@ -141,7 +141,7 @@ func TestOracleContractManifestAuthority(t *testing.T) {
 	})
 }
 
-func TestOracleContractInterface(t *testing.T) {
+func r1OracleContractInterface(t *testing.T) {
 	t.Run("missing_handshake_fails_closed", func(t *testing.T) {
 		if DecideReadiness(nil, []byte(`{}`)).Allowed {
 			t.Fatal("missing handshake allowed")
@@ -152,7 +152,7 @@ func TestOracleContractInterface(t *testing.T) {
 	})
 }
 
-func TestOracleContractReplay(t *testing.T) {
+func r1OracleContractReplay(t *testing.T) {
 	t.Run("missing_command_fails_closed", func(t *testing.T) {
 		if ExecuteReplay([]byte(`{}`), nil).Allowed {
 			t.Fatal("missing replay command allowed")
@@ -163,7 +163,7 @@ func TestOracleContractReplay(t *testing.T) {
 	})
 }
 
-func TestOracleContractSidecar(t *testing.T) {
+func r1OracleContractSidecar(t *testing.T) {
 	t.Run("empty_envelope_fails_closed", func(t *testing.T) {
 		if ValidateSidecarEnvelope(nil, nil).Allowed {
 			t.Fatal("empty sidecar allowed")
@@ -174,7 +174,7 @@ func TestOracleContractSidecar(t *testing.T) {
 	})
 }
 
-func TestOracleContractMutation(t *testing.T) {
+func r1OracleContractMutation(t *testing.T) {
 	t.Run("invalid_pointer_fails_closed", func(t *testing.T) {
 		_, err := ParseBoundedPointerIndex("01", 4, false)
 		requireCode(t, err, CodeMutationPointer)
@@ -191,7 +191,7 @@ func TestOracleContractMutation(t *testing.T) {
 	})
 }
 
-func TestOracleContractCrossRepo(t *testing.T) {
+func r1OracleContractCrossRepo(t *testing.T) {
 	t.Run("missing_mirror_fails_closed", func(t *testing.T) {
 		decision := InspectMirror(filepath.Join(t.TempDir(), "missing"), mirrorRoot, "predecessor")
 		if decision.Allowed {
