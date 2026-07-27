@@ -161,6 +161,18 @@ test_explicit_smoke_skip_is_visible() {
   assert_contains "${output}" "API smoke: SKIPPED BY OPERATOR" "smoke skip is auditable"
 }
 
+test_explicit_native_search_skip_is_visible() {
+  local case_dir="${TEST_ROOT}/skip-native-search-smoke"
+  SMOKE_API_KEY="native-search-skip-test-key" \
+    run_deploy "${case_dir}" --image example/sub2api:test --skip-native-search-smoke --dry-run
+  local status=$?
+  local output
+  output="$(captured_output "${case_dir}")"
+  assert_status "${status}" 0 "explicit native Search smoke skip is accepted"
+  assert_contains "${output}" "API smoke: required" "Responses and Compact smoke remain required"
+  assert_contains "${output}" "Native Search smoke: SKIPPED BY OPERATOR" "native Search skip is auditable"
+}
+
 test_secret_is_redacted() {
   local case_dir="${TEST_ROOT}/redaction"
   local secret="compact-secret-value"
@@ -206,6 +218,7 @@ run_config_tests() {
   test_requires_image
   test_requires_smoke_key
   test_explicit_smoke_skip_is_visible
+  test_explicit_native_search_skip_is_visible
   test_secret_is_redacted
   test_unknown_argument_is_rejected
   test_lock_rejection
@@ -528,6 +541,21 @@ test_candidate_probe_pair_succeeds_without_secret_artifacts() {
   fi
 }
 
+test_candidate_probe_pair_can_skip_only_native_search() {
+  local case_dir="${TEST_ROOT}/candidate-probes-skip-native-search"
+  setup_candidate_case "${case_dir}"
+  SKIP_NATIVE_SEARCH_SMOKE=true \
+    probe_api_pair_with_active_baseline \
+      "http://172.18.0.99:8080" direct "http://172.18.0.98:8080" \
+      >"${case_dir}/probe.out" 2>"${case_dir}/probe.err"
+  local status=$?
+  assert_status "${status}" 0 "candidate may skip only native Search when explicitly authorized"
+  assert_file_contains "${case_dir}/curl.log" "scope=direct kind=responses" "Responses probe still runs"
+  assert_file_contains "${case_dir}/curl.log" "scope=direct kind=compact" "Compact probe still runs"
+  assert_file_not_contains "${case_dir}/curl.log" "kind=native-search" "native Search probes are skipped"
+  assert_file_contains "${case_dir}/probe.err" "Native Search smoke: SKIPPED BY OPERATOR" "native Search skip is recorded"
+}
+
 test_native_search_rejects_invalid_contracts() {
   local case_dir mode status env_var
   for mode in TRANSPORT_FAIL HTML BAD_CONTENT_TYPE MALFORMED MISSING_OUTPUT INVALID_OUTPUT INVALID_ENCRYPTED; do
@@ -558,6 +586,7 @@ run_candidate_tests() {
   test_compact_candidate_only_failure_still_blocks
   test_compact_non_upstream_failure_still_blocks
   test_candidate_probe_pair_succeeds_without_secret_artifacts
+  test_candidate_probe_pair_can_skip_only_native_search
   test_native_search_rejects_invalid_contracts
 }
 

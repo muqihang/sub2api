@@ -190,6 +190,10 @@ auto-injected `file_server.hide` source paths (`./-` for stdin and
 key. It prints `API smoke: SKIPPED BY OPERATOR` and must not be used for normal
 production deployment.
 
+`--skip-native-search-smoke` keeps Responses and streaming Compact probes active
+while explicitly skipping only native Search. Use it only for a known pre-existing
+Search outage with operator approval; the skip is emitted in deployment logs.
+
 `--dry-run` validates arguments and prints topology without creating a
 container or reloading Caddy:
 

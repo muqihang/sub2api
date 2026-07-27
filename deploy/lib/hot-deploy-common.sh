@@ -33,6 +33,8 @@ Options:
                            Recover a stale host file only when the mounted
                            Caddyfile adapts exactly to the active Admin JSON
   --skip-api-smoke         Explicitly skip Responses, Compact, and Search smoke probes
+  --skip-native-search-smoke
+                           Explicitly skip only native Search smoke probes
   --dry-run                Validate input and print the intended deployment
   --help                   Show this help
 EOF
@@ -67,6 +69,7 @@ apply_defaults() {
   CONFIG_FILE="${CONFIG_FILE:-}"
   DRY_RUN="${DRY_RUN:-false}"
   SKIP_API_SMOKE="${SKIP_API_SMOKE:-false}"
+  SKIP_NATIVE_SEARCH_SMOKE="${SKIP_NATIVE_SEARCH_SMOKE:-false}"
   ALLOW_MATCHED_UPSTREAM_DEGRADATION="${ALLOW_MATCHED_UPSTREAM_DEGRADATION:-true}"
   RECOVER_STALE_HOST_CADDYFILE="${RECOVER_STALE_HOST_CADDYFILE:-false}"
   SMOKE_API_KEY="${SMOKE_API_KEY:-}"
@@ -120,6 +123,10 @@ parse_args() {
         SKIP_API_SMOKE=true
         shift
         ;;
+      --skip-native-search-smoke)
+        SKIP_NATIVE_SEARCH_SMOKE=true
+        shift
+        ;;
       --recover-stale-host-caddyfile)
         RECOVER_STALE_HOST_CADDYFILE=true
         shift
@@ -163,6 +170,10 @@ validate_config() {
     true|false) ;;
     *) die 2 "ALLOW_MATCHED_UPSTREAM_DEGRADATION must be true or false" ;;
   esac
+  case "${SKIP_NATIVE_SEARCH_SMOKE}" in
+    true|false) ;;
+    *) die 2 "SKIP_NATIVE_SEARCH_SMOKE must be true or false" ;;
+  esac
   case "${SOAK_SECONDS}" in
     ''|*[!0-9]*) die 2 "SOAK_SECONDS must be a non-negative integer" ;;
   esac
@@ -203,6 +214,9 @@ print_dry_run() {
     warn "API smoke: SKIPPED BY OPERATOR"
   else
     log "API smoke: required (key supplied, value redacted)"
+    if [[ "${SKIP_NATIVE_SEARCH_SMOKE}" == "true" ]]; then
+      warn "Native Search smoke: SKIPPED BY OPERATOR"
+    fi
   fi
 }
 
@@ -854,6 +868,10 @@ probe_api_pair() {
     "${RESPONSES_SMOKE_PAYLOAD}" || return 1
   run_probe compact "${scope}" "${base_url}${COMPACT_PATH}" \
     "${COMPACT_SMOKE_PAYLOAD}" || return 1
+  if [[ "${SKIP_NATIVE_SEARCH_SMOKE:-false}" == "true" ]]; then
+    warn "Native Search smoke: SKIPPED BY OPERATOR (scope=${scope})"
+    return 0
+  fi
   probe_native_search_pair "${base_url}" "${scope}"
 }
 
@@ -908,6 +926,10 @@ probe_api_pair_with_active_baseline() {
     "${RESPONSES_SMOKE_PAYLOAD}" || return 1
   probe_compact_with_active_baseline \
     "${candidate_base_url}" "${candidate_scope}" "${active_base_url}" || return 1
+  if [[ "${SKIP_NATIVE_SEARCH_SMOKE:-false}" == "true" ]]; then
+    warn "Native Search smoke: SKIPPED BY OPERATOR (scope=${candidate_scope})"
+    return 0
+  fi
   probe_native_search_pair "${candidate_base_url}" "${candidate_scope}"
 }
 
