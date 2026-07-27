@@ -1108,6 +1108,7 @@ export default {
   channelStatus: {
     title: 'Channel Status',
     description: 'Inspect channel availability, latency and recent status',
+    ungrouped: 'Other Channels',
     searchPlaceholder: 'Search channels...',
     allProviders: 'All Providers',
     loadError: 'Failed to load channel status',
