@@ -4041,6 +4041,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	httpInvalidEncryptedContentRetryTried := false
+	compactEndpointFallbackTried := false
+	if isCompactRequest && account.GetOpenAICompactEndpointMode() == OpenAICompactEndpointModeAuto && c != nil {
+		c.Set(openAICompactEndpointModeOverrideKey, resolveOpenAICompactEndpointModeForRequest(c, account, body))
+		defer c.Set(openAICompactEndpointModeOverrideKey, "")
+	}
 	for {
 		// Build upstream request
 		upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
@@ -4073,6 +4078,31 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 			upstreamCode := extractUpstreamErrorCode(respBody)
+			if isCompactRequest && account.GetOpenAICompactEndpointMode() == OpenAICompactEndpointModeAuto && !compactEndpointFallbackTried && shouldRetryOpenAICompactWithAlternateEndpoint(resp.StatusCode, respBody) {
+				currentMode := resolveOpenAICompactEndpointModeForRequest(c, account, body)
+				nextMode := alternateOpenAICompactEndpointMode(currentMode)
+				if nextMode == OpenAICompactEndpointModeBodySignal {
+					var changed bool
+					body, changed, err = ensureOpenAICompactionTrigger(body)
+					if err != nil {
+						return nil, err
+					}
+					if changed {
+						requestView = newOpenAIRequestView(body)
+						reqBody = nil
+						setOpsUpstreamRequestBody(c, body)
+					}
+				}
+				c.Set(openAICompactEndpointModeOverrideKey, nextMode)
+				compactEndpointFallbackTried = true
+				logger.FromContext(ctx).Info("OpenAI compact endpoint protocol fallback",
+					zap.Int64("account_id", account.ID),
+					zap.String("from", currentMode),
+					zap.String("to", nextMode),
+					zap.Int("upstream_status", resp.StatusCode),
+				)
+				continue
+			}
 			if !httpInvalidEncryptedContentRetryTried && resp.StatusCode == http.StatusBadRequest && upstreamCode == "invalid_encrypted_content" {
 				decoded, decodeErr := ensureReqBody()
 				if decodeErr != nil {
@@ -4143,6 +4173,45 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				}
 			}
 			return s.handleErrorResponse(ctx, resp, c, account, body, billingModel)
+		}
+		if isCompactRequest && openAICompactClientWantsStream(c) && !reqStream {
+			validCompact, compactCount, outputCount, inspectErr := s.inspectOpenAICompactResponse(resp, c)
+			if inspectErr != nil {
+				return nil, inspectErr
+			}
+			if !validCompact {
+				_ = resp.Body.Close()
+				if account.GetOpenAICompactEndpointMode() == OpenAICompactEndpointModeAuto && !compactEndpointFallbackTried {
+					currentMode := resolveOpenAICompactEndpointModeForRequest(c, account, body)
+					nextMode := alternateOpenAICompactEndpointMode(currentMode)
+					if nextMode == OpenAICompactEndpointModeBodySignal {
+						var changed bool
+						body, changed, err = ensureOpenAICompactionTrigger(body)
+						if err != nil {
+							return nil, err
+						}
+						if changed {
+							requestView = newOpenAIRequestView(body)
+							reqBody = nil
+							setOpsUpstreamRequestBody(c, body)
+						}
+					}
+					c.Set(openAICompactEndpointModeOverrideKey, nextMode)
+					compactEndpointFallbackTried = true
+					logger.FromContext(ctx).Warn("OpenAI compact endpoint semantic fallback",
+						zap.Int64("account_id", account.ID),
+						zap.String("from", currentMode),
+						zap.String("to", nextMode),
+						zap.Int("compact_output_count", compactCount),
+						zap.Int("output_count", outputCount),
+					)
+					continue
+				}
+				return nil, newOpenAICompactSemanticMismatchFailover(compactCount, outputCount)
+			}
+		}
+		if isCompactRequest {
+			s.recordOpenAICompactEndpointMode(ctx, account, resolveOpenAICompactEndpointModeForRequest(c, account, body))
 		}
 		defer func() { _ = resp.Body.Close() }()
 
@@ -4456,6 +4525,13 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		c.Set("openai_passthrough", true)
 	}
 
+	isCompactRequest := isOpenAIResponsesCompactPath(c)
+	compactEndpointFallbackTried := false
+	if isCompactRequest && account.GetOpenAICompactEndpointMode() == OpenAICompactEndpointModeAuto && c != nil {
+		c.Set(openAICompactEndpointModeOverrideKey, resolveOpenAICompactEndpointModeForRequest(c, account, body))
+		defer c.Set(openAICompactEndpointModeOverrideKey, "")
+	}
+
 	var resp *http.Response
 	for {
 		upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
@@ -4475,11 +4551,68 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, true)
 		}
 		if resp.StatusCode < 400 {
+			if isCompactRequest && openAICompactClientWantsStream(c) && !reqStream {
+				validCompact, compactCount, outputCount, inspectErr := s.inspectOpenAICompactResponse(resp, c)
+				if inspectErr != nil {
+					return nil, inspectErr
+				}
+				if !validCompact {
+					_ = resp.Body.Close()
+					if account.GetOpenAICompactEndpointMode() == OpenAICompactEndpointModeAuto && !compactEndpointFallbackTried {
+						currentMode := resolveOpenAICompactEndpointModeForRequest(c, account, body)
+						nextMode := alternateOpenAICompactEndpointMode(currentMode)
+						if nextMode == OpenAICompactEndpointModeBodySignal {
+							var changed bool
+							body, changed, err = ensureOpenAICompactionTrigger(body)
+							if err != nil {
+								return nil, err
+							}
+							if changed {
+								setOpsUpstreamRequestBody(c, body)
+							}
+						}
+						c.Set(openAICompactEndpointModeOverrideKey, nextMode)
+						compactEndpointFallbackTried = true
+						logger.FromContext(ctx).Warn("OpenAI passthrough compact endpoint semantic fallback",
+							zap.Int64("account_id", account.ID),
+							zap.String("from", currentMode),
+							zap.String("to", nextMode),
+							zap.Int("compact_output_count", compactCount),
+							zap.Int("output_count", outputCount),
+						)
+						continue
+					}
+					return nil, newOpenAICompactSemanticMismatchFailover(compactCount, outputCount)
+				}
+			}
 			break
 		}
 
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		_ = resp.Body.Close()
+		if isCompactRequest && account.GetOpenAICompactEndpointMode() == OpenAICompactEndpointModeAuto && !compactEndpointFallbackTried && shouldRetryOpenAICompactWithAlternateEndpoint(resp.StatusCode, respBody) {
+			currentMode := resolveOpenAICompactEndpointModeForRequest(c, account, body)
+			nextMode := alternateOpenAICompactEndpointMode(currentMode)
+			if nextMode == OpenAICompactEndpointModeBodySignal {
+				var changed bool
+				body, changed, err = ensureOpenAICompactionTrigger(body)
+				if err != nil {
+					return nil, err
+				}
+				if changed {
+					setOpsUpstreamRequestBody(c, body)
+				}
+			}
+			c.Set(openAICompactEndpointModeOverrideKey, nextMode)
+			compactEndpointFallbackTried = true
+			logger.FromContext(ctx).Info("OpenAI passthrough compact endpoint protocol fallback",
+				zap.Int64("account_id", account.ID),
+				zap.String("from", currentMode),
+				zap.String("to", nextMode),
+				zap.Int("upstream_status", resp.StatusCode),
+			)
+			continue
+		}
 		if len(detectOpenAIUnsupportedResponseFields(resp.StatusCode, respBody, []string{"store"})) > 0 && gjson.GetBytes(body, "store").Exists() {
 			s.markOpenAIResponseFieldUnsupported(account.ID, passthroughModelForCapability, "store")
 			nextBody, deleteErr := sjson.DeleteBytes(body, "store")
@@ -4497,6 +4630,9 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			return nil, s.handleFailoverErrorResponsePassthrough(ctx, resp, c, account, body)
 		}
 		return nil, s.handleErrorResponsePassthrough(ctx, resp, c, account, body)
+	}
+	if isCompactRequest {
+		s.recordOpenAICompactEndpointMode(ctx, account, resolveOpenAICompactEndpointModeForRequest(c, account, body))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -4627,7 +4763,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 			targetURL = buildOpenAIResponsesURL(validatedURL)
 		}
 	}
-	targetURL = appendOpenAIResponsesRequestPathSuffix(targetURL, openAIResponsesRequestPathSuffix(c))
+	targetURL = appendOpenAIResponsesRequestPathSuffix(targetURL, openAIResponsesRequestPathSuffixForAccount(c, account, body))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -5521,7 +5657,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	default:
 		targetURL = openaiPlatformAPIURL
 	}
-	targetURL = appendOpenAIResponsesRequestPathSuffix(targetURL, openAIResponsesRequestPathSuffix(c))
+	targetURL = appendOpenAIResponsesRequestPathSuffix(targetURL, openAIResponsesRequestPathSuffixForAccount(c, account, body))
 
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -7518,6 +7654,96 @@ func openAIResponsesRequestPathSuffix(c *gin.Context) string {
 		return ""
 	}
 	return suffix
+}
+
+const openAICompactEndpointModeOverrideKey = "openai_compact_endpoint_mode_override"
+
+func resolveOpenAICompactEndpointModeForRequest(c *gin.Context, account *Account, body []byte) string {
+	configured := account.GetOpenAICompactEndpointMode()
+	if configured != OpenAICompactEndpointModeAuto {
+		return configured
+	}
+	if c != nil {
+		if override, ok := c.Get(openAICompactEndpointModeOverrideKey); ok {
+			if normalized := normalizeOpenAICompactEndpointMode(fmt.Sprint(override)); normalized != OpenAICompactEndpointModeAuto {
+				return normalized
+			}
+		}
+	}
+	if account != nil && account.Extra != nil {
+		if detected, _ := account.Extra["openai_compact_endpoint_mode_detected"].(string); detected != "" {
+			if normalized := normalizeOpenAICompactEndpointMode(detected); normalized != OpenAICompactEndpointModeAuto {
+				return normalized
+			}
+		}
+	}
+	if account != nil && account.IsOAuth() {
+		return OpenAICompactEndpointModePath
+	}
+	if HasCompactionTriggerInInput(body) {
+		return OpenAICompactEndpointModeBodySignal
+	}
+	return OpenAICompactEndpointModePath
+}
+
+func openAIResponsesRequestPathSuffixForAccount(c *gin.Context, account *Account, body []byte) string {
+	suffix := openAIResponsesRequestPathSuffix(c)
+	if account == nil || resolveOpenAICompactEndpointModeForRequest(c, account, body) != OpenAICompactEndpointModeBodySignal {
+		return suffix
+	}
+	if suffix == "/compact" || strings.HasPrefix(suffix, "/compact/") {
+		return ""
+	}
+	return suffix
+}
+
+func alternateOpenAICompactEndpointMode(mode string) string {
+	if mode == OpenAICompactEndpointModeBodySignal {
+		return OpenAICompactEndpointModePath
+	}
+	return OpenAICompactEndpointModeBodySignal
+}
+
+func shouldRetryOpenAICompactWithAlternateEndpoint(status int, body []byte) bool {
+	if status == http.StatusNotFound || status == http.StatusMethodNotAllowed || status == http.StatusNotImplemented {
+		return true
+	}
+	if status != http.StatusBadRequest && status != http.StatusForbidden && status != http.StatusUnprocessableEntity && status != http.StatusServiceUnavailable {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(extractUpstreamErrorCode(body) + " " + extractUpstreamErrorMessage(body) + " " + string(body)))
+	if strings.Contains(lower, "model_not_found") && strings.Contains(lower, "compact") {
+		return true
+	}
+	if !strings.Contains(lower, "compact") && !strings.Contains(lower, "responses/compact") {
+		return false
+	}
+	for _, marker := range []string{
+		"unsupported", "not support", "does not support", "not available",
+		"no available channel", "unknown model", "unknown input", "invalid input type",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *OpenAIGatewayService) recordOpenAICompactEndpointMode(ctx context.Context, account *Account, mode string) {
+	if s == nil || s.accountRepo == nil || account == nil || account.GetOpenAICompactEndpointMode() != OpenAICompactEndpointModeAuto {
+		return
+	}
+	normalized := normalizeOpenAICompactEndpointMode(mode)
+	if normalized == OpenAICompactEndpointModeAuto {
+		return
+	}
+	if account.Extra != nil && account.Extra["openai_compact_endpoint_mode_detected"] == normalized {
+		return
+	}
+	_ = s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{
+		"openai_compact_endpoint_mode_detected":   normalized,
+		"openai_compact_endpoint_mode_checked_at": time.Now().Format(time.RFC3339),
+	})
 }
 
 func appendOpenAIResponsesRequestPathSuffix(baseURL, suffix string) string {

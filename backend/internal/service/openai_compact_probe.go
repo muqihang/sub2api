@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -35,6 +36,49 @@ func createOpenAICompactProbePayload(model string) map[string]any {
 			},
 		},
 	}
+}
+
+func createOpenAICompactBodySignalProbePayload(model string) map[string]any {
+	payload := createOpenAICompactProbePayload(model)
+	payload["input"] = []any{
+		map[string]any{
+			"type": "message",
+			"role": "user",
+			"content": []any{
+				map[string]any{"type": "input_text", "text": "Respond with OK."},
+			},
+		},
+		map[string]any{"type": "compaction_trigger"},
+	}
+	return payload
+}
+
+func isOpenAICompactProbeSuccess(mode string, status int, body []byte) bool {
+	if status != http.StatusOK {
+		return false
+	}
+	if normalizeOpenAICompactEndpointMode(mode) != OpenAICompactEndpointModeBodySignal {
+		return true
+	}
+
+	var payload struct {
+		Object string `json:"object"`
+		Output []struct {
+			Type string `json:"type"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(payload.Object), "response.compaction") {
+		return true
+	}
+	for _, item := range payload.Output {
+		if strings.EqualFold(strings.TrimSpace(item.Type), "compaction_summary") {
+			return true
+		}
+	}
+	return false
 }
 
 func shouldMarkOpenAICompactUnsupported(status int, body []byte) bool {
