@@ -824,6 +824,9 @@ export default {
         noteWindows:
           '按 Win+R，输入 %userprofile%\\.codex 打开配置目录。如目录不存在，请先手动创建。'
       },
+      vector: {
+        description: '请选择公开模型，并按示例调用对应的向量或排序接口。'
+      },
       cliTabs: {
         claudeCode: 'Claude Code',
         geminiCli: 'Gemini CLI',

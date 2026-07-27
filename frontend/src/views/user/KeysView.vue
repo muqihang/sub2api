@@ -1010,6 +1010,9 @@
       :api-key="selectedKey?.key || ''"
       :base-url="publicSettings?.api_base_url || ''"
       :platform="selectedKey?.group?.platform || null"
+      :available-models="selectedKey?.group?.models_list_config?.enabled
+        ? selectedKey.group.models_list_config.models
+        : []"
       :augment-only="selectedKey?.augment_only || false"
       :allow-messages-dispatch="selectedKey?.group?.allow_messages_dispatch || false"
       @close="closeUseKeyModal"
