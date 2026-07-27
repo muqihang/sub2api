@@ -88,6 +88,7 @@ const (
 	OpenAIEndpointCapabilityEmbeddings      OpenAIEndpointCapability = "embeddings"
 	OpenAIEndpointCapabilityRerank          OpenAIEndpointCapability = "rerank"
 	OpenAIEndpointCapabilitySearch          OpenAIEndpointCapability = "search"
+	OpenAIEndpointCapabilityWebSearch       OpenAIEndpointCapability = "web_search"
 )
 
 const openAIEndpointCapabilitiesCredentialKey = "openai_capabilities"
@@ -1464,6 +1465,10 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 	if capability == OpenAIEndpointCapabilitySearch {
 		return a.Type == AccountTypeOAuth
 	}
+	if capability == OpenAIEndpointCapabilityWebSearch {
+		supported, known := a.OpenAIWebSearchSupportKnown()
+		return known && supported
+	}
 	switch capability {
 	case OpenAIEndpointCapabilityChatCompletions:
 	case OpenAIEndpointCapabilityEmbeddings, OpenAIEndpointCapabilityRerank:
@@ -1479,6 +1484,37 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 		return true
 	}
 	return configured[string(capability)]
+}
+
+// OpenAIWebSearchSupportKnown reports the semantic hosted web_search probe
+// result. Unknown accounts are excluded because HTTP 200 alone does not prove
+// that an upstream executed the hosted tool.
+func (a *Account) OpenAIWebSearchSupportKnown() (supported bool, known bool) {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return false, false
+	}
+	raw, found := a.Extra["openai_web_search_supported"]
+	if !found || raw == nil {
+		return false, false
+	}
+	switch value := raw.(type) {
+	case bool:
+		return value, true
+	case string:
+		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+		return parsed, err == nil
+	case json.Number:
+		parsed, err := strconv.ParseBool(value.String())
+		return parsed, err == nil
+	case float64:
+		return value != 0, true
+	case int:
+		return value != 0, true
+	case int64:
+		return value != 0, true
+	default:
+		return false, false
+	}
 }
 
 func (a *Account) openAIEndpointCapabilitySet() (map[string]bool, bool) {

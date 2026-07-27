@@ -994,12 +994,14 @@ func (s *AccountRepoSuite) TestUpdateExtra_ExhaustedCodexSnapshotSyncsSchedulerC
 	s.Require().Equal(100.0, cacheRecorder.setAccounts[0].Extra["codex_7d_used_percent"])
 }
 
-func (s *AccountRepoSuite) TestUpdateExtra_SchedulerRelevantStillEnqueuesOutbox() {
+func (s *AccountRepoSuite) TestUpdateExtra_SchedulerRelevantEnqueuesOutboxAndSyncsFreshSnapshot() {
 	account := mustCreateAccount(s.T(), s.client, &service.Account{
 		Name:     "acc-extra-mixed",
 		Platform: service.PlatformAntigravity,
 		Extra:    map[string]any{},
 	})
+	cacheRecorder := &schedulerCacheRecorder{}
+	s.repo.schedulerCache = cacheRecorder
 	_, err := s.repo.sql.ExecContext(s.ctx, "TRUNCATE scheduler_outbox")
 	s.Require().NoError(err)
 
@@ -1012,6 +1014,10 @@ func (s *AccountRepoSuite) TestUpdateExtra_SchedulerRelevantStillEnqueuesOutbox(
 	err = scanSingleRow(s.ctx, s.repo.sql, "SELECT COUNT(*) FROM scheduler_outbox", nil, &count)
 	s.Require().NoError(err)
 	s.Require().Equal(1, count)
+	s.Require().Len(cacheRecorder.setAccounts, 1)
+	s.Require().Equal(account.ID, cacheRecorder.setAccounts[0].ID)
+	s.Require().Equal(true, cacheRecorder.setAccounts[0].Extra["mixed_scheduling"])
+	s.Require().Equal("2026-03-11T10:00:00Z", cacheRecorder.setAccounts[0].Extra["codex_usage_updated_at"])
 }
 
 // --- GetByCRSAccountID ---

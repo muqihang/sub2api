@@ -1609,12 +1609,11 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
 			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue extra update failed: account=%d err=%v", id, err)
 		}
-	} else {
-		// 观测型 extra 字段不需要触发 bucket 重建，但仍同步单账号快照，
-		// 让 sticky session / GetAccount 命中缓存时也能读到最新数据，
-		// 同时避免缓存局部 patch 覆盖掉并发写入的其它账号字段。
-		r.syncSchedulerAccountSnapshot(ctx, id)
 	}
+	// Extra 字段会参与 endpoint capability、model mapping 和运行时防护判定。
+	// outbox 负责重建 bucket，这里同步最新的单账号 metadata，避免 worker
+	// 消费前请求继续命中旧能力。从数据库重读也能避免局部 patch 覆盖并发写入。
+	r.syncSchedulerAccountSnapshot(ctx, id)
 	return nil
 }
 

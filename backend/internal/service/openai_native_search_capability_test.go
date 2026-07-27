@@ -34,3 +34,25 @@ func TestAccountSupportsOpenAIEndpointCapability_SearchIsInternalOAuthOnly(t *te
 		})
 	}
 }
+
+func TestAccountSupportsOpenAIEndpointCapability_WebSearchRequiresSuccessfulProbe(t *testing.T) {
+	tests := []struct {
+		name    string
+		account *Account
+		want    bool
+	}{
+		{name: "unprobed API key", account: &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}},
+		{name: "successful API key", account: &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Extra: map[string]any{"openai_web_search_supported": true}}, want: true},
+		{name: "failed API key", account: &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Extra: map[string]any{"openai_web_search_supported": false}}},
+		{name: "successful upstream", account: &Account{Platform: PlatformOpenAI, Type: AccountTypeUpstream, Extra: map[string]any{"openai_web_search_supported": true}}, want: true},
+		{name: "successful OAuth", account: &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{"openai_web_search_supported": true}}, want: true},
+		{name: "other platform", account: &Account{Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Extra: map[string]any{"openai_web_search_supported": true}}},
+		{name: "nil"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, tc.account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityWebSearch))
+		})
+	}
+}

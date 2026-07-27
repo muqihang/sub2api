@@ -92,6 +92,19 @@ func newOpenAIModelMappedBodyCache(body []byte, replace openAIModelBodyReplaceFu
 	}
 }
 
+func openAIResponsesRequiredCapability(body []byte) service.OpenAIEndpointCapability {
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.IsArray() {
+		return service.OpenAIEndpointCapabilityChatCompletions
+	}
+	for _, tool := range tools.Array() {
+		if strings.EqualFold(strings.TrimSpace(tool.Get("type").String()), "web_search") {
+			return service.OpenAIEndpointCapabilityWebSearch
+		}
+	}
+	return service.OpenAIEndpointCapabilityChatCompletions
+}
+
 func usageRecordContext(parent context.Context, base context.Context) context.Context {
 	if base == nil {
 		base = context.Background()
@@ -791,6 +804,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 	requireCompact := isOpenAIRemoteCompactPath(c)
+	requiredCapability := openAIResponsesRequiredCapability(body)
+	if requireCompact {
+		requiredCapability = service.OpenAIEndpointCapabilityChatCompletions
+	}
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
@@ -809,7 +826,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			reqModel,
 			failedAccountIDs,
 			service.OpenAIUpstreamTransportAny,
-			service.OpenAIEndpointCapabilityChatCompletions,
+			requiredCapability,
 			requireCompact,
 		)
 		if err != nil {
@@ -818,6 +835,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				zap.Int("excluded_account_count", len(failedAccountIDs)),
 			)
 			if len(failedAccountIDs) == 0 {
+				if requiredCapability == service.OpenAIEndpointCapabilityWebSearch {
+					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
+					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "web_search_not_supported", "No available OpenAI accounts support hosted web_search", streamStarted)
+					return
+				}
 				if errors.Is(err, service.ErrNoAvailableCompactAccounts) {
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "compact_not_supported", "No available OpenAI accounts support /responses/compact", streamStarted)

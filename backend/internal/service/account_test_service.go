@@ -583,6 +583,9 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		testModelID = resolveOpenAICompactForwardModel(account, testModelID)
 		return s.testOpenAICompactConnection(c, account, requestedTestModelID, testModelID)
 	}
+	if mode == AccountTestModeWebSearch {
+		return s.testOpenAIWebSearchConnection(c, account, testModelID)
+	}
 
 	// Route to image generation test if an image model is selected
 	if isOpenAIImageModel(testModelID) {

@@ -13,12 +13,16 @@ const (
 	AccountTestModeDefault = "default"
 	// AccountTestModeCompact drives the /responses/compact compact-probe test.
 	AccountTestModeCompact = "compact"
+	// AccountTestModeWebSearch verifies a real hosted web_search_call.
+	AccountTestModeWebSearch = "web_search"
 )
 
 func normalizeAccountTestMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case AccountTestModeCompact:
 		return AccountTestModeCompact
+	case AccountTestModeWebSearch:
+		return AccountTestModeWebSearch
 	default:
 		return AccountTestModeDefault
 	}

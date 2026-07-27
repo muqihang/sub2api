@@ -44,6 +44,27 @@ func TestBuildSchedulerMetadataAccount_PreservesFormalPoolSchedulableEvidence(t 
 	require.False(t, missingGatewaySeen.IsSchedulable(), "missing gateway-seen evidence must still fail closed after metadata slimming")
 }
 
+func TestBuildSchedulerMetadataAccount_PreservesOpenAIWebSearchCapability(t *testing.T) {
+	got := buildSchedulerMetadataAccount(service.Account{
+		ID:          176,
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeAPIKey,
+		Status:      service.StatusActive,
+		Schedulable: true,
+		Extra: map[string]any{
+			"openai_web_search_supported":   true,
+			"openai_web_search_checked_at":  "2026-07-28T00:25:26+08:00",
+			"openai_web_search_last_status": 200,
+			"openai_web_search_last_error":  "",
+		},
+	})
+
+	require.Equal(t, true, got.Extra["openai_web_search_supported"])
+	require.NotContains(t, got.Extra, "openai_web_search_checked_at")
+	require.NotContains(t, got.Extra, "openai_web_search_last_status")
+	require.NotContains(t, got.Extra, "openai_web_search_last_error")
+}
+
 func formalPoolSchedulerEvidenceAccount(extra map[string]any) service.Account {
 	return service.Account{
 		ID:          84,

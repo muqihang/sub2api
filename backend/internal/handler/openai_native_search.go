@@ -148,7 +148,7 @@ func (h *OpenAIGatewayHandler) NativeSearch(c *gin.Context) {
 			reqLog.Warn("openai_native_search.account_select_failed", zap.Error(err), zap.Int("excluded_account_count", len(failedAccountIDs)))
 			if len(failedAccountIDs) == 0 {
 				markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
-				h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable")
+				h.errorResponse(c, http.StatusServiceUnavailable, "native_search_not_available", "No schedulable OpenAI OAuth accounts support native Search")
 				return
 			}
 			if lastFailoverErr != nil {
@@ -160,7 +160,7 @@ func (h *OpenAIGatewayHandler) NativeSearch(c *gin.Context) {
 		}
 		if selection == nil || selection.Account == nil {
 			markOpsRoutingCapacityLimited(c)
-			h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "No available accounts")
+			h.errorResponse(c, http.StatusServiceUnavailable, "native_search_not_available", "No schedulable OpenAI OAuth accounts support native Search")
 			return
 		}
 		account := selection.Account
