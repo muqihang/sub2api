@@ -945,6 +945,17 @@ func (s *RateLimitService) handle403(ctx context.Context, account *Account, upst
 }
 
 func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account, upstreamMsg string, responseBody []byte) (shouldDisable bool) {
+	if isOpenAIInsufficientBalanceError(responseBody, upstreamMsg) {
+		msg := buildForbiddenErrorMessage(
+			"Payment required (403):",
+			upstreamMsg,
+			responseBody,
+			"insufficient balance or billing issue",
+		)
+		s.handleAuthError(ctx, account, msg)
+		return true
+	}
+
 	msg := buildForbiddenErrorMessage(
 		"Access forbidden (403):",
 		upstreamMsg,

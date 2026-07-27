@@ -92,6 +92,19 @@ func newOpenAIModelMappedBodyCache(body []byte, replace openAIModelBodyReplaceFu
 	}
 }
 
+func openAIResponsesRequiredCapability(body []byte) service.OpenAIEndpointCapability {
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.IsArray() {
+		return service.OpenAIEndpointCapabilityChatCompletions
+	}
+	for _, tool := range tools.Array() {
+		if strings.EqualFold(strings.TrimSpace(tool.Get("type").String()), "web_search") {
+			return service.OpenAIEndpointCapabilityWebSearch
+		}
+	}
+	return service.OpenAIEndpointCapabilityChatCompletions
+}
+
 func usageRecordContext(parent context.Context, base context.Context) context.Context {
 	if base == nil {
 		base = context.Background()
@@ -621,9 +634,32 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 
+	// Remote compact v2 requests can carry multi-megabyte bodies. Mark the
+	// declared SSE compact stream before reading the body so ingress heartbeats
+	// can keep edge proxies alive while the upload is still in progress.
+	compactKeepaliveStarted := markOpenAICompactClientStreamFromHeaders(c)
+	stopCompactKeepalive := service.StartOpenAICompactSSEKeepalive(c, h.openAICompactKeepaliveInterval())
+	defer func() {
+		stopCompactKeepalive()
+	}()
+
 	// Read request body
+	bodyReadStartedAt := time.Now()
 	body, err := readLenientJSONRequestBodyWithPrealloc(c.Request, h.cfg)
 	if err != nil {
+		contextErr := ""
+		if requestContextErr := c.Request.Context().Err(); requestContextErr != nil {
+			contextErr = requestContextErr.Error()
+		}
+		reqLog.Warn("read request body failed",
+			zap.Error(err),
+			zap.Int64("content_length", c.Request.ContentLength),
+			zap.String("content_encoding", c.GetHeader("Content-Encoding")),
+			zap.Strings("transfer_encoding", c.Request.TransferEncoding),
+			zap.String("request_proto", c.Request.Proto),
+			zap.Int64("read_latency_ms", time.Since(bodyReadStartedAt).Milliseconds()),
+			zap.String("request_context_error", contextErr),
+		)
 		if maxErr, ok := extractMaxBytesError(err); ok {
 			h.errorResponse(c, http.StatusRequestEntityTooLarge, "invalid_request_error", buildBodyTooLargeMessage(maxErr.Limit))
 			return
@@ -643,8 +679,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	if !ok {
 		return
 	}
-	stopCompactKeepalive := service.StartOpenAICompactSSEKeepalive(c, h.openAICompactKeepaliveInterval())
-	defer stopCompactKeepalive()
+	if !compactKeepaliveStarted {
+		stopCompactKeepalive = service.StartOpenAICompactSSEKeepalive(c, h.openAICompactKeepaliveInterval())
+	}
 
 	// 校验请求体 JSON 合法性
 	if !gjson.ValidBytes(body) {
@@ -767,6 +804,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 	requireCompact := isOpenAIRemoteCompactPath(c)
+	requiredCapability := openAIResponsesRequiredCapability(body)
+	if requireCompact {
+		requiredCapability = service.OpenAIEndpointCapabilityChatCompletions
+	}
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
@@ -785,7 +826,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			reqModel,
 			failedAccountIDs,
 			service.OpenAIUpstreamTransportAny,
-			service.OpenAIEndpointCapabilityChatCompletions,
+			requiredCapability,
 			requireCompact,
 		)
 		if err != nil {
@@ -794,6 +835,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				zap.Int("excluded_account_count", len(failedAccountIDs)),
 			)
 			if len(failedAccountIDs) == 0 {
+				if requiredCapability == service.OpenAIEndpointCapabilityWebSearch {
+					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
+					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "web_search_not_supported", "No available OpenAI accounts support hosted web_search", streamStarted)
+					return
+				}
 				if errors.Is(err, service.ErrNoAvailableCompactAccounts) {
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "compact_not_supported", "No available OpenAI accounts support /responses/compact", streamStarted)
@@ -1073,6 +1119,27 @@ func (h *OpenAIGatewayHandler) normalizeOpenAIResponsesCompactRequest(c *gin.Con
 		body = normalizedCompactBody
 	}
 	return body, true
+}
+
+func markOpenAICompactClientStreamFromHeaders(c *gin.Context) bool {
+	if c == nil || c.Request == nil || !isBareOpenAIResponsesPath(c) {
+		return false
+	}
+	if !strings.Contains(strings.ToLower(c.GetHeader("Accept")), "text/event-stream") {
+		return false
+	}
+	metadata := strings.TrimSpace(c.GetHeader("X-Codex-Turn-Metadata"))
+	if metadata == "" || !gjson.Valid(metadata) {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(gjson.Get(metadata, "request_kind").String()), "compaction") {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(gjson.Get(metadata, "compaction.implementation").String()), "responses_compaction_v2") {
+		return false
+	}
+	service.MarkOpenAICompactClientStream(c)
+	return true
 }
 
 func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcome(c *gin.Context, startedAt time.Time) {

@@ -67,6 +67,7 @@ type DataAccount struct {
 	ProxyKey           *string        `json:"proxy_key,omitempty"`
 	Concurrency        int            `json:"concurrency"`
 	Priority           int            `json:"priority"`
+	GroupIDs           []int64        `json:"group_ids,omitempty"`
 	RateMultiplier     *float64       `json:"rate_multiplier,omitempty"`
 	ExpiresAt          *int64         `json:"expires_at,omitempty"`
 	AutoPauseOnExpired *bool          `json:"auto_pause_on_expired,omitempty"`
@@ -220,6 +221,7 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 			ProxyKey:           proxyKey,
 			Concurrency:        acc.Concurrency,
 			Priority:           acc.Priority,
+			GroupIDs:           acc.GroupIDs,
 			RateMultiplier:     acc.RateMultiplier,
 			ExpiresAt:          expiresAt,
 			AutoPauseOnExpired: &acc.AutoPauseOnExpired,
@@ -467,6 +469,12 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			skipBindForItem := skipDefaultGroupBind || decision.PoolRole != service.OpenAIPoolRoleMain
 
 			matched, matchKey := service.FindMatchingOpenAIOAuthAccountWithAccessor(openAIOAuthAccounts, item.Credentials, h.openaiOAuthService.CredentialAccessor())
+			if matched == nil && decision.TokenSource == service.OpenAITokenSourceAgentIdentity {
+				matched = findMatchingImportedOpenAIAgentIdentityByName(openAIOAuthAccounts, item.Name)
+				if matched != nil {
+					matchKey = "name"
+				}
+			}
 			if matched != nil && !service.ShouldOverwriteMatchedOpenAIAccount(matched, matchKey, decision) {
 				msg := "import rejected: newer RT-managed account already exists"
 				result.AccountFailed++
@@ -482,6 +490,11 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			}
 
 			if matched != nil {
+				var groupIDs *[]int64
+				if item.GroupIDs != nil {
+					value := append([]int64(nil), item.GroupIDs...)
+					groupIDs = &value
+				}
 				updated, updateErr := h.adminService.UpdateAccount(ctx, matched.ID, &service.UpdateAccountInput{
 					Name:        item.Name,
 					Notes:       item.Notes,
@@ -491,6 +504,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 					Concurrency: &item.Concurrency,
 					Priority:    &item.Priority,
 					Status:      decision.Status,
+					GroupIDs:    groupIDs,
 				})
 				if updateErr != nil {
 					result.AccountFailed++
@@ -527,7 +541,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 				Concurrency:          item.Concurrency,
 				Priority:             item.Priority,
 				RateMultiplier:       item.RateMultiplier,
-				GroupIDs:             nil,
+				GroupIDs:             item.GroupIDs,
 				ExpiresAt:            item.ExpiresAt,
 				AutoPauseOnExpired:   item.AutoPauseOnExpired,
 				SkipDefaultGroupBind: skipBindForItem,
@@ -584,7 +598,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 			Concurrency:          item.Concurrency,
 			Priority:             item.Priority,
 			RateMultiplier:       item.RateMultiplier,
-			GroupIDs:             nil,
+			GroupIDs:             item.GroupIDs,
 			ExpiresAt:            item.ExpiresAt,
 			AutoPauseOnExpired:   item.AutoPauseOnExpired,
 			SkipDefaultGroupBind: skipDefaultGroupBind,
@@ -627,6 +641,19 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 	}
 
 	return result, nil
+}
+
+func findMatchingImportedOpenAIAgentIdentityByName(accounts []service.Account, name string) *service.Account {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	for i := range accounts {
+		if accounts[i].IsOpenAIAgentIdentity() && strings.EqualFold(strings.TrimSpace(accounts[i].Name), name) {
+			return &accounts[i]
+		}
+	}
+	return nil
 }
 
 func (h *AccountHandler) listAllProxies(ctx context.Context) ([]service.Proxy, error) {

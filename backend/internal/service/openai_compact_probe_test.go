@@ -26,6 +26,32 @@ func TestNormalizeAccountTestMode(t *testing.T) {
 	}
 }
 
+func TestIsOpenAICompactProbeSuccessRequiresSemanticProofForBodySignal(t *testing.T) {
+	tests := []struct {
+		name string
+		mode string
+		body string
+		want bool
+	}{
+		{name: "dedicated path", mode: OpenAICompactEndpointModePath, body: `{"id":"cmp_1"}`, want: true},
+		{name: "body signal object", mode: OpenAICompactEndpointModeBodySignal, body: `{"object":"response.compaction"}`, want: true},
+		{name: "body signal output", mode: OpenAICompactEndpointModeBodySignal, body: `{"output":[{"type":"compaction_summary"}]}`, want: true},
+		{name: "ordinary response", mode: OpenAICompactEndpointModeBodySignal, body: `{"object":"response","output":[{"type":"message"}]}`, want: false},
+		{name: "invalid json", mode: OpenAICompactEndpointModeBodySignal, body: `not-json`, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isOpenAICompactProbeSuccess(tt.mode, http.StatusOK, []byte(tt.body)); got != tt.want {
+				t.Fatalf("isOpenAICompactProbeSuccess() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+	if isOpenAICompactProbeSuccess(OpenAICompactEndpointModeBodySignal, http.StatusBadGateway, []byte(`{"object":"response.compaction"}`)) {
+		t.Fatal("non-200 response must not pass compact semantic validation")
+	}
+}
+
 func TestBuildOpenAICompactProbeExtraUpdates_SuccessMarksSupported(t *testing.T) {
 	now := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 	updates := buildOpenAICompactProbeExtraUpdates(&http.Response{StatusCode: http.StatusOK}, []byte(`{"id":"cmp_1"}`), nil, now)

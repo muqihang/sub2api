@@ -38,6 +38,34 @@ var openAIGatewayRouteMatrixCases = []openAIGatewayRouteMatrixCase{
 	{method: http.MethodGet, path: "/backend-api/codex/responses", ws: true},
 }
 
+func TestOpenAIVectorRoutesAreRegisteredWithoutCoreClientToken(t *testing.T) {
+	router := newOpenAIGatewayRouteMatrixRouter(service.PlatformOpenAI, true, []config.OpenAIGatewayClientTokenConfig{
+		{Name: "codex", Token: "gateway-token"},
+	})
+
+	tests := []openAIGatewayRouteMatrixCase{
+		{method: http.MethodPost, path: "/openai/v1/embeddings", body: `{"model":"nvidia-embed","input":"hi"}`},
+		{method: http.MethodPost, path: "/v1/embeddings", body: `{"model":"nvidia-embed","input":"hi"}`},
+		{method: http.MethodPost, path: "/embeddings", body: `{"model":"nvidia-embed","input":"hi"}`},
+		{method: http.MethodPost, path: "/openai/v1/rerank", body: `{"model":"nvidia-rerank","query":"hi","documents":["a"]}`},
+		{method: http.MethodPost, path: "/v1/rerank", body: `{"model":"nvidia-rerank","query":"hi","documents":["a"]}`},
+		{method: http.MethodPost, path: "/rerank", body: `{"model":"nvidia-rerank","query":"hi","documents":["a"]}`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.path, func(t *testing.T) {
+			req := newOpenAIGatewayRouteMatrixRequest(tc)
+			rec := httptest.NewRecorder()
+
+			router.ServeHTTP(rec, req)
+
+			require.NotEqual(t, http.StatusNotFound, rec.Code)
+			require.NotEqual(t, http.StatusUnauthorized, rec.Code)
+			require.NotContains(t, rec.Body.String(), "gateway client token")
+		})
+	}
+}
+
 func newOpenAIGatewayRouteMatrixRouter(platform string, coreEnabled bool, clientTokens []config.OpenAIGatewayClientTokenConfig) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

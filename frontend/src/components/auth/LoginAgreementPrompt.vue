@@ -146,9 +146,10 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/icons/Icon.vue'
+import { localizeLoginAgreementDocument } from '@/utils/legalDocument'
 import type { LoginAgreementDocument } from '@/types'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
 const props = withDefaults(defineProps<{
   accepted: boolean
@@ -167,7 +168,11 @@ const emit = defineEmits<{
 }>()
 
 const dialogVisible = computed(() => props.visible && documents.value.length > 0)
-const documents = computed(() => props.documents.filter((doc) => doc.title.trim()))
+const documents = computed(() =>
+  props.documents
+    .map((doc) => localizeLoginAgreementDocument(doc, locale.value))
+    .filter((doc) => doc.title.trim()),
+)
 const updatedAt = computed(() => props.updatedAt || '')
 const accepted = computed(() => props.accepted)
 const mode = computed(() => props.mode === 'checkbox' ? 'checkbox' : 'modal')

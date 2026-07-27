@@ -29,7 +29,12 @@ Options:
   --candidate NAME         Candidate container name
   --active-container NAME  Override active application container discovery
   --config FILE            Load deployment settings from FILE
-  --skip-api-smoke         Explicitly skip Responses and Compact smoke probes
+  --recover-stale-host-caddyfile
+                           Recover a stale host file only when the mounted
+                           Caddyfile adapts exactly to the active Admin JSON
+  --skip-api-smoke         Explicitly skip Responses, Compact, and Search smoke probes
+  --skip-native-search-smoke
+                           Explicitly skip only native Search smoke probes
   --dry-run                Validate input and print the intended deployment
   --help                   Show this help
 EOF
@@ -44,6 +49,8 @@ apply_defaults() {
   HEALTH_PATH="${HEALTH_PATH:-/health}"
   RESPONSES_PATH="${RESPONSES_PATH:-/responses}"
   COMPACT_PATH="${COMPACT_PATH:-/responses}"
+  NATIVE_SEARCH_ROOT_PATH="${NATIVE_SEARCH_ROOT_PATH:-/alpha/search}"
+  NATIVE_SEARCH_V1_PATH="${NATIVE_SEARCH_V1_PATH:-/v1/alpha/search}"
   CONTAINER_PREFIX="${CONTAINER_PREFIX:-sub2api-next}"
   SMOKE_MODEL="${SMOKE_MODEL:-gpt-5.6-sol}"
   SMOKE_USER_AGENT="${SMOKE_USER_AGENT:-codex_cli_rs/hot-deploy}"
@@ -62,6 +69,9 @@ apply_defaults() {
   CONFIG_FILE="${CONFIG_FILE:-}"
   DRY_RUN="${DRY_RUN:-false}"
   SKIP_API_SMOKE="${SKIP_API_SMOKE:-false}"
+  SKIP_NATIVE_SEARCH_SMOKE="${SKIP_NATIVE_SEARCH_SMOKE:-false}"
+  ALLOW_MATCHED_UPSTREAM_DEGRADATION="${ALLOW_MATCHED_UPSTREAM_DEGRADATION:-true}"
+  RECOVER_STALE_HOST_CADDYFILE="${RECOVER_STALE_HOST_CADDYFILE:-false}"
   SMOKE_API_KEY="${SMOKE_API_KEY:-}"
   LOCK_DIR="${LOCK_FILE}.d"
   LOCK_ACQUIRED=false
@@ -113,6 +123,14 @@ parse_args() {
         SKIP_API_SMOKE=true
         shift
         ;;
+      --skip-native-search-smoke)
+        SKIP_NATIVE_SEARCH_SMOKE=true
+        shift
+        ;;
+      --recover-stale-host-caddyfile)
+        RECOVER_STALE_HOST_CADDYFILE=true
+        shift
+        ;;
       --dry-run)
         DRY_RUN=true
         shift
@@ -148,6 +166,14 @@ validate_config() {
   validate_positive_integer SOAK_INTERVAL_SECONDS "${SOAK_INTERVAL_SECONDS}"
   validate_positive_integer COMPACT_SMOKE_BYTES "${COMPACT_SMOKE_BYTES}"
   validate_positive_integer CANDIDATE_STOP_TIMEOUT_SECONDS "${CANDIDATE_STOP_TIMEOUT_SECONDS}"
+  case "${ALLOW_MATCHED_UPSTREAM_DEGRADATION}" in
+    true|false) ;;
+    *) die 2 "ALLOW_MATCHED_UPSTREAM_DEGRADATION must be true or false" ;;
+  esac
+  case "${SKIP_NATIVE_SEARCH_SMOKE}" in
+    true|false) ;;
+    *) die 2 "SKIP_NATIVE_SEARCH_SMOKE must be true or false" ;;
+  esac
   case "${SOAK_SECONDS}" in
     ''|*[!0-9]*) die 2 "SOAK_SECONDS must be a non-negative integer" ;;
   esac
@@ -188,6 +214,9 @@ print_dry_run() {
     warn "API smoke: SKIPPED BY OPERATOR"
   else
     log "API smoke: required (key supplied, value redacted)"
+    if [[ "${SKIP_NATIVE_SEARCH_SMOKE}" == "true" ]]; then
+      warn "Native Search smoke: SKIPPED BY OPERATOR"
+    fi
   fi
 }
 
@@ -462,14 +491,20 @@ wait_candidate_ready() {
 }
 
 candidate_base_url() {
+  container_base_url "${CANDIDATE_CONTAINER}"
+}
+
+container_base_url() {
+  local container_name="$1"
   local network
   local address
   network="$(discover_docker_network)" || return 1
   address="$(docker inspect --format \
     "{{with index .NetworkSettings.Networks \"${network}\"}}{{.IPAddress}}{{end}}" \
-    "${CANDIDATE_CONTAINER}")" || return 1
+    "${container_name}")" || return 1
   [[ -n "${address}" ]] || {
-    printf 'candidate has no address on Docker network %s\n' "${network}" >&2
+    printf 'container %s has no address on Docker network %s\n' \
+      "${container_name}" "${network}" >&2
     return 1
   }
   printf 'http://%s:%s\n' "${address}" "${APP_PORT}"
@@ -627,11 +662,15 @@ run_probe() {
   local url="$3"
   local payload_file="${4:-}"
   local output_file="${STATE_DIR}/${scope}-${kind}-response.json"
+  local headers_file="${STATE_DIR}/${scope}-${kind}-response.headers"
+  local status_file="${STATE_DIR}/${scope}-${kind}-http-status"
   local escaped_key
+  local http_status
 
   if [[ "${kind}" == "health" ]]; then
     HOT_DEPLOY_PROBE_SCOPE="${scope}" HOT_DEPLOY_PROBE_KIND="${kind}" \
-      curl -fsS --max-time "${REQUEST_TIMEOUT_SECONDS}" --config - \
+      curl -sS --max-time "${REQUEST_TIMEOUT_SECONDS}" \
+      --dump-header "${headers_file}" --config - \
       >"${output_file}" <<EOF || return 1
 url = "${url}"
 EOF
@@ -651,7 +690,8 @@ EOF
         ;;
     esac
     HOT_DEPLOY_PROBE_SCOPE="${scope}" HOT_DEPLOY_PROBE_KIND="${kind}" \
-      curl -fsS --max-time "${REQUEST_TIMEOUT_SECONDS}" --config - \
+      curl -sS --max-time "${REQUEST_TIMEOUT_SECONDS}" \
+      --dump-header "${headers_file}" --config - \
       --data-binary "@${payload_file}" >"${output_file}" <<EOF || return 1
 url = "${url}"
 header = "Authorization: Bearer ${escaped_key}"
@@ -660,6 +700,21 @@ header = "User-Agent: ${SMOKE_USER_AGENT}"
 header = "originator: ${SMOKE_ORIGINATOR}"
 EOF
   fi
+  http_status="$(awk '
+    /^HTTP\// && $2 ~ /^[0-9][0-9][0-9]$/ { status=$2 }
+    END { if (status == "") exit 1; print status }
+  ' "${headers_file}")" || {
+    printf '%s probe returned no HTTP status\n' "${kind}" >&2
+    return 1
+  }
+  printf '%s\n' "${http_status}" >"${status_file}"
+  case "${http_status}" in
+    2??) ;;
+    *)
+      printf '%s probe returned HTTP %s\n' "${kind}" "${http_status}" >&2
+      return 1
+      ;;
+  esac
   case "${kind}" in
     compact) assert_compact_sse "${output_file}" ;;
     responses) assert_responses_json "${output_file}" ;;
@@ -673,6 +728,138 @@ probe_health() {
   run_probe health "${scope}" "${base_url}${HEALTH_PATH}"
 }
 
+validate_native_search_headers() {
+  local verdict_file="$1"
+  python3 -c '
+import re
+import sys
+
+raw = sys.stdin.buffer.read().decode("iso-8859-1", "replace")
+blocks = [block for block in re.split(r"\r?\n\r?\n", raw) if block.strip()]
+status = None
+content_type = ""
+for block in blocks:
+    lines = block.splitlines()
+    if not lines or not lines[0].startswith("HTTP/"):
+        continue
+    parts = lines[0].split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        continue
+    candidate_status = int(parts[1])
+    if 100 <= candidate_status < 200:
+        continue
+    status = candidate_status
+    content_type = ""
+    for line in lines[1:]:
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        if key.strip().lower() == "content-type":
+            content_type = value.strip().lower()
+if status != 200:
+    raise SystemExit("native Search probe returned a non-200 status")
+if content_type.split(";", 1)[0].strip() != "application/json":
+    raise SystemExit("native Search probe returned a non-JSON Content-Type")
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    handle.write("status=200 content_type=application/json\n")
+' "${verdict_file}"
+}
+
+validate_native_search_body_stream() {
+  python3 -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin.buffer)
+except Exception:
+    raise SystemExit("native Search probe returned malformed JSON")
+if not isinstance(payload, dict):
+    raise SystemExit("native Search probe response is not a JSON object")
+output = payload.get("output")
+if not isinstance(output, str) or not output.strip():
+    raise SystemExit("native Search probe returned no output string")
+encrypted = payload.get("encrypted_output")
+if encrypted is not None and not isinstance(encrypted, str):
+    raise SystemExit("native Search probe returned invalid encrypted_output")
+' >/dev/null
+}
+
+probe_native_search_path() {
+  local base_url="${1%/}"
+  local scope="$2"
+  local path="$3"
+  local kind="$4"
+  local escaped_key payload scratch headers_fifo header_verdict header_pid
+  local curl_status body_status header_status had_errexit=false
+  local -a pipeline_status
+
+  case "${SMOKE_API_KEY}" in
+    *$'\n'*|*$'\r'*)
+      printf 'SMOKE_API_KEY must not contain a newline\n' >&2
+      return 1
+      ;;
+  esac
+  case "${SMOKE_USER_AGENT}${SMOKE_ORIGINATOR}" in
+    *$'\n'*|*$'\r'*)
+      printf 'Codex smoke identity headers must not contain a newline\n' >&2
+      return 1
+      ;;
+  esac
+  escaped_key="${SMOKE_API_KEY//\\/\\\\}"
+  escaped_key="${escaped_key//\"/\\\"}"
+  payload="$(python3 -c 'import json,sys; print(json.dumps({"id":"hot-deploy-native-search","model":sys.argv[1],"commands":{}}, separators=(",",":")))' "${SMOKE_MODEL}")" || return 1
+
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/sub2api-native-search-probe.XXXXXX")" || return 1
+  headers_fifo="${scratch}/headers.fifo"
+  header_verdict="${scratch}/header.verdict"
+  mkfifo "${headers_fifo}" || {
+    rm -rf "${scratch}"
+    return 1
+  }
+  validate_native_search_headers "${header_verdict}" <"${headers_fifo}" &
+  header_pid=$!
+
+  [[ $- == *e* ]] && had_errexit=true
+  set +e
+  HOT_DEPLOY_PROBE_SCOPE="${scope}" HOT_DEPLOY_PROBE_KIND="${kind}" \
+    curl -sS --max-time "${REQUEST_TIMEOUT_SECONDS}" --dump-header "${headers_fifo}" \
+    --data-binary @<(printf '%s' "${payload}") --config - <<EOF | validate_native_search_body_stream
+url = "${base_url}${path}"
+header = "Authorization: Bearer ${escaped_key}"
+header = "Content-Type: application/json"
+header = "Accept: application/json"
+header = "User-Agent: ${SMOKE_USER_AGENT}"
+header = "originator: ${SMOKE_ORIGINATOR}"
+EOF
+  pipeline_status=("${PIPESTATUS[@]}")
+  curl_status="${pipeline_status[0]}"
+  body_status="${pipeline_status[1]}"
+  if [[ "${curl_status}" -ne 0 ]]; then
+    kill "${header_pid}" 2>/dev/null || true
+    wait "${header_pid}" 2>/dev/null
+    header_status=1
+  else
+    wait "${header_pid}"
+    header_status=$?
+  fi
+  [[ "${had_errexit}" == "true" ]] && set -e
+
+  if [[ "${curl_status}" -ne 0 || "${body_status}" -ne 0 || "${header_status}" -ne 0 || ! -s "${header_verdict}" ]]; then
+    rm -rf "${scratch}"
+    return 1
+  fi
+  rm -rf "${scratch}"
+  log "Native Search probe passed: scope=${scope} path=${path}"
+}
+
+probe_native_search_pair() {
+  local base_url="$1"
+  local scope="$2"
+  probe_native_search_path "${base_url}" "${scope}" "${NATIVE_SEARCH_ROOT_PATH}" native-search-root || return 1
+  probe_native_search_path "${base_url}" "${scope}" "${NATIVE_SEARCH_V1_PATH}" native-search-v1
+}
+
 probe_api_pair() {
   local base_url="${1%/}"
   local scope="$2"
@@ -680,7 +867,70 @@ probe_api_pair() {
   run_probe responses "${scope}" "${base_url}${RESPONSES_PATH}" \
     "${RESPONSES_SMOKE_PAYLOAD}" || return 1
   run_probe compact "${scope}" "${base_url}${COMPACT_PATH}" \
-    "${COMPACT_SMOKE_PAYLOAD}"
+    "${COMPACT_SMOKE_PAYLOAD}" || return 1
+  if [[ "${SKIP_NATIVE_SEARCH_SMOKE:-false}" == "true" ]]; then
+    warn "Native Search smoke: SKIPPED BY OPERATOR (scope=${scope})"
+    return 0
+  fi
+  probe_native_search_pair "${base_url}" "${scope}"
+}
+
+is_upstream_degradation_status() {
+  case "$1" in
+    429|502|503|504|524) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+probe_compact_with_active_baseline() {
+  local candidate_base_url="${1%/}"
+  local candidate_scope="$2"
+  local active_base_url="${3%/}"
+  local baseline_scope="${candidate_scope}-active-baseline"
+  local candidate_status_file="${STATE_DIR}/${candidate_scope}-compact-http-status"
+  local baseline_status_file="${STATE_DIR}/${baseline_scope}-compact-http-status"
+  local candidate_status
+  local baseline_status
+
+  prepare_smoke_payloads || return 1
+  if run_probe compact "${candidate_scope}" "${candidate_base_url}${COMPACT_PATH}" \
+    "${COMPACT_SMOKE_PAYLOAD}"; then
+    return 0
+  fi
+
+  [[ "${ALLOW_MATCHED_UPSTREAM_DEGRADATION:-true}" == "true" ]] || return 1
+  [[ -s "${candidate_status_file}" ]] || return 1
+  candidate_status="$(cat "${candidate_status_file}")"
+  is_upstream_degradation_status "${candidate_status}" || return 1
+
+  warn "Compact candidate returned HTTP ${candidate_status}; probing the active production baseline"
+  if run_probe compact "${baseline_scope}" "${active_base_url}${COMPACT_PATH}" \
+    "${COMPACT_SMOKE_PAYLOAD}"; then
+    printf 'candidate Compact failed while active production passed\n' >&2
+    return 1
+  fi
+  [[ -s "${baseline_status_file}" ]] || return 1
+  baseline_status="$(cat "${baseline_status_file}")"
+  is_upstream_degradation_status "${baseline_status}" || return 1
+
+  warn "MATCHED UPSTREAM DEGRADATION: candidate HTTP ${candidate_status}, active HTTP ${baseline_status}; Compact request was exercised on both and deployment may continue"
+}
+
+probe_api_pair_with_active_baseline() {
+  local candidate_base_url="${1%/}"
+  local candidate_scope="$2"
+  local active_base_url="${3%/}"
+
+  prepare_smoke_payloads || return 1
+  run_probe responses "${candidate_scope}" "${candidate_base_url}${RESPONSES_PATH}" \
+    "${RESPONSES_SMOKE_PAYLOAD}" || return 1
+  probe_compact_with_active_baseline \
+    "${candidate_base_url}" "${candidate_scope}" "${active_base_url}" || return 1
+  if [[ "${SKIP_NATIVE_SEARCH_SMOKE:-false}" == "true" ]]; then
+    warn "Native Search smoke: SKIPPED BY OPERATOR (scope=${candidate_scope})"
+    return 0
+  fi
+  probe_native_search_pair "${candidate_base_url}" "${candidate_scope}"
 }
 
 require_commands() {
@@ -737,7 +987,51 @@ check_caddy_mount_consistency() {
   fi
   if ! cmp -s "${CADDYFILE}" "${mounted_file}"; then
     warn "host and mounted Caddyfile differ (stale bind inode); reload remains stdin-only"
+    if [[ "${RECOVER_STALE_HOST_CADDYFILE}" == "true" ]]; then
+      recover_stale_host_caddyfile "${mounted_file}"
+    fi
   fi
+}
+
+recover_stale_host_caddyfile() {
+  local mounted_file="$1"
+  local mounted_json="${STATE_DIR}/mounted-Caddyfile.adapted.json"
+  local active_recheck="${STATE_DIR}/caddy-before-host-recovery.json"
+  local mounted_upstream
+
+  log "Verifying mounted Caddyfile before stale host recovery"
+  validate_caddyfile "${mounted_file}" || {
+    printf 'mounted Caddyfile validation failed; host recovery refused\n' >&2
+    return 1
+  }
+  adapt_caddyfile "${mounted_file}" "${mounted_json}" || {
+    printf 'mounted Caddyfile adaptation failed; host recovery refused\n' >&2
+    return 1
+  }
+  mounted_upstream="$(extract_active_upstream "${mounted_json}")" || return 1
+  if [[ "${mounted_upstream}" != "${ORIGINAL_UPSTREAM}" ]]; then
+    printf 'mounted Caddyfile upstream does not match active upstream; host recovery refused\n' >&2
+    return 1
+  fi
+  if ! json_configs_equal_for_stale_recovery "${CADDY_BEFORE_JSON}" "${mounted_json}"; then
+    printf 'mounted Caddyfile does not match active Caddy JSON; host recovery refused\n' >&2
+    return 1
+  fi
+
+  snapshot_caddy "${active_recheck}" || return 1
+  if ! json_configs_equal "${CADDY_BEFORE_JSON}" "${active_recheck}"; then
+    printf 'active Caddy configuration changed during host recovery\n' >&2
+    return 1
+  fi
+  if ! cmp -s "${CADDYFILE}" "${CADDYFILE_BACKUP}"; then
+    printf 'host Caddyfile changed during host recovery\n' >&2
+    return 1
+  fi
+
+  cp "${CADDYFILE_BACKUP}" "${STATE_DIR}/Caddyfile.stale-before-recovery"
+  write_file_in_place "${mounted_file}" "${CADDYFILE}" || return 1
+  cp "${mounted_file}" "${CADDYFILE_BACKUP}"
+  log "STALE HOST CADDYFILE RECOVERED: verified against active Admin JSON"
 }
 
 run_soak() {
@@ -775,6 +1069,45 @@ json_configs_equal() {
   [[ -s "${left}" && -s "${right}" ]] || return 1
   left_digest="$(json_config_digest "${left}")" || return 1
   right_digest="$(json_config_digest "${right}")" || return 1
+  [[ "${left_digest}" == "${right_digest}" ]]
+}
+
+json_config_digest_for_stale_recovery() {
+  local config_file="$1"
+  python3 - "${config_file}" <<'PY'
+import hashlib
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+def normalize(value):
+    if isinstance(value, dict):
+        normalized = {key: normalize(child) for key, child in value.items()}
+        if normalized.get("handler") == "file_server" and isinstance(normalized.get("hide"), list):
+            normalized["hide"] = [
+                "<caddy-config-source>" if item in {"./-", "/etc/caddy/Caddyfile"} else item
+                for item in normalized["hide"]
+            ]
+        return normalized
+    if isinstance(value, list):
+        return [normalize(child) for child in value]
+    return value
+
+canonical = json.dumps(normalize(payload), sort_keys=True, separators=(",", ":")).encode("utf-8")
+print(hashlib.sha256(canonical).hexdigest())
+PY
+}
+
+json_configs_equal_for_stale_recovery() {
+  local left="$1"
+  local right="$2"
+  local left_digest
+  local right_digest
+  [[ -s "${left}" && -s "${right}" ]] || return 1
+  left_digest="$(json_config_digest_for_stale_recovery "${left}")" || return 1
+  right_digest="$(json_config_digest_for_stale_recovery "${right}")" || return 1
   [[ "${left_digest}" == "${right_digest}" ]]
 }
 
@@ -887,6 +1220,7 @@ handle_transaction_signal() {
 
 run_transaction() {
   local active_host
+  local active_base_url
   local direct_base_url
 
   require_commands
@@ -913,6 +1247,7 @@ run_transaction() {
   fi
   ACTIVE_CONTAINER="${active_host}"
   export ACTIVE_CONTAINER
+  active_base_url="$(container_base_url "${ACTIVE_CONTAINER}")"
   CANDIDATE_UPSTREAM="${CANDIDATE_CONTAINER}:${APP_PORT}"
   check_caddy_mount_consistency
 
@@ -926,7 +1261,8 @@ run_transaction() {
   if [[ "${SKIP_API_SMOKE}" == "true" ]]; then
     warn "API smoke: SKIPPED BY OPERATOR"
   else
-    probe_api_pair "${direct_base_url}" direct
+    probe_api_pair_with_active_baseline \
+      "${direct_base_url}" direct "${active_base_url}"
   fi
 
   log "Stage 4/7: render and validate candidate Caddyfile"
@@ -957,7 +1293,8 @@ run_transaction() {
   log "Stage 6/7: probe public endpoint ${PUBLIC_BASE_URL}"
   probe_health "${PUBLIC_BASE_URL}" public
   if [[ "${SKIP_API_SMOKE}" != "true" ]]; then
-    probe_api_pair "${PUBLIC_BASE_URL}" public
+    probe_api_pair_with_active_baseline \
+      "${PUBLIC_BASE_URL}" public "${active_base_url}"
   fi
 
   log "Stage 7/7: soak and finalize"

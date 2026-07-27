@@ -583,6 +583,9 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		testModelID = resolveOpenAICompactForwardModel(account, testModelID)
 		return s.testOpenAICompactConnection(c, account, requestedTestModelID, testModelID)
 	}
+	if mode == AccountTestModeWebSearch {
+		return s.testOpenAIWebSearchConnection(c, account, testModelID)
+	}
 
 	// Route to image generation test if an image model is selected
 	if isOpenAIImageModel(testModelID) {
@@ -784,7 +787,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	ctx := c.Request.Context()
 
 	authToken := ""
-	apiURL := ""
+	responsesURL := ""
 	isOAuth := false
 	var authErr error
 	openAICredentials := NewOpenAIGatewayCredentials(s.cfg, nil)
@@ -796,7 +799,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 		if authErr != nil {
 			return s.sendErrorAndEnd(c, "No access token available")
 		}
-		apiURL = chatgptCodexAPIURL + "/compact"
+		responsesURL = chatgptCodexAPIURL
 	case account.Type == AccountTypeAPIKey:
 		authToken, authErr = openAICredentials.OpenAIAPIKey(account)
 		if authErr != nil {
@@ -810,7 +813,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 		if err != nil {
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
 		}
-		apiURL = appendOpenAIResponsesRequestPathSuffix(buildOpenAIResponsesURL(normalizedBaseURL), "/compact")
+		responsesURL = buildOpenAIResponsesURL(normalizedBaseURL)
 	default:
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Unsupported account type: %s", account.Type))
 	}
@@ -821,47 +824,95 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
-	payloadBytes, _ := json.Marshal(createOpenAICompactProbePayload(upstreamModelID))
 	s.sendEvent(c, TestEvent{Type: "test_start", Model: upstreamModelID})
 
-	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(payloadBytes))
-	if err != nil {
-		return s.sendErrorAndEnd(c, "Failed to create request")
+	configuredMode := account.GetOpenAICompactEndpointMode()
+	primaryMode := configuredMode
+	if primaryMode == OpenAICompactEndpointModeAuto {
+		primaryMode = OpenAICompactEndpointModePath
+		if account.Extra != nil {
+			if detected, _ := account.Extra["openai_compact_endpoint_mode_detected"].(string); detected != "" {
+				if normalized := normalizeOpenAICompactEndpointMode(detected); normalized != OpenAICompactEndpointModeAuto {
+					primaryMode = normalized
+				}
+			}
+		}
 	}
-	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+authToken)
-	req.Header.Set("OpenAI-Beta", "responses=experimental")
-	req.Header.Set("Originator", "codex_cli_rs")
-	req.Header.Set("User-Agent", codexCLIUserAgent)
-	req.Header.Set("Version", codexCLIVersion)
-	probeSessionID := compactProbeSessionID(account.ID)
-	req.Header.Set("Session_ID", probeSessionID)
-	req.Header.Set("Conversation_ID", probeSessionID)
-
-	if isOAuth {
-		req.Host = "chatgpt.com"
-		setOpenAIChatGPTAccountHeaders(req.Header, account)
+	modes := []string{primaryMode}
+	if configuredMode == OpenAICompactEndpointModeAuto {
+		modes = append(modes, alternateOpenAICompactEndpointMode(primaryMode))
 	}
-	account.ApplyHeaderOverrides(req.Header)
 
-	resp, err := s.sendOpenAIAccountTestHTTPRequest(ctx, c, req, account)
-	if err != nil {
+	var resp *http.Response
+	var body []byte
+	var probeErr error
+	usedMode := primaryMode
+	for index, mode := range modes {
+		usedMode = mode
+		apiURL := responsesURL
+		probePayload := createOpenAICompactProbePayload(upstreamModelID)
+		if mode == OpenAICompactEndpointModeBodySignal {
+			probePayload = createOpenAICompactBodySignalProbePayload(upstreamModelID)
+		} else {
+			apiURL = appendOpenAIResponsesRequestPathSuffix(apiURL, "/compact")
+		}
+		payloadBytes, _ := json.Marshal(probePayload)
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(payloadBytes))
+		if reqErr != nil {
+			return s.sendErrorAndEnd(c, "Failed to create request")
+		}
+		req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Authorization", "Bearer "+authToken)
+		req.Header.Set("OpenAI-Beta", "responses=experimental")
+		req.Header.Set("Originator", "codex_cli_rs")
+		req.Header.Set("User-Agent", codexCLIUserAgent)
+		req.Header.Set("Version", codexCLIVersion)
+		probeSessionID := compactProbeSessionID(account.ID)
+		req.Header.Set("Session_ID", probeSessionID)
+		req.Header.Set("Conversation_ID", probeSessionID)
+		if isOAuth {
+			req.Host = "chatgpt.com"
+			setOpenAIChatGPTAccountHeaders(req.Header, account)
+		}
+		account.ApplyHeaderOverrides(req.Header)
+
+		resp, probeErr = s.sendOpenAIAccountTestHTTPRequest(ctx, c, req, account)
+		if probeErr != nil {
+			break
+		}
+		body, _ = io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		_ = resp.Body.Close()
+		if isOpenAICompactProbeSuccess(mode, resp.StatusCode, body) {
+			break
+		}
+		if resp.StatusCode == http.StatusOK {
+			if index < len(modes)-1 {
+				continue
+			}
+			probeErr = errors.New("compact probe returned HTTP 200 without a compaction result")
+			break
+		}
+		if index == len(modes)-1 || !shouldRetryOpenAICompactWithAlternateEndpoint(resp.StatusCode, body) {
+			break
+		}
+	}
+	if probeErr != nil {
 		if s.accountRepo != nil {
-			updates := buildOpenAICompactProbeExtraUpdatesForModel(account.Extra, requestedModelID, upstreamModelID, nil, nil, err, time.Now())
+			updates := buildOpenAICompactProbeExtraUpdatesForModel(account.Extra, requestedModelID, upstreamModelID, nil, nil, probeErr, time.Now())
 			_ = s.accountRepo.UpdateExtra(ctx, account.ID, updates)
 			mergeAccountExtra(account, updates)
 		}
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", probeErr.Error()))
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 
 	if s.accountRepo != nil {
 		updates := buildOpenAICompactProbeExtraUpdatesForModel(account.Extra, requestedModelID, upstreamModelID, resp, body, nil, time.Now())
+		if resp.StatusCode == http.StatusOK && configuredMode == OpenAICompactEndpointModeAuto {
+			updates["openai_compact_endpoint_mode_detected"] = usedMode
+			updates["openai_compact_endpoint_mode_checked_at"] = time.Now().Format(time.RFC3339)
+		}
 		if codexUpdates, err := extractOpenAICodexProbeUpdates(resp); err == nil && len(codexUpdates) > 0 {
 			updates = mergeExtraUpdates(updates, codexUpdates)
 		}

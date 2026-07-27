@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // swapMonitorHTTPClient 临时替换 monitorHTTPClient 为不带 SSRF 校验的普通 client，
@@ -258,6 +260,77 @@ func TestRunCheckForModel_OpenAIResponses_DefaultRequest(t *testing.T) {
 	if h.lastHeaders.Get("Authorization") != "Bearer sk-openai" {
 		t.Errorf("expected bearer auth header, got %q", h.lastHeaders.Get("Authorization"))
 	}
+}
+
+func TestRunCheckForModel_OpenAIEmbeddings_DefaultRequest(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"embedding": []float64{0.1, 0.2}}},
+		})
+	}))
+	t.Cleanup(server.Close)
+	swapMonitorHTTPClient(t)
+
+	res := runCheckForModel(context.Background(), MonitorProviderOpenAI, server.URL, "sk-openai", "embed-test", &CheckOptions{
+		APIMode: MonitorAPIModeEmbeddings,
+	})
+
+	require.Equal(t, MonitorStatusOperational, res.Status, res.Message)
+	require.Equal(t, providerOpenAIEmbeddingsPath, gotPath)
+	require.Equal(t, "embed-test", gotBody["model"])
+	require.NotEmpty(t, gotBody["input"])
+}
+
+func TestRunCheckForModel_OpenAIRerank_DefaultRequest(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{{"index": 0, "relevance_score": 0.99}},
+		})
+	}))
+	t.Cleanup(server.Close)
+	swapMonitorHTTPClient(t)
+
+	res := runCheckForModel(context.Background(), MonitorProviderOpenAI, server.URL, "sk-openai", "rerank-test", &CheckOptions{
+		APIMode: MonitorAPIModeRerank,
+	})
+
+	require.Equal(t, MonitorStatusOperational, res.Status, res.Message)
+	require.Equal(t, providerOpenAIRerankPath, gotPath)
+	require.Equal(t, "rerank-test", gotBody["model"])
+	require.NotEmpty(t, gotBody["query"])
+	require.NotEmpty(t, gotBody["documents"])
+}
+
+func TestRunCheckForModel_OpenAIEmbeddings_EmptyVectorFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"embedding": []float64{}}},
+		})
+	}))
+	t.Cleanup(server.Close)
+	swapMonitorHTTPClient(t)
+
+	res := runCheckForModel(context.Background(), MonitorProviderOpenAI, server.URL, "sk-openai", "embed-test", &CheckOptions{
+		APIMode: MonitorAPIModeEmbeddings,
+	})
+
+	require.Equal(t, MonitorStatusFailed, res.Status)
+	require.Contains(t, res.Message, "embedding")
 }
 
 func TestRunCheckForModel_OpenAIResponses_SkipsLeadingReasoningItem(t *testing.T) {

@@ -31,7 +31,7 @@ func (s *openaiTokenRefresherScopeClientStub) RefreshTokenWithClientID(ctx conte
 	return s.resp, nil
 }
 
-func TestOpenAITokenRefresher_RejectsResponsesWriteScopeMissing(t *testing.T) {
+func TestOpenAITokenRefresher_AcceptsMissingResponsesWriteScope(t *testing.T) {
 	svc := NewOpenAIOAuthService(nil, &openaiTokenRefresherScopeClientStub{
 		resp: &openai.TokenResponse{
 			AccessToken:  "at-new",
@@ -55,9 +55,10 @@ func TestOpenAITokenRefresher_RejectsResponsesWriteScopeMissing(t *testing.T) {
 		},
 	}
 
-	_, err := refresher.Refresh(context.Background(), account)
-	require.Error(t, err)
-	require.ErrorContains(t, err, openAIAuthErrorCodeResponsesWriteMissing)
+	credentials, err := refresher.Refresh(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, "at-new", credentials["access_token"])
+	require.Equal(t, "rt-new", credentials["refresh_token"])
 }
 
 func TestOpenAITokenRefresher_RefreshReturnsEncryptedCredentialsWhenConfigured(t *testing.T) {

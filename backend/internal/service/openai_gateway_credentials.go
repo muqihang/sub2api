@@ -134,6 +134,8 @@ func openAIProtectedCredentialKeysForAccount(account *Account) []string {
 		return nil
 	}
 	switch {
+	case account.IsOpenAIAgentIdentity():
+		return []string{"agent_private_key", "access_token", "refresh_token", "id_token"}
 	case account.IsOpenAIOAuth():
 		return []string{"access_token", "refresh_token", "id_token"}
 	case account.IsOpenAIApiKey():

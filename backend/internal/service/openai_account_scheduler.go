@@ -374,7 +374,8 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, false, nil
 	}
-	if shouldClearStickySession(account, req.RequestedModel) || !accountMatchesOpenAISchedulerPlatform(account, req.TargetPlatform) || !account.IsSchedulable() {
+	if shouldClearOpenAIStickySessionForRequest(ctx, account, req.RequestedModel, req.RequiredCapability) || !accountMatchesOpenAISchedulerPlatform(account, req.TargetPlatform) ||
+		!isOpenAIAccountSchedulableForRequest(ctx, account, req.RequestedModel, req.RequiredCapability) {
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, false, nil
 	}
@@ -956,7 +957,13 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	req OpenAIAccountScheduleRequest,
 ) (*AccountSelectionResult, int, int, float64, error) {
 	targetPlatform := openAISchedulerTargetPlatform(req.TargetPlatform)
-	accounts, err := s.service.listSchedulableAccountsForPlatform(ctx, req.GroupID, targetPlatform)
+	var accounts []Account
+	var err error
+	if req.RequiredCapability == OpenAIEndpointCapabilitySearch && targetPlatform == PlatformOpenAI {
+		accounts, err = s.service.listOpenAINativeSearchCandidateAccounts(ctx, req.GroupID)
+	} else {
+		accounts, err = s.service.listSchedulableAccountsForPlatform(ctx, req.GroupID, targetPlatform)
+	}
 	if err != nil {
 		return nil, 0, 0, 0, err
 	}
@@ -980,7 +987,8 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 				continue
 			}
 		}
-		if !account.IsSchedulable() || !accountMatchesOpenAISchedulerPlatform(account, req.TargetPlatform) {
+		if !isOpenAIAccountSchedulableForRequest(ctx, account, req.RequestedModel, req.RequiredCapability) ||
+			!accountMatchesOpenAISchedulerPlatform(account, req.TargetPlatform) {
 			continue
 		}
 		if targetPlatform == PlatformOpenAI && s.service.isOpenAIAccountRuntimeBlocked(account) {
@@ -1154,6 +1162,9 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.C
 		}
 		return req.RequiredCapability == "" && req.RequiredImageCapability == "" && !req.RequireCompact
 	}
+	if !isOpenAIAccountSchedulableForRequest(ctx, account, req.RequestedModel, req.RequiredCapability) {
+		return false
+	}
 	if s != nil && s.service != nil && s.service.isOpenAIAccountRuntimeBlocked(account) {
 		return false
 	}
@@ -1161,7 +1172,7 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.C
 	// TopK candidate pool can be filled with paused accounts and the later fresh/DB
 	// rechecks won't reach healthy accounts that fell outside TopK — manifesting as
 	// "no available accounts" even though healthy ones exist.
-	if paused, _ := shouldAutoPauseOpenAIAccountByQuota(ctx, account); paused {
+	if paused, _ := shouldAutoPauseOpenAIAccountByQuota(ctx, account); req.RequiredCapability != OpenAIEndpointCapabilitySearch && paused {
 		return false
 	}
 	// 母账号健康联动：影子账号的凭据来自母账号，母账号不可调度时影子也不应被选中。
@@ -1321,6 +1332,30 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapability(
 	requireCompact bool,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
 	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requireCompact)
+}
+
+// SelectAccountWithSchedulerForNativeSearch keeps Search outside Responses
+// model-rate-limit scopes. The request model is still forwarded upstream, but
+// a Responses 429 for that model must not remove an otherwise healthy OAuth
+// account from the independent native Search pool.
+func (s *OpenAIGatewayService) SelectAccountWithSchedulerForNativeSearch(
+	ctx context.Context,
+	groupID *int64,
+	sessionHash string,
+	excludedIDs map[int64]struct{},
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	return s.selectAccountWithScheduler(
+		ctx,
+		groupID,
+		"",
+		sessionHash,
+		"",
+		excludedIDs,
+		OpenAIUpstreamTransportHTTPSSE,
+		OpenAIEndpointCapabilitySearch,
+		"",
+		false,
+	)
 }
 
 func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(

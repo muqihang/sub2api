@@ -3362,6 +3362,34 @@ func TestOpenAIBuildUpstreamRequestPreservesCompactPathForAPIKeyBaseURL(t *testi
 	require.Equal(t, "https://example.com/v1/responses/compact", req.URL.String())
 }
 
+func TestOpenAIBuildUpstreamRequestUsesResponsesPathForBodySignalCompactAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"gpt-5.6-sol","input":[{"type":"message","role":"user","content":"hi"},{"type":"compaction_trigger"}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/responses/compact", bytes.NewReader(body))
+
+	svc := &OpenAIGatewayService{cfg: &config.Config{
+		Security: config.SecurityConfig{
+			URLAllowlist: config.URLAllowlistConfig{Enabled: false},
+		},
+	}}
+	account := &Account{
+		Type:     AccountTypeAPIKey,
+		Platform: PlatformOpenAI,
+		Credentials: map[string]any{
+			"base_url": "https://example.com/v1",
+		},
+		Extra: map[string]any{
+			"openai_compact_endpoint_mode": OpenAICompactEndpointModeBodySignal,
+		},
+	}
+
+	req, err := svc.buildUpstreamRequest(c.Request.Context(), c, account, body, "token", false, "", false)
+	require.NoError(t, err)
+	require.Equal(t, "https://example.com/v1/responses", req.URL.String())
+}
+
 func TestOpenAIBuildUpstreamRequestAPIKeyPromotesPromptCacheKeyToSessionHeader(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

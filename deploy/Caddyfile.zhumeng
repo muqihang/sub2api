@@ -74,30 +74,49 @@ www.5566676.xyz, 5566676.xyz {
 	}
 }
 
-# --- API 子域名：产品定位是"AI 客户端调用"，浏览器看不到工作台 -------------
-# 黑名单设计：拦掉所有工作台入口（前端 + 后台 API），其他全放行。
-# 未来新增任何 gateway 路径都不需要改配置（只要不与黑名单冲突）。
+# --- API 子域名：只允许程序化 AI 网关路径 -------------------------------
+# 使用白名单，避免未知路径触发 SPA fallback 并向扫描器暴露工作台前端。
 api.5566676.xyz {
 	tls /etc/caddy/certs/origin.pem /etc/caddy/certs/origin.key
 
-	# 工作台入口三件套：前端首页 + 前端资源 + 后台管理 API
-	@workbench_paths {
-		path /
-		path /assets/*
-		path /api/v1/*
-	}
-	respond @workbench_paths 404
+	@ai_gateway_paths {
+		# Core OpenAI / Anthropic / Gemini-compatible gateway routes.
+		path /health
+		path /v1/*
+		path /v1beta/*
+		path /responses*
+		path /chat/completions
+		path /embeddings
+		path /images/*
+		path /videos/*
+		path /alpha/search
+		path /backend-api/codex/*
+		path /backend-api/anthropic/control-plane/intent
+		path /openai/v1/*
+		path /openai/_health /openai/_verify /openai/_tls_canary /openai/_tls/canary
+		path /antigravity/*
 
-	# 拦掉所有期望 HTML 的浏览器请求（AI 客户端用 Accept: */* 或 application/json，不带 text/html）
-	# 这让 api.5566676.xyz 的产品定位 100% 清晰：只服务程序化 API 调用
-	@browser_html {
-		header Accept *text/html*
+		# Augment-compatible client routes are API traffic, not workbench routes.
+		path /usage/api/*
+		path /get-models /batch-upload /checkpoint-blobs /find-missing /save-chat
+		path /chat /chat-stream /prompt-enhancer /instruction-stream /smart-paste-stream
+		path /generate-commit-message-stream /next_edit_loc /next-edit-stream
+		path /remote-agents/* /agents/*
+		path /get-implicit-external-sources /search-external-sources
+		path /context-canvas/* /notifications/* /subscription-banner
+		path /report-* /client-* /record-* /chat-feedback /completion-feedback /resolve-*
 	}
-	respond @browser_html 404
 
-	import common_headers
-	import common_encoding
-	import reverse_to_sub2api
+	handle @ai_gateway_paths {
+		import common_headers
+		import common_encoding
+		import reverse_to_sub2api
+	}
+
+	# Unknown paths, SPA routes, static assets, and all management APIs stay dark.
+	handle {
+		respond 404
+	}
 
 	handle_errors {
 		respond "{err.status_code} {err.status_text}"

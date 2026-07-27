@@ -824,6 +824,9 @@ export default {
         noteWindows:
           '按 Win+R，输入 %userprofile%\\.codex 打开配置目录。如目录不存在，请先手动创建。'
       },
+      vector: {
+        description: '请选择公开模型，并按示例调用对应的向量或排序接口。'
+      },
       cliTabs: {
         claudeCode: 'Claude Code',
         geminiCli: 'Gemini CLI',
@@ -1112,6 +1115,7 @@ export default {
   channelStatus: {
     title: '渠道状态',
     description: '查看渠道可用性、延迟和近期状态',
+    ungrouped: '其他渠道',
     searchPlaceholder: '搜索渠道...',
     allProviders: '全部供应商',
     loadError: '加载渠道状态失败',
@@ -3111,6 +3115,10 @@ export default {
         apiModeChatCompletionsHint: '使用 /v1/chat/completions，发送 messages；适合大多数兼容站。',
         apiModeResponses: 'Responses API',
         apiModeResponsesHint: '使用 /v1/responses，默认带 instructions + input；适合本站自检/Codex。',
+		apiModeEmbeddings: 'Embeddings API',
+		apiModeEmbeddingsHint: '使用 /v1/embeddings，并校验返回向量非空。',
+		apiModeRerank: 'Rerank API',
+		apiModeRerankHint: '使用 /v1/rerank，并校验返回有效排序分数。',
         endpoint: '上游地址',
         endpointPlaceholder: 'https://api.example.com',
         useCurrentDomain: '使用当前服务',
@@ -3836,6 +3844,7 @@ export default {
       status: {
         active: '正常',
         inactive: '停用',
+        disabled: '已禁用',
         error: '错误',
         cooldown: '冷却中',
         paused: '暂停',
@@ -4156,13 +4165,14 @@ export default {
         responsesModeTextDisabledHint: '未启用 Responses / Chat Completions 端点时，此设置不适用。',
         endpointCapabilities: '端点能力',
         endpointCapabilitiesDesc:
-          '用于调度筛选。文本端点会跟随上方 Responses API 支持显示为 Responses、Chat Completions 或自动模式；Embeddings 独立控制 /v1/embeddings。',
+          '用于调度筛选。文本端点跟随上方 Responses API 支持；Embeddings 与 Rerank 分别独立控制 /v1/embeddings 和 /v1/rerank。',
         capabilityResponses: 'Responses',
         capabilityTextAuto: 'Responses / Chat Completions（自动）',
         capabilityResponsesAuto: 'Responses（自动探测）',
         capabilityChatCompletions: 'Chat Completions',
         capabilityChatCompletionsAuto: 'Chat Completions（自动探测）',
         capabilityEmbeddings: 'Embeddings',
+        capabilityRerank: 'Rerank',
         responsesStatusAutoSupported: '自动探测：Responses',
         responsesStatusAutoUnsupported: '自动探测：Chat Completions',
         responsesStatusAutoUnknown: '自动探测：未探测',
@@ -4219,6 +4229,7 @@ export default {
         testMode: '测试模式',
         testModeDefault: '常规请求',
         testModeCompact: 'Compact 探测',
+        testModeWebSearch: 'Web Search 探测',
         modelRestrictionDisabledByPassthrough: '已开启自动透传：模型白名单/映射不会生效。',
       },
       anthropic: {

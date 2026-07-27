@@ -31,24 +31,38 @@
       :description="t('channelStatus.empty.description')"
     />
 
-    <div
-      v-else
-      class="grid gap-5 grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
-    >
-      <MonitorCard
-        v-for="item in items"
-        :key="item.id"
-        :item="item"
-        :window="window"
-        :availability-value="resolveAvailability(item)"
-        :countdown-seconds="countdownSeconds"
-        @click="emit('cardClick', item)"
-      />
+    <div v-else class="space-y-7">
+      <section
+        v-for="group in groupedItems"
+        :key="group.name"
+        data-monitor-group
+      >
+        <div class="mb-3 flex items-center gap-3">
+          <h2 class="text-sm font-semibold text-gray-800 dark:text-gray-100">
+            {{ group.name }}
+          </h2>
+          <span class="text-xs text-gray-500 dark:text-gray-400">
+            {{ group.items.length }}
+          </span>
+        </div>
+        <div class="grid gap-5 grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+          <MonitorCard
+            v-for="item in group.items"
+            :key="item.id"
+            :item="item"
+            :window="window"
+            :availability-value="resolveAvailability(item)"
+            :countdown-seconds="countdownSeconds"
+            @click="emit('cardClick', item)"
+          />
+        </div>
+      </section>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { UserMonitorView, UserMonitorDetail } from '@/api/channelMonitor'
 import EmptyState from '@/components/common/EmptyState.vue'
@@ -67,6 +81,17 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+
+const groupedItems = computed(() => {
+  const groups = new Map<string, UserMonitorView[]>()
+  for (const item of props.items) {
+    const name = item.group_name.trim() || t('channelStatus.ungrouped')
+    const items = groups.get(name) ?? []
+    items.push(item)
+    groups.set(name, items)
+  }
+  return Array.from(groups, ([name, items]) => ({ name, items }))
+})
 
 function resolveAvailability(item: UserMonitorView): number | null {
   if (props.window === '7d') {

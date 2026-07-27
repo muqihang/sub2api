@@ -61,7 +61,8 @@ disagrees with the upstream returned by Caddy's Admin API, deployment stops.
    candidate that has no published host ports. The candidate starts with
    `restart=no`; its target restart policy is applied only after final commit.
 4. Wait for Docker health and probe the candidate bridge IP directly.
-5. Run normal Responses and Compact probes directly against the candidate.
+5. Run normal Responses, streaming Compact, and both native Search path probes
+   directly against the candidate.
 6. Validate the candidate Caddyfile through stdin.
 7. Re-read Caddy and the host Caddyfile, aborting if the full canonical active
    JSON or host file changed since the initial snapshot; then reload through
@@ -69,7 +70,8 @@ disagrees with the upstream returned by Caddy's Admin API, deployment stops.
 8. Adapt the candidate Caddyfile to expected native JSON before reload. After
    reload, require the full active JSON to match that expected JSON before the
    transaction claims ownership.
-9. Run public health, Responses, and Compact probes.
+9. Run public health, Responses, streaming Compact, `/alpha/search`, and
+   `/v1/alpha/search` probes.
 10. Monitor public health for the configured soak window, then require the full
     active Caddy JSON and persistent Caddyfile to still match the transaction's
     candidate state before declaring success.
@@ -78,10 +80,33 @@ The Compact canary reproduces the Codex remote compact v2 request shape. It
 sends streaming `POST /responses` input containing `type=compaction_trigger`,
 then requires both a `type=compaction` output item and a
 `response.completed` SSE event. A plain HTTP 200 is not enough.
+
+Compact availability is compared against the application that is already in
+production. If the candidate returns an upstream-capacity status (`429`,
+`502`, `503`, `504`, or `524`), the deployment sends the same real streaming
+Compact request directly to the active container. The gate continues only
+when the active container also returns an upstream-capacity status. This is
+recorded as `MATCHED UPSTREAM DEGRADATION`: the application path was exercised,
+but the shared external account pool was already degraded before deployment.
+It avoids requiring a newly purchased OAuth account for every release.
+
+This comparison does not accept authentication failures, malformed successful
+responses, transport failures, or a failure unique to the candidate. A
+candidate failure while the active container succeeds remains blocking. Set
+`ALLOW_MATCHED_UPSTREAM_DEGRADATION=false` to restore strict success-only
+Compact gating for a deployment.
+
 Both API probes send paired official-client identity headers (`User-Agent` and
 `originator`) so accounts with `codex_cli_only` exercise the real Codex path.
 The normal Responses probe also requires `status=completed` and an output text
 equal to `OK`; an empty HTTP 200 JSON object cannot pass.
+
+Each native Search probe requires HTTP 200, JSON Content-Type, a top-level JSON
+object, a non-empty string `output`, and absent/null/string `encrypted_output`.
+Search response bytes flow directly into a validator and are never written to
+the deployment state directory or logs. Only a sanitized status/media-type
+verdict exists transiently; Search request JSON, `output`, and
+`encrypted_output` are not retained.
 
 Only this final line is a successful deployment:
 
@@ -128,17 +153,46 @@ snapshots, smoke request/response artifacts, and `deploy.log`. It never stores
 exported only inside the short-lived `docker create` subprocess while Docker
 arguments contain variable names, not `KEY=secret` values.
 
+Responses and Compact keep their existing diagnostic artifacts. Native Search
+is the exception: neither Search requests nor raw Search responses are written
+to `STATE_DIR`, including failed probes.
+
 The current Caddy uses a read-only single-file bind mount. If its mounted file
 is stale, the command prints a warning. This does not change reload behavior:
 validation, cutover, and rollback always use stdin, while the host Caddyfile is
 updated without changing its inode. Do not work around the warning with a
 manual container-mounted reload.
 
+If the inverse drift occurs, where the Caddy process and its mounted file still
+match but the host path was overwritten with older content, normal deployment
+stops before cutover. Recover that host baseline only through the guarded mode:
+
+```bash
+SMOKE_API_KEY='<production-canary-key>' \
+  deploy/hot-deploy.sh \
+  --image 'sub2api-zhumeng:<git-sha>' \
+  --recover-stale-host-caddyfile
+```
+
+This mode validates and adapts the mounted Caddyfile through stdin, requires its
+full canonical JSON and active upstream to match a fresh Caddy Admin API
+snapshot, confirms neither the active JSON nor host file changed during the
+check, then restores the host path with an in-place inode-preserving write. The
+overwritten bytes are retained in the deployment state directory as
+`Caddyfile.stale-before-recovery`. Any mismatch refuses recovery and leaves the
+host path unchanged. The recovery-only comparison normalizes Caddy's equivalent
+auto-injected `file_server.hide` source paths (`./-` for stdin and
+`/etc/caddy/Caddyfile` for file startup); every other JSON field remains strict.
+
 ## Explicit Exceptions
 
 `--skip-api-smoke` is available for a non-production environment without an API
 key. It prints `API smoke: SKIPPED BY OPERATOR` and must not be used for normal
 production deployment.
+
+`--skip-native-search-smoke` keeps Responses and streaming Compact probes active
+while explicitly skipping only native Search. Use it only for a known pre-existing
+Search outage with operator approval; the skip is emitted in deployment logs.
 
 `--dry-run` validates arguments and prints topology without creating a
 container or reloading Caddy:

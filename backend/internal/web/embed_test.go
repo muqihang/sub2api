@@ -451,6 +451,9 @@ func TestFrontendServer_Middleware(t *testing.T) {
 
 		apiPaths := []string{
 			"/api/v1/users",
+			"/alpha",
+			"/alpha/",
+			"/alpha/search",
 			"/v1/models",
 			"/v1beta/chat",
 			"/backend-api/codex/responses",

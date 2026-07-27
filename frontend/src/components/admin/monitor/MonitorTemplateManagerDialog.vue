@@ -250,6 +250,9 @@ import {
   PROVIDER_GEMINI,
   API_MODE_CHAT_COMPLETIONS,
   API_MODE_RESPONSES,
+  API_MODE_EMBEDDINGS,
+  API_MODE_RERANK,
+  API_MODES,
 } from '@/constants/channelMonitor'
 
 const props = defineProps<{ show: boolean }>()
@@ -490,6 +493,16 @@ const apiModeOptions = computed<{ value: APIMode; label: string; hint: string }[
     label: t('admin.channelMonitor.form.apiModeResponses'),
     hint: t('admin.channelMonitor.form.apiModeResponsesHint'),
   },
+	{
+		value: API_MODE_EMBEDDINGS,
+		label: t('admin.channelMonitor.form.apiModeEmbeddings'),
+		hint: t('admin.channelMonitor.form.apiModeEmbeddingsHint'),
+	},
+	{
+		value: API_MODE_RERANK,
+		label: t('admin.channelMonitor.form.apiModeRerank'),
+		hint: t('admin.channelMonitor.form.apiModeRerankHint'),
+	},
 ])
 
 watch(() => form.provider, (provider) => {
@@ -499,7 +512,7 @@ watch(() => form.provider, (provider) => {
 })
 
 function normalizeAPIMode(mode: APIMode | undefined | null): APIMode {
-  return mode === API_MODE_RESPONSES ? API_MODE_RESPONSES : API_MODE_CHAT_COMPLETIONS
+	return mode && API_MODES.includes(mode) ? mode : API_MODE_CHAT_COMPLETIONS
 }
 
 function apiModeButtonClass(mode: APIMode): string {
@@ -511,15 +524,25 @@ function apiModeButtonClass(mode: APIMode): string {
 }
 
 function apiModeLabel(mode: APIMode): string {
-  return normalizeAPIMode(mode) === API_MODE_RESPONSES
-    ? t('admin.channelMonitor.form.apiModeResponses')
-    : t('admin.channelMonitor.form.apiModeChatCompletions')
+	const key = {
+		[API_MODE_CHAT_COMPLETIONS]: 'apiModeChatCompletions',
+		[API_MODE_RESPONSES]: 'apiModeResponses',
+		[API_MODE_EMBEDDINGS]: 'apiModeEmbeddings',
+		[API_MODE_RERANK]: 'apiModeRerank',
+	}[normalizeAPIMode(mode)]
+	return t(`admin.channelMonitor.form.${key}`)
 }
 
 function apiModeBadgeClass(mode: APIMode): string {
-  if (normalizeAPIMode(mode) === API_MODE_RESPONSES) {
-    return 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300'
-  }
-  return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'
+	switch (normalizeAPIMode(mode)) {
+		case API_MODE_RESPONSES:
+			return 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300'
+		case API_MODE_EMBEDDINGS:
+			return 'bg-cyan-100 text-cyan-700 dark:bg-cyan-500/15 dark:text-cyan-300'
+		case API_MODE_RERANK:
+			return 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300'
+		default:
+			return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'
+	}
 }
 </script>

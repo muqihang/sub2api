@@ -92,7 +92,7 @@ run_transaction_deploy() {
   local case_dir="$1"
   shift
   mkdir -p "${case_dir}/state"
-  cp "${FIXTURES}/Caddyfile" "${case_dir}/Caddyfile"
+  cp "${TRANSACTION_HOST_CADDYFILE:-${FIXTURES}/Caddyfile}" "${case_dir}/Caddyfile"
   cp "${FIXTURES}/caddy-active-v5.json" "${case_dir}/caddy-active.json"
   : >"${case_dir}/docker.log"
   : >"${case_dir}/curl.log"
@@ -114,7 +114,7 @@ run_transaction_deploy() {
     FAKE_CADDY_V7="${FIXTURES}/caddy-active-v7.json" \
     FAKE_CADDY_V5_MUTATED="${FIXTURES}/caddy-active-v5-mutated.json" \
     FAKE_CADDY_V6_MUTATED="${FIXTURES}/caddy-active-v6-mutated.json" \
-    FAKE_HOST_CADDYFILE="${case_dir}/Caddyfile" \
+    FAKE_HOST_CADDYFILE="${TRANSACTION_MOUNTED_CADDYFILE:-${case_dir}/Caddyfile}" \
     SMOKE_API_KEY="production-smoke-secret" \
     HEALTH_TIMEOUT_SECONDS=2 \
     HEALTH_POLL_INTERVAL_SECONDS=1 \
@@ -159,6 +159,18 @@ test_explicit_smoke_skip_is_visible() {
   output="$(captured_output "${case_dir}")"
   assert_status "${status}" 0 "explicit smoke skip is accepted"
   assert_contains "${output}" "API smoke: SKIPPED BY OPERATOR" "smoke skip is auditable"
+}
+
+test_explicit_native_search_skip_is_visible() {
+  local case_dir="${TEST_ROOT}/skip-native-search-smoke"
+  SMOKE_API_KEY="native-search-skip-test-key" \
+    run_deploy "${case_dir}" --image example/sub2api:test --skip-native-search-smoke --dry-run
+  local status=$?
+  local output
+  output="$(captured_output "${case_dir}")"
+  assert_status "${status}" 0 "explicit native Search smoke skip is accepted"
+  assert_contains "${output}" "API smoke: required" "Responses and Compact smoke remain required"
+  assert_contains "${output}" "Native Search smoke: SKIPPED BY OPERATOR" "native Search skip is auditable"
 }
 
 test_secret_is_redacted() {
@@ -206,6 +218,7 @@ run_config_tests() {
   test_requires_image
   test_requires_smoke_key
   test_explicit_smoke_skip_is_visible
+  test_explicit_native_search_skip_is_visible
   test_secret_is_redacted
   test_unknown_argument_is_rejected
   test_lock_rejection
@@ -246,6 +259,8 @@ setup_candidate_case() {
   export HEALTH_PATH=/health
   export RESPONSES_PATH=/v1/responses
   export COMPACT_PATH=/responses
+  export NATIVE_SEARCH_ROOT_PATH=/alpha/search
+  export NATIVE_SEARCH_V1_PATH=/v1/alpha/search
   export SMOKE_MODEL=gpt-5.6-sol
   export SMOKE_USER_AGENT=codex_cli_rs/hot-deploy
   export SMOKE_ORIGINATOR=codex_cli_rs
@@ -327,6 +342,31 @@ test_restore_uses_native_json_stdin() {
   fi
 }
 
+test_stale_recovery_json_comparison_normalizes_only_caddy_source_hide_path() {
+  local case_dir="${TEST_ROOT}/caddy-stale-recovery-json"
+  mkdir -p "${case_dir}"
+  cat >"${case_dir}/stdin.json" <<'JSON'
+{"apps":{"http":{"servers":{"srv0":{"routes":[{"handle":[{"handler":"file_server","hide":["./-"]},{"handler":"reverse_proxy","upstreams":[{"dial":"sub2api-next-v5:8080"}]}]}]}}}}}
+JSON
+  cat >"${case_dir}/mounted.json" <<'JSON'
+{"apps":{"http":{"servers":{"srv0":{"routes":[{"handle":[{"handler":"file_server","hide":["/etc/caddy/Caddyfile"]},{"handler":"reverse_proxy","upstreams":[{"dial":"sub2api-next-v5:8080"}]}]}]}}}}}
+JSON
+  cat >"${case_dir}/external.json" <<'JSON'
+{"apps":{"http":{"servers":{"srv0":{"listen":[":443"],"routes":[{"handle":[{"handler":"file_server","hide":["/etc/caddy/Caddyfile"]},{"handler":"reverse_proxy","upstreams":[{"dial":"sub2api-next-v5:8080"}]}]}]}}}}}
+JSON
+
+  if json_configs_equal_for_stale_recovery "${case_dir}/stdin.json" "${case_dir}/mounted.json"; then
+    pass "stale recovery treats Caddy source hide paths as equivalent"
+  else
+    fail "stale recovery treats Caddy source hide paths as equivalent"
+  fi
+  if json_configs_equal_for_stale_recovery "${case_dir}/stdin.json" "${case_dir}/external.json"; then
+    fail "stale recovery still rejects unrelated JSON drift"
+  else
+    pass "stale recovery still rejects unrelated JSON drift"
+  fi
+}
+
 run_caddy_tests() {
   setup_caddy_case "${TEST_ROOT}/caddy-setup"
   test_extracts_active_caddy_upstream
@@ -335,6 +375,7 @@ run_caddy_tests() {
   test_caddy_operations_use_stdin_only
   test_snapshot_and_active_assertion
   test_restore_uses_native_json_stdin
+  test_stale_recovery_json_comparison_normalizes_only_caddy_source_hide_path
 }
 
 test_candidate_clones_runtime_without_ports() {
@@ -432,6 +473,44 @@ test_compact_requires_completed_status() {
   assert_status "${status}" 1 "Compact smoke rejects an incomplete terminal response"
 }
 
+test_compact_matched_upstream_degradation_allows_candidate() {
+  local case_dir="${TEST_ROOT}/candidate-compact-matched-upstream-degradation"
+  setup_candidate_case "${case_dir}"
+  FAKE_DIRECT_COMPACT_HTTP_STATUS=502 \
+    FAKE_BASELINE_COMPACT_HTTP_STATUS=503 \
+    probe_compact_with_active_baseline \
+      "http://172.18.0.99:8080" direct "http://172.18.0.98:8080" \
+      >"${case_dir}/probe.out" 2>"${case_dir}/probe.err"
+  local status=$?
+  assert_status "${status}" 0 "matching candidate/active upstream degradation does not require a fresh OAuth account"
+  assert_file_contains "${case_dir}/probe.err" "MATCHED UPSTREAM DEGRADATION" "matched degradation is explicit and auditable"
+  assert_file_contains "${case_dir}/curl.log" "scope=direct kind=compact" "candidate Compact is still exercised"
+  assert_file_contains "${case_dir}/curl.log" "scope=direct-active-baseline kind=compact" "active Compact baseline is exercised"
+}
+
+test_compact_candidate_only_failure_still_blocks() {
+  local case_dir="${TEST_ROOT}/candidate-compact-candidate-only-failure"
+  setup_candidate_case "${case_dir}"
+  FAKE_DIRECT_COMPACT_HTTP_STATUS=502 \
+    probe_compact_with_active_baseline \
+      "http://172.18.0.99:8080" direct "http://172.18.0.98:8080" \
+      >"${case_dir}/probe.out" 2>"${case_dir}/probe.err"
+  local status=$?
+  assert_status "${status}" 1 "candidate-only Compact failure remains blocking"
+}
+
+test_compact_non_upstream_failure_still_blocks() {
+  local case_dir="${TEST_ROOT}/candidate-compact-auth-failure"
+  setup_candidate_case "${case_dir}"
+  FAKE_DIRECT_COMPACT_HTTP_STATUS=401 \
+    FAKE_BASELINE_COMPACT_HTTP_STATUS=401 \
+    probe_compact_with_active_baseline \
+      "http://172.18.0.99:8080" direct "http://172.18.0.98:8080" \
+      >"${case_dir}/probe.out" 2>"${case_dir}/probe.err"
+  local status=$?
+  assert_status "${status}" 1 "matched authentication failure remains blocking"
+}
+
 test_candidate_probe_pair_succeeds_without_secret_artifacts() {
   local case_dir="${TEST_ROOT}/candidate-probes-pass"
   setup_candidate_case "${case_dir}"
@@ -440,10 +519,12 @@ test_candidate_probe_pair_succeeds_without_secret_artifacts() {
   probe_health "${base_url}" direct
   probe_api_pair "${base_url}" direct
   local status=$?
-  assert_status "${status}" 0 "candidate health, Responses, and Compact probes pass"
+  assert_status "${status}" 0 "candidate health, Responses, Compact, and native Search probes pass"
   assert_file_contains "${case_dir}/curl.log" "scope=direct kind=health" "direct health probe is recorded"
   assert_file_contains "${case_dir}/curl.log" "scope=direct kind=responses" "direct Responses probe is recorded"
   assert_file_contains "${case_dir}/curl.log" "scope=direct kind=compact" "direct Compact probe is recorded"
+  assert_file_contains "${case_dir}/curl.log" "scope=direct kind=native-search-root" "direct root native Search probe is recorded"
+  assert_file_contains "${case_dir}/curl.log" "scope=direct kind=native-search-v1" "direct v1 native Search probe is recorded"
   assert_file_contains "${case_dir}/curl.log" 'header = "User-Agent: codex_cli_rs/' "smoke identifies as an official Codex client"
   assert_file_contains "${case_dir}/curl.log" 'header = "originator: codex_cli_rs"' "smoke sends the paired Codex originator"
   assert_file_contains "${COMPACT_SMOKE_PAYLOAD}" '"stream":true' "Compact smoke exercises the streaming client path"
@@ -453,6 +534,41 @@ test_candidate_probe_pair_succeeds_without_secret_artifacts() {
   else
     pass "candidate probe artifacts redact the API key"
   fi
+  if rg -q 'SEARCH_(OUTPUT|ENCRYPTED)_SENTINEL' "${STATE_DIR}" "${case_dir}/curl.log" 2>/dev/null; then
+    fail "candidate probe artifacts must not retain native Search output"
+  else
+    pass "candidate probe artifacts do not retain native Search output"
+  fi
+}
+
+test_candidate_probe_pair_can_skip_only_native_search() {
+  local case_dir="${TEST_ROOT}/candidate-probes-skip-native-search"
+  setup_candidate_case "${case_dir}"
+  SKIP_NATIVE_SEARCH_SMOKE=true \
+    probe_api_pair_with_active_baseline \
+      "http://172.18.0.99:8080" direct "http://172.18.0.98:8080" \
+      >"${case_dir}/probe.out" 2>"${case_dir}/probe.err"
+  local status=$?
+  assert_status "${status}" 0 "candidate may skip only native Search when explicitly authorized"
+  assert_file_contains "${case_dir}/curl.log" "scope=direct kind=responses" "Responses probe still runs"
+  assert_file_contains "${case_dir}/curl.log" "scope=direct kind=compact" "Compact probe still runs"
+  assert_file_not_contains "${case_dir}/curl.log" "kind=native-search" "native Search probes are skipped"
+  assert_file_contains "${case_dir}/probe.err" "Native Search smoke: SKIPPED BY OPERATOR" "native Search skip is recorded"
+}
+
+test_native_search_rejects_invalid_contracts() {
+  local case_dir mode status env_var
+  for mode in TRANSPORT_FAIL HTML BAD_CONTENT_TYPE MALFORMED MISSING_OUTPUT INVALID_OUTPUT INVALID_ENCRYPTED; do
+    case_dir="${TEST_ROOT}/candidate-native-search-${mode}"
+    setup_candidate_case "${case_dir}"
+    env_var="FAKE_NATIVE_SEARCH_${mode}"
+    printf -v "${env_var}" '%s' 1
+    export "${env_var}"
+    probe_api_pair "http://172.18.0.99:8080" direct 2>"${case_dir}/probe.err"
+    status=$?
+    unset "${env_var}"
+    assert_status "${status}" 1 "native Search rejects ${mode} response"
+  done
 }
 
 run_candidate_tests() {
@@ -466,7 +582,12 @@ run_candidate_tests() {
   test_compact_failure_blocks_candidate
   test_compact_requires_terminal_compaction_sse
   test_compact_requires_completed_status
+  test_compact_matched_upstream_degradation_allows_candidate
+  test_compact_candidate_only_failure_still_blocks
+  test_compact_non_upstream_failure_still_blocks
   test_candidate_probe_pair_succeeds_without_secret_artifacts
+  test_candidate_probe_pair_can_skip_only_native_search
+  test_native_search_rejects_invalid_contracts
 }
 
 test_transaction_success_commits_cutover() {
@@ -484,6 +605,81 @@ test_transaction_success_commits_cutover() {
   assert_file_contains "${case_dir}/docker.log" "update --restart unless-stopped sub2api-next-v6" "success promotes candidate restart policy only after final validation"
 }
 
+test_transaction_matched_compact_degradation_commits_cutover() {
+  local case_dir="${TEST_ROOT}/transaction-matched-compact-degradation"
+  FAKE_DIRECT_COMPACT_HTTP_STATUS=502 \
+    FAKE_PUBLIC_COMPACT_HTTP_STATUS=524 \
+    FAKE_BASELINE_COMPACT_HTTP_STATUS=503 \
+    run_transaction_deploy "${case_dir}"
+  local status=$?
+  local output
+  output="$(captured_output "${case_dir}")"
+  assert_status "${status}" 0 "matched Compact upstream degradation can complete a deployment"
+  assert_contains "${output}" "MATCHED UPSTREAM DEGRADATION" "degraded deployment records the baseline comparison"
+  assert_contains "${output}" "DEPLOYMENT SUCCEEDED" "degraded deployment still requires final commit"
+  assert_file_contains "${case_dir}/curl.log" "scope=direct-active-baseline kind=compact" "direct Compact compares the old production baseline"
+  assert_file_contains "${case_dir}/curl.log" "scope=public-active-baseline kind=compact" "public Compact compares the old production baseline"
+  assert_file_contains "${case_dir}/caddy-active.json" "sub2api-next-v6:8080" "matched degradation commits the candidate"
+}
+
+test_stale_host_caddyfile_requires_explicit_recovery() {
+  local case_dir="${TEST_ROOT}/transaction-stale-host-default"
+  mkdir -p "${case_dir}"
+  cp "${FIXTURES}/Caddyfile" "${case_dir}/mounted.Caddyfile"
+  sed 's/sub2api-next-v5:8080/sub2api:8080/' "${FIXTURES}/Caddyfile" >"${case_dir}/stale.Caddyfile"
+  TRANSACTION_HOST_CADDYFILE="${case_dir}/stale.Caddyfile" \
+    TRANSACTION_MOUNTED_CADDYFILE="${case_dir}/mounted.Caddyfile" \
+    run_transaction_deploy "${case_dir}"
+  local status=$?
+  local output
+  output="$(captured_output "${case_dir}")"
+  if [[ "${status}" -ne 0 ]]; then
+    pass "stale host Caddyfile blocks deployment by default"
+  else
+    fail "stale host Caddyfile blocks deployment by default"
+  fi
+  assert_contains "${output}" "host and mounted Caddyfile differ" "stale bind inode is reported"
+  assert_file_not_contains "${case_dir}/Caddyfile" "sub2api-next-v6:8080" "default mode does not overwrite stale host Caddyfile"
+}
+
+test_explicit_stale_host_recovery_requires_matching_active_json() {
+  local case_dir="${TEST_ROOT}/transaction-stale-host-mismatch"
+  mkdir -p "${case_dir}"
+  cp "${FIXTURES}/Caddyfile" "${case_dir}/mounted.Caddyfile"
+  sed 's/sub2api-next-v5:8080/sub2api:8080/' "${FIXTURES}/Caddyfile" >"${case_dir}/stale.Caddyfile"
+  TRANSACTION_HOST_CADDYFILE="${case_dir}/stale.Caddyfile" \
+    TRANSACTION_MOUNTED_CADDYFILE="${case_dir}/mounted.Caddyfile" \
+    FAKE_CADDY_ADAPT_MISMATCH=1 \
+    run_transaction_deploy "${case_dir}" --recover-stale-host-caddyfile
+  local status=$?
+  local output
+  output="$(captured_output "${case_dir}")"
+  if [[ "${status}" -ne 0 ]]; then
+    pass "stale host recovery rejects mismatched active JSON"
+  else
+    fail "stale host recovery rejects mismatched active JSON"
+  fi
+  assert_contains "${output}" "mounted Caddyfile does not match active Caddy JSON" "recovery mismatch is explicit"
+  assert_file_not_contains "${case_dir}/Caddyfile" "sub2api-next-v5:8080" "mismatched recovery leaves host Caddyfile untouched"
+}
+
+test_explicit_stale_host_recovery_commits_transaction() {
+  local case_dir="${TEST_ROOT}/transaction-stale-host-recovery"
+  mkdir -p "${case_dir}"
+  cp "${FIXTURES}/Caddyfile" "${case_dir}/mounted.Caddyfile"
+  sed 's/sub2api-next-v5:8080/sub2api:8080/' "${FIXTURES}/Caddyfile" >"${case_dir}/stale.Caddyfile"
+  TRANSACTION_HOST_CADDYFILE="${case_dir}/stale.Caddyfile" \
+    TRANSACTION_MOUNTED_CADDYFILE="${case_dir}/mounted.Caddyfile" \
+    run_transaction_deploy "${case_dir}" --recover-stale-host-caddyfile
+  local status=$?
+  local output
+  output="$(captured_output "${case_dir}")"
+  assert_status "${status}" 0 "verified stale host recovery completes deployment"
+  assert_contains "${output}" "STALE HOST CADDYFILE RECOVERED" "verified recovery is auditable"
+  assert_contains "${output}" "DEPLOYMENT SUCCEEDED" "recovered transaction reaches final commit"
+  assert_file_contains "${case_dir}/Caddyfile" "sub2api-next-v6:8080" "recovered host Caddyfile advances to candidate"
+}
+
 test_public_failure_rolls_back() {
   local case_dir="${TEST_ROOT}/transaction-public-fail"
   FAKE_PUBLIC_FAIL=1 run_transaction_deploy "${case_dir}"
@@ -498,6 +694,21 @@ test_public_failure_rolls_back() {
   assert_contains "${output}" "ROLLBACK VERIFIED" "public failure verifies rollback"
   assert_file_contains "${case_dir}/caddy-active.json" "sub2api-next-v5:8080" "rollback restores active Caddy JSON"
   assert_file_contains "${case_dir}/Caddyfile" "sub2api-next-v5:8080" "rollback restores persistent Caddyfile"
+}
+
+test_public_native_search_failure_rolls_back() {
+  local case_dir="${TEST_ROOT}/transaction-public-native-search-fail"
+  FAKE_PUBLIC_NATIVE_SEARCH_V1_FAIL=1 run_transaction_deploy "${case_dir}"
+  local status=$?
+  local output
+  output="$(captured_output "${case_dir}")"
+  if [[ "${status}" -ne 0 ]]; then
+    pass "public native Search failure fails the deployment"
+  else
+    fail "public native Search failure fails the deployment"
+  fi
+  assert_contains "${output}" "ROLLBACK VERIFIED" "public native Search failure verifies rollback"
+  assert_file_contains "${case_dir}/caddy-active.json" "sub2api-next-v5:8080" "native Search rollback restores active Caddy JSON"
 }
 
 test_soak_failure_rolls_back() {
@@ -639,7 +850,12 @@ test_signal_rolls_back() {
 
 run_transaction_tests() {
   test_transaction_success_commits_cutover
+  test_transaction_matched_compact_degradation_commits_cutover
+  test_stale_host_caddyfile_requires_explicit_recovery
+  test_explicit_stale_host_recovery_requires_matching_active_json
+  test_explicit_stale_host_recovery_commits_transaction
   test_public_failure_rolls_back
+  test_public_native_search_failure_rolls_back
   test_soak_failure_rolls_back
   test_rollback_verification_failure_is_critical
   test_pre_cutover_caddy_drift_aborts_without_overwrite
@@ -657,14 +873,24 @@ test_repository_deployment_policy() {
   local agents_file="${DEPLOY_DIR}/../AGENTS.md"
   local runbook="${DEPLOY_DIR}/HOT_DEPLOY.md"
   local example_config="${DEPLOY_DIR}/hot-deploy.env.example"
+  local caddyfile="${DEPLOY_DIR}/Caddyfile.zhumeng"
   assert_file_contains "${agents_file}" "deploy/hot-deploy.sh" "project policy names the only production hot-deploy entry point"
   assert_file_contains "${agents_file}" "--config /etc/caddy/Caddyfile" "project policy prohibits mounted-file reload"
   assert_file_contains "${agents_file}" "PostgreSQL" "project policy protects production databases"
   assert_file_contains "${runbook}" "SMOKE_API_KEY" "runbook documents mandatory API smoke credentials"
   assert_file_contains "${runbook}" "ROLLBACK VERIFIED" "runbook documents verified rollback evidence"
   assert_file_contains "${runbook}" "/responses" "runbook documents the real Codex remote compact path"
+  assert_file_contains "${runbook}" "MATCHED UPSTREAM DEGRADATION" "runbook documents comparative upstream gating"
+  assert_file_contains "${runbook}" "/alpha/search" "runbook documents native Search deployment gates"
+  assert_file_contains "${runbook}" "never written" "runbook documents native Search artifact privacy"
   assert_file_contains "${example_config}" "COMPACT_SMOKE_BYTES=1048576" "example config keeps the large compact canary"
+  assert_file_contains "${example_config}" "ALLOW_MATCHED_UPSTREAM_DEGRADATION=true" "example config enables comparative Compact gating"
   assert_file_contains "${DEPLOY_DIR}/Makefile" "test-hot-deploy" "deploy Makefile exposes the regression suite"
+  assert_file_contains "${caddyfile}" "@ai_gateway_paths" "API hostname uses an explicit gateway allowlist"
+  assert_file_contains "${caddyfile}" "path /v1/*" "API allowlist keeps versioned gateway routes"
+  assert_file_contains "${caddyfile}" "path /responses*" "API allowlist keeps direct Responses routes"
+  assert_file_contains "${caddyfile}" "handle @ai_gateway_paths" "only allowlisted API paths reach the application"
+  assert_file_not_contains "${caddyfile}" "@workbench_paths" "API hostname no longer relies on a workbench blacklist"
   local repository_root="${DEPLOY_DIR}/.."
   local required_file
   for required_file in \

@@ -86,6 +86,9 @@ type OpenAIEndpointCapability string
 const (
 	OpenAIEndpointCapabilityChatCompletions OpenAIEndpointCapability = "chat_completions"
 	OpenAIEndpointCapabilityEmbeddings      OpenAIEndpointCapability = "embeddings"
+	OpenAIEndpointCapabilityRerank          OpenAIEndpointCapability = "rerank"
+	OpenAIEndpointCapabilitySearch          OpenAIEndpointCapability = "search"
+	OpenAIEndpointCapabilityWebSearch       OpenAIEndpointCapability = "web_search"
 )
 
 const openAIEndpointCapabilitiesCredentialKey = "openai_capabilities"
@@ -484,6 +487,14 @@ const (
 	OpenAICompactModeForceOn = "force_on"
 	// OpenAICompactModeForceOff always treats the account as compact-unsupported.
 	OpenAICompactModeForceOff = "force_off"
+
+	// OpenAICompactEndpointModePath sends compact requests to /responses/compact.
+	OpenAICompactEndpointModePath = "path"
+	// OpenAICompactEndpointModeBodySignal keeps compact requests on /responses and
+	// relies on an input item with type=compaction_trigger.
+	OpenAICompactEndpointModeBodySignal = "body_signal"
+	// OpenAICompactEndpointModeAuto negotiates the supported upstream shape.
+	OpenAICompactEndpointModeAuto = "auto"
 )
 
 func normalizeOpenAICompactMode(mode string) string {
@@ -494,6 +505,17 @@ func normalizeOpenAICompactMode(mode string) string {
 		return OpenAICompactModeForceOff
 	default:
 		return OpenAICompactModeAuto
+	}
+}
+
+func normalizeOpenAICompactEndpointMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case OpenAICompactEndpointModePath:
+		return OpenAICompactEndpointModePath
+	case OpenAICompactEndpointModeBodySignal:
+		return OpenAICompactEndpointModeBodySignal
+	default:
+		return OpenAICompactEndpointModeAuto
 	}
 }
 
@@ -809,6 +831,31 @@ func (a *Account) GetOpenAICompactMode() string {
 	return normalizeOpenAICompactMode(mode)
 }
 
+// GetOpenAICompactEndpointMode returns the upstream compact protocol shape.
+// Auto negotiation remains the default.
+func (a *Account) GetOpenAICompactEndpointMode() string {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return OpenAICompactEndpointModeAuto
+	}
+	mode, _ := a.Extra["openai_compact_endpoint_mode"].(string)
+	return normalizeOpenAICompactEndpointMode(mode)
+}
+
+func (a *Account) UsesOpenAICompactBodySignal() bool {
+	if a == nil {
+		return false
+	}
+	return a.GetOpenAICompactEndpointMode() == OpenAICompactEndpointModeBodySignal
+}
+
+func (a *Account) IsOpenAICompactNegotiationEnabled() bool {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return false
+	}
+	enabled, _ := a.Extra["openai_compact_negotiation_enabled"].(bool)
+	return enabled
+}
+
 // OpenAICompactSupportKnown reports whether compact capability is known for this
 // account and, when known, whether it is supported.
 func (a *Account) OpenAICompactSupportKnown() (supported bool, known bool) {
@@ -820,6 +867,9 @@ func (a *Account) OpenAICompactSupportKnown() (supported bool, known bool) {
 	case OpenAICompactModeForceOn:
 		return true, true
 	case OpenAICompactModeForceOff:
+		if a.IsOpenAICompactNegotiationEnabled() {
+			return false, false
+		}
 		return false, true
 	}
 
@@ -845,6 +895,9 @@ func (a *Account) OpenAICompactSupportKnownForModel(requestedModel string) (supp
 	case OpenAICompactModeForceOn:
 		return true, true
 	case OpenAICompactModeForceOff:
+		if a.IsOpenAICompactNegotiationEnabled() {
+			return false, false
+		}
 		return false, true
 	}
 
@@ -1409,9 +1462,16 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 	if !a.IsOpenAI() {
 		return false
 	}
+	if capability == OpenAIEndpointCapabilitySearch {
+		return a.Type == AccountTypeOAuth
+	}
+	if capability == OpenAIEndpointCapabilityWebSearch {
+		supported, known := a.OpenAIWebSearchSupportKnown()
+		return known && supported
+	}
 	switch capability {
 	case OpenAIEndpointCapabilityChatCompletions:
-	case OpenAIEndpointCapabilityEmbeddings:
+	case OpenAIEndpointCapabilityEmbeddings, OpenAIEndpointCapabilityRerank:
 		if a.Type != AccountTypeAPIKey {
 			return false
 		}
@@ -1424,6 +1484,37 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 		return true
 	}
 	return configured[string(capability)]
+}
+
+// OpenAIWebSearchSupportKnown reports the semantic hosted web_search probe
+// result. Unknown accounts are excluded because HTTP 200 alone does not prove
+// that an upstream executed the hosted tool.
+func (a *Account) OpenAIWebSearchSupportKnown() (supported bool, known bool) {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return false, false
+	}
+	raw, found := a.Extra["openai_web_search_supported"]
+	if !found || raw == nil {
+		return false, false
+	}
+	switch value := raw.(type) {
+	case bool:
+		return value, true
+	case string:
+		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+		return parsed, err == nil
+	case json.Number:
+		parsed, err := strconv.ParseBool(value.String())
+		return parsed, err == nil
+	case float64:
+		return value != 0, true
+	case int:
+		return value != 0, true
+	case int64:
+		return value != 0, true
+	default:
+		return false, false
+	}
 }
 
 func (a *Account) openAIEndpointCapabilitySet() (map[string]bool, bool) {
