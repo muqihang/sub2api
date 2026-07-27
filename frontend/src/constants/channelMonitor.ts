@@ -15,6 +15,8 @@ export const PROVIDER_GEMINI: Provider = 'gemini'
 
 export const API_MODE_CHAT_COMPLETIONS: APIMode = 'chat_completions'
 export const API_MODE_RESPONSES: APIMode = 'responses'
+export const API_MODE_EMBEDDINGS: APIMode = 'embeddings'
+export const API_MODE_RERANK: APIMode = 'rerank'
 
 export const PROVIDERS: readonly Provider[] = [
   PROVIDER_OPENAI,
@@ -25,6 +27,8 @@ export const PROVIDERS: readonly Provider[] = [
 export const API_MODES: readonly APIMode[] = [
   API_MODE_CHAT_COMPLETIONS,
   API_MODE_RESPONSES,
+  API_MODE_EMBEDDINGS,
+  API_MODE_RERANK,
 ]
 
 export const STATUS_OPERATIONAL: MonitorStatus = 'operational'

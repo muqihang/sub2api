@@ -85,6 +85,16 @@ func runCheckForModel(ctx context.Context, provider, endpoint, apiKey, model str
 		return res
 	}
 
+	apiMode := checkAPIMode(opts)
+	if apiMode == MonitorAPIModeEmbeddings || apiMode == MonitorAPIModeRerank {
+		if valid, message := validateNonGenerativeMonitorResponse(apiMode, rawBody); !valid {
+			res.Status = MonitorStatusFailed
+			res.Message = truncateMessage(message)
+			return res
+		}
+		return finalizeOperationalOrDegraded(res, latency, latencyMs)
+	}
+
 	// Replace 模式：跳过 challenge 校验（用户 body 是静态的，challenge 没法嵌入）。
 	// 改用「HTTP 2xx + 响应文本（adapter.textPath 抽取）非空」作为 operational 判定。
 	// 响应文本为空则降级为 failed（视为上游回了 200 但没实际内容）。
@@ -238,13 +248,70 @@ var providerOpenAIResponsesAdapter = providerAdapter{
 	textPath: "output.0.content.0.text",
 }
 
+//nolint:gochecknoglobals // 适配器表是只读静态数据，初始化后不变更。
+var providerOpenAIEmbeddingsAdapter = providerAdapter{
+	buildPath: func(string) string { return providerOpenAIEmbeddingsPath },
+	buildBody: func(model, _ string) ([]byte, error) {
+		return json.Marshal(map[string]any{
+			"model": model,
+			"input": "channel monitor health check",
+		})
+	},
+	buildHeaders: func(apiKey string) map[string]string {
+		return map[string]string{"Authorization": "Bearer " + apiKey}
+	},
+	textPath: "data.0.embedding.0",
+}
+
+//nolint:gochecknoglobals // 适配器表是只读静态数据，初始化后不变更。
+var providerOpenAIRerankAdapter = providerAdapter{
+	buildPath: func(string) string { return providerOpenAIRerankPath },
+	buildBody: func(model, _ string) ([]byte, error) {
+		return json.Marshal(map[string]any{
+			"model":     model,
+			"query":     "channel monitor health check",
+			"documents": []string{"channel monitor health check", "unrelated document"},
+		})
+	},
+	buildHeaders: func(apiKey string) map[string]string {
+		return map[string]string{"Authorization": "Bearer " + apiKey}
+	},
+	textPath: "results.0.relevance_score",
+}
+
 // providerAdapterFor 按 provider + api_mode 选择具体 adapter。
 func providerAdapterFor(provider, apiMode string) (providerAdapter, string, bool) {
-	if provider == MonitorProviderOpenAI && defaultAPIMode(apiMode) == MonitorAPIModeResponses {
-		return providerOpenAIResponsesAdapter, MonitorAPIModeResponses, true
+	if provider == MonitorProviderOpenAI {
+		switch defaultAPIMode(apiMode) {
+		case MonitorAPIModeResponses:
+			return providerOpenAIResponsesAdapter, MonitorAPIModeResponses, true
+		case MonitorAPIModeEmbeddings:
+			return providerOpenAIEmbeddingsAdapter, MonitorAPIModeEmbeddings, true
+		case MonitorAPIModeRerank:
+			return providerOpenAIRerankAdapter, MonitorAPIModeRerank, true
+		}
 	}
 	adapter, ok := providerAdapters[provider]
 	return adapter, MonitorAPIModeChatCompletions, ok
+}
+
+func validateNonGenerativeMonitorResponse(apiMode, rawBody string) (bool, string) {
+	switch apiMode {
+	case MonitorAPIModeEmbeddings:
+		embedding := gjson.Get(rawBody, "data.0.embedding")
+		if !embedding.IsArray() || len(embedding.Array()) == 0 {
+			return false, "embedding response contains no vector"
+		}
+		return true, ""
+	case MonitorAPIModeRerank:
+		results := gjson.Get(rawBody, "results")
+		if !results.IsArray() || len(results.Array()) == 0 || !gjson.Get(rawBody, "results.0.relevance_score").Exists() {
+			return false, "rerank response contains no scored results"
+		}
+		return true, ""
+	default:
+		return false, "unsupported non-generative monitor mode"
+	}
 }
 
 // isSupportedProvider 校验 provider 字符串是否在 adapter 表中。
@@ -431,6 +498,8 @@ func buildRequestBody(adapter providerAdapter, provider, apiMode, model, prompt 
 var bodyMergeKeyDenyList = map[string]map[string]bool{
 	MonitorProviderOpenAI + ":" + MonitorAPIModeChatCompletions: {"model": true, "messages": true, "stream": true},
 	MonitorProviderOpenAI + ":" + MonitorAPIModeResponses:       {"model": true, "instructions": true, "input": true, "stream": true},
+	MonitorProviderOpenAI + ":" + MonitorAPIModeEmbeddings:      {"model": true, "input": true},
+	MonitorProviderOpenAI + ":" + MonitorAPIModeRerank:          {"model": true, "query": true, "documents": true},
 	MonitorProviderAnthropic:                                    {"model": true, "messages": true},
 	MonitorProviderGemini:                                       {"contents": true},
 }
@@ -461,6 +530,14 @@ func validateReplaceRequestBody(provider, apiMode string, body map[string]any) e
 	case MonitorAPIModeChatCompletions:
 		if !hasNonEmptyBodyValue(body["messages"]) {
 			return fmt.Errorf("replace mode chat_completions body: messages are required")
+		}
+	case MonitorAPIModeEmbeddings:
+		if !hasNonEmptyBodyValue(body["input"]) {
+			return fmt.Errorf("replace mode embeddings body: input is required")
+		}
+	case MonitorAPIModeRerank:
+		if !hasNonEmptyBodyValue(body["query"]) || !hasNonEmptyBodyValue(body["documents"]) {
+			return fmt.Errorf("replace mode rerank body: query and documents are required")
 		}
 	}
 	return nil
