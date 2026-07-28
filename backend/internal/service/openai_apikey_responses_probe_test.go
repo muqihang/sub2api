@@ -137,7 +137,7 @@ func TestOpenAIResponsesProbePayloadForcesToolCallWithoutDefaultInstructions(t *
 }
 
 func TestOpenAIResponsesCustomToolsProbePayloadUsesAutoCustomTool(t *testing.T) {
-	body := openaiResponsesCustomToolsProbePayload("upstream-model")
+	body := openaiResponsesCustomToolsProbePayload("upstream-model", "attempt-1")
 
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(body, &payload))
@@ -146,6 +146,7 @@ func TestOpenAIResponsesCustomToolsProbePayloadUsesAutoCustomTool(t *testing.T) 
 	require.Equal(t, "auto", payload["tool_choice"])
 	require.EqualValues(t, 128, payload["max_output_tokens"])
 	require.Contains(t, payload, "instructions")
+	require.Contains(t, string(body), "attempt-1")
 
 	tools, ok := payload["tools"].([]any)
 	require.True(t, ok)

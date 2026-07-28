@@ -488,6 +488,15 @@ func TestAccountTestService_OpenAIAPIKeyProbeRequiresConsistentAutoCustomTools(t
 	svc.ProbeOpenAIAPIKeyResponsesSupport(context.Background(), account.ID)
 
 	require.Len(t, upstream.requests, 4)
+	prompts := make(map[string]struct{}, responsesCustomToolProbeRuns)
+	for _, request := range upstream.requests[1:] {
+		body, err := io.ReadAll(request.Body)
+		require.NoError(t, err)
+		prompt := gjson.GetBytes(body, "input.0.content.0.text").String()
+		require.Contains(t, prompt, "pwd")
+		prompts[prompt] = struct{}{}
+	}
+	require.Len(t, prompts, responsesCustomToolProbeRuns, "each consistency probe must have an independent payload")
 	require.Equal(t, true, repo.updatedExtra[openai_compat.ExtraKeyResponsesCustomToolsSupported])
 }
 

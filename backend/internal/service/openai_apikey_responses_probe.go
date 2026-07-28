@@ -7,12 +7,14 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
+	"github.com/google/uuid"
 )
 
 type openAIResponsesProbeResultRepository interface {
@@ -64,9 +66,13 @@ func openaiResponsesProbePayload(modelID string) []byte {
 	return body
 }
 
-func openaiResponsesCustomToolsProbePayload(modelID string) []byte {
+func openaiResponsesCustomToolsProbePayload(modelID string, nonce string) []byte {
 	if strings.TrimSpace(modelID) == "" {
 		modelID = openai.DefaultTestModel
+	}
+	prompt := "Run pwd now and report its result."
+	if nonce = strings.TrimSpace(nonce); nonce != "" {
+		prompt = "Run pwd now for capability probe " + nonce + " and report its result."
 	}
 	body, _ := json.Marshal(map[string]any{
 		"model":        modelID,
@@ -75,7 +81,7 @@ func openaiResponsesCustomToolsProbePayload(modelID string) []byte {
 			{
 				"role": "user",
 				"content": []map[string]any{
-					{"type": "input_text", "text": "Run pwd now and report its result."},
+					{"type": "input_text", "text": prompt},
 				},
 			},
 		},
@@ -247,8 +253,9 @@ func (s *AccountTestService) probeOpenAIResponsesCustomToolsConsistency(
 	apiKey string,
 	probeModel string,
 ) (supported bool, known bool, lastStatus int) {
-	payload := openaiResponsesCustomToolsProbePayload(probeModel)
+	probeRunID := uuid.NewString()
 	for attempt := 1; attempt <= responsesCustomToolProbeRuns; attempt++ {
+		payload := openaiResponsesCustomToolsProbePayload(probeModel, probeRunID+"-"+strconv.Itoa(attempt))
 		status, body, err := s.executeOpenAIResponsesProbe(ctx, account, probeURL, apiKey, payload)
 		lastStatus = status
 		if err != nil {
