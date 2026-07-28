@@ -281,7 +281,8 @@ func (s *OpenAIResponsesProbeScheduler) RunBackfill(ctx context.Context) {
 }
 
 func needsOpenAIResponsesProbe(account *Account) bool {
-	if account == nil || account.Platform != PlatformOpenAI || account.Type != AccountTypeAPIKey {
+	if account == nil || account.Platform != PlatformOpenAI || account.Type != AccountTypeAPIKey ||
+		account.Status != StatusActive || !account.Schedulable {
 		return false
 	}
 	probeModel := selectResponsesProbeModel(account)

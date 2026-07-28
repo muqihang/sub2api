@@ -147,8 +147,10 @@ func TestOpenAIResponsesProbeScheduler_DeduplicatesWithOneFollowUp(t *testing.T)
 
 func TestNeedsOpenAIResponsesProbe_UnknownAndStaleOnly(t *testing.T) {
 	complete := Account{
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
 		Credentials: map[string]any{
 			"base_url": "https://provider.example/v1",
 			"model_mapping": map[string]any{
@@ -172,6 +174,12 @@ func TestNeedsOpenAIResponsesProbe_UnknownAndStaleOnly(t *testing.T) {
 	unknown := complete
 	unknown.Extra = nil
 	require.True(t, needsOpenAIResponsesProbe(&unknown))
+	unschedulable := unknown
+	unschedulable.Schedulable = false
+	require.False(t, needsOpenAIResponsesProbe(&unschedulable))
+	errorAccount := unknown
+	errorAccount.Status = StatusError
+	require.False(t, needsOpenAIResponsesProbe(&errorAccount))
 	stale := complete
 	stale.Credentials = map[string]any{
 		"base_url": "https://new-provider.example/v1",
@@ -188,7 +196,7 @@ func TestNeedsOpenAIResponsesProbe_UnknownAndStaleOnly(t *testing.T) {
 func TestOpenAIResponsesProbeScheduler_RunBackfillPaginates(t *testing.T) {
 	accounts := make([]Account, 0, 501)
 	for id := int64(1); id <= 501; id++ {
-		accounts = append(accounts, Account{ID: id, Platform: PlatformOpenAI, Type: AccountTypeAPIKey})
+		accounts = append(accounts, Account{ID: id, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true})
 	}
 	lister := &responsesProbeSchedulerListerStub{accounts: accounts}
 	executor := &responsesProbeSchedulerExecutorStub{}
