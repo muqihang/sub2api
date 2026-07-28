@@ -735,12 +735,7 @@ func (h *AccountHandler) Update(c *gin.Context) {
 	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
 }
 
-// scheduleOpenAIResponsesProbe 异步触发 OpenAI APIKey 账号的 Responses API 能力探测。
-//
-// 仅对 platform=openai && type=apikey 账号生效；其他账号无操作。
-// 探测本身在 goroutine 中执行（会发送 Responses 与 custom-tool 语义探针），不会阻塞
-// 当前请求。探测错误仅记录日志，不向上下文传播：探测失败时标记保持缺失，
-// 网关会按"现状即证据"默认走 Responses。
+// scheduleOpenAIResponsesProbe enqueues an OpenAI APIKey capability probe.
 func (h *AccountHandler) scheduleOpenAIResponsesProbe(account *service.Account) {
 	if account == nil || account.Platform != service.PlatformOpenAI || account.Type != service.AccountTypeAPIKey {
 		return
@@ -755,14 +750,7 @@ func (h *AccountHandler) scheduleOpenAIResponsesProbeByID(accountID int64, model
 	if h.accountTestService == nil || accountID <= 0 {
 		return
 	}
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("openai_responses_probe_panic", "account_id", accountID, "recover", r)
-			}
-		}()
-		h.accountTestService.ProbeOpenAIAPIKeyResponsesSupportForModel(context.Background(), accountID, modelID)
-	}()
+	h.accountTestService.ScheduleOpenAIAPIKeyResponsesProbe(accountID, modelID)
 }
 
 // Delete handles deleting an account

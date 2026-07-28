@@ -70,6 +70,17 @@ type AccountTestService struct {
 	httpUpstream              HTTPUpstream
 	cfg                       *config.Config
 	tlsFPProfileService       *TLSFingerprintProfileService
+	openAIResponsesProbe      *OpenAIResponsesProbeScheduler
+}
+
+func (s *AccountTestService) SetOpenAIResponsesProbeScheduler(scheduler *OpenAIResponsesProbeScheduler) {
+	if s != nil {
+		s.openAIResponsesProbe = scheduler
+	}
+}
+
+func (s *AccountTestService) ScheduleOpenAIAPIKeyResponsesProbe(accountID int64, modelID string) bool {
+	return s != nil && s.openAIResponsesProbe != nil && s.openAIResponsesProbe.Schedule(accountID, modelID)
 }
 
 // NewAccountTestService creates a new AccountTestService
