@@ -76,6 +76,22 @@ func nativeSearchOAuthAccountForTest() *Account {
 	}
 }
 
+func nativeSearchAPIKeyAccountForTest() *Account {
+	return &Account{
+		ID:          809,
+		Name:        "native-search-api-key-test",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"api_key":             "provider-api-key",
+			"base_url":            "https://api-pool.example/v1",
+			"openai_capabilities": []any{"responses", "search"},
+		},
+	}
+}
+
 func TestForwardNativeSearch_ForwardsOAuthNativeContractUnchanged(t *testing.T) {
 	requestBody := []byte(`{"id":"search-session","model":"gpt-5.4","commands":{}}`)
 	responseBody := []byte("{\n  \"encrypted_output\": \"opaque\", \"output\": \"result\"\n}")
@@ -109,6 +125,38 @@ func TestForwardNativeSearch_ForwardsOAuthNativeContractUnchanged(t *testing.T) 
 	require.Equal(t, "codex_cli_rs", upstream.request.Header.Get("originator"))
 	require.Contains(t, upstream.request.Header.Get("User-Agent"), "codex_cli_rs/")
 	require.Empty(t, upstream.request.Header.Get("OpenAI-Beta"))
+}
+
+func TestForwardNativeSearch_ForwardsExplicitAPIKeyNativeContract(t *testing.T) {
+	requestBody := []byte(`{"id":"search-session","model":"gpt-5.6-terra","commands":{}}`)
+	responseBody := []byte(`{"encrypted_output":null,"output":"result"}`)
+	upstream := &nativeSearchHTTPUpstream{responseCode: http.StatusOK, responseBody: responseBody}
+	svc := newNativeSearchServiceForTest(t, upstream)
+
+	got, err := svc.ForwardNativeSearch(
+		context.Background(),
+		nil,
+		nativeSearchAPIKeyAccountForTest(),
+		http.Header{
+			"Authorization": []string{"Bearer client-secret"},
+			"User-Agent":    []string{"codex_cli_rs/0.146.0"},
+			"Originator":    []string{"codex_cli_rs"},
+		},
+		requestBody,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, http.StatusOK, got.StatusCode)
+	require.Equal(t, responseBody, got.Body)
+	require.Equal(t, requestBody, upstream.requestBody)
+	require.Equal(t, "https", upstream.request.URL.Scheme)
+	require.Equal(t, "api-pool.example", upstream.request.URL.Host)
+	require.Equal(t, "/v1/alpha/search", upstream.request.URL.Path)
+	require.Equal(t, "Bearer provider-api-key", upstream.request.Header.Get("Authorization"))
+	require.NotEqual(t, "Bearer client-secret", upstream.request.Header.Get("Authorization"))
+	require.Empty(t, upstream.request.Header.Get("chatgpt-account-id"))
+	require.Equal(t, "codex_cli_rs", upstream.request.Header.Get("originator"))
 }
 
 func TestValidateOpenAINativeSearchResponse(t *testing.T) {

@@ -20,6 +20,11 @@ func TestBuildSchedulerMetadataAccount_KeepsOpenAIWSFlags(t *testing.T) {
 			"openai_ws_force_http":                         true,
 			"openai_responses_mode":                        "force_chat_completions",
 			"openai_responses_supported":                   false,
+			"openai_responses_probe_model":                 "gpt-5.6-sol",
+			"openai_responses_probe_target":                "sha256:endpoint-target",
+			"openai_responses_custom_tools_supported":      false,
+			"openai_responses_custom_tools_probe_model":    "gpt-5.6-sol",
+			"openai_responses_custom_tools_probe_target":   "sha256:test-target",
 			"mixed_scheduling":                             true,
 			"unused_large_field":                           "drop-me",
 		},
@@ -32,6 +37,12 @@ func TestBuildSchedulerMetadataAccount_KeepsOpenAIWSFlags(t *testing.T) {
 	require.Equal(t, true, got.Extra["openai_ws_force_http"])
 	require.Equal(t, "force_chat_completions", got.Extra["openai_responses_mode"])
 	require.Equal(t, false, got.Extra["openai_responses_supported"])
+	require.Equal(t, "gpt-5.6-sol", got.Extra["openai_responses_probe_model"])
+	require.Equal(t, "sha256:endpoint-target", got.Extra["openai_responses_probe_target"])
+	require.Equal(t, account.OpenAIResponsesTargetFingerprint("gpt-5.6-sol"), got.Extra["openai_responses_current_target"])
+	require.Equal(t, false, got.Extra["openai_responses_custom_tools_supported"])
+	require.Equal(t, "gpt-5.6-sol", got.Extra["openai_responses_custom_tools_probe_model"])
+	require.Equal(t, "sha256:test-target", got.Extra["openai_responses_custom_tools_probe_target"])
 	require.Equal(t, true, got.Extra["mixed_scheduling"])
 	require.Nil(t, got.Extra["unused_large_field"])
 }
@@ -190,4 +201,21 @@ func TestBuildSchedulerMetadataAccount_KeepsSparkShadowRoutingIdentity(t *testin
 	require.Equal(t, map[string]any{"gpt-5.3-codex-spark": "gpt-5.3-codex-spark"}, got.Credentials["model_mapping"])
 	require.Equal(t, map[string]any{"gpt-5.4": "gpt-5.4-openai-compact"}, got.Credentials["compact_model_mapping"])
 	require.Nil(t, got.Credentials["access_token"])
+}
+
+func TestBuildSchedulerMetadataAccount_KeepsOpenAIEndpointCapabilities(t *testing.T) {
+	account := service.Account{
+		ID:       201,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"openai_capabilities": []any{"responses", "search"},
+			"base_url":            "https://provider.example/v1",
+		},
+	}
+
+	got := buildSchedulerMetadataAccount(account)
+
+	require.Equal(t, []any{"responses", "search"}, got.Credentials["openai_capabilities"])
+	require.Nil(t, got.Credentials["base_url"])
 }

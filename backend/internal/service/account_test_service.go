@@ -21,7 +21,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -70,6 +69,21 @@ type AccountTestService struct {
 	httpUpstream              HTTPUpstream
 	cfg                       *config.Config
 	tlsFPProfileService       *TLSFingerprintProfileService
+	openAIResponsesProbe      OpenAIResponsesProbeSubmitter
+}
+
+type OpenAIResponsesProbeSubmitter interface {
+	Schedule(accountID int64, modelID string) bool
+}
+
+func (s *AccountTestService) SetOpenAIResponsesProbeScheduler(scheduler OpenAIResponsesProbeSubmitter) {
+	if s != nil {
+		s.openAIResponsesProbe = scheduler
+	}
+}
+
+func (s *AccountTestService) ScheduleOpenAIAPIKeyResponsesProbe(accountID int64, modelID string) bool {
+	return s != nil && s.openAIResponsesProbe != nil && s.openAIResponsesProbe.Schedule(accountID, modelID)
 }
 
 // NewAccountTestService creates a new AccountTestService
@@ -640,7 +654,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		if err != nil {
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
 		}
-		if !openai_compat.ShouldUseResponsesAPI(account.Extra) {
+		if !credentialAccount.ShouldUseOpenAIResponsesAPI(testModelID) {
 			return s.testOpenAIChatCompletionsConnection(c, account, testModelID, prompt, normalizedBaseURL, authToken)
 		}
 		apiURL = buildOpenAIResponsesURL(normalizedBaseURL)

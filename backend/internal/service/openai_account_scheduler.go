@@ -1334,6 +1334,54 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapability(
 	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, requiredCapability, "", requireCompact)
 }
 
+func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapabilityModel(
+	ctx context.Context,
+	groupID *int64,
+	previousResponseID string,
+	sessionHash string,
+	requestedModel string,
+	capabilityModel string,
+	excludedIDs map[int64]struct{},
+	requiredTransport OpenAIUpstreamTransport,
+	requiredCapability OpenAIEndpointCapability,
+	requireCompact bool,
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	effectiveExcludedIDs := cloneExcludedAccountIDs(excludedIDs)
+	for {
+		selection, decision, err := s.SelectAccountWithSchedulerForCapability(
+			ctx,
+			groupID,
+			previousResponseID,
+			sessionHash,
+			requestedModel,
+			effectiveExcludedIDs,
+			requiredTransport,
+			requiredCapability,
+			requireCompact,
+		)
+		if err != nil || selection == nil || selection.Account == nil {
+			return selection, decision, err
+		}
+		if requiredCapability != OpenAIEndpointCapabilityResponsesCustomTools &&
+			requiredCapability != OpenAIEndpointCapabilityWebSearchCustomTools {
+			return selection, decision, nil
+		}
+		if selection.Account.SupportsOpenAIResponsesCustomToolsForModel(capabilityModel) {
+			return selection, decision, nil
+		}
+		if selection.ReleaseFunc != nil {
+			selection.ReleaseFunc()
+		}
+		if effectiveExcludedIDs == nil {
+			effectiveExcludedIDs = make(map[int64]struct{})
+		}
+		if _, exists := effectiveExcludedIDs[selection.Account.ID]; exists {
+			return nil, decision, noAvailableOpenAISelectionErrorForRequest(requestedModel, "", false, false)
+		}
+		effectiveExcludedIDs[selection.Account.ID] = struct{}{}
+	}
+}
+
 // SelectAccountWithSchedulerForNativeSearch keeps Search outside Responses
 // model-rate-limit scopes. The request model is still forwarded upstream, but
 // a Responses 429 for that model must not remove an otherwise healthy OAuth

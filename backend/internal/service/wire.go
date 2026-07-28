@@ -1130,6 +1130,7 @@ var ProviderSet = wire.NewSet(
 	ProvideRateLimitService,
 	ProvideAccountUsageService,
 	NewAccountTestService,
+	ProvideOpenAIResponsesProbeScheduler,
 	ProvideSettingService,
 	NewDataManagementService,
 	ProvideBackupService,
@@ -1242,4 +1243,11 @@ func ProvideChannelMonitorRunner(svc *ChannelMonitorService, settingService *Set
 	svc.SetScheduler(r)
 	r.Start()
 	return r
+}
+
+func ProvideOpenAIResponsesProbeScheduler(accountRepo AccountRepository, accountTestService *AccountTestService) *OpenAIResponsesProbeScheduler {
+	scheduler := NewOpenAIResponsesProbeScheduler(accountRepo, accountTestService)
+	accountTestService.SetOpenAIResponsesProbeScheduler(scheduler)
+	scheduler.Start()
+	return scheduler
 }

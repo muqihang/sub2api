@@ -97,10 +97,28 @@ func openAIResponsesRequiredCapability(body []byte) service.OpenAIEndpointCapabi
 	if !tools.IsArray() {
 		return service.OpenAIEndpointCapabilityChatCompletions
 	}
+	hasWebSearch := false
+	hasCustomTools := false
 	for _, tool := range tools.Array() {
-		if strings.EqualFold(strings.TrimSpace(tool.Get("type").String()), "web_search") {
-			return service.OpenAIEndpointCapabilityWebSearch
+		if tool.Type == gjson.String {
+			hasCustomTools = hasCustomTools || strings.TrimSpace(tool.String()) != ""
+			continue
 		}
+		switch strings.ToLower(strings.TrimSpace(tool.Get("type").String())) {
+		case "web_search":
+			hasWebSearch = true
+		case "custom":
+			hasCustomTools = true
+		}
+	}
+	if hasWebSearch && hasCustomTools {
+		return service.OpenAIEndpointCapabilityWebSearchCustomTools
+	}
+	if hasWebSearch {
+		return service.OpenAIEndpointCapabilityWebSearch
+	}
+	if hasCustomTools {
+		return service.OpenAIEndpointCapabilityResponsesCustomTools
 	}
 	return service.OpenAIEndpointCapabilityChatCompletions
 }
@@ -754,6 +772,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	// 解析渠道级模型映射
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
 	forwardBody := openAIModelMappedBody(body, channelMapping.Mapped, channelMapping.MappedModel, h.gatewayService.ReplaceModelInBody)
+	routingModel := reqModel
+	if channelMapping.Mapped && strings.TrimSpace(channelMapping.MappedModel) != "" {
+		routingModel = strings.TrimSpace(channelMapping.MappedModel)
+	}
 
 	// 提前校验 function_call_output 是否具备可关联上下文，避免上游 400。
 	if !h.validateFunctionCallOutputRequest(c, body, reqLog) {
@@ -818,12 +840,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	for {
 		// Select account supporting the requested model
 		reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
+		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapabilityModel(
 			c.Request.Context(),
 			apiKey.GroupID,
 			previousResponseID,
 			sessionHash,
 			reqModel,
+			routingModel,
 			failedAccountIDs,
 			service.OpenAIUpstreamTransportAny,
 			requiredCapability,
@@ -835,9 +858,18 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				zap.Int("excluded_account_count", len(failedAccountIDs)),
 			)
 			if len(failedAccountIDs) == 0 {
-				if requiredCapability == service.OpenAIEndpointCapabilityWebSearch {
+				switch requiredCapability {
+				case service.OpenAIEndpointCapabilityWebSearch:
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "web_search_not_supported", "No available OpenAI accounts support hosted web_search", streamStarted)
+					return
+				case service.OpenAIEndpointCapabilityResponsesCustomTools:
+					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
+					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "custom_tools_not_supported", "No available OpenAI accounts support automatic Responses custom tools", streamStarted)
+					return
+				case service.OpenAIEndpointCapabilityWebSearchCustomTools:
+					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
+					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "custom_tools_not_supported", "No available OpenAI accounts support hosted web_search with automatic Responses custom tools", streamStarted)
 					return
 				}
 				if errors.Is(err, service.ErrNoAvailableCompactAccounts) {
@@ -1026,7 +1058,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		clientIP := ip.GetClientIP(c)
 		requestPayloadHash := service.HashUsageRequestPayload(body)
 		inboundEndpoint := GetInboundEndpoint(c)
-		upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account)
+		upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account, reqModel)
 		requestCtx := c.Request.Context()
 		quotaPlatform := service.QuotaPlatform(requestCtx, apiKey)
 
@@ -1551,7 +1583,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		clientIP := ip.GetClientIP(c)
 		requestPayloadHash := service.HashUsageRequestPayload(body)
 		inboundEndpoint := GetInboundEndpoint(c)
-		upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account)
+		upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account, reqModel)
 		requestCtx := c.Request.Context()
 		quotaPlatform := service.QuotaPlatform(requestCtx, apiKey)
 
@@ -2286,7 +2318,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
 				inboundEndpoint := GetInboundEndpoint(c)
-				upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account)
+				upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account, reqModel)
 				requestCtx := c.Request.Context()
 				quotaPlatform := service.QuotaPlatform(requestCtx, apiKey)
 				cyberBlocked := service.GetOpsCyberPolicy(c) != nil
