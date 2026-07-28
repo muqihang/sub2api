@@ -205,7 +205,7 @@ func (m *openAIAgentIdentityManager) registerTask(ctx context.Context, account *
 	if err != nil {
 		return "", fmt.Errorf("register openai agent task: %w", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
 		return "", fmt.Errorf("read openai agent task registration: %w", err)

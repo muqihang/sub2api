@@ -142,7 +142,7 @@ func TestOpenAIAgentIdentityRealResponses(t *testing.T) {
 
 	response, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, response.StatusCode, "upstream response: %s", responseBody)

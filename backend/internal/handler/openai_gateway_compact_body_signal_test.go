@@ -210,7 +210,7 @@ func TestOpenAIResponses_RemoteCompactHeartbeatStartsBeforeBodyReadCompletes(t *
 	defer server.Close()
 
 	bodyReader, bodyWriter := io.Pipe()
-	defer bodyWriter.Close()
+	defer func() { _ = bodyWriter.Close() }()
 	request, err := http.NewRequest(http.MethodPost, server.URL+"/responses", bodyReader)
 	require.NoError(t, err)
 	request.Header.Set("Content-Type", "application/json")
@@ -230,7 +230,7 @@ func TestOpenAIResponses_RemoteCompactHeartbeatStartsBeforeBodyReadCompletes(t *
 	select {
 	case result := <-responseCh:
 		require.NoError(t, result.err)
-		defer result.response.Body.Close()
+		defer func() { _ = result.response.Body.Close() }()
 		require.Equal(t, http.StatusOK, result.response.StatusCode)
 		ping := make([]byte, len("event: ping\ndata: {\"type\":\"ping\"}\n\n"))
 		_, err = io.ReadFull(result.response.Body, ping)

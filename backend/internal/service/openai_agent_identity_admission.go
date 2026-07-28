@@ -278,7 +278,7 @@ func (t openAIAgentIdentityGatewayAdmissionTransport) Responses(ctx context.Cont
 	if err != nil {
 		return 0, nil, nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	responseBody, readErr := readAdmissionResponseBody(response.Body)
 	return response.StatusCode, response.Header, responseBody, readErr
 }
@@ -532,10 +532,10 @@ func validateAdmissionCompactSSE(body []byte) error {
 		}
 	}
 	if !foundCompaction {
-		return errors.New("Compact admission canary returned no compaction output")
+		return errors.New("compact admission canary returned no compaction output")
 	}
 	if !foundCompleted {
-		return errors.New("Compact admission canary returned no completed event")
+		return errors.New("compact admission canary returned no completed event")
 	}
 	return nil
 }

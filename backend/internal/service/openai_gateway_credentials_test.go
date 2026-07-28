@@ -75,9 +75,11 @@ func TestOpenAIGatewayCredentialAccessor_ProtectsAgentIdentityPrivateKey(t *test
 		"agent_private_key": "pkcs8-secret",
 	})
 	require.NoError(t, err)
-	require.True(t, strings.HasPrefix(protected["agent_private_key"].(string), openAISecretProtectorPrefix))
+	protectedPrivateKey, ok := protected["agent_private_key"].(string)
+	require.True(t, ok)
+	require.True(t, strings.HasPrefix(protectedPrivateKey, openAISecretProtectorPrefix))
 
-	plaintext, err := creds.resolveValue(protected["agent_private_key"].(string), "agent_private_key")
+	plaintext, err := creds.resolveValue(protectedPrivateKey, "agent_private_key")
 	require.NoError(t, err)
 	require.Equal(t, "pkcs8-secret", plaintext)
 }
