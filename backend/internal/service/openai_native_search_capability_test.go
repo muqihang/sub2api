@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestAccountSupportsOpenAIEndpointCapability_SearchIsInternalOAuthOnly(t *testing.T) {
+func TestAccountSupportsOpenAIEndpointCapability_SearchRequiresNativeProvider(t *testing.T) {
 	tests := []struct {
 		name    string
 		account *Account
@@ -22,7 +22,33 @@ func TestAccountSupportsOpenAIEndpointCapability_SearchIsInternalOAuthOnly(t *te
 			},
 			want: true,
 		},
-		{name: "api key", account: &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}},
+		{name: "unconfigured api key", account: &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}},
+		{
+			name: "api key explicitly supports search",
+			account: &Account{
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeAPIKey,
+				Credentials: map[string]any{"openai_capabilities": []any{"responses", "search"}},
+			},
+			want: true,
+		},
+		{
+			name: "api key explicitly disables search",
+			account: &Account{
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeAPIKey,
+				Credentials: map[string]any{"openai_capabilities": map[string]any{"search": false}},
+			},
+		},
+		{
+			name: "upstream explicitly supports search",
+			account: &Account{
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeUpstream,
+				Credentials: map[string]any{"openai_capabilities": []any{"search"}},
+			},
+			want: true,
+		},
 		{name: "upstream", account: &Account{Platform: PlatformOpenAI, Type: AccountTypeUpstream}},
 		{name: "other platform", account: &Account{Platform: PlatformAnthropic, Type: AccountTypeOAuth}},
 		{name: "nil"},

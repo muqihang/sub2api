@@ -37,8 +37,8 @@ func (s *OpenAIGatewayService) ForwardNativeSearch(
 	if s == nil || s.httpUpstream == nil {
 		return nil, errors.New("native Search upstream is not configured")
 	}
-	if account == nil || !account.IsOpenAIOAuth() {
-		return nil, errors.New("native Search requires an OpenAI OAuth account")
+	if account == nil || !account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilitySearch) {
+		return nil, errors.New("native Search requires a compatible OpenAI account")
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -116,12 +116,23 @@ func (s *OpenAIGatewayService) buildNativeSearchRequest(
 	body []byte,
 	token string,
 ) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatGPTNativeSearchURL, bytes.NewReader(body))
+	targetURL := chatGPTNativeSearchURL
+	isOAuth := account.IsOpenAIOAuth()
+	if !isOAuth {
+		baseURL, err := s.validateUpstreamBaseURL(account.GetOpenAIBaseURL())
+		if err != nil {
+			return nil, fmt.Errorf("resolve native Search base URL: %w", err)
+		}
+		targetURL = buildOpenAIEndpointURL(baseURL, "/v1/alpha/search")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build native Search request: %w", err)
 	}
 	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
-	req.Host = "chatgpt.com"
+	if isOAuth {
+		req.Host = "chatgpt.com"
+	}
 
 	copyNativeSearchIdentityHeaders(req.Header, clientHeaders)
 	account.ApplyHeaderOverrides(req.Header)
@@ -151,8 +162,10 @@ func (s *OpenAIGatewayService) buildNativeSearchRequest(
 	}
 	artifact.ApplyHTTP(req.Header)
 
-	if err := resolveAndSetOpenAIChatGPTAccountHeaders(ctx, s.accountRepo, req.Header, account); err != nil {
-		return nil, fmt.Errorf("resolve native Search account headers: %w", err)
+	if isOAuth {
+		if err := resolveAndSetOpenAIChatGPTAccountHeaders(ctx, s.accountRepo, req.Header, account); err != nil {
+			return nil, fmt.Errorf("resolve native Search account headers: %w", err)
+		}
 	}
 	req.Header.Del("x-api-key")
 	req.Header.Del("x-goog-api-key")

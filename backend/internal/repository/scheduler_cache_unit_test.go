@@ -197,3 +197,20 @@ func TestBuildSchedulerMetadataAccount_KeepsSparkShadowRoutingIdentity(t *testin
 	require.Equal(t, map[string]any{"gpt-5.4": "gpt-5.4-openai-compact"}, got.Credentials["compact_model_mapping"])
 	require.Nil(t, got.Credentials["access_token"])
 }
+
+func TestBuildSchedulerMetadataAccount_KeepsOpenAIEndpointCapabilities(t *testing.T) {
+	account := service.Account{
+		ID:       201,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"openai_capabilities": []any{"responses", "search"},
+			"base_url":            "https://provider.example/v1",
+		},
+	}
+
+	got := buildSchedulerMetadataAccount(account)
+
+	require.Equal(t, []any{"responses", "search"}, got.Credentials["openai_capabilities"])
+	require.Nil(t, got.Credentials["base_url"])
+}

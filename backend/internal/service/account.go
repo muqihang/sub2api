@@ -1467,7 +1467,14 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 		return false
 	}
 	if capability == OpenAIEndpointCapabilitySearch {
-		return a.Type == AccountTypeOAuth
+		if a.Type == AccountTypeOAuth {
+			return true
+		}
+		if a.Type != AccountTypeAPIKey && a.Type != AccountTypeUpstream {
+			return false
+		}
+		configured, found := a.openAIEndpointCapabilitySet()
+		return found && configured[string(OpenAIEndpointCapabilitySearch)]
 	}
 	if capability == OpenAIEndpointCapabilityWebSearch {
 		supported, known := a.OpenAIWebSearchSupportKnown()
