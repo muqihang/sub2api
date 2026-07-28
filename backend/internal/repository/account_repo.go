@@ -26,6 +26,7 @@ import (
 	dbpredicate "github.com/Wei-Shaw/sub2api/ent/predicate"
 	dbproxy "github.com/Wei-Shaw/sub2api/ent/proxy"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
@@ -1613,6 +1614,60 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 	// Extra 字段会参与 endpoint capability、model mapping 和运行时防护判定。
 	// outbox 负责重建 bucket，这里同步最新的单账号 metadata，避免 worker
 	// 消费前请求继续命中旧能力。从数据库重读也能避免局部 patch 覆盖并发写入。
+	r.syncSchedulerAccountSnapshot(ctx, id)
+	return nil
+}
+
+// UpdateOpenAIResponsesProbeResult atomically merges probe evidence while
+// keeping an explicit semantic failure sticky for the same target and model.
+func (r *accountRepository) UpdateOpenAIResponsesProbeResult(ctx context.Context, id int64, updates map[string]any) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	payload, err := json.Marshal(updates)
+	if err != nil {
+		return err
+	}
+	probeModel, _ := updates[openai_compat.ExtraKeyResponsesCustomToolsProbeModel].(string)
+	probeTarget, _ := updates[openai_compat.ExtraKeyResponsesCustomToolsProbeTarget].(string)
+
+	client := clientFromContext(ctx, r.client)
+	result, err := client.ExecContext(ctx, `
+		UPDATE accounts
+		SET extra = COALESCE(extra, '{}'::jsonb) ||
+			CASE
+				WHEN ($1::jsonb ->> $3) = 'true'
+					AND (COALESCE(extra, '{}'::jsonb) ->> $3) = 'false'
+					AND (COALESCE(extra, '{}'::jsonb) ->> $4) = $5
+					AND (COALESCE(extra, '{}'::jsonb) ->> $6) = $7
+				THEN jsonb_set($1::jsonb, ARRAY[$3]::text[], 'false'::jsonb, true)
+				ELSE $1::jsonb
+			END,
+			updated_at = NOW()
+		WHERE id = $2 AND deleted_at IS NULL`,
+		string(payload),
+		id,
+		openai_compat.ExtraKeyResponsesCustomToolsSupported,
+		openai_compat.ExtraKeyResponsesCustomToolsProbeModel,
+		probeModel,
+		openai_compat.ExtraKeyResponsesCustomToolsProbeTarget,
+		probeTarget,
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return service.ErrAccountNotFound
+	}
+	if shouldEnqueueSchedulerOutboxForExtraUpdates(updates) {
+		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue probe result update failed: account=%d err=%v", id, err)
+		}
+	}
 	r.syncSchedulerAccountSnapshot(ctx, id)
 	return nil
 }

@@ -4,11 +4,13 @@ package repository
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/accountgroup"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/suite"
@@ -922,6 +924,49 @@ func (s *AccountRepoSuite) TestUpdateExtra_NilExtra() {
 	got, err := s.repo.GetByID(s.ctx, account.ID)
 	s.Require().NoError(err)
 	s.Require().Equal("val", got.Extra["key"])
+}
+
+func (s *AccountRepoSuite) TestUpdateOpenAIResponsesProbeResult_ConcurrentNegativeWinsForSameTarget() {
+	account := mustCreateAccount(s.T(), s.client, &service.Account{
+		Name:     "acc-responses-probe-concurrent",
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeAPIKey,
+		Extra:    map[string]any{},
+	})
+	base := map[string]any{
+		openai_compat.ExtraKeyResponsesCustomToolsProbeModel:  "gpt-5.6-sol",
+		openai_compat.ExtraKeyResponsesCustomToolsProbeTarget: "target-a",
+	}
+	positive := map[string]any{}
+	negative := map[string]any{}
+	for key, value := range base {
+		positive[key] = value
+		negative[key] = value
+	}
+	positive[openai_compat.ExtraKeyResponsesCustomToolsSupported] = true
+	negative[openai_compat.ExtraKeyResponsesCustomToolsSupported] = false
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, updates := range []map[string]any{positive, negative} {
+		wg.Add(1)
+		go func(updates map[string]any) {
+			defer wg.Done()
+			<-start
+			errs <- s.repo.UpdateOpenAIResponsesProbeResult(context.Background(), account.ID, updates)
+		}(updates)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		s.Require().NoError(err)
+	}
+
+	got, err := s.repo.GetByID(s.ctx, account.ID)
+	s.Require().NoError(err)
+	s.Require().Equal(false, got.Extra[openai_compat.ExtraKeyResponsesCustomToolsSupported])
 }
 
 func (s *AccountRepoSuite) TestUpdateExtra_SchedulerNeutralSkipsOutboxAndSyncsFreshSnapshot() {

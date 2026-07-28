@@ -499,6 +499,64 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_DefaultDisabled_Embeddi
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
 }
 
+func TestOpenAIGatewayService_SelectAccountWithSchedulerForCapabilityModel_SkipsSemanticCustomToolFailure(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(10110)
+	account := func(id int64, priority int, supported bool) Account {
+		result := Account{
+			ID:          id,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    priority,
+			GroupIDs:    []int64{groupID},
+			Credentials: map[string]any{
+				"base_url": "https://api.example.com/v1",
+				"model_mapping": map[string]any{
+					"public-alias": "channel-model",
+				},
+			},
+			Extra: map[string]any{
+				"openai_responses_custom_tools_supported":   supported,
+				"openai_responses_custom_tools_probe_model": "channel-model",
+			},
+		}
+		result.Extra["openai_responses_custom_tools_probe_target"] = result.OpenAIResponsesCustomToolsTargetFingerprint("channel-model")
+		return result
+	}
+	accounts := []Account{
+		account(36041, 0, false),
+		account(36042, 5, true),
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithSchedulerForCapabilityModel(
+		ctx,
+		&groupID,
+		"",
+		"",
+		"public-alias",
+		"channel-model",
+		nil,
+		OpenAIUpstreamTransportHTTPSSE,
+		OpenAIEndpointCapabilityResponsesCustomTools,
+		false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(36042), selection.Account.ID)
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_EnabledUsesAdvancedPreviousResponseRouting(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 

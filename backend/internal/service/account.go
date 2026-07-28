@@ -2,6 +2,7 @@
 package service
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
 
@@ -84,11 +86,13 @@ type Account struct {
 type OpenAIEndpointCapability string
 
 const (
-	OpenAIEndpointCapabilityChatCompletions OpenAIEndpointCapability = "chat_completions"
-	OpenAIEndpointCapabilityEmbeddings      OpenAIEndpointCapability = "embeddings"
-	OpenAIEndpointCapabilityRerank          OpenAIEndpointCapability = "rerank"
-	OpenAIEndpointCapabilitySearch          OpenAIEndpointCapability = "search"
-	OpenAIEndpointCapabilityWebSearch       OpenAIEndpointCapability = "web_search"
+	OpenAIEndpointCapabilityChatCompletions      OpenAIEndpointCapability = "chat_completions"
+	OpenAIEndpointCapabilityEmbeddings           OpenAIEndpointCapability = "embeddings"
+	OpenAIEndpointCapabilityRerank               OpenAIEndpointCapability = "rerank"
+	OpenAIEndpointCapabilitySearch               OpenAIEndpointCapability = "search"
+	OpenAIEndpointCapabilityWebSearch            OpenAIEndpointCapability = "web_search"
+	OpenAIEndpointCapabilityResponsesCustomTools OpenAIEndpointCapability = "responses_custom_tools"
+	OpenAIEndpointCapabilityWebSearchCustomTools OpenAIEndpointCapability = "web_search_custom_tools"
 )
 
 const openAIEndpointCapabilitiesCredentialKey = "openai_capabilities"
@@ -1469,6 +1473,20 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 		supported, known := a.OpenAIWebSearchSupportKnown()
 		return known && supported
 	}
+	if capability == OpenAIEndpointCapabilityResponsesCustomTools {
+		if a.Type == AccountTypeOAuth {
+			return true
+		}
+		supported, known := a.OpenAIResponsesCustomToolsSupportKnown()
+		if strings.TrimSpace(a.OpenAIResponsesCustomToolsProbeModel()) != "" {
+			return true
+		}
+		return !known || supported
+	}
+	if capability == OpenAIEndpointCapabilityWebSearchCustomTools {
+		return a.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityWebSearch) &&
+			a.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityResponsesCustomTools)
+	}
 	switch capability {
 	case OpenAIEndpointCapabilityChatCompletions:
 	case OpenAIEndpointCapabilityEmbeddings, OpenAIEndpointCapabilityRerank:
@@ -1490,10 +1508,110 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 // result. Unknown accounts are excluded because HTTP 200 alone does not prove
 // that an upstream executed the hosted tool.
 func (a *Account) OpenAIWebSearchSupportKnown() (supported bool, known bool) {
+	return a.openAIExtraBoolKnown("openai_web_search_supported")
+}
+
+func (a *Account) OpenAIResponsesCustomToolsSupportKnown() (supported bool, known bool) {
+	return a.openAIExtraBoolKnown(openai_compat.ExtraKeyResponsesCustomToolsSupported)
+}
+
+func (a *Account) OpenAIResponsesCustomToolsProbeModel() string {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return ""
+	}
+	value, _ := a.Extra[openai_compat.ExtraKeyResponsesCustomToolsProbeModel].(string)
+	return strings.TrimSpace(value)
+}
+
+func (a *Account) OpenAIResponsesCustomToolsProbeTarget() string {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return ""
+	}
+	value, _ := a.Extra[openai_compat.ExtraKeyResponsesCustomToolsProbeTarget].(string)
+	return strings.TrimSpace(value)
+}
+
+func (a *Account) OpenAIResponsesCustomToolsCurrentTarget() string {
+	if a == nil || !a.IsOpenAI() {
+		return ""
+	}
+	if a.Extra != nil {
+		if value, ok := a.Extra[openai_compat.ExtraKeyResponsesCustomToolsCurrentTarget].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return a.OpenAIResponsesCustomToolsTargetFingerprint(a.OpenAIResponsesCustomToolsProbeModel())
+}
+
+func (a *Account) OpenAIResponsesCustomToolsTargetFingerprint(probeModel string) string {
+	if a == nil || !a.IsOpenAI() {
+		return ""
+	}
+	targetCredentials := make(map[string]any)
+	for _, key := range []string{"base_url", "model_mapping", "user_agent"} {
+		if value, ok := a.Credentials[key]; ok && value != nil {
+			targetCredentials[key] = value
+		}
+	}
+	routingExtra := make(map[string]any)
+	for _, key := range []string{"openai_gateway_egress_bucket", "openai_gateway_profile_id", "openai_gateway_profile_mode"} {
+		if value, ok := a.Extra[key]; ok && value != nil {
+			routingExtra[key] = value
+		}
+	}
+	payload, err := json.Marshal(struct {
+		Platform     string         `json:"platform"`
+		Type         string         `json:"type"`
+		Credentials  map[string]any `json:"credentials"`
+		ProxyID      *int64         `json:"proxy_id"`
+		RoutingExtra map[string]any `json:"routing_extra"`
+		ProbeModel   string         `json:"probe_model"`
+	}{
+		Platform:     a.Platform,
+		Type:         a.Type,
+		Credentials:  targetCredentials,
+		ProxyID:      a.ProxyID,
+		RoutingExtra: routingExtra,
+		ProbeModel:   strings.TrimSpace(probeModel),
+	})
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(payload)
+	return fmt.Sprintf("sha256:%x", sum[:])
+}
+
+func (a *Account) SupportsOpenAIResponsesCustomToolsForModel(requestedModel string) bool {
+	if a == nil || !a.IsOpenAI() {
+		return false
+	}
+	if a.Type == AccountTypeOAuth {
+		return true
+	}
+	supported, known := a.OpenAIResponsesCustomToolsSupportKnown()
+	if !known {
+		return true
+	}
+	probeModel := a.OpenAIResponsesCustomToolsProbeModel()
+	if probeModel == "" {
+		return supported
+	}
+	mappedModel := strings.TrimSpace(a.GetMappedModel(strings.TrimSpace(requestedModel)))
+	if mappedModel == "" || !strings.EqualFold(mappedModel, probeModel) {
+		return true
+	}
+	probeTarget := a.OpenAIResponsesCustomToolsProbeTarget()
+	if probeTarget == "" || probeTarget != a.OpenAIResponsesCustomToolsCurrentTarget() {
+		return true
+	}
+	return supported
+}
+
+func (a *Account) openAIExtraBoolKnown(key string) (supported bool, known bool) {
 	if a == nil || !a.IsOpenAI() || a.Extra == nil {
 		return false, false
 	}
-	raw, found := a.Extra["openai_web_search_supported"]
+	raw, found := a.Extra[key]
 	if !found || raw == nil {
 		return false, false
 	}

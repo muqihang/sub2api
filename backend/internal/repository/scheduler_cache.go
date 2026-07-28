@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/redis/go-redis/v9"
 )
@@ -428,6 +429,15 @@ func (c *schedulerCache) mgetChunked(ctx context.Context, keys []string) ([]any,
 
 func buildSchedulerMetadataAccount(account service.Account) service.Account {
 	credentials := filterSchedulerCredentials(account.Credentials)
+	extra := filterSchedulerExtra(account.Extra)
+	if probeModel := account.OpenAIResponsesCustomToolsProbeModel(); probeModel != "" {
+		if currentTarget := account.OpenAIResponsesCustomToolsTargetFingerprint(probeModel); currentTarget != "" {
+			if extra == nil {
+				extra = make(map[string]any)
+			}
+			extra[openai_compat.ExtraKeyResponsesCustomToolsCurrentTarget] = currentTarget
+		}
+	}
 	if account.IsClaudePlatformAWS() {
 		credentials = nil
 	}
@@ -460,7 +470,7 @@ func buildSchedulerMetadataAccount(account service.Account) service.Account {
 		GroupIDs:                filterSchedulerGroupIDs(account.GroupIDs, account.AccountGroups),
 		Credentials:             credentials,
 		ProxyID:                 account.ProxyID,
-		Extra:                   filterSchedulerExtra(account.Extra),
+		Extra:                   extra,
 	}
 }
 
@@ -603,6 +613,9 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		service.ClaudePlatformAWSExtraProductionAdmitted,
 		"openai_responses_mode",
 		"openai_responses_supported",
+		"openai_responses_custom_tools_supported",
+		"openai_responses_custom_tools_probe_model",
+		"openai_responses_custom_tools_probe_target",
 		"openai_web_search_supported",
 		"codex_5h_used_percent",
 		"codex_7d_used_percent",

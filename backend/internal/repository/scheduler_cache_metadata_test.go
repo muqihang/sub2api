@@ -65,6 +65,35 @@ func TestBuildSchedulerMetadataAccount_PreservesOpenAIWebSearchCapability(t *tes
 	require.NotContains(t, got.Extra, "openai_web_search_last_error")
 }
 
+func TestBuildSchedulerMetadataAccount_PreservesCurrentCustomToolProbeTarget(t *testing.T) {
+	account := service.Account{
+		ID:          177,
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeAPIKey,
+		Status:      service.StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"api_key":  "encrypted-or-plain-key",
+			"base_url": "https://api.example.com/v1",
+			"model_mapping": map[string]any{
+				"gpt-5.6-sol": "upstream-sol",
+			},
+		},
+		Extra: map[string]any{
+			"openai_responses_custom_tools_supported":   false,
+			"openai_responses_custom_tools_probe_model": "upstream-sol",
+		},
+	}
+	probeTarget := account.OpenAIResponsesCustomToolsTargetFingerprint("upstream-sol")
+	account.Extra["openai_responses_custom_tools_probe_target"] = probeTarget
+
+	got := buildSchedulerMetadataAccount(account)
+
+	require.Equal(t, probeTarget, got.Extra["openai_responses_custom_tools_probe_target"])
+	require.Equal(t, probeTarget, got.Extra["openai_responses_custom_tools_current_target"])
+	require.False(t, got.SupportsOpenAIResponsesCustomToolsForModel("gpt-5.6-sol"))
+}
+
 func formalPoolSchedulerEvidenceAccount(extra map[string]any) service.Account {
 	return service.Account{
 		ID:          84,
