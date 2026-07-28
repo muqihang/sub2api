@@ -10,7 +10,9 @@ import (
 	"html"
 	"log/slog"
 	"math/big"
+	"mime"
 	"net"
+	"net/mail"
 	"net/smtp"
 	"net/url"
 	"strconv"
@@ -186,26 +188,34 @@ const smtpIOTimeout = 20 * time.Second
 
 // SendEmailWithConfig 使用指定配置发送邮件
 func (s *EmailService) SendEmailWithConfig(config *SMTPConfig, to, subject, body string) error {
-	// Sanitize all SMTP header fields to prevent header injection (CR/LF removal).
-	to = sanitizeEmailHeader(to)
-	subject = sanitizeEmailHeader(subject)
-
-	from := sanitizeEmailHeader(config.From)
-	if config.FromName != "" {
-		from = fmt.Sprintf("%s <%s>", sanitizeEmailHeader(config.FromName), sanitizeEmailHeader(config.From))
-	}
-
-	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n%s",
-		from, to, subject, body)
+	msg, envelopeTo := buildSMTPMessage(config, to, subject, body)
 
 	addr := fmt.Sprintf("%s:%d", config.Host, config.Port)
 	auth := smtp.PlainAuth("", config.Username, config.Password, config.Host)
 
 	if config.UseTLS {
-		return s.sendMailTLS(addr, auth, config.From, to, []byte(msg), config.Host)
+		return s.sendMailTLS(addr, auth, config.From, envelopeTo, []byte(msg), config.Host)
 	}
 
-	return s.sendMailPlain(addr, auth, config.From, to, []byte(msg), config.Host)
+	return s.sendMailPlain(addr, auth, config.From, envelopeTo, []byte(msg), config.Host)
+}
+
+func buildSMTPMessage(config *SMTPConfig, to, subject, body string) (string, string) {
+	// Keep transport addresses separate from presentation headers. Named RFC 5322
+	// mailboxes avoid "naked To" fingerprints while the Sender header identifies
+	// the responsible mailbox when a third-party SMTP relay supplies Return-Path.
+	envelopeTo := sanitizeEmailHeader(to)
+	fromAddress := sanitizeEmailHeader(config.From)
+	fromName := sanitizeEmailHeader(config.FromName)
+	recipientName := emailRecipientName(envelopeTo)
+
+	fromHeader := (&mail.Address{Name: fromName, Address: fromAddress}).String()
+	toHeader := (&mail.Address{Name: recipientName, Address: envelopeTo}).String()
+	subjectHeader := mime.QEncoding.Encode("UTF-8", sanitizeEmailHeader(subject))
+
+	msg := fmt.Sprintf("From: %s\r\nSender: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n%s",
+		fromHeader, fromHeader, toHeader, subjectHeader, body)
+	return msg, envelopeTo
 }
 
 // sendMailPlain sends mail without TLS using a dialer with timeout.
