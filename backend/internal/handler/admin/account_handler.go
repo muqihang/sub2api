@@ -738,7 +738,7 @@ func (h *AccountHandler) Update(c *gin.Context) {
 // scheduleOpenAIResponsesProbe 异步触发 OpenAI APIKey 账号的 Responses API 能力探测。
 //
 // 仅对 platform=openai && type=apikey 账号生效；其他账号无操作。
-// 探测本身在 goroutine 中执行（会发一次 HTTP 请求到上游），不会阻塞
+// 探测本身在 goroutine 中执行（会发送 Responses 与 custom-tool 语义探针），不会阻塞
 // 当前请求。探测错误仅记录日志，不向上下文传播：探测失败时标记保持缺失，
 // 网关会按"现状即证据"默认走 Responses。
 func (h *AccountHandler) scheduleOpenAIResponsesProbe(account *service.Account) {
@@ -748,14 +748,20 @@ func (h *AccountHandler) scheduleOpenAIResponsesProbe(account *service.Account) 
 	if h.accountTestService == nil {
 		return
 	}
-	accountID := account.ID
+	h.scheduleOpenAIResponsesProbeByID(account.ID, "")
+}
+
+func (h *AccountHandler) scheduleOpenAIResponsesProbeByID(accountID int64, modelID string) {
+	if h.accountTestService == nil || accountID <= 0 {
+		return
+	}
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("openai_responses_probe_panic", "account_id", accountID, "recover", r)
 			}
 		}()
-		h.accountTestService.ProbeOpenAIAPIKeyResponsesSupport(context.Background(), accountID)
+		h.accountTestService.ProbeOpenAIAPIKeyResponsesSupportForModel(context.Background(), accountID, modelID)
 	}()
 }
 
@@ -816,6 +822,7 @@ func (h *AccountHandler) Test(c *gin.Context) {
 		// Error already sent via SSE, just log
 		return
 	}
+	h.scheduleOpenAIResponsesProbeByID(accountID, req.ModelID)
 
 	if h.rateLimitService != nil {
 		if _, err := h.rateLimitService.RecoverAccountAfterSuccessfulTest(c.Request.Context(), accountID); err != nil {
@@ -1689,6 +1696,7 @@ func (h *AccountHandler) BatchUpdateCredentials(c *gin.Context) {
 		}
 		success++
 		successIDs = append(successIDs, u.ID)
+		h.scheduleOpenAIResponsesProbeByID(u.ID, "")
 		results = append(results, gin.H{
 			"account_id": u.ID,
 			"success":    true,
@@ -1760,6 +1768,11 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		SkipMixedChannelCheck: skipCheck,
 	})
 	if err != nil {
+		if len(req.Credentials) > 0 {
+			for _, accountID := range req.AccountIDs {
+				h.scheduleOpenAIResponsesProbeByID(accountID, "")
+			}
+		}
 		var mixedErr *service.MixedChannelError
 		if errors.As(err, &mixedErr) {
 			c.JSON(409, gin.H{
@@ -1776,6 +1789,12 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		}
 		response.ErrorFrom(c, err)
 		return
+	}
+	if len(req.Credentials) > 0 {
+		probeIDs := append(append([]int64(nil), result.SuccessIDs...), result.FailedIDs...)
+		for _, accountID := range probeIDs {
+			h.scheduleOpenAIResponsesProbeByID(accountID, "")
+		}
 	}
 
 	response.Success(c, result)
