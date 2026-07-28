@@ -189,7 +189,11 @@ func (s *AccountTestService) probeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 	}
 
 	supported := decideResponsesProbeSupport(status, bodyBytes)
-	updates := map[string]any{openai_compat.ExtraKeyResponsesSupported: supported}
+	updates := map[string]any{
+		openai_compat.ExtraKeyResponsesSupported:   supported,
+		openai_compat.ExtraKeyResponsesProbeModel:  probeModel,
+		openai_compat.ExtraKeyResponsesProbeTarget: probeTarget,
+	}
 	customToolsSupported := false
 	customToolsKnown := !supported
 	customStatus := 0

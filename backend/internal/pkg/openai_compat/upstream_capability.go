@@ -58,6 +58,18 @@ const ExtraKeyResponsesMode = "openai_responses_mode"
 // 值类型为 bool：true=支持、false=不支持、键缺失=未探测。
 const ExtraKeyResponsesSupported = "openai_responses_supported"
 
+// ExtraKeyResponsesProbeModel scopes endpoint evidence to the mapped upstream
+// model used by the semantic probe.
+const ExtraKeyResponsesProbeModel = "openai_responses_probe_model"
+
+// ExtraKeyResponsesProbeTarget binds endpoint evidence to the account's
+// non-secret upstream routing fingerprint.
+const ExtraKeyResponsesProbeTarget = "openai_responses_probe_target"
+
+// ExtraKeyResponsesCurrentTarget is scheduler-only metadata computed before
+// credentials are removed from the cached account view.
+const ExtraKeyResponsesCurrentTarget = "openai_responses_current_target"
+
 // ExtraKeyResponsesCustomToolsSupported records whether a Responses upstream
 // honors Codex custom tools when tool_choice=auto. Basic endpoint and forced
 // function-call probes are insufficient: some compatible upstreams accept the

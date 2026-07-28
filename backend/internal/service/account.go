@@ -1522,6 +1522,82 @@ func (a *Account) OpenAIResponsesCustomToolsSupportKnown() (supported bool, know
 	return a.openAIExtraBoolKnown(openai_compat.ExtraKeyResponsesCustomToolsSupported)
 }
 
+func (a *Account) OpenAIResponsesProbeModel() string {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return ""
+	}
+	value, _ := a.Extra[openai_compat.ExtraKeyResponsesProbeModel].(string)
+	return strings.TrimSpace(value)
+}
+
+func (a *Account) OpenAIResponsesProbeTarget() string {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return ""
+	}
+	value, _ := a.Extra[openai_compat.ExtraKeyResponsesProbeTarget].(string)
+	return strings.TrimSpace(value)
+}
+
+func (a *Account) OpenAIResponsesCurrentTarget() string {
+	if a == nil || !a.IsOpenAI() {
+		return ""
+	}
+	if a.Extra != nil {
+		if value, ok := a.Extra[openai_compat.ExtraKeyResponsesCurrentTarget].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return a.OpenAIResponsesTargetFingerprint(a.OpenAIResponsesProbeModel())
+}
+
+func (a *Account) OpenAIResponsesSupportKnownForModel(requestedModel string) (supported bool, known bool) {
+	if a == nil || !a.IsOpenAI() || a.Type != AccountTypeAPIKey {
+		return false, false
+	}
+	supported, known = a.openAIExtraBoolKnown(openai_compat.ExtraKeyResponsesSupported)
+	if !known {
+		return false, false
+	}
+	probeModel := a.OpenAIResponsesProbeModel()
+	mappedModel := strings.TrimSpace(a.GetMappedModel(strings.TrimSpace(requestedModel)))
+	if probeModel == "" || mappedModel == "" || !strings.EqualFold(mappedModel, probeModel) {
+		return false, false
+	}
+	probeTarget := a.OpenAIResponsesProbeTarget()
+	if probeTarget == "" || probeTarget != a.OpenAIResponsesCurrentTarget() {
+		return false, false
+	}
+	return supported, true
+}
+
+func (a *Account) ShouldUseOpenAIResponsesAPI(requestedModel string) bool {
+	return a.ResolveOpenAIResponsesSupportForModel(requestedModel) != openai_compat.ResponsesSupportNo
+}
+
+func (a *Account) ResolveOpenAIResponsesSupportForModel(requestedModel string) openai_compat.AccountResponsesSupport {
+	if a == nil || a.Type != AccountTypeAPIKey {
+		return openai_compat.ResponsesSupportYes
+	}
+	mode := ""
+	if a.Extra != nil {
+		mode, _ = a.Extra[openai_compat.ExtraKeyResponsesMode].(string)
+	}
+	switch openai_compat.NormalizeResponsesSupportMode(strings.TrimSpace(mode)) {
+	case openai_compat.ResponsesSupportModeForceResponses:
+		return openai_compat.ResponsesSupportYes
+	case openai_compat.ResponsesSupportModeForceChatCompletions:
+		return openai_compat.ResponsesSupportNo
+	}
+	supported, known := a.OpenAIResponsesSupportKnownForModel(requestedModel)
+	if !known {
+		return openai_compat.ResponsesSupportUnknown
+	}
+	if supported {
+		return openai_compat.ResponsesSupportYes
+	}
+	return openai_compat.ResponsesSupportNo
+}
+
 func (a *Account) OpenAIResponsesCustomToolsProbeModel() string {
 	if a == nil || !a.IsOpenAI() || a.Extra == nil {
 		return ""
@@ -1551,6 +1627,10 @@ func (a *Account) OpenAIResponsesCustomToolsCurrentTarget() string {
 }
 
 func (a *Account) OpenAIResponsesCustomToolsTargetFingerprint(probeModel string) string {
+	return a.OpenAIResponsesTargetFingerprint(probeModel)
+}
+
+func (a *Account) OpenAIResponsesTargetFingerprint(probeModel string) string {
 	if a == nil || !a.IsOpenAI() {
 		return ""
 	}

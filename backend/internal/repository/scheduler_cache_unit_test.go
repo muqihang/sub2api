@@ -20,6 +20,8 @@ func TestBuildSchedulerMetadataAccount_KeepsOpenAIWSFlags(t *testing.T) {
 			"openai_ws_force_http":                         true,
 			"openai_responses_mode":                        "force_chat_completions",
 			"openai_responses_supported":                   false,
+			"openai_responses_probe_model":                 "gpt-5.6-sol",
+			"openai_responses_probe_target":                "sha256:endpoint-target",
 			"openai_responses_custom_tools_supported":      false,
 			"openai_responses_custom_tools_probe_model":    "gpt-5.6-sol",
 			"openai_responses_custom_tools_probe_target":   "sha256:test-target",
@@ -35,6 +37,9 @@ func TestBuildSchedulerMetadataAccount_KeepsOpenAIWSFlags(t *testing.T) {
 	require.Equal(t, true, got.Extra["openai_ws_force_http"])
 	require.Equal(t, "force_chat_completions", got.Extra["openai_responses_mode"])
 	require.Equal(t, false, got.Extra["openai_responses_supported"])
+	require.Equal(t, "gpt-5.6-sol", got.Extra["openai_responses_probe_model"])
+	require.Equal(t, "sha256:endpoint-target", got.Extra["openai_responses_probe_target"])
+	require.Equal(t, account.OpenAIResponsesTargetFingerprint("gpt-5.6-sol"), got.Extra["openai_responses_current_target"])
 	require.Equal(t, false, got.Extra["openai_responses_custom_tools_supported"])
 	require.Equal(t, "gpt-5.6-sol", got.Extra["openai_responses_custom_tools_probe_model"])
 	require.Equal(t, "sha256:test-target", got.Extra["openai_responses_custom_tools_probe_target"])

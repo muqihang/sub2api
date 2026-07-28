@@ -430,6 +430,14 @@ func (c *schedulerCache) mgetChunked(ctx context.Context, keys []string) ([]any,
 func buildSchedulerMetadataAccount(account service.Account) service.Account {
 	credentials := filterSchedulerCredentials(account.Credentials)
 	extra := filterSchedulerExtra(account.Extra)
+	if probeModel := account.OpenAIResponsesProbeModel(); probeModel != "" {
+		if currentTarget := account.OpenAIResponsesTargetFingerprint(probeModel); currentTarget != "" {
+			if extra == nil {
+				extra = make(map[string]any)
+			}
+			extra[openai_compat.ExtraKeyResponsesCurrentTarget] = currentTarget
+		}
+	}
 	if probeModel := account.OpenAIResponsesCustomToolsProbeModel(); probeModel != "" {
 		if currentTarget := account.OpenAIResponsesCustomToolsTargetFingerprint(probeModel); currentTarget != "" {
 			if extra == nil {
@@ -613,6 +621,8 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		service.ClaudePlatformAWSExtraProductionAdmitted,
 		"openai_responses_mode",
 		"openai_responses_supported",
+		"openai_responses_probe_model",
+		"openai_responses_probe_target",
 		"openai_responses_custom_tools_supported",
 		"openai_responses_custom_tools_probe_model",
 		"openai_responses_custom_tools_probe_target",

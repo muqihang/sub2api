@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 )
 
@@ -285,12 +284,12 @@ func needsOpenAIResponsesProbe(account *Account) bool {
 	if account == nil || account.Platform != PlatformOpenAI || account.Type != AccountTypeAPIKey {
 		return false
 	}
-	_, responsesKnown := account.openAIExtraBoolKnown(openai_compat.ExtraKeyResponsesSupported)
+	probeModel := selectResponsesProbeModel(account)
+	_, responsesKnown := account.OpenAIResponsesSupportKnownForModel(probeModel)
 	_, customToolsKnown := account.OpenAIResponsesCustomToolsSupportKnown()
 	if !responsesKnown || !customToolsKnown {
 		return true
 	}
-	probeModel := selectResponsesProbeModel(account)
 	if !strings.EqualFold(account.OpenAIResponsesCustomToolsProbeModel(), probeModel) {
 		return true
 	}

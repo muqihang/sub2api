@@ -1058,7 +1058,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		clientIP := ip.GetClientIP(c)
 		requestPayloadHash := service.HashUsageRequestPayload(body)
 		inboundEndpoint := GetInboundEndpoint(c)
-		upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account)
+		upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account, reqModel)
 		requestCtx := c.Request.Context()
 		quotaPlatform := service.QuotaPlatform(requestCtx, apiKey)
 
@@ -1583,7 +1583,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		clientIP := ip.GetClientIP(c)
 		requestPayloadHash := service.HashUsageRequestPayload(body)
 		inboundEndpoint := GetInboundEndpoint(c)
-		upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account)
+		upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account, reqModel)
 		requestCtx := c.Request.Context()
 		quotaPlatform := service.QuotaPlatform(requestCtx, apiKey)
 
@@ -2318,7 +2318,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				}
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, result.FirstTokenMs)
 				inboundEndpoint := GetInboundEndpoint(c)
-				upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account)
+				upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account, reqModel)
 				requestCtx := c.Request.Context()
 				quotaPlatform := service.QuotaPlatform(requestCtx, apiKey)
 				cyberBlocked := service.GetOpsCyberPolicy(c) != nil

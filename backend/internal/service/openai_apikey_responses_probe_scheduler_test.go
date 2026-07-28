@@ -157,12 +157,15 @@ func TestNeedsOpenAIResponsesProbe_UnknownAndStaleOnly(t *testing.T) {
 		},
 		Extra: map[string]any{
 			openai_compat.ExtraKeyResponsesSupported:                true,
+			openai_compat.ExtraKeyResponsesProbeModel:               "gpt-5.6-sol",
+			openai_compat.ExtraKeyResponsesProbeTarget:              "",
 			openai_compat.ExtraKeyResponsesCustomToolsSupported:     false,
 			openai_compat.ExtraKeyResponsesCustomToolsProbeModel:    "gpt-5.6-sol",
 			openai_compat.ExtraKeyResponsesCustomToolsProbeTarget:   "",
 			openai_compat.ExtraKeyResponsesCustomToolsCurrentTarget: "",
 		},
 	}
+	complete.Extra[openai_compat.ExtraKeyResponsesProbeTarget] = complete.OpenAIResponsesTargetFingerprint("gpt-5.6-sol")
 	complete.Extra[openai_compat.ExtraKeyResponsesCustomToolsProbeTarget] = complete.OpenAIResponsesCustomToolsTargetFingerprint("gpt-5.6-sol")
 
 	require.False(t, needsOpenAIResponsesProbe(&complete))

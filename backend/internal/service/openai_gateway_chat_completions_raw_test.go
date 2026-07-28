@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -509,7 +510,7 @@ func TestForwardAsRawChatCompletions_UpstreamRequestIgnoresClientCancel(t *testi
 	require.NoError(t, upstream.lastReq.Context().Err())
 }
 
-func TestForwardAsChatCompletions_UnknownResponsesSupportFallbackUsesVersionedChatURL(t *testing.T) {
+func TestForwardAsChatCompletions_StaleResponsesEvidenceFallbackUsesVersionedChatURL(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"glm-4.5-air","messages":[{"role":"user","content":"hello"}],"stream":false}`)
@@ -538,6 +539,11 @@ func TestForwardAsChatCompletions_UnknownResponsesSupportFallbackUsesVersionedCh
 		httpUpstream: upstream,
 	}
 	account := rawChatCompletionsTestAccount()
+	account.Extra = map[string]any{
+		openai_compat.ExtraKeyResponsesSupported:  false,
+		openai_compat.ExtraKeyResponsesProbeModel: "glm-4.5-air",
+	}
+	account.Extra[openai_compat.ExtraKeyResponsesProbeTarget] = account.OpenAIResponsesTargetFingerprint("glm-4.5-air")
 	account.Credentials["base_url"] = "https://open.bigmodel.cn/api/paas/v4"
 
 	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
