@@ -405,7 +405,9 @@ func normalizeLoginAgreementDocuments(docs []LoginAgreementDocument) []LoginAgre
 	for i, doc := range docs {
 		title := strings.TrimSpace(doc.Title)
 		content := strings.TrimSpace(doc.ContentMD)
-		if title == "" && content == "" {
+		titleEN := strings.TrimSpace(doc.TitleEN)
+		contentEN := strings.TrimSpace(doc.ContentMDEN)
+		if title == "" && content == "" && titleEN == "" && contentEN == "" {
 			continue
 		}
 		id := normalizeLoginAgreementDocumentID(doc.ID)
@@ -419,9 +421,11 @@ func normalizeLoginAgreementDocuments(docs []LoginAgreementDocument) []LoginAgre
 		}
 		seen[id]++
 		normalized = append(normalized, LoginAgreementDocument{
-			ID:        id,
-			Title:     title,
-			ContentMD: content,
+			ID:          id,
+			Title:       title,
+			ContentMD:   content,
+			TitleEN:     titleEN,
+			ContentMDEN: contentEN,
 		})
 	}
 	return normalized

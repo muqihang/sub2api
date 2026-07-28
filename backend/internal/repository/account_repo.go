@@ -26,6 +26,7 @@ import (
 	dbpredicate "github.com/Wei-Shaw/sub2api/ent/predicate"
 	dbproxy "github.com/Wei-Shaw/sub2api/ent/proxy"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
@@ -50,6 +51,8 @@ type accountRepository struct {
 	// ensuring sticky sessions can promptly detect unavailable accounts.
 	schedulerCache service.SchedulerCache
 }
+
+var _ service.OpenAINativeSearchAccountRepository = (*accountRepository)(nil)
 
 var schedulerNeutralExtraKeyPrefixes = []string{
 	"codex_primary_",
@@ -1167,6 +1170,54 @@ func (r *accountRepository) ListSchedulableByGroupIDAndPlatform(ctx context.Cont
 	})
 }
 
+func (r *accountRepository) ListOpenAINativeSearchCandidatesByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
+	now := time.Now()
+	accounts, err := r.client.Account.Query().
+		Where(
+			dbaccount.PlatformEQ(platform),
+			dbaccount.StatusEQ(service.StatusActive),
+			dbaccount.SchedulableEQ(true),
+			tempUnschedulablePredicate(),
+			notExpiredPredicate(now),
+			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
+		).
+		Order(dbent.Asc(dbaccount.FieldPriority)).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return r.accountsToService(ctx, accounts)
+}
+
+func (r *accountRepository) ListOpenAINativeSearchCandidatesByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]service.Account, error) {
+	return r.queryAccountsByGroup(ctx, groupID, accountGroupQueryOptions{
+		status:                 service.StatusActive,
+		schedulable:            true,
+		platforms:              []string{platform},
+		ignoreRateLimitResetAt: true,
+	})
+}
+
+func (r *accountRepository) ListOpenAINativeSearchCandidatesUngroupedByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
+	now := time.Now()
+	accounts, err := r.client.Account.Query().
+		Where(
+			dbaccount.PlatformEQ(platform),
+			dbaccount.StatusEQ(service.StatusActive),
+			dbaccount.SchedulableEQ(true),
+			dbaccount.Not(dbaccount.HasAccountGroups()),
+			tempUnschedulablePredicate(),
+			notExpiredPredicate(now),
+			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
+		).
+		Order(dbent.Asc(dbaccount.FieldPriority)).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return r.accountsToService(ctx, accounts)
+}
+
 func (r *accountRepository) ListSchedulableByPlatforms(ctx context.Context, platforms []string) ([]service.Account, error) {
 	if len(platforms) == 0 {
 		return nil, nil
@@ -1559,12 +1610,65 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
 			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue extra update failed: account=%d err=%v", id, err)
 		}
-	} else {
-		// 观测型 extra 字段不需要触发 bucket 重建，但仍同步单账号快照，
-		// 让 sticky session / GetAccount 命中缓存时也能读到最新数据，
-		// 同时避免缓存局部 patch 覆盖掉并发写入的其它账号字段。
-		r.syncSchedulerAccountSnapshot(ctx, id)
 	}
+	// Extra 字段会参与 endpoint capability、model mapping 和运行时防护判定。
+	// outbox 负责重建 bucket，这里同步最新的单账号 metadata，避免 worker
+	// 消费前请求继续命中旧能力。从数据库重读也能避免局部 patch 覆盖并发写入。
+	r.syncSchedulerAccountSnapshot(ctx, id)
+	return nil
+}
+
+// UpdateOpenAIResponsesProbeResult atomically merges probe evidence while
+// keeping an explicit semantic failure sticky for the same target and model.
+func (r *accountRepository) UpdateOpenAIResponsesProbeResult(ctx context.Context, id int64, updates map[string]any) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	payload, err := json.Marshal(updates)
+	if err != nil {
+		return err
+	}
+	probeModel, _ := updates[openai_compat.ExtraKeyResponsesCustomToolsProbeModel].(string)
+	probeTarget, _ := updates[openai_compat.ExtraKeyResponsesCustomToolsProbeTarget].(string)
+
+	client := clientFromContext(ctx, r.client)
+	result, err := client.ExecContext(ctx, `
+		UPDATE accounts
+		SET extra = COALESCE(extra, '{}'::jsonb) ||
+			CASE
+				WHEN ($1::jsonb ->> $3) = 'true'
+					AND (COALESCE(extra, '{}'::jsonb) ->> $3) = 'false'
+					AND (COALESCE(extra, '{}'::jsonb) ->> $4) = $5
+					AND (COALESCE(extra, '{}'::jsonb) ->> $6) = $7
+				THEN jsonb_set($1::jsonb, ARRAY[$3]::text[], 'false'::jsonb, true)
+				ELSE $1::jsonb
+			END,
+			updated_at = NOW()
+		WHERE id = $2 AND deleted_at IS NULL`,
+		string(payload),
+		id,
+		openai_compat.ExtraKeyResponsesCustomToolsSupported,
+		openai_compat.ExtraKeyResponsesCustomToolsProbeModel,
+		probeModel,
+		openai_compat.ExtraKeyResponsesCustomToolsProbeTarget,
+		probeTarget,
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return service.ErrAccountNotFound
+	}
+	if shouldEnqueueSchedulerOutboxForExtraUpdates(updates) {
+		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue probe result update failed: account=%d err=%v", id, err)
+		}
+	}
+	r.syncSchedulerAccountSnapshot(ctx, id)
 	return nil
 }
 
@@ -1712,9 +1816,10 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 }
 
 type accountGroupQueryOptions struct {
-	status      string
-	schedulable bool
-	platforms   []string // 允许的多个平台，空切片表示不进行平台过滤
+	status                 string
+	schedulable            bool
+	platforms              []string // 允许的多个平台，空切片表示不进行平台过滤
+	ignoreRateLimitResetAt bool
 }
 
 func (r *accountRepository) queryAccountsByGroup(ctx context.Context, groupID int64, opts accountGroupQueryOptions) ([]service.Account, error) {
@@ -1737,8 +1842,10 @@ func (r *accountRepository) queryAccountsByGroup(ctx context.Context, groupID in
 			tempUnschedulablePredicate(),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
-			dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)),
 		)
+		if !opts.ignoreRateLimitResetAt {
+			preds = append(preds, dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)))
+		}
 	}
 
 	if len(preds) > 0 {

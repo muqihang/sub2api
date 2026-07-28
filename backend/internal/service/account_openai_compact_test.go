@@ -1,6 +1,10 @@
 package service
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestAccountGetOpenAICompactMode(t *testing.T) {
 	tests := []struct {
@@ -62,6 +66,44 @@ func TestAccountGetOpenAICompactMode(t *testing.T) {
 	}
 }
 
+func TestAccountGetOpenAICompactEndpointMode(t *testing.T) {
+	tests := []struct {
+		name    string
+		account *Account
+		want    string
+	}{
+		{
+			name: "missing config defaults to auto",
+			account: &Account{
+				Platform: PlatformOpenAI,
+			},
+			want: OpenAICompactEndpointModeAuto,
+		},
+		{
+			name: "body signal is normalized",
+			account: &Account{
+				Platform: PlatformOpenAI,
+				Extra:    map[string]any{"openai_compact_endpoint_mode": " BODY_SIGNAL "},
+			},
+			want: OpenAICompactEndpointModeBodySignal,
+		},
+		{
+			name: "invalid config defaults to auto",
+			account: &Account{
+				Platform: PlatformOpenAI,
+				Extra:    map[string]any{"openai_compact_endpoint_mode": "invalid"},
+			},
+			want: OpenAICompactEndpointModeAuto,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, tt.account.GetOpenAICompactEndpointMode())
+		})
+	}
+}
+
 func TestAccountOpenAICompactSupportKnown(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -106,6 +148,19 @@ func TestAccountOpenAICompactSupportKnown(t *testing.T) {
 			},
 			wantSupported: false,
 			wantKnown:     true,
+		},
+		{
+			name: "negotiation reopens a previously force-off account as unknown",
+			account: &Account{
+				Platform: PlatformOpenAI,
+				Extra: map[string]any{
+					"openai_compact_mode":                OpenAICompactModeForceOff,
+					"openai_compact_supported":           false,
+					"openai_compact_negotiation_enabled": true,
+				},
+			},
+			wantSupported: false,
+			wantKnown:     false,
 		},
 		{
 			name: "auto true is known supported",
@@ -407,6 +462,12 @@ func TestAccountOpenAICompactSupportKnownForModelLegacyAndOverrides(t *testing.T
 	supported, known = forceOff.OpenAICompactSupportKnownForModel("gpt-5.4")
 	if supported || !known {
 		t.Fatalf("force-off support = (%v, %v), want (false, true)", supported, known)
+	}
+
+	forceOff.Extra["openai_compact_negotiation_enabled"] = true
+	supported, known = forceOff.OpenAICompactSupportKnownForModel("gpt-5.4")
+	if supported || known {
+		t.Fatalf("force-off negotiation support = (%v, %v), want (false, false)", supported, known)
 	}
 }
 

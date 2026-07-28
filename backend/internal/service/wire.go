@@ -379,6 +379,7 @@ func ProvideOpenAIGatewayServiceForWire(
 	entityRegistryRepo EntityRegistryRepository,
 	entityRateLimitService *EntityRateLimitService,
 	userPlatformQuotaRepo UserPlatformQuotaRepository,
+	contentModerationService *ContentModerationService,
 ) *OpenAIGatewayService {
 	return NewOpenAIGatewayService(
 		accountRepo,
@@ -406,6 +407,7 @@ func ProvideOpenAIGatewayServiceForWire(
 		entityRegistryRepo,
 		entityRateLimitService,
 		userPlatformQuotaRepo,
+		NewContentModerationOpenAIContentSafetyProvider(contentModerationService),
 	)
 }
 
@@ -418,6 +420,23 @@ func ProvideCodexEntryCenterService(
 	pricingResolver *ModelPricingResolver,
 ) *CodexEntryCenterServiceImpl {
 	return NewCodexEntryCenterService(repo, apiKeyReader, apiKeyCreator, cfg, modelRegistry, pricingResolver)
+}
+
+// ProvideOpenAIAgentIdentityAdmissionWorker starts the isolated admission
+// pipeline for Agent Identity imports. Imported accounts remain quarantined
+// until Responses, Compact, and Native Search all pass.
+func ProvideOpenAIAgentIdentityAdmissionWorker(
+	accountRepo AccountRepository,
+	openAIGateway *OpenAIGatewayService,
+) *OpenAIAgentIdentityAdmissionWorker {
+	prober := NewOpenAIAgentIdentityAdmissionGatewayProber(openAIGateway)
+	worker := NewOpenAIAgentIdentityAdmissionWorker(
+		accountRepo,
+		prober,
+		OpenAIAgentIdentityAdmissionWorkerOptions{},
+	)
+	worker.Start()
+	return worker
 }
 
 // ProvideClaudeTokenProvider creates ClaudeTokenProvider with OAuthRefreshAPI injection
@@ -1150,6 +1169,7 @@ var ProviderSet = wire.NewSet(
 	ProvideOpenAIGatewayCoreService,
 	NewEntityRateLimitService,
 	ProvideOpenAIGatewayServiceForWire,
+	ProvideOpenAIAgentIdentityAdmissionWorker,
 	ProvideBatchImageModelPricingResolver,
 	NewBatchImagePublicService,
 	NewBatchImageDownloadService,
@@ -1188,6 +1208,7 @@ var ProviderSet = wire.NewSet(
 	ProvideRateLimitService,
 	ProvideAccountUsageService,
 	NewAccountTestService,
+	ProvideOpenAIResponsesProbeScheduler,
 	ProvideSettingService,
 	NewDataManagementService,
 	ProvideBackupService,
@@ -1300,4 +1321,11 @@ func ProvideChannelMonitorRunner(svc *ChannelMonitorService, settingService *Set
 	svc.SetScheduler(r)
 	r.Start()
 	return r
+}
+
+func ProvideOpenAIResponsesProbeScheduler(accountRepo AccountRepository, accountTestService *AccountTestService) *OpenAIResponsesProbeScheduler {
+	scheduler := NewOpenAIResponsesProbeScheduler(accountRepo, accountTestService)
+	accountTestService.SetOpenAIResponsesProbeScheduler(scheduler)
+	scheduler.Start()
+	return scheduler
 }

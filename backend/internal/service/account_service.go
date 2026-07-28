@@ -83,6 +83,15 @@ type AccountRepository interface {
 	RevertProxyFallback(ctx context.Context, accountID int64) error
 }
 
+// OpenAINativeSearchAccountRepository is the optional repository extension for
+// native Search scheduling. Responses rate-limit windows are endpoint-specific
+// and must not hide otherwise healthy OAuth accounts from Search.
+type OpenAINativeSearchAccountRepository interface {
+	ListOpenAINativeSearchCandidatesByPlatform(ctx context.Context, platform string) ([]Account, error)
+	ListOpenAINativeSearchCandidatesByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error)
+	ListOpenAINativeSearchCandidatesUngroupedByPlatform(ctx context.Context, platform string) ([]Account, error)
+}
+
 // AccountShadowRepository is the optional repository extension used by linked
 // Spark shadow account management. Keeping it outside AccountRepository avoids
 // forcing unrelated protected-path tests/stubs to implement shadow-only methods.

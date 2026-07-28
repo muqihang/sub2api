@@ -33,6 +33,54 @@ vi.mock('@/api/zhumengAgent', () => ({
 import UseKeyModal from '../UseKeyModal.vue'
 
 describe('UseKeyModal', () => {
+  it('renders only public embedding and rerank usage for a vector group', async () => {
+    const wrapper = mount(UseKeyModal, {
+      props: {
+        show: true,
+        apiKeyId: 42,
+        apiKey: 'sk-vector',
+        baseUrl: 'https://example.com/v1',
+        platform: 'openai',
+        availableModels: [
+          'Zhumeng-embeddings-1536',
+          'Zhumeng-embeddings-1024',
+          'Zhumeng-erank',
+        ],
+      },
+      global: {
+        stubs: {
+          BaseDialog: {
+            template: '<div><slot /><slot name="footer" /></div>'
+          },
+          Icon: {
+            template: '<span />'
+          }
+        }
+      }
+    })
+
+    expect(wrapper.text()).toContain('Zhumeng-embeddings-1536')
+    expect(wrapper.text()).toContain('Zhumeng-embeddings-1024')
+    expect(wrapper.text()).toContain('Zhumeng-erank')
+    expect(wrapper.text()).not.toContain('keys.useKeyModal.cliTabs.codexCli')
+    expect(wrapper.text()).not.toContain('keys.useKeyModal.cliTabs.opencode')
+
+    let code = wrapper.find('pre code').text()
+    expect(code).toContain('https://example.com/v1/embeddings')
+    expect(code).toContain('"model": "Zhumeng-embeddings-1536"')
+    expect(code).not.toMatch(/nvidia|nvapi|nvolveqa/i)
+
+    const rerankTab = wrapper.findAll('button').find((button) => button.text().includes('Zhumeng-erank'))
+    expect(rerankTab).toBeDefined()
+    await rerankTab!.trigger('click')
+    await nextTick()
+
+    code = wrapper.find('pre code').text()
+    expect(code).toContain('https://example.com/v1/rerank')
+    expect(code).toContain('"model": "Zhumeng-erank"')
+    expect(code).not.toMatch(/nvidia|nvapi|nvolveqa/i)
+  })
+
   it('renders GPT-5.5, Codex-safe context limits, and goals feature in OpenAI Codex config', () => {
     const wrapper = mount(UseKeyModal, {
       props: {

@@ -31,7 +31,6 @@ func TestHandleNonStreamingResponse_CompactClientStreamBridgesToSSE(t *testing.T
 		Body: io.NopCloser(strings.NewReader(`{
 			"id":"resp_compact_json",
 			"object":"response",
-			"status":"completed",
 			"output":[{"id":"cmp_1","type":"compaction","encrypted_content":"compact-payload"}],
 			"usage":{"input_tokens":9,"output_tokens":4,"total_tokens":13}
 		}`)),
@@ -48,6 +47,7 @@ func TestHandleNonStreamingResponse_CompactClientStreamBridgesToSSE(t *testing.T
 	require.Equal(t, "compaction", gjson.Get(events[0][1], "item.type").String())
 	require.Equal(t, "response.completed", events[1][0])
 	require.Equal(t, "resp_compact_json", gjson.Get(events[1][1], "response.id").String())
+	require.Equal(t, "completed", gjson.Get(events[1][1], "response.status").String())
 	require.Equal(t, 9, result.usage.InputTokens)
 }
 

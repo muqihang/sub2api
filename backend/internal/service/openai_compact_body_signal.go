@@ -1,6 +1,12 @@
 package service
 
-import "github.com/tidwall/gjson"
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	"github.com/tidwall/gjson"
+)
 
 // HasCompactionTriggerInInput detects the Codex remote compact v2 body signal:
 // an input item with type "compaction_trigger". When the client sends this
@@ -31,4 +37,24 @@ func HasCompactionTriggerInInput(body []byte) bool {
 		return true
 	})
 	return found
+}
+
+func ensureOpenAICompactionTrigger(body []byte) ([]byte, bool, error) {
+	if HasCompactionTriggerInInput(body) {
+		return body, false, nil
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return body, false, fmt.Errorf("decode compact body for body-signal fallback: %w", err)
+	}
+	input, ok := payload["input"].([]any)
+	if !ok {
+		return body, false, errors.New("compact body input must be an array for body-signal fallback")
+	}
+	payload["input"] = append(input, map[string]any{"type": "compaction_trigger"})
+	updated, err := json.Marshal(payload)
+	if err != nil {
+		return body, false, fmt.Errorf("encode compact body for body-signal fallback: %w", err)
+	}
+	return updated, true, nil
 }

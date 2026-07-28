@@ -128,22 +128,14 @@ func TestBlockerRegressionOpenAITokenProviderRefreshErrorFailsClosed(t *testing.
 	require.Equal(t, "openai_refresh_retryable", blocker.reason)
 }
 
-func TestBlockerRegressionTemporaryNetworkShortCooldownExpires(t *testing.T) {
+func TestBlockerRegressionTemporaryNetworkHTTPErrorDoesNotPoisonScheduling(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	account := &Account{ID: 9002, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
 
 	shouldDisable := svc.handleOpenAIAccountUpstreamError(context.Background(), account, 502, nil, []byte("<html>bad gateway temporary network</html>"), "gpt-5", "responses")
 
 	require.False(t, shouldDisable)
-	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account), "temporary upstream/network failures should short-cooldown scheduling")
-	value, ok := svc.openaiAccountRuntimeBlockUntil.Load(account.ID)
-	require.True(t, ok)
-	until, ok := value.(time.Time)
-	require.True(t, ok)
-	require.WithinDuration(t, time.Now().Add(openAIRuntimeGuardLearnedBlockTemporaryTTL), until, 2*time.Second)
-
-	svc.openaiAccountRuntimeBlockUntil.Store(account.ID, time.Now().Add(-time.Millisecond))
-	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account), "expired temporary_network cooldown should allow probing again")
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account), "request-local HTTP 502 must not poison scheduling for other sessions")
 }
 
 func TestBlockerRegressionRuntimeGuardLocalOpsEventStructuredAndSanitized(t *testing.T) {

@@ -363,9 +363,11 @@ func loginAgreementDocumentsToDTO(items []service.LoginAgreementDocument) []dto.
 	result := make([]dto.LoginAgreementDocument, 0, len(items))
 	for _, item := range items {
 		result = append(result, dto.LoginAgreementDocument{
-			ID:        item.ID,
-			Title:     item.Title,
-			ContentMD: item.ContentMD,
+			ID:          item.ID,
+			Title:       item.Title,
+			ContentMD:   item.ContentMD,
+			TitleEN:     item.TitleEN,
+			ContentMDEN: item.ContentMDEN,
 		})
 	}
 	return result
@@ -376,13 +378,17 @@ func loginAgreementDocumentsToService(items []dto.LoginAgreementDocument) []serv
 	for _, item := range items {
 		title := strings.TrimSpace(item.Title)
 		content := strings.TrimSpace(item.ContentMD)
-		if title == "" && content == "" {
+		titleEN := strings.TrimSpace(item.TitleEN)
+		contentEN := strings.TrimSpace(item.ContentMDEN)
+		if title == "" && content == "" && titleEN == "" && contentEN == "" {
 			continue
 		}
 		result = append(result, service.LoginAgreementDocument{
-			ID:        strings.TrimSpace(item.ID),
-			Title:     title,
-			ContentMD: content,
+			ID:          strings.TrimSpace(item.ID),
+			Title:       title,
+			ContentMD:   content,
+			TitleEN:     titleEN,
+			ContentMDEN: contentEN,
 		})
 	}
 	return result

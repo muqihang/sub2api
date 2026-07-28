@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -144,6 +145,35 @@ func TestWriteOpenAICompactSSEBridge_AfterKeepaliveCommit(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, http.StatusBadGateway, streamErr.IntendedStatus)
 	})
+}
+
+func TestHandleErrorResponse_CompactKeepaliveEmitsFailedSSE(t *testing.T) {
+	ctx, recorder := newCompactKeepaliveTestContext(true)
+	stop := StartOpenAICompactSSEKeepalive(ctx, keepaliveTestInterval)
+	defer stop()
+	waitForCompactKeepaliveBeat()
+
+	responseBody := `{"error":{"code":"model_price_error","message":"compact model is not priced","type":"new_api_error"}}`
+	resp := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(responseBody)),
+	}
+	account := &Account{ID: 1, Name: "compact-apikey", Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	svc := &OpenAIGatewayService{}
+
+	_, err := svc.handleErrorResponse(context.Background(), resp, ctx, account, nil, "gpt-5.6-sol")
+	require.Error(t, err)
+
+	events := parseCompactBridgeSSE(t, stripCompactKeepaliveEvents(recorder.Body.String()))
+	require.Len(t, events, 1)
+	require.Equal(t, "response.failed", events[0][0])
+	require.Equal(t, "upstream_error", gjson.Get(events[0][1], "response.error.code").String())
+	require.Contains(t, gjson.Get(events[0][1], "response.error.message").String(), "Upstream request failed")
+	require.True(t, IsResponseCommitted(ctx))
+	streamErr, ok := GetOpsStreamError(ctx)
+	require.True(t, ok)
+	require.Equal(t, http.StatusBadGateway, streamErr.IntendedStatus)
 }
 
 func TestOpenAICompactKeepaliveWriter_RequestSideWriteSuspendsBeats(t *testing.T) {

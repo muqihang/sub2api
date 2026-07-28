@@ -9,7 +9,6 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -334,7 +333,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)
 		inboundEndpoint := GetInboundEndpoint(c)
-		upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account)
+		upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account, reqModel)
 		requestCtx := c.Request.Context()
 		quotaPlatform := service.QuotaPlatform(requestCtx, apiKey)
 
@@ -377,9 +376,9 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 // resolveOpenAIUpstreamEndpoint returns the actual upstream endpoint for an
 // OpenAI account. APIKey accounts whose upstream is forced or probed to not
 // support the Responses API are served directly via /v1/chat/completions.
-func resolveOpenAIUpstreamEndpoint(c *gin.Context, account *service.Account) string {
+func resolveOpenAIUpstreamEndpoint(c *gin.Context, account *service.Account, requestedModel string) string {
 	if account != nil && account.Type == service.AccountTypeAPIKey &&
-		!openai_compat.ShouldUseResponsesAPI(account.Extra) {
+		!account.ShouldUseOpenAIResponsesAPI(requestedModel) {
 		return "/v1/chat/completions"
 	}
 	return GetUpstreamEndpoint(c, account.Platform)

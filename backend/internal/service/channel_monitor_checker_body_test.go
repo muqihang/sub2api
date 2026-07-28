@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // swapMonitorHTTPClient 临时替换 monitorHTTPClient 为不带 SSRF 校验的普通 client，
@@ -25,10 +27,11 @@ func swapMonitorHTTPClient(t *testing.T) {
 
 // captureHandler 把每次收到的请求 body 和 headers 存起来，测试断言用。
 type captureHandler struct {
-	lastBody    map[string]any
-	lastHeaders http.Header
-	respondText string // 写到 Anthropic content[0].text 里（校验用）
-	status      int
+	lastBody        map[string]any
+	lastHeaders     http.Header
+	respondText     string // 写到 Anthropic text block 里（校验用）
+	leadingThinking bool
+	status          int
 }
 
 func (h *captureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -43,11 +46,17 @@ func (h *captureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(h.status)
-	// 构造 Anthropic 格式的响应：content[0].text = h.respondText
+	content := []map[string]any{}
+	if h.leadingThinking {
+		content = append(content, map[string]any{
+			"type":      "thinking",
+			"thinking":  "The arithmetic is straightforward.",
+			"signature": "test-signature",
+		})
+	}
+	content = append(content, map[string]any{"type": "text", "text": h.respondText})
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"content": []map[string]any{
-			{"type": "text", "text": h.respondText},
-		},
+		"content": content,
 	})
 }
 
@@ -161,6 +170,33 @@ func TestRunCheckForModel_OffMode_PreservesDefaultBody(t *testing.T) {
 	}
 }
 
+func TestCallProvider_AnthropicSkipsLeadingThinkingBlock(t *testing.T) {
+	h := &captureHandler{respondText: "29", leadingThinking: true}
+	endpoint := setupFakeAnthropic(t, h)
+
+	text, _, status, err := callProvider(
+		context.Background(),
+		MonitorProviderAnthropic,
+		endpoint,
+		"sk-fake",
+		"claude-haiku-4-5-20251001",
+		"What is 14 + 15? Reply with only the integer result.",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("callProvider returned error: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d", status)
+	}
+	if text != "29" {
+		t.Fatalf("expected text from the Anthropic text block, got %q", text)
+	}
+	if got := int(h.lastBody["max_tokens"].(float64)); got != monitorAnthropicChallengeMaxTokens {
+		t.Fatalf("expected Anthropic max_tokens=%d, got %d", monitorAnthropicChallengeMaxTokens, got)
+	}
+}
+
 func TestRunCheckForModel_OpenAI_DefaultChatRequest(t *testing.T) {
 	h := &openAICaptureHandler{}
 	endpoint := setupFakeOpenAI(t, h)
@@ -224,6 +260,77 @@ func TestRunCheckForModel_OpenAIResponses_DefaultRequest(t *testing.T) {
 	if h.lastHeaders.Get("Authorization") != "Bearer sk-openai" {
 		t.Errorf("expected bearer auth header, got %q", h.lastHeaders.Get("Authorization"))
 	}
+}
+
+func TestRunCheckForModel_OpenAIEmbeddings_DefaultRequest(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"embedding": []float64{0.1, 0.2}}},
+		})
+	}))
+	t.Cleanup(server.Close)
+	swapMonitorHTTPClient(t)
+
+	res := runCheckForModel(context.Background(), MonitorProviderOpenAI, server.URL, "sk-openai", "embed-test", &CheckOptions{
+		APIMode: MonitorAPIModeEmbeddings,
+	})
+
+	require.Equal(t, MonitorStatusOperational, res.Status, res.Message)
+	require.Equal(t, providerOpenAIEmbeddingsPath, gotPath)
+	require.Equal(t, "embed-test", gotBody["model"])
+	require.NotEmpty(t, gotBody["input"])
+}
+
+func TestRunCheckForModel_OpenAIRerank_DefaultRequest(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{{"index": 0, "relevance_score": 0.99}},
+		})
+	}))
+	t.Cleanup(server.Close)
+	swapMonitorHTTPClient(t)
+
+	res := runCheckForModel(context.Background(), MonitorProviderOpenAI, server.URL, "sk-openai", "rerank-test", &CheckOptions{
+		APIMode: MonitorAPIModeRerank,
+	})
+
+	require.Equal(t, MonitorStatusOperational, res.Status, res.Message)
+	require.Equal(t, providerOpenAIRerankPath, gotPath)
+	require.Equal(t, "rerank-test", gotBody["model"])
+	require.NotEmpty(t, gotBody["query"])
+	require.NotEmpty(t, gotBody["documents"])
+}
+
+func TestRunCheckForModel_OpenAIEmbeddings_EmptyVectorFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"embedding": []float64{}}},
+		})
+	}))
+	t.Cleanup(server.Close)
+	swapMonitorHTTPClient(t)
+
+	res := runCheckForModel(context.Background(), MonitorProviderOpenAI, server.URL, "sk-openai", "embed-test", &CheckOptions{
+		APIMode: MonitorAPIModeEmbeddings,
+	})
+
+	require.Equal(t, MonitorStatusFailed, res.Status)
+	require.Contains(t, res.Message, "embedding")
 }
 
 func TestRunCheckForModel_OpenAIResponses_SkipsLeadingReasoningItem(t *testing.T) {

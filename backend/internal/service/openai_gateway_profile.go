@@ -26,6 +26,7 @@ type OpenAIGatewayProfileRouteKind string
 const (
 	OpenAIGatewayProfileRouteResponsesHTTP        OpenAIGatewayProfileRouteKind = "responses_http"
 	OpenAIGatewayProfileRouteResponsesCompact     OpenAIGatewayProfileRouteKind = "responses_compact"
+	OpenAIGatewayProfileRouteNativeSearch         OpenAIGatewayProfileRouteKind = "native_search"
 	OpenAIGatewayProfileRouteCompatMessagesBridge OpenAIGatewayProfileRouteKind = "compat_messages_bridge"
 	OpenAIGatewayProfileRouteResponsesWSV1        OpenAIGatewayProfileRouteKind = "responses_ws_v1"
 	OpenAIGatewayProfileRouteResponsesWSV2        OpenAIGatewayProfileRouteKind = "responses_ws_v2"
@@ -87,6 +88,9 @@ func BuildOpenAIGatewayProfileArtifact(
 	case OpenAIGatewayProfileRouteCompatMessagesBridge:
 		artifact.ClearOpenAIBeta = true
 		artifact.ClearOriginator = true
+	case OpenAIGatewayProfileRouteNativeSearch:
+		artifact.ClearOpenAIBeta = true
+		artifact.Originator = resolveOpenAIGatewayArtifactOriginator(opts.RequestedOriginator, opts.IsOfficialClient)
 	case OpenAIGatewayProfileRouteResponsesCompact:
 		artifact.OpenAIBeta = openAIGatewayResponsesBetaValue
 		artifact.Originator = resolveOpenAIGatewayArtifactOriginator(opts.RequestedOriginator, opts.IsOfficialClient)

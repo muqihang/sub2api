@@ -203,6 +203,35 @@ func TestGatewayRoutesOpenAIResponsesCompactPathIsRegistered(t *testing.T) {
 	}
 }
 
+func TestGatewayRoutesOpenAINativeSearchPathsAreRegistered(t *testing.T) {
+	router := newGatewayRoutesTestRouter()
+
+	for _, path := range []string{"/alpha/search", "/v1/alpha/search"} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"id":"session","model":"gpt-5.4","commands":{}}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+
+		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should reach native Search handler", path)
+		require.NotContains(t, w.Header().Get("Content-Type"), "text/html")
+	}
+}
+
+func TestGatewayRoutesOpenAINativeSearchRejectsOtherPlatforms(t *testing.T) {
+	router := newGatewayRoutesTestRouterWithPlatform(service.PlatformAnthropic)
+
+	for _, path := range []string{"/alpha/search", "/v1/alpha/search"} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"id":"session","model":"gpt-5.4","commands":{}}`))
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+
+		require.Equal(t, http.StatusNotFound, w.Code)
+		require.Contains(t, w.Header().Get("Content-Type"), "application/json")
+	}
+}
+
 type gatewayRoutesAugmentAuthStub struct {
 	userID int64
 }

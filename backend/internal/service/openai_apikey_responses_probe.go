@@ -7,19 +7,27 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
+	"github.com/google/uuid"
 )
+
+type openAIResponsesProbeResultRepository interface {
+	UpdateOpenAIResponsesProbeResult(ctx context.Context, id int64, updates map[string]any) error
+}
 
 // openaiResponsesProbeTimeout 是探测请求的超时时长。
 // 探测在后台异步执行；留出余量给推理型模型先推理再产出工具调用。
 const openaiResponsesProbeTimeout = 15 * time.Second
 
 const responsesProbeMaxBodyBytes = 256 * 1024
+
+const responsesCustomToolProbeRuns = 3
 
 // openaiResponsesProbePayload 是探测使用的最小 Responses 请求体。
 // 探测强制一次函数调用，只有真正产出 function_call 的 2xx 响应才判定支持。
@@ -58,11 +66,59 @@ func openaiResponsesProbePayload(modelID string) []byte {
 	return body
 }
 
-func selectResponsesProbeModel(account *Account) string {
+func openaiResponsesCustomToolsProbePayload(modelID string, nonce string) []byte {
+	if strings.TrimSpace(modelID) == "" {
+		modelID = openai.DefaultTestModel
+	}
+	prompt := "Run pwd now and report its result."
+	if nonce = strings.TrimSpace(nonce); nonce != "" {
+		prompt = "Run pwd now for capability probe " + nonce + " and report its result."
+	}
+	body, _ := json.Marshal(map[string]any{
+		"model":        modelID,
+		"instructions": "You are a coding agent. Use the exec tool for shell commands.",
+		"input": []map[string]any{
+			{
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "input_text", "text": prompt},
+				},
+			},
+		},
+		"tools": []map[string]any{
+			{
+				"type":        "custom",
+				"name":        "exec",
+				"description": "Run a shell command.",
+				"format":      map[string]any{"type": "text"},
+			},
+		},
+		"tool_choice":       "auto",
+		"max_output_tokens": 128,
+		"stream":            false,
+		"store":             false,
+	})
+	return body
+}
+
+func selectResponsesProbeModel(account *Account, requestedModels ...string) string {
 	if account == nil {
 		return openai.DefaultTestModel
 	}
+	if len(requestedModels) > 0 {
+		requestedModel := strings.TrimSpace(requestedModels[0])
+		if requestedModel != "" && account.IsModelSupported(requestedModel) {
+			if mapped := strings.TrimSpace(account.GetMappedModel(requestedModel)); mapped != "" && !strings.Contains(mapped, "*") {
+				return mapped
+			}
+		}
+	}
 	mapping := account.GetModelMapping()
+	for _, preferred := range []string{"gpt-5.6-sol", "gpt-5.6", "gpt-5.4", "gpt-5.2"} {
+		if upstream := strings.TrimSpace(mapping[preferred]); upstream != "" && !strings.Contains(upstream, "*") {
+			return upstream
+		}
+	}
 	candidates := make([]string, 0, len(mapping))
 	for _, upstream := range mapping {
 		upstream = strings.TrimSpace(upstream)
@@ -94,6 +150,14 @@ func selectResponsesProbeModel(account *Account) string {
 // 关于失败处理：探测本身的失败不应阻塞账号创建——账号能创建/更新成功就够了，
 // 探测结果只影响后续路由优化。所有错误都仅记录日志，不向调用方传播。
 func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Context, accountID int64) {
+	s.probeOpenAIAPIKeyResponsesSupport(ctx, accountID, "")
+}
+
+func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupportForModel(ctx context.Context, accountID int64, requestedModel string) {
+	s.probeOpenAIAPIKeyResponsesSupport(ctx, accountID, requestedModel)
+}
+
+func (s *AccountTestService) probeOpenAIAPIKeyResponsesSupport(ctx context.Context, accountID int64, requestedModel string) {
 	account, err := s.accountRepo.GetByID(ctx, accountID)
 	if err != nil {
 		logger.LegacyPrintf("service.openai_probe", "probe_load_account_failed: account_id=%d err=%v", accountID, err)
@@ -120,48 +184,122 @@ func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 	}
 
 	probeURL := buildOpenAIResponsesURL(normalizedBaseURL)
-	probeModel := selectResponsesProbeModel(account)
+	probeModel := selectResponsesProbeModel(account, requestedModel)
+	probeTarget := account.OpenAIResponsesCustomToolsTargetFingerprint(probeModel)
 
-	probeCtx, cancel := context.WithTimeout(ctx, openaiResponsesProbeTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(probeCtx, http.MethodPost, probeURL, bytes.NewReader(openaiResponsesProbePayload(probeModel)))
-	if err != nil {
-		logger.LegacyPrintf("service.openai_probe", "probe_build_request_failed: account_id=%d err=%v", accountID, err)
-		return
-	}
-	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Accept", "application/json")
-	account.ApplyHeaderOverrides(req.Header)
-
-	resp, err := s.sendOpenAIProbeHTTPRequest(probeCtx, req, account)
+	status, bodyBytes, err := s.executeOpenAIResponsesProbe(ctx, account, probeURL, apiKey, openaiResponsesProbePayload(probeModel))
 	if err != nil {
 		// 网络层失败：不写标记，保持 unknown，下次重试或由网关 fallback 处理
 		logger.LegacyPrintf("service.openai_probe", "probe_request_failed: account_id=%d url=%s err=%v", accountID, probeURL, err)
 		return
 	}
-	defer func() { _ = resp.Body.Close() }()
-	bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, responsesProbeMaxBodyBytes))
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, responsesProbeMaxBodyBytes))
-	if readErr != nil {
-		return
+
+	supported := decideResponsesProbeSupport(status, bodyBytes)
+	updates := map[string]any{
+		openai_compat.ExtraKeyResponsesSupported:   supported,
+		openai_compat.ExtraKeyResponsesProbeModel:  probeModel,
+		openai_compat.ExtraKeyResponsesProbeTarget: probeTarget,
+	}
+	customToolsSupported := false
+	customToolsKnown := !supported
+	customStatus := 0
+	if supported {
+		customToolsSupported, customToolsKnown, customStatus = s.probeOpenAIResponsesCustomToolsConsistency(
+			ctx,
+			account,
+			probeURL,
+			apiKey,
+			probeModel,
+		)
+	}
+	if customToolsKnown {
+		updates[openai_compat.ExtraKeyResponsesCustomToolsSupported] = customToolsSupported
+		updates[openai_compat.ExtraKeyResponsesCustomToolsProbeModel] = probeModel
+		updates[openai_compat.ExtraKeyResponsesCustomToolsProbeTarget] = probeTarget
 	}
 
-	supported := decideResponsesProbeSupport(resp.StatusCode, bodyBytes)
+	latest, err := s.accountRepo.GetByID(ctx, accountID)
+	if err != nil || latest.OpenAIResponsesCustomToolsTargetFingerprint(selectResponsesProbeModel(latest, requestedModel)) != probeTarget {
+		logger.LegacyPrintf("service.openai_probe", "probe_stale_result_skipped: account_id=%d", accountID)
+		return
+	}
+	if customToolsKnown && customToolsSupported && hasOpenAIResponsesCustomToolsNegativeEvidence(latest, probeModel, probeTarget) {
+		customToolsSupported = false
+		updates[openai_compat.ExtraKeyResponsesCustomToolsSupported] = false
+		logger.LegacyPrintf("service.openai_probe", "custom_tools_probe_recovery_suppressed: account_id=%d model=%s reason=prior_negative_same_target", accountID, probeModel)
+	}
 
-	if err := s.accountRepo.UpdateExtra(ctx, accountID, map[string]any{
-		openai_compat.ExtraKeyResponsesSupported: supported,
-	}); err != nil {
-		logger.LegacyPrintf("service.openai_probe", "probe_persist_failed: account_id=%d supported=%v err=%v", accountID, supported, err)
+	var persistErr error
+	if repo, ok := s.accountRepo.(openAIResponsesProbeResultRepository); ok {
+		persistErr = repo.UpdateOpenAIResponsesProbeResult(ctx, accountID, updates)
+	} else {
+		persistErr = s.accountRepo.UpdateExtra(ctx, accountID, updates)
+	}
+	if persistErr != nil {
+		logger.LegacyPrintf("service.openai_probe", "probe_persist_failed: account_id=%d supported=%v err=%v", accountID, supported, persistErr)
 		return
 	}
 
 	logger.LegacyPrintf("service.openai_probe",
-		"probe_done: account_id=%d base_url=%s status=%d supported=%v",
-		accountID, normalizedBaseURL, resp.StatusCode, supported,
+		"probe_done: account_id=%d base_url=%s status=%d supported=%v custom_tools_status=%d custom_tools_known=%v custom_tools_supported=%v",
+		accountID, normalizedBaseURL, status, supported, customStatus, customToolsKnown, customToolsSupported,
 	)
+}
+
+func (s *AccountTestService) probeOpenAIResponsesCustomToolsConsistency(
+	ctx context.Context,
+	account *Account,
+	probeURL string,
+	apiKey string,
+	probeModel string,
+) (supported bool, known bool, lastStatus int) {
+	probeRunID := uuid.NewString()
+	for attempt := 1; attempt <= responsesCustomToolProbeRuns; attempt++ {
+		payload := openaiResponsesCustomToolsProbePayload(probeModel, probeRunID+"-"+strconv.Itoa(attempt))
+		status, body, err := s.executeOpenAIResponsesProbe(ctx, account, probeURL, apiKey, payload)
+		lastStatus = status
+		if err != nil {
+			logger.LegacyPrintf("service.openai_probe", "custom_tools_probe_request_failed: account_id=%d url=%s attempt=%d/%d err=%v", account.ID, probeURL, attempt, responsesCustomToolProbeRuns, err)
+			return false, false, lastStatus
+		}
+		attemptSupported, attemptKnown := decideResponsesCustomToolsProbeSupport(status, body)
+		if !attemptKnown {
+			return false, false, lastStatus
+		}
+		if !attemptSupported {
+			return false, true, lastStatus
+		}
+	}
+	return true, true, lastStatus
+}
+
+func (s *AccountTestService) executeOpenAIResponsesProbe(ctx context.Context, account *Account, probeURL, apiKey string, payload []byte) (int, []byte, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, openaiResponsesProbeTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodPost, probeURL, bytes.NewReader(payload))
+	if err != nil {
+		return 0, nil, err
+	}
+	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Originator", "codex_cli_rs")
+	req.Header.Set("User-Agent", codexCLIUserAgent)
+	account.ApplyHeaderOverrides(req.Header)
+
+	resp, err := s.sendOpenAIProbeHTTPRequest(probeCtx, req, account)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, responsesProbeMaxBodyBytes))
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, responsesProbeMaxBodyBytes))
+	if err != nil {
+		return resp.StatusCode, nil, err
+	}
+	return resp.StatusCode, body, nil
 }
 
 // isResponsesEndpointSupportedByStatus 根据探测响应的 HTTP 状态码判定上游
@@ -206,6 +344,50 @@ func decideResponsesProbeSupport(status int, body []byte) bool {
 }
 
 func responsesProbeBodyHasFunctionCall(body []byte) bool {
+	return responsesProbeBodyHasOutputType(body, "function_call")
+}
+
+func responsesProbeBodyHasCustomToolCall(body []byte) bool {
+	return responsesProbeBodyHasOutputType(body, "custom_tool_call")
+}
+
+func decideResponsesCustomToolsProbeSupport(status int, body []byte) (supported bool, known bool) {
+	if status < 200 || status >= 300 {
+		return false, false
+	}
+	var parsed struct {
+		Output []struct {
+			Type string `json:"type"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil || len(parsed.Output) == 0 {
+		return false, false
+	}
+	explicitFailure := false
+	for _, item := range parsed.Output {
+		switch strings.ToLower(strings.TrimSpace(item.Type)) {
+		case "custom_tool_call":
+			return true, true
+		case "message", "function_call":
+			explicitFailure = true
+		}
+	}
+	return false, explicitFailure
+}
+
+func hasOpenAIResponsesCustomToolsNegativeEvidence(account *Account, probeModel, probeTarget string) bool {
+	if account == nil || account.Extra == nil {
+		return false
+	}
+	priorSupported, ok := account.Extra[openai_compat.ExtraKeyResponsesCustomToolsSupported].(bool)
+	if !ok || priorSupported {
+		return false
+	}
+	return strings.TrimSpace(account.OpenAIResponsesCustomToolsProbeModel()) == strings.TrimSpace(probeModel) &&
+		strings.TrimSpace(account.OpenAIResponsesCustomToolsProbeTarget()) == strings.TrimSpace(probeTarget)
+}
+
+func responsesProbeBodyHasOutputType(body []byte, outputType string) bool {
 	var parsed struct {
 		Output []struct {
 			Type string `json:"type"`
@@ -215,7 +397,7 @@ func responsesProbeBodyHasFunctionCall(body []byte) bool {
 		return false
 	}
 	for _, item := range parsed.Output {
-		if strings.TrimSpace(item.Type) == "function_call" {
+		if strings.EqualFold(strings.TrimSpace(item.Type), outputType) {
 			return true
 		}
 	}

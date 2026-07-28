@@ -47,6 +47,41 @@ func TestResponsesProbeBodyHasFunctionCall(t *testing.T) {
 	require.False(t, responsesProbeBodyHasFunctionCall([]byte(`garbage`)))
 }
 
+func TestResponsesProbeBodyHasCustomToolCall(t *testing.T) {
+	require.True(t, responsesProbeBodyHasCustomToolCall([]byte(`{"output":[{"type":"custom_tool_call","name":"exec"}]}`)))
+	require.True(t, responsesProbeBodyHasCustomToolCall([]byte(`{"output":[{"type":"reasoning"},{"type":"custom_tool_call","name":"exec"}]}`)))
+	require.False(t, responsesProbeBodyHasCustomToolCall([]byte(`{"output":[{"type":"function_call","name":"exec"}]}`)))
+	require.False(t, responsesProbeBodyHasCustomToolCall([]byte(`{"output":[{"type":"message","content":[{"type":"output_text","text":"tool unavailable"}]}]}`)))
+	require.False(t, responsesProbeBodyHasCustomToolCall([]byte(`garbage`)))
+}
+
+func TestDecideResponsesCustomToolsProbeSupport(t *testing.T) {
+	customCall := []byte(`{"output":[{"type":"custom_tool_call","name":"exec"}]}`)
+	textOnly := []byte(`{"output":[{"type":"message","content":[{"type":"output_text","text":"tool unavailable"}]}]}`)
+
+	supported, known := decideResponsesCustomToolsProbeSupport(http.StatusOK, customCall)
+	require.True(t, known)
+	require.True(t, supported)
+
+	supported, known = decideResponsesCustomToolsProbeSupport(http.StatusOK, []byte(`{"output":[{"type":"message"},{"type":"custom_tool_call","name":"exec"}]}`))
+	require.True(t, known)
+	require.True(t, supported)
+
+	supported, known = decideResponsesCustomToolsProbeSupport(http.StatusOK, textOnly)
+	require.True(t, known)
+	require.False(t, supported)
+
+	supported, known = decideResponsesCustomToolsProbeSupport(http.StatusOK, []byte(`{}`))
+	require.False(t, known)
+	require.False(t, supported)
+
+	for _, status := range []int{http.StatusBadRequest, http.StatusTooManyRequests, http.StatusInternalServerError} {
+		supported, known = decideResponsesCustomToolsProbeSupport(status, customCall)
+		require.False(t, known, "status %d must be inconclusive", status)
+		require.False(t, supported)
+	}
+}
+
 func TestSelectResponsesProbeModel(t *testing.T) {
 	require.Equal(t, openai.DefaultTestModel, selectResponsesProbeModel(&Account{}))
 
@@ -57,6 +92,14 @@ func TestSelectResponsesProbeModel(t *testing.T) {
 		},
 	}}
 	require.Equal(t, "alpha-model", selectResponsesProbeModel(account))
+
+	accountWithCodexModel := &Account{Credentials: map[string]any{
+		"model_mapping": map[string]any{
+			"codex-auto-review": "codex-auto-review",
+			"gpt-5.6-sol":       "gpt-5.6-sol-upstream",
+		},
+	}}
+	require.Equal(t, "gpt-5.6-sol-upstream", selectResponsesProbeModel(accountWithCodexModel))
 
 	accountWithWildcards := &Account{Credentials: map[string]any{
 		"model_mapping": map[string]any{
@@ -91,6 +134,27 @@ func TestOpenAIResponsesProbePayloadForcesToolCallWithoutDefaultInstructions(t *
 	require.True(t, ok)
 	require.Equal(t, "function", tool["type"])
 	require.Equal(t, "probe_ping", tool["name"])
+}
+
+func TestOpenAIResponsesCustomToolsProbePayloadUsesAutoCustomTool(t *testing.T) {
+	body := openaiResponsesCustomToolsProbePayload("upstream-model", "attempt-1")
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(body, &payload))
+	require.Equal(t, "upstream-model", payload["model"])
+	require.Equal(t, false, payload["stream"])
+	require.Equal(t, "auto", payload["tool_choice"])
+	require.EqualValues(t, 128, payload["max_output_tokens"])
+	require.Contains(t, payload, "instructions")
+	require.Contains(t, string(body), "attempt-1")
+
+	tools, ok := payload["tools"].([]any)
+	require.True(t, ok)
+	require.Len(t, tools, 1)
+	tool, ok := tools[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "custom", tool["type"])
+	require.Equal(t, "exec", tool["name"])
 }
 
 func TestOpenAIResponsesProbeTimeoutAllowsReasoningModels(t *testing.T) {

@@ -824,6 +824,9 @@ export default {
         note: 'Make sure the config directory exists. macOS/Linux users can run mkdir -p ~/.codex to create it.',
         noteWindows: 'Press Win+R and enter %userprofile%\\.codex to open the config directory. Create it manually if it does not exist.',
       },
+      vector: {
+        description: 'Select a public model and call the matching embeddings or rerank endpoint as shown.'
+      },
       cliTabs: {
         claudeCode: 'Claude Code',
         geminiCli: 'Gemini CLI',
@@ -1108,6 +1111,7 @@ export default {
   channelStatus: {
     title: 'Channel Status',
     description: 'Inspect channel availability, latency and recent status',
+    ungrouped: 'Other Channels',
     searchPlaceholder: 'Search channels...',
     allProviders: 'All Providers',
     loadError: 'Failed to load channel status',
@@ -3122,6 +3126,10 @@ export default {
         apiModeChatCompletionsHint: 'Use /v1/chat/completions with messages; works for most compatible providers.',
         apiModeResponses: 'Responses API',
         apiModeResponsesHint: 'Use /v1/responses with default instructions + input; best for self-check/Codex paths.',
+		apiModeEmbeddings: 'Embeddings API',
+		apiModeEmbeddingsHint: 'Use /v1/embeddings and verify that a non-empty vector is returned.',
+		apiModeRerank: 'Rerank API',
+		apiModeRerankHint: 'Use /v1/rerank and verify that scored ranking results are returned.',
         endpoint: 'Endpoint',
         endpointPlaceholder: 'https://api.example.com',
         useCurrentDomain: 'Use current service',
@@ -3453,6 +3461,7 @@ export default {
       status: {
         active: 'Active',
         inactive: 'Inactive',
+        disabled: 'Disabled',
         error: 'Error',
         cooldown: 'Cooldown',
         paused: 'Paused',
@@ -4073,13 +4082,14 @@ export default {
           'Not applicable when the Responses / Chat Completions endpoint is not enabled.',
         endpointCapabilities: 'Endpoint capabilities',
         endpointCapabilitiesDesc:
-          'Used by account routing. The text endpoint follows the Responses API support setting above and is shown as Responses, Chat Completions, or auto mode; Embeddings independently controls /v1/embeddings.',
+          'Used by account routing. The text endpoint follows the Responses API setting above; Embeddings and Rerank independently control /v1/embeddings and /v1/rerank.',
         capabilityResponses: 'Responses',
         capabilityTextAuto: 'Responses / Chat Completions (Auto)',
         capabilityResponsesAuto: 'Responses (auto probe)',
         capabilityChatCompletions: 'Chat Completions',
         capabilityChatCompletionsAuto: 'Chat Completions (auto probe)',
         capabilityEmbeddings: 'Embeddings',
+        capabilityRerank: 'Rerank',
         responsesStatusAutoSupported: 'Auto probe: Responses',
         responsesStatusAutoUnsupported: 'Auto probe: Chat Completions',
         responsesStatusAutoUnknown: 'Auto probe: unknown',
@@ -4138,6 +4148,7 @@ export default {
         testMode: 'Test mode',
         testModeDefault: 'Default request',
         testModeCompact: 'Compact probe',
+        testModeWebSearch: 'Web Search probe',
         modelRestrictionDisabledByPassthrough: 'Automatic passthrough is enabled: model whitelist/mapping will not take effect.',
       },
       anthropic: {

@@ -58,6 +58,36 @@ const ExtraKeyResponsesMode = "openai_responses_mode"
 // 值类型为 bool：true=支持、false=不支持、键缺失=未探测。
 const ExtraKeyResponsesSupported = "openai_responses_supported"
 
+// ExtraKeyResponsesProbeModel scopes endpoint evidence to the mapped upstream
+// model used by the semantic probe.
+const ExtraKeyResponsesProbeModel = "openai_responses_probe_model"
+
+// ExtraKeyResponsesProbeTarget binds endpoint evidence to the account's
+// non-secret upstream routing fingerprint.
+const ExtraKeyResponsesProbeTarget = "openai_responses_probe_target"
+
+// ExtraKeyResponsesCurrentTarget is scheduler-only metadata computed before
+// credentials are removed from the cached account view.
+const ExtraKeyResponsesCurrentTarget = "openai_responses_current_target"
+
+// ExtraKeyResponsesCustomToolsSupported records whether a Responses upstream
+// honors Codex custom tools when tool_choice=auto. Basic endpoint and forced
+// function-call probes are insufficient: some compatible upstreams accept the
+// schema but hide custom tools from the model unless tool use is forced.
+const ExtraKeyResponsesCustomToolsSupported = "openai_responses_custom_tools_supported"
+
+// ExtraKeyResponsesCustomToolsProbeModel scopes semantic custom-tool evidence
+// to the mapped upstream model used by the probe.
+const ExtraKeyResponsesCustomToolsProbeModel = "openai_responses_custom_tools_probe_model"
+
+// ExtraKeyResponsesCustomToolsProbeTarget binds the result to a non-secret
+// fingerprint of the account credentials and upstream routing configuration.
+const ExtraKeyResponsesCustomToolsProbeTarget = "openai_responses_custom_tools_probe_target"
+
+// ExtraKeyResponsesCustomToolsCurrentTarget is scheduler-only metadata. It is
+// computed from the full account before credentials are slimmed for cache.
+const ExtraKeyResponsesCustomToolsCurrentTarget = "openai_responses_custom_tools_current_target"
+
 // NormalizeResponsesSupportMode 归一化账号级 Responses API 路由覆盖模式。
 // 缺失或非法值按 auto 处理，以保持存量行为。
 func NormalizeResponsesSupportMode(mode string) ResponsesSupportMode {

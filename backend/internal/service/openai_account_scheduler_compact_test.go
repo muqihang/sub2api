@@ -245,7 +245,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactMappingDoesNotAf
 	account := Account{
 		ID: 71032, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive,
 		Schedulable: true, Concurrency: 1, GroupIDs: []int64{groupID},
-		Credentials: map[string]any{"compact_model_mapping": map[string]any{"gpt-5.6-sol": "gpt-5.4"}},
+		Credentials: map[string]any{"compact_model_mapping": map[string]any{"gpt-6.0-sol": "gpt-5.4"}},
 		Extra:       map[string]any{"openai_compact_mode": OpenAICompactModeForceOn},
 	}
 	svc := &OpenAIGatewayService{
@@ -255,7 +255,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CompactMappingDoesNotAf
 		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
 	}
 
-	selection, _, err := svc.SelectAccountWithScheduler(context.Background(), &groupID, "", "", "gpt-5.6-sol", nil, OpenAIUpstreamTransportAny, false)
+	selection, _, err := svc.SelectAccountWithScheduler(context.Background(), &groupID, "", "", "gpt-6.0-sol", nil, OpenAIUpstreamTransportAny, false)
 	require.Error(t, err)
 	require.Nil(t, selection)
 }

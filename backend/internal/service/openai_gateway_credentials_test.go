@@ -66,6 +66,22 @@ func TestOpenAIGatewayCredentialAccessor_EncryptedOAuthTokens(t *testing.T) {
 	require.Equal(t, "client-id", clientID)
 }
 
+func TestOpenAIGatewayCredentialAccessor_ProtectsAgentIdentityPrivateKey(t *testing.T) {
+	cfg := testOpenAIGatewayCredentialsConfig()
+	creds := NewOpenAIGatewayCredentials(cfg, nil)
+
+	protected, err := creds.ProtectCredentials(map[string]any{
+		"auth_mode":         "agentIdentity",
+		"agent_private_key": "pkcs8-secret",
+	})
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(protected["agent_private_key"].(string), openAISecretProtectorPrefix))
+
+	plaintext, err := creds.resolveValue(protected["agent_private_key"].(string), "agent_private_key")
+	require.NoError(t, err)
+	require.Equal(t, "pkcs8-secret", plaintext)
+}
+
 func TestOpenAIGatewayCredentialAccessor_PlaintextAllowedOutsideProduction(t *testing.T) {
 	creds := NewOpenAIGatewayCredentials(&config.Config{}, nil)
 	account := &Account{

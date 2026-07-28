@@ -18,6 +18,7 @@ const (
 	EndpointMessages          = "/v1/messages"
 	EndpointChatCompletions   = "/v1/chat/completions"
 	EndpointEmbeddings        = "/v1/embeddings"
+	EndpointRerank            = "/v1/rerank"
 	EndpointResponses         = "/v1/responses"
 	EndpointResponsesCompact  = "/v1/responses/compact"
 	EndpointImagesGenerations = "/v1/images/generations"
@@ -46,6 +47,8 @@ const (
 func NormalizeInboundEndpoint(path string) string {
 	path = strings.TrimSpace(path)
 	switch {
+	case strings.Contains(path, EndpointRerank):
+		return EndpointRerank
 	case strings.Contains(path, EndpointEmbeddings):
 		return EndpointEmbeddings
 	case strings.Contains(path, EndpointChatCompletions):
@@ -126,7 +129,7 @@ func DeriveUpstreamEndpoint(inbound, rawRequestPath, platform string) string {
 
 	switch platform {
 	case service.PlatformOpenAI, service.PlatformGrok:
-		if inbound == EndpointEmbeddings || inbound == EndpointImagesGenerations || inbound == EndpointImagesEdits || inbound == EndpointVideosGenerations || inbound == EndpointVideos {
+		if inbound == EndpointEmbeddings || inbound == EndpointRerank || inbound == EndpointImagesGenerations || inbound == EndpointImagesEdits || inbound == EndpointVideosGenerations || inbound == EndpointVideos {
 			return inbound
 		}
 		if inbound == EndpointResponsesCompact {

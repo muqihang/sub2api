@@ -2,6 +2,7 @@
 package service
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
 
@@ -84,8 +86,13 @@ type Account struct {
 type OpenAIEndpointCapability string
 
 const (
-	OpenAIEndpointCapabilityChatCompletions OpenAIEndpointCapability = "chat_completions"
-	OpenAIEndpointCapabilityEmbeddings      OpenAIEndpointCapability = "embeddings"
+	OpenAIEndpointCapabilityChatCompletions      OpenAIEndpointCapability = "chat_completions"
+	OpenAIEndpointCapabilityEmbeddings           OpenAIEndpointCapability = "embeddings"
+	OpenAIEndpointCapabilityRerank               OpenAIEndpointCapability = "rerank"
+	OpenAIEndpointCapabilitySearch               OpenAIEndpointCapability = "search"
+	OpenAIEndpointCapabilityWebSearch            OpenAIEndpointCapability = "web_search"
+	OpenAIEndpointCapabilityResponsesCustomTools OpenAIEndpointCapability = "responses_custom_tools"
+	OpenAIEndpointCapabilityWebSearchCustomTools OpenAIEndpointCapability = "web_search_custom_tools"
 )
 
 const openAIEndpointCapabilitiesCredentialKey = "openai_capabilities"
@@ -484,6 +491,14 @@ const (
 	OpenAICompactModeForceOn = "force_on"
 	// OpenAICompactModeForceOff always treats the account as compact-unsupported.
 	OpenAICompactModeForceOff = "force_off"
+
+	// OpenAICompactEndpointModePath sends compact requests to /responses/compact.
+	OpenAICompactEndpointModePath = "path"
+	// OpenAICompactEndpointModeBodySignal keeps compact requests on /responses and
+	// relies on an input item with type=compaction_trigger.
+	OpenAICompactEndpointModeBodySignal = "body_signal"
+	// OpenAICompactEndpointModeAuto negotiates the supported upstream shape.
+	OpenAICompactEndpointModeAuto = "auto"
 )
 
 func normalizeOpenAICompactMode(mode string) string {
@@ -494,6 +509,17 @@ func normalizeOpenAICompactMode(mode string) string {
 		return OpenAICompactModeForceOff
 	default:
 		return OpenAICompactModeAuto
+	}
+}
+
+func normalizeOpenAICompactEndpointMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case OpenAICompactEndpointModePath:
+		return OpenAICompactEndpointModePath
+	case OpenAICompactEndpointModeBodySignal:
+		return OpenAICompactEndpointModeBodySignal
+	default:
+		return OpenAICompactEndpointModeAuto
 	}
 }
 
@@ -809,6 +835,31 @@ func (a *Account) GetOpenAICompactMode() string {
 	return normalizeOpenAICompactMode(mode)
 }
 
+// GetOpenAICompactEndpointMode returns the upstream compact protocol shape.
+// Auto negotiation remains the default.
+func (a *Account) GetOpenAICompactEndpointMode() string {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return OpenAICompactEndpointModeAuto
+	}
+	mode, _ := a.Extra["openai_compact_endpoint_mode"].(string)
+	return normalizeOpenAICompactEndpointMode(mode)
+}
+
+func (a *Account) UsesOpenAICompactBodySignal() bool {
+	if a == nil {
+		return false
+	}
+	return a.GetOpenAICompactEndpointMode() == OpenAICompactEndpointModeBodySignal
+}
+
+func (a *Account) IsOpenAICompactNegotiationEnabled() bool {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return false
+	}
+	enabled, _ := a.Extra["openai_compact_negotiation_enabled"].(bool)
+	return enabled
+}
+
 // OpenAICompactSupportKnown reports whether compact capability is known for this
 // account and, when known, whether it is supported.
 func (a *Account) OpenAICompactSupportKnown() (supported bool, known bool) {
@@ -820,6 +871,9 @@ func (a *Account) OpenAICompactSupportKnown() (supported bool, known bool) {
 	case OpenAICompactModeForceOn:
 		return true, true
 	case OpenAICompactModeForceOff:
+		if a.IsOpenAICompactNegotiationEnabled() {
+			return false, false
+		}
 		return false, true
 	}
 
@@ -845,6 +899,9 @@ func (a *Account) OpenAICompactSupportKnownForModel(requestedModel string) (supp
 	case OpenAICompactModeForceOn:
 		return true, true
 	case OpenAICompactModeForceOff:
+		if a.IsOpenAICompactNegotiationEnabled() {
+			return false, false
+		}
 		return false, true
 	}
 
@@ -1409,9 +1466,37 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 	if !a.IsOpenAI() {
 		return false
 	}
+	if capability == OpenAIEndpointCapabilitySearch {
+		if a.Type == AccountTypeOAuth {
+			return true
+		}
+		if a.Type != AccountTypeAPIKey && a.Type != AccountTypeUpstream {
+			return false
+		}
+		configured, found := a.openAIEndpointCapabilitySet()
+		return found && configured[string(OpenAIEndpointCapabilitySearch)]
+	}
+	if capability == OpenAIEndpointCapabilityWebSearch {
+		supported, known := a.OpenAIWebSearchSupportKnown()
+		return known && supported
+	}
+	if capability == OpenAIEndpointCapabilityResponsesCustomTools {
+		if a.Type == AccountTypeOAuth {
+			return true
+		}
+		supported, known := a.OpenAIResponsesCustomToolsSupportKnown()
+		if strings.TrimSpace(a.OpenAIResponsesCustomToolsProbeModel()) != "" {
+			return true
+		}
+		return !known || supported
+	}
+	if capability == OpenAIEndpointCapabilityWebSearchCustomTools {
+		return a.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityWebSearch) &&
+			a.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityResponsesCustomTools)
+	}
 	switch capability {
 	case OpenAIEndpointCapabilityChatCompletions:
-	case OpenAIEndpointCapabilityEmbeddings:
+	case OpenAIEndpointCapabilityEmbeddings, OpenAIEndpointCapabilityRerank:
 		if a.Type != AccountTypeAPIKey {
 			return false
 		}
@@ -1424,6 +1509,217 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 		return true
 	}
 	return configured[string(capability)]
+}
+
+// OpenAIWebSearchSupportKnown reports the semantic hosted web_search probe
+// result. Unknown accounts are excluded because HTTP 200 alone does not prove
+// that an upstream executed the hosted tool.
+func (a *Account) OpenAIWebSearchSupportKnown() (supported bool, known bool) {
+	return a.openAIExtraBoolKnown("openai_web_search_supported")
+}
+
+func (a *Account) OpenAIResponsesCustomToolsSupportKnown() (supported bool, known bool) {
+	return a.openAIExtraBoolKnown(openai_compat.ExtraKeyResponsesCustomToolsSupported)
+}
+
+func (a *Account) OpenAIResponsesProbeModel() string {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return ""
+	}
+	value, _ := a.Extra[openai_compat.ExtraKeyResponsesProbeModel].(string)
+	return strings.TrimSpace(value)
+}
+
+func (a *Account) OpenAIResponsesProbeTarget() string {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return ""
+	}
+	value, _ := a.Extra[openai_compat.ExtraKeyResponsesProbeTarget].(string)
+	return strings.TrimSpace(value)
+}
+
+func (a *Account) OpenAIResponsesCurrentTarget() string {
+	if a == nil || !a.IsOpenAI() {
+		return ""
+	}
+	if a.Extra != nil {
+		if value, ok := a.Extra[openai_compat.ExtraKeyResponsesCurrentTarget].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return a.OpenAIResponsesTargetFingerprint(a.OpenAIResponsesProbeModel())
+}
+
+func (a *Account) OpenAIResponsesSupportKnownForModel(requestedModel string) (supported bool, known bool) {
+	if a == nil || !a.IsOpenAI() || a.Type != AccountTypeAPIKey {
+		return false, false
+	}
+	supported, known = a.openAIExtraBoolKnown(openai_compat.ExtraKeyResponsesSupported)
+	if !known {
+		return false, false
+	}
+	probeModel := a.OpenAIResponsesProbeModel()
+	mappedModel := strings.TrimSpace(a.GetMappedModel(strings.TrimSpace(requestedModel)))
+	if probeModel == "" || mappedModel == "" || !strings.EqualFold(mappedModel, probeModel) {
+		return false, false
+	}
+	probeTarget := a.OpenAIResponsesProbeTarget()
+	if probeTarget == "" || probeTarget != a.OpenAIResponsesCurrentTarget() {
+		return false, false
+	}
+	return supported, true
+}
+
+func (a *Account) ShouldUseOpenAIResponsesAPI(requestedModel string) bool {
+	return a.ResolveOpenAIResponsesSupportForModel(requestedModel) != openai_compat.ResponsesSupportNo
+}
+
+func (a *Account) ResolveOpenAIResponsesSupportForModel(requestedModel string) openai_compat.AccountResponsesSupport {
+	if a == nil || a.Type != AccountTypeAPIKey {
+		return openai_compat.ResponsesSupportYes
+	}
+	mode := ""
+	if a.Extra != nil {
+		mode, _ = a.Extra[openai_compat.ExtraKeyResponsesMode].(string)
+	}
+	switch openai_compat.NormalizeResponsesSupportMode(strings.TrimSpace(mode)) {
+	case openai_compat.ResponsesSupportModeForceResponses:
+		return openai_compat.ResponsesSupportYes
+	case openai_compat.ResponsesSupportModeForceChatCompletions:
+		return openai_compat.ResponsesSupportNo
+	}
+	supported, known := a.OpenAIResponsesSupportKnownForModel(requestedModel)
+	if !known {
+		return openai_compat.ResponsesSupportUnknown
+	}
+	if supported {
+		return openai_compat.ResponsesSupportYes
+	}
+	return openai_compat.ResponsesSupportNo
+}
+
+func (a *Account) OpenAIResponsesCustomToolsProbeModel() string {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return ""
+	}
+	value, _ := a.Extra[openai_compat.ExtraKeyResponsesCustomToolsProbeModel].(string)
+	return strings.TrimSpace(value)
+}
+
+func (a *Account) OpenAIResponsesCustomToolsProbeTarget() string {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return ""
+	}
+	value, _ := a.Extra[openai_compat.ExtraKeyResponsesCustomToolsProbeTarget].(string)
+	return strings.TrimSpace(value)
+}
+
+func (a *Account) OpenAIResponsesCustomToolsCurrentTarget() string {
+	if a == nil || !a.IsOpenAI() {
+		return ""
+	}
+	if a.Extra != nil {
+		if value, ok := a.Extra[openai_compat.ExtraKeyResponsesCustomToolsCurrentTarget].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return a.OpenAIResponsesCustomToolsTargetFingerprint(a.OpenAIResponsesCustomToolsProbeModel())
+}
+
+func (a *Account) OpenAIResponsesCustomToolsTargetFingerprint(probeModel string) string {
+	return a.OpenAIResponsesTargetFingerprint(probeModel)
+}
+
+func (a *Account) OpenAIResponsesTargetFingerprint(probeModel string) string {
+	if a == nil || !a.IsOpenAI() {
+		return ""
+	}
+	targetCredentials := make(map[string]any)
+	for _, key := range []string{"base_url", "model_mapping", "user_agent"} {
+		if value, ok := a.Credentials[key]; ok && value != nil {
+			targetCredentials[key] = value
+		}
+	}
+	routingExtra := make(map[string]any)
+	for _, key := range []string{"openai_gateway_egress_bucket", "openai_gateway_profile_id", "openai_gateway_profile_mode"} {
+		if value, ok := a.Extra[key]; ok && value != nil {
+			routingExtra[key] = value
+		}
+	}
+	payload, err := json.Marshal(struct {
+		Platform     string         `json:"platform"`
+		Type         string         `json:"type"`
+		Credentials  map[string]any `json:"credentials"`
+		ProxyID      *int64         `json:"proxy_id"`
+		RoutingExtra map[string]any `json:"routing_extra"`
+		ProbeModel   string         `json:"probe_model"`
+	}{
+		Platform:     a.Platform,
+		Type:         a.Type,
+		Credentials:  targetCredentials,
+		ProxyID:      a.ProxyID,
+		RoutingExtra: routingExtra,
+		ProbeModel:   strings.TrimSpace(probeModel),
+	})
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(payload)
+	return fmt.Sprintf("sha256:%x", sum[:])
+}
+
+func (a *Account) SupportsOpenAIResponsesCustomToolsForModel(requestedModel string) bool {
+	if a == nil || !a.IsOpenAI() {
+		return false
+	}
+	if a.Type == AccountTypeOAuth {
+		return true
+	}
+	supported, known := a.OpenAIResponsesCustomToolsSupportKnown()
+	if !known {
+		return true
+	}
+	probeModel := a.OpenAIResponsesCustomToolsProbeModel()
+	if probeModel == "" {
+		return supported
+	}
+	mappedModel := strings.TrimSpace(a.GetMappedModel(strings.TrimSpace(requestedModel)))
+	if mappedModel == "" || !strings.EqualFold(mappedModel, probeModel) {
+		return true
+	}
+	probeTarget := a.OpenAIResponsesCustomToolsProbeTarget()
+	if probeTarget == "" || probeTarget != a.OpenAIResponsesCustomToolsCurrentTarget() {
+		return true
+	}
+	return supported
+}
+
+func (a *Account) openAIExtraBoolKnown(key string) (supported bool, known bool) {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return false, false
+	}
+	raw, found := a.Extra[key]
+	if !found || raw == nil {
+		return false, false
+	}
+	switch value := raw.(type) {
+	case bool:
+		return value, true
+	case string:
+		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+		return parsed, err == nil
+	case json.Number:
+		parsed, err := strconv.ParseBool(value.String())
+		return parsed, err == nil
+	case float64:
+		return value != 0, true
+	case int:
+		return value != 0, true
+	case int64:
+		return value != 0, true
+	default:
+		return false, false
+	}
 }
 
 func (a *Account) openAIEndpointCapabilitySet() (map[string]bool, bool) {

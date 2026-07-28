@@ -66,11 +66,11 @@ func TestResolveOpenAIUpstreamEndpoint_RawChatOnlyAPIKey(t *testing.T) {
 		Platform: service.PlatformOpenAI,
 		Type:     service.AccountTypeAPIKey,
 		Extra: map[string]any{
-			"openai_responses_supported": false,
+			"openai_responses_mode": "force_chat_completions",
 		},
 	}
 
-	require.Equal(t, "/v1/chat/completions", resolveOpenAIUpstreamEndpoint(c, account))
+	require.Equal(t, "/v1/chat/completions", resolveOpenAIUpstreamEndpoint(c, account, "gpt-5.6-sol"))
 }
 
 func TestResolveOpenAIUpstreamEndpoint_DefaultOpenAIResponses(t *testing.T) {
@@ -85,5 +85,5 @@ func TestResolveOpenAIUpstreamEndpoint_DefaultOpenAIResponses(t *testing.T) {
 		Type:     service.AccountTypeOAuth,
 	}
 
-	require.Equal(t, EndpointResponses, resolveOpenAIUpstreamEndpoint(c, account))
+	require.Equal(t, EndpointResponses, resolveOpenAIUpstreamEndpoint(c, account, "gpt-5.6-sol"))
 }

@@ -1,4 +1,4 @@
-.PHONY: wire build build-embed test-unit test-integration test-e2e test-cover-integration
+.PHONY: wire build build-embed test-unit test-integration test-e2e test-cover-integration test-hot-deploy
 
 VERSION ?= $(shell ./scripts/resolve-version.sh)
 LDFLAGS ?= -s -w -X main.Version=$(VERSION)
@@ -34,6 +34,15 @@ test-cover-integration:
 	@go tool cover -func=coverage.out | tail -1
 	@go tool cover -html=coverage.out -o coverage.html
 	@echo "覆盖率报告已生成: coverage.html"
+
+test-hot-deploy:
+	@bash tests/test-hot-deploy.sh all
+	@bash -n hot-deploy.sh lib/hot-deploy-common.sh tests/test-hot-deploy.sh
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		shellcheck hot-deploy.sh lib/hot-deploy-common.sh tests/test-hot-deploy.sh tests/fixtures/fake-bin/docker tests/fixtures/fake-bin/curl; \
+	else \
+		echo "shellcheck not installed; skipped"; \
+	fi
 
 clean-coverage:
 	@rm -f coverage.out coverage.html
