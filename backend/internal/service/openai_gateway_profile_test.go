@@ -126,3 +126,33 @@ func TestOpenAIGatewayCanonicalProfile_UserAgentOverrideRealignsVersion(t *testi
 	require.Equal(t, "codex_cli_rs/0.200.0", headers.Get("User-Agent"))
 	require.Equal(t, "0.200.0", headers.Get("Version"))
 }
+
+func TestOpenAIGatewayCanonicalProfile_NativeSearchClearsResponsesHeaders(t *testing.T) {
+	profile := &OpenAIGatewayCanonicalProfile{
+		ProfileID:               "search-profile",
+		Mode:                    OpenAIGatewayProfileModeFixed,
+		UserAgent:               "codex_cli_rs/0.144.2",
+		Version:                 "0.144.2",
+		StainlessLang:           "rust",
+		StainlessPackageVersion: "0.144.2",
+		StainlessOS:             "macOS",
+		StainlessArch:           "arm64",
+		StainlessRuntime:        "native",
+		StainlessRuntimeVersion: "0.144.2",
+	}
+
+	artifact := BuildOpenAIGatewayProfileArtifact(
+		profile,
+		OpenAIGatewayProfileRouteNativeSearch,
+		OpenAIGatewayProfileArtifactOptions{RequestedOriginator: "codex_cli_rs", IsOfficialClient: true},
+	)
+	headers := http.Header{}
+	headers.Set("OpenAI-Beta", "responses=experimental")
+	headers.Set("Version", "0.144.2")
+	artifact.ApplyHTTP(headers)
+
+	require.Equal(t, "codex_cli_rs", headers.Get("originator"))
+	require.Equal(t, "codex_cli_rs/0.144.2", headers.Get("User-Agent"))
+	require.Empty(t, headers.Get("OpenAI-Beta"))
+	require.Empty(t, headers.Get("Version"))
+}

@@ -26,7 +26,8 @@ vi.mock('vue-i18n', async () => {
   const messages: Record<string, string> = {
     'admin.accounts.imagePromptDefault': 'Generate a cute orange cat astronaut sticker on a clean pastel background.',
     'admin.accounts.openai.testModeDefault': 'Default probe',
-    'admin.accounts.openai.testModeCompact': 'Compact probe'
+    'admin.accounts.openai.testModeCompact': 'Compact probe',
+    'admin.accounts.openai.testModeWebSearch': 'Web Search probe'
   }
   return {
     ...actual,
@@ -190,5 +191,39 @@ describe('AccountTestModal', () => {
       mode: 'compact'
     })
     expect(wrapper.text()).toContain('compact probe')
+  })
+
+  it('OpenAI account test can request hosted web search probe mode', async () => {
+    getAvailableModels.mockResolvedValue([
+      { id: 'gpt-5.6-sol', display_name: 'GPT-5.6 Sol' }
+    ])
+    global.fetch = vi.fn().mockResolvedValue(
+      createStreamResponse([
+        'data: {"type":"status","text":"Hosted web_search probe succeeded"}\n',
+        'data: {"type":"test_complete","success":true}\n'
+      ])
+    ) as any
+
+    const wrapper = mountModal({
+      id: 210,
+      name: 'OpenAI Web Search Probe',
+      platform: 'openai',
+      type: 'apikey'
+    })
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+
+    const selects = wrapper.findAll('select.select-stub')
+    await selects[1].setValue('web_search')
+    const startButton = wrapper.findAll('button').find((button) => button.text().includes('admin.accounts.startTest'))
+    await startButton!.trigger('click')
+    await flushPromises()
+
+    const [, request] = (global.fetch as any).mock.calls[0]
+    expect(JSON.parse(request.body)).toMatchObject({
+      model_id: 'gpt-5.6-sol',
+      mode: 'web_search'
+    })
+    expect(wrapper.text()).toContain('Hosted web_search probe succeeded')
   })
 })

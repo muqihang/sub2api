@@ -60,7 +60,7 @@
               ]"
             >
               <span class="flex items-center gap-2">
-                <component :is="tab.icon" class="w-4 h-4" />
+                <component v-if="tab.icon" :is="tab.icon" class="w-4 h-4" />
                 {{ tab.label }}
               </span>
             </button>
@@ -193,6 +193,7 @@ interface Props {
   apiKey: string
   baseUrl: string
   platform: GroupPlatform | null
+  availableModels?: string[]
   augmentOnly?: boolean
   allowMessagesDispatch?: boolean
 }
@@ -204,7 +205,7 @@ interface Emits {
 interface TabConfig {
   id: string
   label: string
-  icon: Component
+  icon?: Component
 }
 
 interface FileConfig {
@@ -241,8 +242,26 @@ const openAIModelContextWindows: Record<'gpt-5.4' | 'gpt-5.5', {
   }
 }
 
+type VectorUsageKind = 'embeddings' | 'rerank'
+
+const vectorUsageKind = (model: string): VectorUsageKind | null => {
+  const normalized = model.trim().toLowerCase()
+  if (normalized.includes('embedding')) return 'embeddings'
+  if (normalized.includes('rerank') || normalized.includes('erank')) return 'rerank'
+  return null
+}
+
+const publicModels = computed(() =>
+  (props.availableModels ?? []).map(model => model.trim()).filter(Boolean)
+)
+
+const isVectorUsage = computed(() =>
+  publicModels.value.length > 0 && publicModels.value.every(model => vectorUsageKind(model) !== null)
+)
+
 // Reset tabs when platform changes
 const defaultClientTab = computed(() => {
+  if (isVectorUsage.value) return `vector:${publicModels.value[0]}`
   switch (props.platform) {
     case 'openai':
       return 'codex'
@@ -255,11 +274,11 @@ const defaultClientTab = computed(() => {
   }
 })
 
-watch(() => props.platform, () => {
+watch([() => props.platform, () => props.availableModels], () => {
   activeTab.value = 'unix'
   activeClientTab.value = defaultClientTab.value
   selectedOpenAIModel.value = 'gpt-5.5'
-}, { immediate: true })
+}, { immediate: true, deep: true })
 
 // Reset shell tab when client changes
 watch(activeClientTab, () => {
@@ -331,6 +350,12 @@ const SparkleIcon = {
 
 const clientTabs = computed((): TabConfig[] => {
   if (!props.platform) return []
+  if (isVectorUsage.value) {
+    return publicModels.value.map(model => ({
+      id: `vector:${model}`,
+      label: model,
+    }))
+  }
   switch (props.platform) {
     case 'openai': {
       const tabs: TabConfig[] = [
@@ -375,13 +400,13 @@ const openaiTabs: TabConfig[] = [
   { id: 'windows', label: 'Windows', icon: WindowsIcon }
 ]
 
-const showShellTabs = computed(() => activeClientTab.value !== 'opencode')
+const showShellTabs = computed(() => !isVectorUsage.value && activeClientTab.value !== 'opencode')
 const showOpenAIModelSelector = computed(() =>
-  props.platform === 'openai' && (activeClientTab.value === 'codex' || activeClientTab.value === 'codex-ws')
+  !isVectorUsage.value && props.platform === 'openai' && (activeClientTab.value === 'codex' || activeClientTab.value === 'codex-ws')
 )
 
 const showZhumengAgentPanel = computed(() =>
-  props.platform === 'openai' && (activeClientTab.value === 'codex' || activeClientTab.value === 'codex-ws')
+  !isVectorUsage.value && props.platform === 'openai' && (activeClientTab.value === 'codex' || activeClientTab.value === 'codex-ws')
 )
 
 const currentTabs = computed(() => {
@@ -393,6 +418,7 @@ const currentTabs = computed(() => {
 })
 
 const platformDescription = computed(() => {
+  if (isVectorUsage.value) return t('keys.useKeyModal.vector.description')
   switch (props.platform) {
     case 'openai':
       if (activeClientTab.value === 'claude') {
@@ -428,7 +454,7 @@ const platformNote = computed(() => {
   }
 })
 
-const showPlatformNote = computed(() => activeClientTab.value !== 'opencode')
+const showPlatformNote = computed(() => !isVectorUsage.value && activeClientTab.value !== 'opencode')
 
 const escapeHtml = (value: string) => value
   .replace(/&/g, '&amp;')
@@ -466,6 +492,34 @@ const currentFiles = computed((): FileConfig[] => {
     const trimmed = baseRoot.replace(/\/+$/, '')
     return trimmed.endsWith('/v1beta') ? trimmed : `${trimmed}/v1beta`
   })()
+
+  if (isVectorUsage.value) {
+    const model = activeClientTab.value.replace(/^vector:/, '')
+    const kind = vectorUsageKind(model)
+    if (kind === 'rerank') {
+      return [{
+        path: 'cURL',
+        content: `curl ${apiBase}/rerank \\
+  -H "Authorization: Bearer ${apiKey}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "${model}",
+    "query": "Which document is most relevant?",
+    "documents": ["First document", "Second document"]
+  }'`,
+      }]
+    }
+    return [{
+      path: 'cURL',
+      content: `curl ${apiBase}/embeddings \\
+  -H "Authorization: Bearer ${apiKey}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "${model}",
+    "input": ["Text to embed"]
+  }'`,
+    }]
+  }
 
   if (activeClientTab.value === 'opencode') {
     switch (props.platform) {

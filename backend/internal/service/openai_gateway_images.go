@@ -187,7 +187,7 @@ func (s *OpenAIGatewayService) ForwardImageGeneration(
 				return nil, nil, resp.Header.Clone(), &UpstreamFailoverError{
 					StatusCode:             resp.StatusCode,
 					ResponseBody:           respBody,
-					RetryableOnSameAccount: account.IsPoolMode() && isPoolModeRetryableStatus(resp.StatusCode),
+					RetryableOnSameAccount: account.IsPoolMode() && !isOpenAIInsufficientBalanceError(respBody, upstreamMsg) && isPoolModeRetryableStatus(resp.StatusCode),
 				}
 			}
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))

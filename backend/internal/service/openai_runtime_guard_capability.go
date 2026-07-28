@@ -289,6 +289,8 @@ func openAIOAuthBuiltInModelSeedSupports(model string) bool {
 	m = strings.TrimPrefix(m, "openai/")
 	m = strings.TrimPrefix(m, "models/")
 	switch {
+	case m == "gpt-5.6" || strings.HasPrefix(m, "gpt-5.6-"):
+		return true
 	case m == "gpt-5.5" || strings.HasPrefix(m, "gpt-5.5-"):
 		return true
 	case m == "gpt-5.4" || strings.HasPrefix(m, "gpt-5.4-"):

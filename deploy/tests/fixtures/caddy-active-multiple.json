@@ -1,0 +1,23 @@
+{
+  "apps": {
+    "http": {
+      "servers": {
+        "srv0": {
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    {"dial": "sub2api-next-v4:8080"},
+                    {"dial": "sub2api-next-v5:8080"}
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}

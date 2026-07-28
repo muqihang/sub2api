@@ -65,6 +65,11 @@ export default defineConfig(({ mode }) => {
     emptyOutDir: true,
     rollupOptions: {
       output: {
+        // Keep lazy chunk URLs opaque. Privacy and security extensions commonly
+        // block route-derived names such as usage, activity, and keys.
+        entryFileNames: 'assets/entry-[hash].js',
+        chunkFileNames: 'assets/chunk-[hash].js',
+        assetFileNames: 'assets/asset-[hash][extname]',
         /**
          * 手动分包配置
          * 分离第三方库并按功能合并应用代码，避免循环依赖

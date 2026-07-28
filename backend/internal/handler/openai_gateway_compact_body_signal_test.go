@@ -2,10 +2,14 @@ package handler
 
 import (
 	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -119,4 +123,121 @@ func TestNormalizeOpenAIResponsesCompactRequest_SubpathNotPromoted(t *testing.T)
 	require.True(t, ok)
 	require.Equal(t, "/v1/responses/resp_123/cancel", c.Request.URL.Path)
 	require.Equal(t, body, normalized)
+}
+
+func TestMarkOpenAICompactClientStreamFromHeaders_RemoteCompactionV2(t *testing.T) {
+	c := newCompactBodySignalTestContext(t, "/responses", []byte(`{}`))
+	c.Request.Header.Set("Accept", "text/event-stream")
+	c.Request.Header.Set("X-Codex-Turn-Metadata", `{
+		"request_kind":"compaction",
+		"compaction":{"implementation":"responses_compaction_v2"}
+	}`)
+
+	require.True(t, markOpenAICompactClientStreamFromHeaders(c))
+	clientStream, exists := c.Get(service.OpenAICompactClientStreamKeyForTest())
+	require.True(t, exists)
+	require.Equal(t, true, clientStream)
+}
+
+func TestMarkOpenAICompactClientStreamFromHeaders_RejectsAmbiguousRequests(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		accept   string
+		metadata string
+	}{
+		{
+			name:     "normal responses request",
+			path:     "/responses",
+			accept:   "text/event-stream",
+			metadata: `{"request_kind":"response","compaction":{"implementation":"responses_compaction_v2"}}`,
+		},
+		{
+			name:     "compact metadata without event stream",
+			path:     "/responses",
+			accept:   "application/json",
+			metadata: `{"request_kind":"compaction","compaction":{"implementation":"responses_compaction_v2"}}`,
+		},
+		{
+			name:     "compact metadata on subresource",
+			path:     "/responses/resp_123/cancel",
+			accept:   "text/event-stream",
+			metadata: `{"request_kind":"compaction","compaction":{"implementation":"responses_compaction_v2"}}`,
+		},
+		{
+			name:     "missing implementation",
+			path:     "/responses",
+			accept:   "text/event-stream",
+			metadata: `{"request_kind":"compaction"}`,
+		},
+		{
+			name:     "invalid metadata",
+			path:     "/responses",
+			accept:   "text/event-stream",
+			metadata: `{`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newCompactBodySignalTestContext(t, tt.path, []byte(`{}`))
+			c.Request.Header.Set("Accept", tt.accept)
+			c.Request.Header.Set("X-Codex-Turn-Metadata", tt.metadata)
+
+			require.False(t, markOpenAICompactClientStreamFromHeaders(c))
+			_, exists := c.Get(service.OpenAICompactClientStreamKeyForTest())
+			require.False(t, exists)
+		})
+	}
+}
+
+func TestOpenAIResponses_RemoteCompactHeartbeatStartsBeforeBodyReadCompletes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := newOpenAIHandlerForPreviousResponseIDValidation(t, nil)
+	h.cfg = &config.Config{}
+	h.cfg.Gateway.StreamKeepaliveInterval = 1
+
+	groupID := int64(2)
+	apiKey := &service.APIKey{ID: 101, GroupID: &groupID, User: &service.User{ID: 1}}
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(middleware.ContextKeyAPIKey), apiKey)
+		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 1, Concurrency: 1})
+		c.Next()
+	})
+	router.POST("/responses", h.Responses)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	bodyReader, bodyWriter := io.Pipe()
+	defer func() { _ = bodyWriter.Close() }()
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/responses", bodyReader)
+	require.NoError(t, err)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "text/event-stream")
+	request.Header.Set("X-Codex-Turn-Metadata", `{"request_kind":"compaction","compaction":{"implementation":"responses_compaction_v2"}}`)
+
+	type responseResult struct {
+		response *http.Response
+		err      error
+	}
+	responseCh := make(chan responseResult, 1)
+	go func() {
+		response, requestErr := server.Client().Do(request)
+		responseCh <- responseResult{response: response, err: requestErr}
+	}()
+
+	select {
+	case result := <-responseCh:
+		require.NoError(t, result.err)
+		defer func() { _ = result.response.Body.Close() }()
+		require.Equal(t, http.StatusOK, result.response.StatusCode)
+		ping := make([]byte, len("event: ping\ndata: {\"type\":\"ping\"}\n\n"))
+		_, err = io.ReadFull(result.response.Body, ping)
+		require.NoError(t, err)
+		require.Equal(t, "event: ping\ndata: {\"type\":\"ping\"}\n\n", string(ping))
+	case <-time.After(4 * time.Second):
+		t.Fatal("remote compact heartbeat did not arrive while request body remained open")
+	}
+	require.NoError(t, bodyWriter.Close())
 }

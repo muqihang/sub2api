@@ -182,6 +182,13 @@ func registerGatewayRoutes(
 		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Videos API is not supported for this platform"}})
 	}
 
+	r.POST("/alpha/search", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm,
+		apiKeyAuthWithAugmentBearer, requireGroupOpenAI,
+		openAIGatewayHandler(h.OpenAIGateway.NativeSearch))
+	r.POST("/v1/alpha/search", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm,
+		gin.HandlerFunc(v1GatewayAuth), requireGroupOpenAI,
+		openAIGatewayHandler(h.OpenAIGateway.NativeSearch))
+
 	// API网关（Claude API兼容）
 	gateway := r.Group("/v1")
 	gateway.Use(bodyLimit)
@@ -279,6 +286,19 @@ func registerGatewayRoutes(
 			}
 			h.OpenAIGateway.Embeddings(c)
 		})
+		gateway.POST("/rerank", func(c *gin.Context) {
+			if getGroupPlatform(c) != service.PlatformOpenAI {
+				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
+				c.JSON(http.StatusNotFound, gin.H{
+					"error": gin.H{
+						"type":    "not_found_error",
+						"message": "Rerank API is not supported for this platform",
+					},
+				})
+				return
+			}
+			h.OpenAIGateway.Rerank(c)
+		})
 		gateway.POST("/images/generations", imagesHandler)
 		gateway.POST("/images/edits", imagesHandler)
 		gateway.POST("/images/batches", h.BatchImage.Submit)
@@ -351,6 +371,19 @@ func registerGatewayRoutes(
 		}
 		h.OpenAIGateway.Embeddings(c)
 	})
+	r.POST("/rerank", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
+		if getGroupPlatform(c) != service.PlatformOpenAI {
+			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": gin.H{
+					"type":    "not_found_error",
+					"message": "Rerank API is not supported for this platform",
+				},
+			})
+			return
+		}
+		h.OpenAIGateway.Rerank(c)
+	})
 	r.POST("/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, imagesHandler)
 	r.POST("/images/edits", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, imagesHandler)
 	r.POST("/videos/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, videoGenerationHandler)
@@ -369,6 +402,8 @@ func registerGatewayRoutes(
 		openaiGateway.POST("/responses/*subpath", openAIGatewayHandler(h.OpenAIGateway.Responses))
 		openaiGateway.GET("/responses", openAIGatewayHandler(h.OpenAIGateway.ResponsesWebSocket))
 		openaiGateway.POST("/chat/completions", openAIGatewayHandler(h.OpenAIGateway.ChatCompletions))
+		openaiGateway.POST("/embeddings", openAIGatewayHandler(h.OpenAIGateway.Embeddings))
+		openaiGateway.POST("/rerank", openAIGatewayHandler(h.OpenAIGateway.Rerank))
 		openaiGateway.POST("/images/generations", openAIGatewayHandler(h.OpenAIGateway.Images))
 		openaiGateway.POST("/images/edits", openAIGatewayHandler(h.OpenAIGateway.Images))
 	}

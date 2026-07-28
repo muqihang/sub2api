@@ -14,6 +14,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/model"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/gin-gonic/gin"
@@ -388,6 +389,153 @@ func TestAccountTestService_OpenAIAPIKeyProbeUsesSharedTLSAwareSenderMetadata(t 
 	require.NotNil(t, repo.updatedExtra)
 }
 
+func TestAccountTestService_OpenAIAPIKeyProbeRejectsTextOnlyAutoCustomTools(t *testing.T) {
+	account := &Account{
+		ID:          19010,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "test-api-key",
+			"base_url": "https://api.openai.com",
+			"model_mapping": map[string]any{
+				"gpt-5.6-sol": "gpt-5.6-sol",
+			},
+		},
+	}
+	repo := &openAIAccountTestRepo{
+		mockAccountRepoForGemini: mockAccountRepoForGemini{
+			accountsByID: map[int64]*Account{account.ID: account},
+		},
+	}
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{
+		newJSONResponse(http.StatusOK, `{"output":[{"type":"function_call","name":"probe_ping"}]}`),
+		newJSONResponse(http.StatusOK, `{"output":[{"type":"message","content":[{"type":"output_text","text":"tool unavailable"}]}]}`),
+	}}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, cfg: &config.Config{}}
+
+	svc.ProbeOpenAIAPIKeyResponsesSupport(context.Background(), account.ID)
+
+	require.Len(t, upstream.requests, 2)
+	require.Equal(t, "codex_cli_rs", upstream.requests[1].Header.Get("Originator"))
+	require.Contains(t, upstream.requests[1].Header.Get("User-Agent"), "codex_cli_rs/")
+	customProbeBody, err := io.ReadAll(upstream.requests[1].Body)
+	require.NoError(t, err)
+	require.Equal(t, "auto", gjson.GetBytes(customProbeBody, "tool_choice").String())
+	require.Equal(t, "custom", gjson.GetBytes(customProbeBody, "tools.0.type").String())
+	require.Equal(t, true, repo.updatedExtra[openai_compat.ExtraKeyResponsesSupported])
+	require.Equal(t, "gpt-5.6-sol", repo.updatedExtra[openai_compat.ExtraKeyResponsesProbeModel])
+	require.Equal(t, account.OpenAIResponsesTargetFingerprint("gpt-5.6-sol"), repo.updatedExtra[openai_compat.ExtraKeyResponsesProbeTarget])
+	require.Equal(t, false, repo.updatedExtra[openai_compat.ExtraKeyResponsesCustomToolsSupported])
+	require.Equal(t, "gpt-5.6-sol", repo.updatedExtra[openai_compat.ExtraKeyResponsesCustomToolsProbeModel])
+	require.NotEmpty(t, repo.updatedExtra[openai_compat.ExtraKeyResponsesCustomToolsProbeTarget])
+}
+
+func TestAccountTestService_OpenAIAPIKeyProbeRejectsIntermittentAutoCustomTools(t *testing.T) {
+	account := &Account{
+		ID:          19011,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "test-api-key",
+			"base_url": "https://api.openai.com",
+		},
+	}
+	repo := &openAIAccountTestRepo{
+		mockAccountRepoForGemini: mockAccountRepoForGemini{
+			accountsByID: map[int64]*Account{account.ID: account},
+		},
+	}
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{
+		newJSONResponse(http.StatusOK, `{"output":[{"type":"function_call","name":"probe_ping"}]}`),
+		newJSONResponse(http.StatusOK, `{"output":[{"type":"custom_tool_call","name":"exec","input":"pwd"}]}`),
+		newJSONResponse(http.StatusOK, `{"output":[{"type":"message","content":[{"type":"output_text","text":"tool unavailable"}]}]}`),
+	}}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, cfg: &config.Config{}}
+
+	svc.ProbeOpenAIAPIKeyResponsesSupport(context.Background(), account.ID)
+
+	require.Len(t, upstream.requests, 3)
+	require.Equal(t, false, repo.updatedExtra[openai_compat.ExtraKeyResponsesCustomToolsSupported])
+}
+
+func TestAccountTestService_OpenAIAPIKeyProbeRequiresConsistentAutoCustomTools(t *testing.T) {
+	account := &Account{
+		ID:          19012,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "test-api-key",
+			"base_url": "https://api.openai.com",
+		},
+	}
+	repo := &openAIAccountTestRepo{
+		mockAccountRepoForGemini: mockAccountRepoForGemini{
+			accountsByID: map[int64]*Account{account.ID: account},
+		},
+	}
+	customCall := `{"output":[{"type":"custom_tool_call","name":"exec","input":"pwd"}]}`
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{
+		newJSONResponse(http.StatusOK, `{"output":[{"type":"function_call","name":"probe_ping"}]}`),
+		newJSONResponse(http.StatusOK, customCall),
+		newJSONResponse(http.StatusOK, customCall),
+		newJSONResponse(http.StatusOK, customCall),
+	}}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, cfg: &config.Config{}}
+
+	svc.ProbeOpenAIAPIKeyResponsesSupport(context.Background(), account.ID)
+
+	require.Len(t, upstream.requests, 4)
+	prompts := make(map[string]struct{}, responsesCustomToolProbeRuns)
+	for _, request := range upstream.requests[1:] {
+		body, err := io.ReadAll(request.Body)
+		require.NoError(t, err)
+		prompt := gjson.GetBytes(body, "input.0.content.0.text").String()
+		require.Contains(t, prompt, "pwd")
+		prompts[prompt] = struct{}{}
+	}
+	require.Len(t, prompts, responsesCustomToolProbeRuns, "each consistency probe must have an independent payload")
+	require.Equal(t, true, repo.updatedExtra[openai_compat.ExtraKeyResponsesCustomToolsSupported])
+}
+
+func TestAccountTestService_OpenAIAPIKeyProbeDoesNotPromotePriorNegativeForSameTarget(t *testing.T) {
+	account := &Account{
+		ID:          19013,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "test-api-key",
+			"base_url": "https://api.openai.com",
+		},
+		Extra: map[string]any{
+			openai_compat.ExtraKeyResponsesCustomToolsSupported:  false,
+			openai_compat.ExtraKeyResponsesCustomToolsProbeModel: openai.DefaultTestModel,
+		},
+	}
+	account.Extra[openai_compat.ExtraKeyResponsesCustomToolsProbeTarget] = account.OpenAIResponsesCustomToolsTargetFingerprint(openai.DefaultTestModel)
+	repo := &openAIAccountTestRepo{
+		mockAccountRepoForGemini: mockAccountRepoForGemini{
+			accountsByID: map[int64]*Account{account.ID: account},
+		},
+	}
+	customCall := `{"output":[{"type":"custom_tool_call","name":"exec","input":"pwd"}]}`
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{
+		newJSONResponse(http.StatusOK, `{"output":[{"type":"function_call","name":"probe_ping"}]}`),
+		newJSONResponse(http.StatusOK, customCall),
+		newJSONResponse(http.StatusOK, customCall),
+		newJSONResponse(http.StatusOK, customCall),
+	}}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, cfg: &config.Config{}}
+
+	svc.ProbeOpenAIAPIKeyResponsesSupport(context.Background(), account.ID)
+
+	require.Len(t, upstream.requests, 4)
+	require.Equal(t, false, repo.updatedExtra[openai_compat.ExtraKeyResponsesCustomToolsSupported])
+}
+
 func TestAccountTestService_OpenAIAccountConnectionUsesSharedTLSAwareSender(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := newTestContext()
@@ -712,7 +860,7 @@ func TestAccountTestService_OpenAIAPIKeyResponsesUnsupportedUsesChatCompletionsP
 			"api_key":  "sk-test",
 			"base_url": "https://compat-upstream.example/v1",
 		},
-		Extra: map[string]any{openai_compat.ExtraKeyResponsesSupported: false},
+		Extra: map[string]any{openai_compat.ExtraKeyResponsesMode: string(openai_compat.ResponsesSupportModeForceChatCompletions)},
 	}
 
 	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4", "hello", "")
@@ -751,7 +899,7 @@ func TestAccountTestService_OpenAIChatCompletionsPathReturns4xx(t *testing.T) {
 			"api_key":  "sk-test",
 			"base_url": "https://compat-upstream.example",
 		},
-		Extra: map[string]any{openai_compat.ExtraKeyResponsesSupported: false},
+		Extra: map[string]any{openai_compat.ExtraKeyResponsesMode: string(openai_compat.ResponsesSupportModeForceChatCompletions)},
 	}
 
 	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4", "", "")
@@ -780,7 +928,7 @@ func TestAccountTestService_OpenAIChatCompletionsPathTimeout(t *testing.T) {
 			"api_key":  "sk-test",
 			"base_url": "https://compat-upstream.example",
 		},
-		Extra: map[string]any{openai_compat.ExtraKeyResponsesSupported: false},
+		Extra: map[string]any{openai_compat.ExtraKeyResponsesMode: string(openai_compat.ResponsesSupportModeForceChatCompletions)},
 	}
 
 	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4", "", "")
@@ -814,7 +962,7 @@ func TestAccountTestService_OpenAIChatCompletionsPathRejectsNonJSONStream(t *tes
 			"api_key":  "sk-test",
 			"base_url": "https://compat-upstream.example",
 		},
-		Extra: map[string]any{openai_compat.ExtraKeyResponsesSupported: false},
+		Extra: map[string]any{openai_compat.ExtraKeyResponsesMode: string(openai_compat.ResponsesSupportModeForceChatCompletions)},
 	}
 
 	err := svc.testOpenAIAccountConnection(ctx, account, "gpt-5.4", "", "")

@@ -5257,7 +5257,10 @@
                         </span>
                         <div class="min-w-0">
                           <p class="truncate text-sm font-semibold text-gray-900 dark:text-white">
-                            {{ doc.title || localText("未命名文档", "Untitled document") }}
+                            {{
+                              localText(doc.title, doc.title_en || doc.title) ||
+                              localText("未命名文档", "Untitled document")
+                            }}
                           </p>
                           <p class="truncate text-xs text-gray-500 dark:text-gray-400">
                             {{ loginAgreementRoutePath(doc, index) }}
@@ -5277,16 +5280,27 @@
                       </button>
                     </div>
 
-                    <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                    <div class="grid grid-cols-1 gap-3 lg:grid-cols-3">
                       <div>
                         <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
-                          {{ localText("文档名称", "Document title") }}
+                          {{ localText("中文标题", "Chinese title") }}
                         </label>
                         <input
                           v-model="doc.title"
                           type="text"
                           class="input text-sm"
-                          :placeholder="localText('例如：服务条款', 'Example: Terms of Service')"
+                          placeholder="例如：服务条款"
+                        />
+                      </div>
+                      <div>
+                        <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
+                          {{ localText("英文标题", "English title") }}
+                        </label>
+                        <input
+                          v-model="doc.title_en"
+                          type="text"
+                          class="input text-sm"
+                          placeholder="Example: Terms of Service"
                         />
                       </div>
                       <div>
@@ -5306,16 +5320,29 @@
                         </div>
                       </div>
                     </div>
-                    <div class="mt-3">
+                    <div class="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-2">
+                      <div>
                       <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
-                        {{ localText("Markdown 内容", "Markdown content") }}
+                        {{ localText("中文 Markdown 内容", "Chinese Markdown content") }}
                       </label>
                         <textarea
                           v-model="doc.content_md"
-                          rows="8"
+                          rows="10"
                           class="input font-mono text-sm"
-                          :placeholder="localText('在这里填写正式 Markdown 内容。', 'Write the final Markdown content here.')"
+                          placeholder="在这里填写中文正式内容。"
                         ></textarea>
+                      </div>
+                      <div>
+                        <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
+                          {{ localText("英文 Markdown 内容", "English Markdown content") }}
+                        </label>
+                        <textarea
+                          v-model="doc.content_md_en"
+                          rows="10"
+                          class="input font-mono text-sm"
+                          placeholder="Write the final English content here."
+                        ></textarea>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -7161,23 +7188,31 @@ function defaultLoginAgreementDocuments(): LoginAgreementDocument[] {
   return [
     {
       id: "terms",
-      title: localText("服务条款", "Terms of Service"),
+      title: "服务条款",
       content_md: "",
+      title_en: "Terms of Service",
+      content_md_en: "",
     },
     {
       id: "usage-policy",
-      title: localText("使用政策", "Usage Policy"),
+      title: "使用政策",
       content_md: "",
+      title_en: "Usage Policy",
+      content_md_en: "",
     },
     {
       id: "supported-regions",
-      title: localText("支持的国家和地区", "Supported Countries and Regions"),
+      title: "支持的国家和地区",
       content_md: "",
+      title_en: "Supported Countries and Regions",
+      content_md_en: "",
     },
     {
       id: "service-specific-terms",
-      title: localText("服务特定条款", "Service-Specific Terms"),
+      title: "服务特定条款",
       content_md: "",
+      title_en: "Service-Specific Terms",
+      content_md_en: "",
     },
   ];
 }
@@ -7970,6 +8005,8 @@ function addLoginAgreementDocument() {
     id: `custom-${Date.now().toString(36)}`,
     title: "",
     content_md: "",
+    title_en: "",
+    content_md_en: "",
   });
 }
 
@@ -7985,8 +8022,13 @@ function normalizeLoginAgreementDocumentsForSave(): LoginAgreementDocument[] {
         `doc-${index + 1}`,
       title: doc.title.trim(),
       content_md: doc.content_md.trim(),
+      title_en: doc.title_en?.trim() || "",
+      content_md_en: doc.content_md_en?.trim() || "",
     }))
-    .filter((doc) => doc.title || doc.content_md);
+    .filter(
+      (doc) =>
+        doc.title || doc.content_md || doc.title_en || doc.content_md_en,
+    );
 }
 
 function findDuplicateLoginAgreementDocumentId(
@@ -8057,6 +8099,8 @@ async function loadSettings() {
             id: doc.id || "",
             title: doc.title || "",
             content_md: doc.content_md || "",
+            title_en: doc.title_en || "",
+            content_md_en: doc.content_md_en || "",
           }))
         : defaultLoginAgreementDocuments();
     Object.assign(authSourceDefaults, buildAuthSourceDefaultsState(settings));

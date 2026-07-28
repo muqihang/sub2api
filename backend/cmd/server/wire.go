@@ -99,10 +99,12 @@ func provideCleanup(
 	antigravityOAuth *service.AntigravityOAuthService,
 	grokOAuth *service.GrokOAuthService,
 	openAIGateway *service.OpenAIGatewayService,
+	openAIAgentIdentityAdmission *service.OpenAIAgentIdentityAdmissionWorker,
 	scheduledTestRunner *service.ScheduledTestRunnerService,
 	backupSvc *service.BackupService,
 	paymentOrderExpiry *service.PaymentOrderExpiryService,
 	channelMonitorRunner *service.ChannelMonitorRunner,
+	openAIResponsesProbeScheduler *service.OpenAIResponsesProbeScheduler,
 	quotaFlusher *service.UserPlatformQuotaUsageFlusher,
 ) func() {
 	return func() {
@@ -250,6 +252,12 @@ func provideCleanup(
 				}
 				return nil
 			}},
+			{"OpenAIAgentIdentityAdmissionWorker", func() error {
+				if openAIAgentIdentityAdmission != nil {
+					openAIAgentIdentityAdmission.Stop()
+				}
+				return nil
+			}},
 			{"ScheduledTestRunnerService", func() error {
 				if scheduledTestRunner != nil {
 					scheduledTestRunner.Stop()
@@ -271,6 +279,12 @@ func provideCleanup(
 			{"ChannelMonitorRunner", func() error {
 				if channelMonitorRunner != nil {
 					channelMonitorRunner.Stop()
+				}
+				return nil
+			}},
+			{"OpenAIResponsesProbeScheduler", func() error {
+				if openAIResponsesProbeScheduler != nil {
+					openAIResponsesProbeScheduler.Stop()
 				}
 				return nil
 			}},

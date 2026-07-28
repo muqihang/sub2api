@@ -4,7 +4,15 @@ package service
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -178,7 +186,7 @@ func TestEvaluateOpenAIImportLifecycleWithExtra_RejectsExtraEgressBucketBeforeRe
 	require.Zero(t, client.refreshCalls)
 }
 
-func TestEvaluateOpenAIImportLifecycle_ScopeInsufficientQuarantined(t *testing.T) {
+func TestEvaluateOpenAIImportLifecycle_MissingResponsesWriteScopeRemainsSchedulable(t *testing.T) {
 	svc := NewOpenAIOAuthService(nil, &openaiLifecycleClientStub{
 		refreshResp: &openai.TokenResponse{
 			AccessToken:  "new-at",
@@ -195,12 +203,12 @@ func TestEvaluateOpenAIImportLifecycle_ScopeInsufficientQuarantined(t *testing.T
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, OpenAIPoolRoleQuarantine, decision.PoolRole)
-	require.Equal(t, OpenAIAuthStateTerminal, decision.AuthState)
-	require.Equal(t, OpenAIValidationOutcomeRTValidationScopeInsufficient, decision.ValidationOutcome)
-	require.Equal(t, StatusDisabled, decision.Status)
-	require.False(t, decision.Schedulable)
-	require.Equal(t, openAIAuthErrorCodeResponsesWriteMissing, decision.RefreshErrorCode)
+	require.Equal(t, OpenAIPoolRoleMain, decision.PoolRole)
+	require.Equal(t, OpenAIAuthStateHealthy, decision.AuthState)
+	require.Equal(t, OpenAIValidationOutcomeRTValidated, decision.ValidationOutcome)
+	require.Equal(t, StatusActive, decision.Status)
+	require.True(t, decision.Schedulable)
+	require.Empty(t, decision.RefreshErrorCode)
 	require.Equal(t, false, decision.Extra["openai_responses_write_capable"])
 	require.Equal(t, "openid email profile model.request model.read", decision.Extra["openai_last_granted_scope"])
 }
@@ -387,6 +395,55 @@ func TestFindMatchingOpenAIOAuthAccountWithAccessor_MatchesEncryptedStoredToken(
 	require.Equal(t, "refresh_token", matchKey)
 }
 
+func TestFindMatchingOpenAIOAuthAccount_DoesNotMergeDistinctWorkspaceMembers(t *testing.T) {
+	accounts := []Account{
+		{
+			ID:       1,
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Credentials: map[string]any{
+				"chatgpt_account_id": "workspace-1",
+				"chatgpt_user_id":    "user-1",
+				"email":              "member-1@example.com",
+			},
+		},
+	}
+
+	account, matchKey := FindMatchingOpenAIOAuthAccount(accounts, map[string]any{
+		"chatgpt_account_id": "workspace-1",
+		"chatgpt_user_id":    "user-2",
+		"email":              "member-2@example.com",
+	})
+
+	require.Nil(t, account)
+	require.Empty(t, matchKey)
+}
+
+func TestFindMatchingOpenAIOAuthAccount_MatchesSameWorkspaceMember(t *testing.T) {
+	accounts := []Account{
+		{
+			ID:       1,
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Credentials: map[string]any{
+				"chatgpt_account_id": "workspace-1",
+				"chatgpt_user_id":    "user-1",
+				"email":              "old@example.com",
+			},
+		},
+	}
+
+	account, matchKey := FindMatchingOpenAIOAuthAccount(accounts, map[string]any{
+		"chatgpt_account_id": "workspace-1",
+		"chatgpt_user_id":    "user-1",
+		"email":              "new@example.com",
+	})
+
+	require.NotNil(t, account)
+	require.Equal(t, int64(1), account.ID)
+	require.Equal(t, "chatgpt_account_user_id", matchKey)
+}
+
 func TestShouldOverwriteMatchedOpenAIAccount(t *testing.T) {
 	existing := &Account{
 		ID:       1,
@@ -433,6 +490,18 @@ func TestShouldOverwriteMatchedOpenAIAccount(t *testing.T) {
 		},
 	}
 	require.False(t, ShouldOverwriteMatchedOpenAIAccount(existing, "chatgpt_account_id", atOnly))
+
+	agentIdentity := &OpenAIImportLifecycleDecision{
+		TokenSource:       OpenAITokenSourceAgentIdentity,
+		ValidationOutcome: OpenAIValidationOutcomeAgentIdentityPending,
+		Credentials: map[string]any{
+			"agent_runtime_id":   "agent-1",
+			"agent_private_key":  "private-key",
+			"chatgpt_account_id": "acct-1",
+			"chatgpt_user_id":    "user-1",
+		},
+	}
+	require.True(t, ShouldOverwriteMatchedOpenAIAccount(existing, "chatgpt_account_user_id", agentIdentity))
 }
 
 func TestEvaluateOpenAIImportLifecycle_TokenInvalidatedValidationFailureIsTerminal(t *testing.T) {
@@ -451,4 +520,46 @@ func TestEvaluateOpenAIImportLifecycle_TokenInvalidatedValidationFailureIsTermin
 	require.Equal(t, StatusError, decision.Status)
 	require.False(t, decision.Schedulable)
 	require.Equal(t, openAIAuthErrorCodeTokenInvalidated, decision.RefreshErrorCode)
+}
+
+func TestEvaluateOpenAIAgentIdentityImportLifecycle_RegisteredIdentityIsQuarantinedPendingAdmission(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	privateDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	require.NoError(t, err)
+	privateB64 := base64.StdEncoding.EncodeToString(privateDER)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload openAIAgentTaskRegistrationRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		signature, err := base64.StdEncoding.DecodeString(payload.Signature)
+		require.NoError(t, err)
+		require.True(t, ed25519.Verify(publicKey, []byte("agent-import:"+payload.Timestamp), signature))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"task_id":"task-import"}`)
+	}))
+	defer server.Close()
+
+	credentials := map[string]any{
+		"auth_mode":          "agentIdentity",
+		"agent_runtime_id":   "agent-import",
+		"agent_private_key":  privateB64,
+		"chatgpt_account_id": "workspace-import",
+		"chatgpt_user_id":    "user-import",
+	}
+	decision, err := evaluateOpenAIAgentIdentityImportLifecycle(
+		context.Background(),
+		"",
+		credentials,
+		credentials,
+		server.URL,
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, StatusDisabled, decision.Status)
+	require.False(t, decision.Schedulable)
+	require.Equal(t, OpenAIPoolRoleQuarantine, decision.PoolRole)
+	require.Equal(t, OpenAITokenSourceAgentIdentity, decision.TokenSource)
+	require.Equal(t, OpenAIValidationOutcomeAgentIdentityPending, decision.ValidationOutcome)
+	require.Equal(t, OpenAIAgentIdentityAdmissionStatePending, decision.Extra["openai_admission_state"])
 }
