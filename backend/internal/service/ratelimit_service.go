@@ -173,6 +173,14 @@ func (s *RateLimitService) CheckErrorPolicy(ctx context.Context, account *Accoun
 func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, requestedModel ...string) (shouldDisable bool) {
 	customErrorCodesEnabled := account.IsCustomErrorCodesEnabled()
 
+	// Balance exhaustion is account-scoped and persists across requests. Keeping
+	// a depleted pool account active only makes every new request select it again.
+	if account.IsPoolMode() && !customErrorCodesEnabled &&
+		account.Platform == PlatformOpenAI && statusCode == http.StatusForbidden &&
+		isOpenAIInsufficientBalanceError(responseBody, "") {
+		return s.handleOpenAI403(ctx, account, "", responseBody)
+	}
+
 	// 池模式默认不标记本地账号状态；仅当用户显式配置自定义错误码时按本地策略处理。
 	if account.IsPoolMode() && !customErrorCodesEnabled {
 		slog.Info("pool_mode_error_skipped", "account_id", account.ID, "status_code", statusCode)

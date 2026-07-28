@@ -111,3 +111,33 @@ func TestRateLimitService_HandleUpstreamError_OpenAIInsufficientBalanceDisablesI
 	require.Len(t, blocker.accounts, 1)
 	require.Equal(t, "auth_error", blocker.reasons[0])
 }
+
+func TestRateLimitService_HandleUpstreamError_OpenAIPoolInsufficientBalanceDisablesImmediately(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	blocker := &runtimeBlockRecorder{}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	service.SetAccountRuntimeBlocker(blocker)
+	account := &Account{
+		ID:       304,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true,
+		},
+	}
+
+	shouldDisable := service.HandleUpstreamError(
+		context.Background(),
+		account,
+		http.StatusForbidden,
+		http.Header{},
+		[]byte(`{"error":{"code":"INSUFFICIENT_BALANCE","message":"insufficient balance"}}`),
+	)
+
+	require.True(t, shouldDisable)
+	require.Equal(t, 1, repo.setErrorCalls)
+	require.Equal(t, 0, repo.tempCalls)
+	require.Contains(t, repo.lastErrorMsg, "insufficient balance")
+	require.Len(t, blocker.accounts, 1)
+	require.Equal(t, "auth_error", blocker.reasons[0])
+}
