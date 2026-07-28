@@ -70,10 +70,14 @@ type AccountTestService struct {
 	httpUpstream              HTTPUpstream
 	cfg                       *config.Config
 	tlsFPProfileService       *TLSFingerprintProfileService
-	openAIResponsesProbe      *OpenAIResponsesProbeScheduler
+	openAIResponsesProbe      OpenAIResponsesProbeSubmitter
 }
 
-func (s *AccountTestService) SetOpenAIResponsesProbeScheduler(scheduler *OpenAIResponsesProbeScheduler) {
+type OpenAIResponsesProbeSubmitter interface {
+	Schedule(accountID int64, modelID string) bool
+}
+
+func (s *AccountTestService) SetOpenAIResponsesProbeScheduler(scheduler OpenAIResponsesProbeSubmitter) {
 	if s != nil {
 		s.openAIResponsesProbe = scheduler
 	}

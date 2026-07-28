@@ -1739,7 +1739,7 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		return
 	}
 
-	result, err := h.adminService.BulkUpdateAccounts(c.Request.Context(), &service.BulkUpdateAccountsInput{
+	bulkInput := &service.BulkUpdateAccountsInput{
 		AccountIDs:            req.AccountIDs,
 		Filters:               toServiceBulkUpdateAccountFilters(req.Filters),
 		Name:                  req.Name,
@@ -1754,13 +1754,14 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		Credentials:           req.Credentials,
 		Extra:                 req.Extra,
 		SkipMixedChannelCheck: skipCheck,
-	})
-	if err != nil {
-		if len(req.Credentials) > 0 {
-			for _, accountID := range req.AccountIDs {
-				h.scheduleOpenAIResponsesProbeByID(accountID, "")
-			}
+	}
+	result, err := h.adminService.BulkUpdateAccounts(c.Request.Context(), bulkInput)
+	if len(req.Credentials) > 0 {
+		for _, accountID := range normalizeInt64IDList(bulkInput.AccountIDs) {
+			h.scheduleOpenAIResponsesProbeByID(accountID, "")
 		}
+	}
+	if err != nil {
 		var mixedErr *service.MixedChannelError
 		if errors.As(err, &mixedErr) {
 			c.JSON(409, gin.H{
@@ -1778,13 +1779,6 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	if len(req.Credentials) > 0 {
-		probeIDs := append(append([]int64(nil), result.SuccessIDs...), result.FailedIDs...)
-		for _, accountID := range probeIDs {
-			h.scheduleOpenAIResponsesProbeByID(accountID, "")
-		}
-	}
-
 	response.Success(c, result)
 }
 
