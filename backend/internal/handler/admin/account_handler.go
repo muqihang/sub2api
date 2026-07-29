@@ -735,9 +735,14 @@ func (h *AccountHandler) Update(c *gin.Context) {
 	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
 }
 
-// scheduleOpenAIResponsesProbe enqueues an OpenAI APIKey capability probe.
+// scheduleOpenAIResponsesProbe enqueues bounded OpenAI capability probes.
 func (h *AccountHandler) scheduleOpenAIResponsesProbe(account *service.Account) {
-	if account == nil || account.Platform != service.PlatformOpenAI || account.Type != service.AccountTypeAPIKey {
+	if account == nil || account.Platform != service.PlatformOpenAI {
+		return
+	}
+	switch account.Type {
+	case service.AccountTypeAPIKey, service.AccountTypeUpstream, service.AccountTypeOAuth:
+	default:
 		return
 	}
 	if h.accountTestService == nil {

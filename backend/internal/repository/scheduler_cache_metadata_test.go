@@ -45,7 +45,7 @@ func TestBuildSchedulerMetadataAccount_PreservesFormalPoolSchedulableEvidence(t 
 }
 
 func TestBuildSchedulerMetadataAccount_PreservesOpenAIWebSearchCapability(t *testing.T) {
-	got := buildSchedulerMetadataAccount(service.Account{
+	account := service.Account{
 		ID:          176,
 		Platform:    service.PlatformOpenAI,
 		Type:        service.AccountTypeAPIKey,
@@ -57,9 +57,15 @@ func TestBuildSchedulerMetadataAccount_PreservesOpenAIWebSearchCapability(t *tes
 			"openai_web_search_last_status": 200,
 			"openai_web_search_last_error":  "",
 		},
-	})
+	}
+	account.Extra["openai_web_search_probe_model"] = "gpt-5.6-sol"
+	account.Extra["openai_web_search_probe_target"] = account.OpenAIWebSearchTargetFingerprint()
+	got := buildSchedulerMetadataAccount(account)
 
 	require.Equal(t, true, got.Extra["openai_web_search_supported"])
+	require.Equal(t, "gpt-5.6-sol", got.Extra["openai_web_search_probe_model"])
+	require.Equal(t, account.OpenAIWebSearchTargetFingerprint(), got.Extra["openai_web_search_probe_target"])
+	require.Equal(t, account.OpenAIWebSearchTargetFingerprint(), got.Extra["openai_web_search_current_target"])
 	require.NotContains(t, got.Extra, "openai_web_search_checked_at")
 	require.NotContains(t, got.Extra, "openai_web_search_last_status")
 	require.NotContains(t, got.Extra, "openai_web_search_last_error")

@@ -1478,7 +1478,14 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 	}
 	if capability == OpenAIEndpointCapabilityWebSearch {
 		supported, known := a.OpenAIWebSearchSupportKnown()
-		return known && supported
+		if !known {
+			return false
+		}
+		probeTarget := a.OpenAIWebSearchProbeTarget()
+		if probeTarget != "" && probeTarget != a.OpenAIWebSearchCurrentTarget() {
+			return false
+		}
+		return supported
 	}
 	if capability == OpenAIEndpointCapabilityResponsesCustomTools {
 		if a.Type == AccountTypeOAuth {
@@ -1515,7 +1522,42 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 // result. Unknown accounts are excluded because HTTP 200 alone does not prove
 // that an upstream executed the hosted tool.
 func (a *Account) OpenAIWebSearchSupportKnown() (supported bool, known bool) {
-	return a.openAIExtraBoolKnown("openai_web_search_supported")
+	return a.openAIExtraBoolKnown(openai_compat.ExtraKeyWebSearchSupported)
+}
+
+func (a *Account) OpenAIWebSearchProbeModel() string {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return ""
+	}
+	value, _ := a.Extra[openai_compat.ExtraKeyWebSearchProbeModel].(string)
+	return strings.TrimSpace(value)
+}
+
+func (a *Account) OpenAIWebSearchProbeTarget() string {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return ""
+	}
+	value, _ := a.Extra[openai_compat.ExtraKeyWebSearchProbeTarget].(string)
+	return strings.TrimSpace(value)
+}
+
+func (a *Account) OpenAIWebSearchCurrentTarget() string {
+	if a == nil || !a.IsOpenAI() {
+		return ""
+	}
+	if a.Extra != nil {
+		if value, ok := a.Extra[openai_compat.ExtraKeyWebSearchCurrentTarget].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return a.OpenAIWebSearchTargetFingerprint()
+}
+
+func (a *Account) OpenAIWebSearchTargetFingerprint() string {
+	// Hosted web_search is an endpoint capability in the same upstream target;
+	// keep the fingerprint independent of the probe's selected model so one
+	// successful model probe does not strand equivalent mapped models.
+	return a.OpenAIResponsesTargetFingerprint("")
 }
 
 func (a *Account) OpenAIResponsesCustomToolsSupportKnown() (supported bool, known bool) {

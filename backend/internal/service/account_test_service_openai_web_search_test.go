@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -79,4 +80,39 @@ func TestAccountTestServiceWebSearchProbeRejectsIgnoredTool(t *testing.T) {
 	require.Equal(t, false, probeUpdates["openai_web_search_supported"])
 	require.Contains(t, probeUpdates["openai_web_search_last_error"], "web_search_call")
 	require.Contains(t, rec.Body.String(), `"type":"error"`)
+}
+
+func TestAccountTestServiceBackgroundWebSearchProbePersistsScopedEvidence(t *testing.T) {
+	account := Account{
+		ID: 251, Name: "auto-web-search", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true, Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://example.com/v1",
+			"model_mapping": map[string]any{
+				"gpt-5.5": "upstream-model",
+			},
+		},
+	}
+	updates := make(chan map[string]any, 1)
+	repo := &snapshotUpdateAccountRepo{
+		stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{account}},
+		updateExtraCalls:      updates,
+	}
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"output":[{"type":"web_search_call"},{"type":"message"}]}`)),
+	}}
+	svc := &AccountTestService{
+		accountRepo: repo, httpUpstream: upstream,
+		cfg: &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
+	}
+
+	svc.ProbeOpenAIWebSearchSupportForModel(context.Background(), account.ID, "gpt-5.5")
+
+	probeUpdates := <-updates
+	require.Equal(t, true, probeUpdates["openai_web_search_supported"])
+	require.Equal(t, "upstream-model", probeUpdates["openai_web_search_probe_model"])
+	require.Equal(t, account.OpenAIWebSearchTargetFingerprint(), probeUpdates["openai_web_search_probe_target"])
 }

@@ -961,6 +961,11 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	var err error
 	if req.RequiredCapability == OpenAIEndpointCapabilitySearch && targetPlatform == PlatformOpenAI {
 		accounts, err = s.service.listOpenAINativeSearchCandidateAccounts(ctx, req.GroupID)
+	} else if targetPlatform == PlatformOpenAI && requiresFreshOpenAICapabilityEvidence(req.RequiredCapability) {
+		// Rollback containers may still write an older Redis metadata schema
+		// during hot-deploy overlap. Use PostgreSQL for capability-sensitive
+		// candidate discovery so absent cache fields cannot hide fresh evidence.
+		accounts, err = s.service.listSchedulableAccountsFromRepositoryForPlatform(ctx, req.GroupID, targetPlatform)
 	} else {
 		accounts, err = s.service.listSchedulableAccountsForPlatform(ctx, req.GroupID, targetPlatform)
 	}
@@ -1097,6 +1102,17 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	}
 
 	return nil, candidateCount, topK, loadSkew, noAvailableOpenAISelectionErrorForRequest(req.RequestedModel, req.RequiredImageCapability, compactBlocked, oauthCapabilityFiltered || openAISelectionOrderHasOAuthRuntimeGuardReject(selectionOrder, req))
+}
+
+func requiresFreshOpenAICapabilityEvidence(capability OpenAIEndpointCapability) bool {
+	switch capability {
+	case OpenAIEndpointCapabilityWebSearch,
+		OpenAIEndpointCapabilityResponsesCustomTools,
+		OpenAIEndpointCapabilityWebSearchCustomTools:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *defaultOpenAIAccountScheduler) isAccountTransportCompatible(account *Account, requiredTransport OpenAIUpstreamTransport) bool {

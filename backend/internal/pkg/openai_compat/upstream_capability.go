@@ -88,6 +88,22 @@ const ExtraKeyResponsesCustomToolsProbeTarget = "openai_responses_custom_tools_p
 // computed from the full account before credentials are slimmed for cache.
 const ExtraKeyResponsesCustomToolsCurrentTarget = "openai_responses_custom_tools_current_target"
 
+// ExtraKeyWebSearchSupported records semantic hosted web_search probe evidence.
+const ExtraKeyWebSearchSupported = "openai_web_search_supported"
+
+// ExtraKeyWebSearchProbeModel records the model used by the latest hosted
+// web_search probe. It is diagnostic evidence; the capability itself is
+// scoped to the account's current upstream routing target.
+const ExtraKeyWebSearchProbeModel = "openai_web_search_probe_model"
+
+// ExtraKeyWebSearchProbeTarget binds hosted web_search evidence to the
+// account's non-secret upstream routing fingerprint.
+const ExtraKeyWebSearchProbeTarget = "openai_web_search_probe_target"
+
+// ExtraKeyWebSearchCurrentTarget is scheduler-only metadata computed before
+// credentials are removed from the cached account view.
+const ExtraKeyWebSearchCurrentTarget = "openai_web_search_current_target"
+
 // NormalizeResponsesSupportMode 归一化账号级 Responses API 路由覆盖模式。
 // 缺失或非法值按 auto 处理，以保持存量行为。
 func NormalizeResponsesSupportMode(mode string) ResponsesSupportMode {

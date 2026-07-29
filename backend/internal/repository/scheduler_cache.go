@@ -446,6 +446,13 @@ func buildSchedulerMetadataAccount(account service.Account) service.Account {
 			extra[openai_compat.ExtraKeyResponsesCustomToolsCurrentTarget] = currentTarget
 		}
 	}
+	if account.OpenAIWebSearchProbeTarget() != "" {
+		currentTarget := account.OpenAIWebSearchTargetFingerprint()
+		if extra == nil {
+			extra = make(map[string]any)
+		}
+		extra[openai_compat.ExtraKeyWebSearchCurrentTarget] = currentTarget
+	}
 	if account.IsClaudePlatformAWS() {
 		credentials = nil
 	}
@@ -627,6 +634,8 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		"openai_responses_custom_tools_probe_model",
 		"openai_responses_custom_tools_probe_target",
 		"openai_web_search_supported",
+		"openai_web_search_probe_model",
+		"openai_web_search_probe_target",
 		"codex_5h_used_percent",
 		"codex_7d_used_percent",
 		"codex_5h_reset_at",

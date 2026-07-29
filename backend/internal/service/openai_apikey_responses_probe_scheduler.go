@@ -15,6 +15,7 @@ const openAIResponsesProbeBackfillPageSize = 500
 
 type openAIResponsesProbeExecutor interface {
 	ProbeOpenAIAPIKeyResponsesSupportForModel(ctx context.Context, accountID int64, requestedModel string)
+	ProbeOpenAIWebSearchSupportForModel(ctx context.Context, accountID int64, requestedModel string)
 }
 
 type openAIResponsesProbeAccountLister interface {
@@ -43,9 +44,11 @@ func defaultOpenAIResponsesProbeSchedulerOptions() OpenAIResponsesProbeScheduler
 }
 
 type openAIResponsesProbePending struct {
-	model   string
-	running bool
-	dirty   bool
+	model          string
+	running        bool
+	dirty          bool
+	probeResponses bool
+	probeWebSearch bool
 }
 
 type OpenAIResponsesProbeScheduler struct {
@@ -125,8 +128,15 @@ func (s *OpenAIResponsesProbeScheduler) Start() {
 // Schedule coalesces duplicate account probes. A trigger received while the
 // account is running requests at most one follow-up with the latest model.
 func (s *OpenAIResponsesProbeScheduler) Schedule(accountID int64, modelID string) bool {
+	return s.scheduleCapabilities(accountID, modelID, true, true)
+}
+
+func (s *OpenAIResponsesProbeScheduler) scheduleCapabilities(accountID int64, modelID string, probeResponses, probeWebSearch bool) bool {
 	if s == nil || accountID <= 0 {
 		return false
+	}
+	if !probeResponses && !probeWebSearch {
+		return true
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -137,12 +147,18 @@ func (s *OpenAIResponsesProbeScheduler) Schedule(accountID int64, modelID string
 		if modelID = strings.TrimSpace(modelID); modelID != "" {
 			pending.model = modelID
 		}
+		pending.probeResponses = pending.probeResponses || probeResponses
+		pending.probeWebSearch = pending.probeWebSearch || probeWebSearch
 		if pending.running {
 			pending.dirty = true
 		}
 		return true
 	}
-	s.pending[accountID] = &openAIResponsesProbePending{model: strings.TrimSpace(modelID)}
+	s.pending[accountID] = &openAIResponsesProbePending{
+		model:          strings.TrimSpace(modelID),
+		probeResponses: probeResponses,
+		probeWebSearch: probeWebSearch,
+	}
 	select {
 	case s.jobs <- accountID:
 		return true
@@ -179,12 +195,16 @@ func (s *OpenAIResponsesProbeScheduler) runAccount(accountID int64) {
 		pending.running = true
 		pending.dirty = false
 		modelID := pending.model
+		probeResponses := pending.probeResponses
+		probeWebSearch := pending.probeWebSearch
+		pending.probeResponses = false
+		pending.probeWebSearch = false
 		s.mu.Unlock()
 
 		if !waitForProbeDelay(s.ctx, randomDuration(s.options.TaskJitter)) {
 			return
 		}
-		s.executeProbe(accountID, modelID)
+		s.executeProbe(accountID, modelID, probeResponses, probeWebSearch)
 
 		s.mu.Lock()
 		pending = s.pending[accountID]
@@ -198,7 +218,7 @@ func (s *OpenAIResponsesProbeScheduler) runAccount(accountID int64) {
 	}
 }
 
-func (s *OpenAIResponsesProbeScheduler) executeProbe(accountID int64, modelID string) {
+func (s *OpenAIResponsesProbeScheduler) executeProbe(accountID int64, modelID string, probeResponses, probeWebSearch bool) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			slog.Error("openai_responses_probe_panic", "account_id", accountID, "recover", recovered)
@@ -206,7 +226,12 @@ func (s *OpenAIResponsesProbeScheduler) executeProbe(accountID int64, modelID st
 	}()
 	taskCtx, cancel := context.WithTimeout(s.ctx, s.options.TaskTimeout)
 	defer cancel()
-	s.executor.ProbeOpenAIAPIKeyResponsesSupportForModel(taskCtx, accountID, modelID)
+	if probeWebSearch {
+		s.executor.ProbeOpenAIWebSearchSupportForModel(taskCtx, accountID, modelID)
+	}
+	if probeResponses && taskCtx.Err() == nil {
+		s.executor.ProbeOpenAIAPIKeyResponsesSupportForModel(taskCtx, accountID, modelID)
+	}
 }
 
 func waitForProbeDelay(ctx context.Context, delay time.Duration) bool {
@@ -262,14 +287,16 @@ func (s *OpenAIResponsesProbeScheduler) RunBackfill(ctx context.Context) {
 			PageSize:  openAIResponsesProbeBackfillPageSize,
 			SortBy:    "id",
 			SortOrder: pagination.SortOrderAsc,
-		}, PlatformOpenAI, AccountTypeAPIKey, "", "", 0, "")
+		}, PlatformOpenAI, "", "", "", 0, "")
 		if err != nil {
 			slog.Warn("openai_responses_probe_backfill_list_failed", "page", page, "error", err)
 			return
 		}
 		for i := range accounts {
-			if needsOpenAIResponsesProbe(&accounts[i]) {
-				if !s.Schedule(accounts[i].ID, "") {
+			probeResponses := needsOpenAIResponsesProbe(&accounts[i])
+			probeWebSearch := needsOpenAIWebSearchProbe(&accounts[i])
+			if probeResponses || probeWebSearch {
+				if !s.scheduleCapabilities(accounts[i].ID, "", probeResponses, probeWebSearch) {
 					return
 				}
 			}
@@ -296,6 +323,23 @@ func needsOpenAIResponsesProbe(account *Account) bool {
 	}
 	probeTarget := account.OpenAIResponsesCustomToolsProbeTarget()
 	return probeTarget == "" || probeTarget != account.OpenAIResponsesCustomToolsTargetFingerprint(probeModel)
+}
+
+func needsOpenAIWebSearchProbe(account *Account) bool {
+	if account == nil || account.Platform != PlatformOpenAI || account.Status != StatusActive || !account.Schedulable {
+		return false
+	}
+	switch account.Type {
+	case AccountTypeAPIKey, AccountTypeUpstream, AccountTypeOAuth:
+	default:
+		return false
+	}
+	_, known := account.OpenAIWebSearchSupportKnown()
+	if !known {
+		return true
+	}
+	probeTarget := account.OpenAIWebSearchProbeTarget()
+	return probeTarget == "" || probeTarget != account.OpenAIWebSearchTargetFingerprint()
 }
 
 func (s *OpenAIResponsesProbeScheduler) Stop() {

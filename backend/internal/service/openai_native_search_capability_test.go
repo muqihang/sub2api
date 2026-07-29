@@ -83,6 +83,24 @@ func TestAccountSupportsOpenAIEndpointCapability_WebSearchRequiresSuccessfulProb
 	}
 }
 
+func TestAccountSupportsOpenAIEndpointCapability_WebSearchRejectsStaleTargetEvidence(t *testing.T) {
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"base_url": "https://api.example.com/v1",
+		},
+		Extra: map[string]any{
+			"openai_web_search_supported": true,
+		},
+	}
+	account.Extra["openai_web_search_probe_target"] = account.OpenAIWebSearchTargetFingerprint()
+	require.True(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityWebSearch))
+
+	account.Credentials["base_url"] = "https://changed.example.com/v1"
+	require.False(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityWebSearch))
+}
+
 func TestAccountSupportsOpenAIEndpointCapability_CustomToolsUsesSemanticProbe(t *testing.T) {
 	tests := []struct {
 		name    string

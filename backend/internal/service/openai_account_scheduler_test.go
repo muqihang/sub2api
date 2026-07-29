@@ -557,6 +557,66 @@ func TestOpenAIGatewayService_SelectAccountWithSchedulerForCapabilityModel_Skips
 	require.Equal(t, int64(36042), selection.Account.ID)
 }
 
+func TestOpenAIGatewayService_SelectAccountWithSchedulerForCapabilityModel_UsesFreshDatabaseCapabilityEvidence(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(10111)
+	fresh := Account{
+		ID:          36051,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		GroupIDs:    []int64{groupID},
+		Credentials: map[string]any{
+			"base_url": "https://api.example.com/v1",
+			"model_mapping": map[string]any{
+				"public-alias": "channel-model",
+			},
+		},
+		Extra: map[string]any{
+			"openai_web_search_supported":               true,
+			"openai_responses_custom_tools_supported":   true,
+			"openai_responses_custom_tools_probe_model": "channel-model",
+		},
+	}
+	fresh.Extra["openai_responses_custom_tools_probe_target"] = fresh.OpenAIResponsesCustomToolsTargetFingerprint("channel-model")
+	stale := fresh
+	stale.Extra = map[string]any{"openai_responses_supported": true}
+
+	snapshotCache := &openAISnapshotCacheStub{
+		snapshotAccounts: []*Account{&stale},
+		accountsByID:     map[int64]*Account{fresh.ID: &stale},
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: []Account{fresh}},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		schedulerSnapshot:  &SchedulerSnapshotService{cache: snapshotCache},
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithSchedulerForCapabilityModel(
+		ctx,
+		&groupID,
+		"",
+		"",
+		"public-alias",
+		"channel-model",
+		nil,
+		OpenAIUpstreamTransportHTTPSSE,
+		OpenAIEndpointCapabilityWebSearchCustomTools,
+		false,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, fresh.ID, selection.Account.ID)
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_EnabledUsesAdvancedPreviousResponseRouting(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 

@@ -2784,6 +2784,14 @@ func (s *OpenAIGatewayService) listSchedulableAccountsForPlatform(ctx context.Co
 		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, false)
 		return accounts, err
 	}
+	return s.listSchedulableAccountsFromRepositoryForPlatform(ctx, groupID, platform)
+}
+
+func (s *OpenAIGatewayService) listSchedulableAccountsFromRepositoryForPlatform(ctx context.Context, groupID *int64, platform string) ([]Account, error) {
+	platform = strings.TrimSpace(platform)
+	if platform == "" {
+		platform = PlatformOpenAI
+	}
 	var accounts []Account
 	var err error
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
@@ -2834,7 +2842,7 @@ func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccount(ctx context.
 	}
 
 	fresh := account
-	if s.schedulerSnapshot != nil {
+	if s.schedulerSnapshot != nil && !requiresFreshOpenAICapabilityEvidence(requiredCapability) {
 		current, err := s.getSchedulableAccount(ctx, account.ID)
 		if err != nil || current == nil {
 			return nil

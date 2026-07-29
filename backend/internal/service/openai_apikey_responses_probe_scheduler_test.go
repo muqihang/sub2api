@@ -15,11 +15,12 @@ import (
 )
 
 type responsesProbeSchedulerExecutorStub struct {
-	active    atomic.Int32
-	maxActive atomic.Int32
-	calls     atomic.Int32
-	started   chan struct{}
-	release   chan struct{}
+	active         atomic.Int32
+	maxActive      atomic.Int32
+	calls          atomic.Int32
+	webSearchCalls atomic.Int32
+	started        chan struct{}
+	release        chan struct{}
 }
 
 func (s *responsesProbeSchedulerExecutorStub) ProbeOpenAIAPIKeyResponsesSupportForModel(ctx context.Context, _ int64, _ string) {
@@ -43,10 +44,15 @@ func (s *responsesProbeSchedulerExecutorStub) ProbeOpenAIAPIKeyResponsesSupportF
 	}
 }
 
+func (s *responsesProbeSchedulerExecutorStub) ProbeOpenAIWebSearchSupportForModel(_ context.Context, _ int64, _ string) {
+	s.webSearchCalls.Add(1)
+}
+
 type responsesProbeSchedulerListerStub struct {
-	mu       sync.Mutex
-	accounts []Account
-	pages    []int
+	mu           sync.Mutex
+	accounts     []Account
+	pages        []int
+	accountTypes []string
 }
 
 type responsesProbeSchedulerPanicExecutorStub struct {
@@ -59,9 +65,13 @@ func (s *responsesProbeSchedulerPanicExecutorStub) ProbeOpenAIAPIKeyResponsesSup
 	}
 }
 
-func (s *responsesProbeSchedulerListerStub) ListWithFilters(_ context.Context, params pagination.PaginationParams, _, _, _, _ string, _ int64, _ string) ([]Account, *pagination.PaginationResult, error) {
+func (s *responsesProbeSchedulerPanicExecutorStub) ProbeOpenAIWebSearchSupportForModel(_ context.Context, _ int64, _ string) {
+}
+
+func (s *responsesProbeSchedulerListerStub) ListWithFilters(_ context.Context, params pagination.PaginationParams, _, accountType, _, _ string, _ int64, _ string) ([]Account, *pagination.PaginationResult, error) {
 	s.mu.Lock()
 	s.pages = append(s.pages, params.Page)
+	s.accountTypes = append(s.accountTypes, accountType)
 	s.mu.Unlock()
 	start := (params.Page - 1) * params.PageSize
 	if start >= len(s.accounts) {
@@ -191,6 +201,54 @@ func TestNeedsOpenAIResponsesProbe_UnknownAndStaleOnly(t *testing.T) {
 	nonAPIKey := complete
 	nonAPIKey.Type = AccountTypeOAuth
 	require.False(t, needsOpenAIResponsesProbe(&nonAPIKey))
+}
+
+func TestNeedsOpenAIWebSearchProbe_IncludesOAuthAndRejectsCurrentEvidence(t *testing.T) {
+	account := Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"gpt-5.6-sol": "gpt-5.6-sol"},
+		},
+	}
+	require.True(t, needsOpenAIWebSearchProbe(&account))
+
+	account.Extra = map[string]any{
+		"openai_web_search_supported":    true,
+		"openai_web_search_probe_model":  "gpt-5.6-sol",
+		"openai_web_search_probe_target": account.OpenAIWebSearchTargetFingerprint(),
+	}
+	require.False(t, needsOpenAIWebSearchProbe(&account))
+
+	account.Credentials["model_mapping"] = map[string]any{"gpt-5.6-sol": "changed-upstream-model"}
+	require.True(t, needsOpenAIWebSearchProbe(&account))
+}
+
+func TestOpenAIResponsesProbeScheduler_RunBackfillSchedulesOAuthWebSearch(t *testing.T) {
+	lister := &responsesProbeSchedulerListerStub{accounts: []Account{{
+		ID:          253,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+	}}}
+	executor := &responsesProbeSchedulerExecutorStub{}
+	options := testResponsesProbeSchedulerOptions()
+	options.WorkerCount = 1
+	scheduler := newOpenAIResponsesProbeScheduler(lister, executor, options)
+	scheduler.Start()
+	defer scheduler.Stop()
+
+	scheduler.RunBackfill(context.Background())
+
+	require.Eventually(t, func() bool { return executor.webSearchCalls.Load() == 1 }, time.Second, 10*time.Millisecond)
+	require.Zero(t, executor.calls.Load(), "OAuth accounts must not run the API-key Responses probe")
+	lister.mu.Lock()
+	accountTypes := append([]string(nil), lister.accountTypes...)
+	lister.mu.Unlock()
+	require.Equal(t, []string{""}, accountTypes, "backfill must list every OpenAI account type")
 }
 
 func TestOpenAIResponsesProbeScheduler_RunBackfillPaginates(t *testing.T) {
