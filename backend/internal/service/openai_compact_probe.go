@@ -15,6 +15,9 @@ const (
 	AccountTestModeCompact = "compact"
 	// AccountTestModeWebSearch verifies a real hosted web_search_call.
 	AccountTestModeWebSearch = "web_search"
+
+	openAICompactProbeProfileCodexV2 = "codex_compact_v2"
+	openAICompactProbeProfilePathV1  = "responses_compact_path_v1"
 )
 
 func normalizeAccountTestMode(mode string) string {
@@ -44,9 +47,11 @@ func createOpenAICompactProbePayload(model string) map[string]any {
 
 func createOpenAICompactBodySignalProbePayload(model string) map[string]any {
 	payload := createOpenAICompactProbePayload(model)
+	payload["reasoning"] = map[string]any{"effort": "max"}
 	payload["input"] = []any{
 		map[string]any{
 			"type": "message",
+			"id":   "item_compact_probe",
 			"role": "user",
 			"content": []any{
 				map[string]any{"type": "input_text", "text": "Respond with OK."},
@@ -55,6 +60,13 @@ func createOpenAICompactBodySignalProbePayload(model string) map[string]any {
 		map[string]any{"type": "compaction_trigger"},
 	}
 	return payload
+}
+
+func openAICompactProbeProfileForMode(mode string) string {
+	if normalizeOpenAICompactEndpointMode(mode) == OpenAICompactEndpointModeBodySignal {
+		return openAICompactProbeProfileCodexV2
+	}
+	return openAICompactProbeProfilePathV1
 }
 
 func isOpenAICompactProbeSuccess(mode string, status int, body []byte) bool {
@@ -89,7 +101,16 @@ func shouldMarkOpenAICompactUnsupported(status int, body []byte) bool {
 	switch status {
 	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
 		return true
-	case http.StatusBadRequest, http.StatusForbidden, http.StatusUnprocessableEntity:
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		lower := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(body) + " " + string(body)))
+		if isOpenAICompactProbeIndeterminateClientFailure(lower) {
+			return false
+		}
+		// The probe is a valid Codex compact-v2 request. A remaining 400/422 means
+		// this upstream cannot satisfy that request contract, regardless of which
+		// individual field it rejected.
+		return true
+	case http.StatusForbidden:
 		lower := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(body) + " " + string(body)))
 		if strings.Contains(lower, "compact") {
 			for _, keyword := range []string{
@@ -103,6 +124,34 @@ func shouldMarkOpenAICompactUnsupported(status int, body []byte) bool {
 					return true
 				}
 			}
+		}
+	}
+	return false
+}
+
+func isOpenAICompactProbeIndeterminateClientFailure(message string) bool {
+	message = strings.ToLower(strings.TrimSpace(message))
+	if message == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"unknown model",
+		"model_not_found",
+		"no available channel",
+		"no available account",
+		"rate limit",
+		"too many requests",
+		"insufficient_quota",
+		"insufficient user quota",
+		"insufficient balance",
+		"billing",
+		"authentication",
+		"unauthorized",
+		"invalid api key",
+		"invalid token",
+	} {
+		if strings.Contains(message, marker) {
+			return true
 		}
 	}
 	return false
@@ -147,11 +196,19 @@ func buildOpenAICompactProbeExtraUpdates(resp *http.Response, body []byte, probe
 }
 
 func buildOpenAICompactProbeExtraUpdatesForModel(existingExtra map[string]any, requestedModel, upstreamModel string, resp *http.Response, body []byte, probeErr error, now time.Time) map[string]any {
+	return buildOpenAICompactProbeExtraUpdatesForModelWithProfile(existingExtra, requestedModel, upstreamModel, "", resp, body, probeErr, now)
+}
+
+func buildOpenAICompactProbeExtraUpdatesForModelWithProfile(existingExtra map[string]any, requestedModel, upstreamModel, probeProfile string, resp *http.Response, body []byte, probeErr error, now time.Time) map[string]any {
 	updates := buildOpenAICompactProbeExtraUpdates(resp, body, probeErr, now)
 	requestedModel = strings.TrimSpace(requestedModel)
 	upstreamModel = strings.TrimSpace(upstreamModel)
+	probeProfile = strings.TrimSpace(probeProfile)
 	updates["openai_compact_last_requested_model"] = requestedModel
 	updates["openai_compact_last_upstream_model"] = upstreamModel
+	if probeProfile != "" {
+		updates["openai_compact_probe_profile"] = probeProfile
+	}
 
 	scoped := make(map[string]any)
 	if current, ok := existingExtra["openai_compact_model_support"].(map[string]any); ok {
@@ -170,6 +227,9 @@ func buildOpenAICompactProbeExtraUpdatesForModel(existingExtra map[string]any, r
 		"checked_at":      now.Format(time.RFC3339),
 		"status":          updates["openai_compact_last_status"],
 		"error":           updates["openai_compact_last_error"],
+	}
+	if probeProfile != "" {
+		entry["probe_profile"] = probeProfile
 	}
 	if supported, known := updates["openai_compact_supported"].(bool); known {
 		entry["supported"] = supported

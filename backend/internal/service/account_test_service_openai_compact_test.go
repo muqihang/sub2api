@@ -201,7 +201,13 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactAPIKeyUsesBodySig
 	require.NoError(t, err)
 	require.Equal(t, "https://example.com/v1/responses", upstream.lastReq.URL.String())
 	require.Equal(t, "compaction_trigger", gjson.GetBytes(upstream.lastBody, "input.1.type").String())
-	require.Equal(t, true, (<-updateCalls)["openai_compact_supported"])
+	require.Equal(t, "max", gjson.GetBytes(upstream.lastBody, "reasoning.effort").String())
+	require.Contains(t, gjson.GetBytes(upstream.lastBody, "input.0.id").String(), "item_")
+	updates := <-updateCalls
+	require.Equal(t, true, updates["openai_compact_supported"])
+	require.Equal(t, openAICompactProbeProfileCodexV2, updates["openai_compact_probe_profile"])
+	scoped := updates["openai_compact_model_support"].(map[string]any)
+	require.Equal(t, openAICompactProbeProfileCodexV2, scoped["gpt-5.6-sol"].(map[string]any)["probe_profile"])
 }
 
 func TestAccountTestService_TestAccountConnection_OpenAICompactAutoFallsBackToBodySignal(t *testing.T) {

@@ -1,10 +1,14 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/tidwall/gjson"
 )
 
 func TestNormalizeAccountTestMode(t *testing.T) {
@@ -52,6 +56,23 @@ func TestIsOpenAICompactProbeSuccessRequiresSemanticProofForBodySignal(t *testin
 	}
 }
 
+func TestCreateOpenAICompactBodySignalProbePayloadExercisesCodexCompatibility(t *testing.T) {
+	payload, err := json.Marshal(createOpenAICompactBodySignalProbePayload("gpt-5.4"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := gjson.GetBytes(payload, "reasoning.effort").String(); got != "max" {
+		t.Fatalf("reasoning.effort = %q, want max", got)
+	}
+	if got := gjson.GetBytes(payload, "input.0.id").String(); !strings.HasPrefix(got, "item_") {
+		t.Fatalf("input.0.id = %q, want Codex item_ prefix", got)
+	}
+	if got := gjson.GetBytes(payload, "input.1.type").String(); got != "compaction_trigger" {
+		t.Fatalf("input.1.type = %q, want compaction_trigger", got)
+	}
+}
+
 func TestBuildOpenAICompactProbeExtraUpdates_SuccessMarksSupported(t *testing.T) {
 	now := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 	updates := buildOpenAICompactProbeExtraUpdates(&http.Response{StatusCode: http.StatusOK}, []byte(`{"id":"cmp_1"}`), nil, now)
@@ -80,6 +101,43 @@ func TestBuildOpenAICompactProbeExtraUpdates_404MarksUnsupported(t *testing.T) {
 	}
 	if got := updates["openai_compact_last_status"]; got != http.StatusNotFound {
 		t.Fatalf("openai_compact_last_status = %v, want %d", got, http.StatusNotFound)
+	}
+}
+
+func TestBuildOpenAICompactProbeExtraUpdates_ContractRejectionMarksUnsupported(t *testing.T) {
+	tests := []string{
+		`{"error":{"message":"Invalid 'input[12].id': 'item_abc'. Expected an ID that begins with 'msg'."}}`,
+		`{"error":{"message":"level \"max\" not supported, valid levels: low, medium, high, xhigh"}}`,
+	}
+	for _, body := range tests {
+		updates := buildOpenAICompactProbeExtraUpdates(
+			&http.Response{StatusCode: http.StatusBadRequest},
+			[]byte(body),
+			nil,
+			time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC),
+		)
+		if got := updates["openai_compact_supported"]; got != false {
+			t.Fatalf("openai_compact_supported = %v for %s, want false", got, body)
+		}
+	}
+}
+
+func TestBuildOpenAICompactProbeExtraUpdates_TransientClientFailureRemainsUnknown(t *testing.T) {
+	tests := []string{
+		`{"error":{"code":"model_not_found","message":"unknown model gpt-5.4"}}`,
+		`{"error":{"code":"insufficient_quota","message":"insufficient user quota"}}`,
+		`{"error":{"message":"rate limit exceeded"}}`,
+	}
+	for _, body := range tests {
+		updates := buildOpenAICompactProbeExtraUpdates(
+			&http.Response{StatusCode: http.StatusBadRequest},
+			[]byte(body),
+			nil,
+			time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC),
+		)
+		if _, exists := updates["openai_compact_supported"]; exists {
+			t.Fatalf("transient failure must remain unknown: %s", body)
+		}
 	}
 }
 

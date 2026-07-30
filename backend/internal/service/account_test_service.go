@@ -914,7 +914,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	}
 	if probeErr != nil {
 		if s.accountRepo != nil {
-			updates := buildOpenAICompactProbeExtraUpdatesForModel(account.Extra, requestedModelID, upstreamModelID, nil, nil, probeErr, time.Now())
+			updates := buildOpenAICompactProbeExtraUpdatesForModelWithProfile(account.Extra, requestedModelID, upstreamModelID, openAICompactProbeProfileForMode(usedMode), nil, nil, probeErr, time.Now())
 			_ = s.accountRepo.UpdateExtra(ctx, account.ID, updates)
 			mergeAccountExtra(account, updates)
 		}
@@ -922,7 +922,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	}
 
 	if s.accountRepo != nil {
-		updates := buildOpenAICompactProbeExtraUpdatesForModel(account.Extra, requestedModelID, upstreamModelID, resp, body, nil, time.Now())
+		updates := buildOpenAICompactProbeExtraUpdatesForModelWithProfile(account.Extra, requestedModelID, upstreamModelID, openAICompactProbeProfileForMode(usedMode), resp, body, nil, time.Now())
 		if resp.StatusCode == http.StatusOK && configuredMode == OpenAICompactEndpointModeAuto {
 			updates["openai_compact_endpoint_mode_detected"] = usedMode
 			updates["openai_compact_endpoint_mode_checked_at"] = time.Now().Format(time.RFC3339)
