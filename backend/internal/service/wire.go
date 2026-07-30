@@ -1315,9 +1315,10 @@ func ProvideChannelMonitorService(
 // ProvideChannelMonitorRunner 创建并启动渠道监控调度器。
 // 通过 SetScheduler 注入回 service 后再 Start，确保启动时加载所有 enabled monitor，
 // 后续 CRUD 也能即时同步任务表。Runner.Stop 由 cleanup function 调用。
-// settingService 用于 runner 每次 fire 读取功能开关。
-func ProvideChannelMonitorRunner(svc *ChannelMonitorService, settingService *SettingService) *ChannelMonitorRunner {
-	r := NewChannelMonitorRunner(svc, settingService)
+// settingService 用于 runner 每次 fire 读取功能开关；leaderLock 保证热部署保留的
+// 多个应用实例在一个完整 interval 内只会有一个实例执行真实上游探测。
+func ProvideChannelMonitorRunner(svc *ChannelMonitorService, settingService *SettingService, leaderLock LeaderLockCache) *ChannelMonitorRunner {
+	r := NewChannelMonitorRunner(svc, settingService, leaderLock)
 	svc.SetScheduler(r)
 	r.Start()
 	return r

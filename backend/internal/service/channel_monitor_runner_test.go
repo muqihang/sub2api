@@ -20,6 +20,32 @@ type stubMonitorSvc struct {
 	runHoldFor time.Duration // RunCheck 内额外阻塞的时长，用来测试 Stop 等待行为
 }
 
+type fakeMonitorLeaderLock struct {
+	mu      sync.Mutex
+	expires map[string]time.Time
+}
+
+func (f *fakeMonitorLeaderLock) TryAcquireLeaderLock(_ context.Context, key, _ string, ttl time.Duration) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.expires == nil {
+		f.expires = make(map[string]time.Time)
+	}
+	now := time.Now()
+	if expiresAt, ok := f.expires[key]; ok && expiresAt.After(now) {
+		return false, nil
+	}
+	f.expires[key] = now.Add(ttl)
+	return true, nil
+}
+
+func (f *fakeMonitorLeaderLock) ReleaseLeaderLock(_ context.Context, key, _ string) error {
+	f.mu.Lock()
+	delete(f.expires, key)
+	f.mu.Unlock()
+	return nil
+}
+
 func (s *stubMonitorSvc) ListEnabledMonitors(_ context.Context) ([]*ChannelMonitor, error) {
 	if s.listErr != nil {
 		return nil, s.listErr
@@ -45,7 +71,7 @@ func (s *stubMonitorSvc) RunCheck(ctx context.Context, id int64) ([]*CheckResult
 }
 
 func newRunnerForTest(svc monitorRunnerSvc) *ChannelMonitorRunner {
-	return newChannelMonitorRunner(svc, nil)
+	return newChannelMonitorRunner(svc, nil, nil)
 }
 
 // 等待 condition 在 timeout 内变 true，否则 t.Fatalf。轮询 5ms 一次。
@@ -97,6 +123,31 @@ func TestSchedule_AddsTaskAndFiresOnce(t *testing.T) {
 	}
 
 	r.Stop()
+}
+
+func TestSchedule_MultipleInstancesShareOneIntervalSlot(t *testing.T) {
+	lock := &fakeMonitorLeaderLock{}
+	svc1 := &stubMonitorSvc{runCalled: make(chan int64, 2)}
+	svc2 := &stubMonitorSvc{runCalled: make(chan int64, 2)}
+	r1 := newChannelMonitorRunner(svc1, nil, lock)
+	r2 := newChannelMonitorRunner(svc2, nil, lock)
+	r1.Start()
+	r2.Start()
+
+	monitor := &ChannelMonitor{ID: 11, Name: "shared", Enabled: true, IntervalSeconds: 300}
+	r1.Schedule(monitor)
+	r2.Schedule(monitor)
+
+	waitFor(t, time.Second, "one runner claimed the shared interval", func() bool {
+		return svc1.runCount.Load()+svc2.runCount.Load() == 1
+	})
+	time.Sleep(100 * time.Millisecond)
+	if got := svc1.runCount.Load() + svc2.runCount.Load(); got != 1 {
+		t.Fatalf("expected one check across two instances, got %d", got)
+	}
+
+	stoppedWithin(t, r1, 3*time.Second)
+	stoppedWithin(t, r2, 3*time.Second)
 }
 
 // TestSchedule_ReplaceCancelsOldTask 验证对同一 id 二次 Schedule 会替换旧 task 实例。
