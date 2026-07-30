@@ -511,6 +511,44 @@ test_compact_non_upstream_failure_still_blocks() {
   assert_status "${status}" 1 "matched authentication failure remains blocking"
 }
 
+test_native_search_matched_upstream_degradation_allows_candidate() {
+  local case_dir="${TEST_ROOT}/candidate-native-search-matched-upstream-degradation"
+  setup_candidate_case "${case_dir}"
+  FAKE_DIRECT_NATIVE_SEARCH_HTTP_STATUS=503 \
+    FAKE_BASELINE_NATIVE_SEARCH_HTTP_STATUS=503 \
+    probe_native_search_pair_with_active_baseline \
+      "http://172.18.0.99:8080" direct "http://172.18.0.98:8080" \
+      >"${case_dir}/probe.out" 2>"${case_dir}/probe.err"
+  local status=$?
+  assert_status "${status}" 0 "matching candidate/active native Search degradation does not require a fresh OAuth account"
+  assert_file_contains "${case_dir}/probe.err" "MATCHED NATIVE SEARCH UPSTREAM DEGRADATION" "matched native Search degradation is explicit and auditable"
+  assert_file_contains "${case_dir}/curl.log" "scope=direct kind=native-search-root" "candidate native Search is still exercised"
+  assert_file_contains "${case_dir}/curl.log" "scope=direct-active-baseline kind=native-search-root" "active native Search baseline is exercised"
+}
+
+test_native_search_candidate_only_failure_still_blocks() {
+  local case_dir="${TEST_ROOT}/candidate-native-search-candidate-only-failure"
+  setup_candidate_case "${case_dir}"
+  FAKE_DIRECT_NATIVE_SEARCH_HTTP_STATUS=503 \
+    probe_native_search_pair_with_active_baseline \
+      "http://172.18.0.99:8080" direct "http://172.18.0.98:8080" \
+      >"${case_dir}/probe.out" 2>"${case_dir}/probe.err"
+  local status=$?
+  assert_status "${status}" 1 "candidate-only native Search failure remains blocking"
+}
+
+test_native_search_non_upstream_failure_still_blocks() {
+  local case_dir="${TEST_ROOT}/candidate-native-search-auth-failure"
+  setup_candidate_case "${case_dir}"
+  FAKE_DIRECT_NATIVE_SEARCH_HTTP_STATUS=401 \
+    FAKE_BASELINE_NATIVE_SEARCH_HTTP_STATUS=401 \
+    probe_native_search_pair_with_active_baseline \
+      "http://172.18.0.99:8080" direct "http://172.18.0.98:8080" \
+      >"${case_dir}/probe.out" 2>"${case_dir}/probe.err"
+  local status=$?
+  assert_status "${status}" 1 "matched native Search authentication failure remains blocking"
+}
+
 test_candidate_probe_pair_succeeds_without_secret_artifacts() {
   local case_dir="${TEST_ROOT}/candidate-probes-pass"
   setup_candidate_case "${case_dir}"
@@ -585,6 +623,9 @@ run_candidate_tests() {
   test_compact_matched_upstream_degradation_allows_candidate
   test_compact_candidate_only_failure_still_blocks
   test_compact_non_upstream_failure_still_blocks
+  test_native_search_matched_upstream_degradation_allows_candidate
+  test_native_search_candidate_only_failure_still_blocks
+  test_native_search_non_upstream_failure_still_blocks
   test_candidate_probe_pair_succeeds_without_secret_artifacts
   test_candidate_probe_pair_can_skip_only_native_search
   test_native_search_rejects_invalid_contracts
@@ -620,6 +661,23 @@ test_transaction_matched_compact_degradation_commits_cutover() {
   assert_file_contains "${case_dir}/curl.log" "scope=direct-active-baseline kind=compact" "direct Compact compares the old production baseline"
   assert_file_contains "${case_dir}/curl.log" "scope=public-active-baseline kind=compact" "public Compact compares the old production baseline"
   assert_file_contains "${case_dir}/caddy-active.json" "sub2api-next-v6:8080" "matched degradation commits the candidate"
+}
+
+test_transaction_matched_native_search_degradation_commits_cutover() {
+  local case_dir="${TEST_ROOT}/transaction-matched-native-search-degradation"
+  FAKE_DIRECT_NATIVE_SEARCH_HTTP_STATUS=503 \
+    FAKE_PUBLIC_NATIVE_SEARCH_HTTP_STATUS=503 \
+    FAKE_BASELINE_NATIVE_SEARCH_HTTP_STATUS=503 \
+    run_transaction_deploy "${case_dir}"
+  local status=$?
+  local output
+  output="$(captured_output "${case_dir}")"
+  assert_status "${status}" 0 "matched native Search upstream degradation can complete a deployment"
+  assert_contains "${output}" "MATCHED NATIVE SEARCH UPSTREAM DEGRADATION" "native Search degradation records the baseline comparison"
+  assert_contains "${output}" "DEPLOYMENT SUCCEEDED" "native Search degraded deployment still requires final commit"
+  assert_file_contains "${case_dir}/curl.log" "scope=direct-active-baseline kind=native-search-root" "direct native Search compares the old production baseline"
+  assert_file_contains "${case_dir}/curl.log" "scope=public-active-baseline kind=native-search-root" "public native Search compares the old production baseline"
+  assert_file_contains "${case_dir}/caddy-active.json" "sub2api-next-v6:8080" "matched native Search degradation commits the candidate"
 }
 
 test_stale_host_caddyfile_requires_explicit_recovery() {
@@ -851,6 +909,7 @@ test_signal_rolls_back() {
 run_transaction_tests() {
   test_transaction_success_commits_cutover
   test_transaction_matched_compact_degradation_commits_cutover
+  test_transaction_matched_native_search_degradation_commits_cutover
   test_stale_host_caddyfile_requires_explicit_recovery
   test_explicit_stale_host_recovery_requires_matching_active_json
   test_explicit_stale_host_recovery_commits_transaction

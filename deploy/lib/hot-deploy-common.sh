@@ -730,6 +730,7 @@ probe_health() {
 
 validate_native_search_headers() {
   local verdict_file="$1"
+  local status_file="$2"
   python3 -c '
 import re
 import sys
@@ -756,13 +757,16 @@ for block in blocks:
         key, value = line.split(":", 1)
         if key.strip().lower() == "content-type":
             content_type = value.strip().lower()
+if status is not None:
+    with open(sys.argv[2], "w", encoding="utf-8") as handle:
+        handle.write(str(status) + "\n")
 if status != 200:
     raise SystemExit("native Search probe returned a non-200 status")
 if content_type.split(";", 1)[0].strip() != "application/json":
     raise SystemExit("native Search probe returned a non-JSON Content-Type")
 with open(sys.argv[1], "w", encoding="utf-8") as handle:
     handle.write("status=200 content_type=application/json\n")
-' "${verdict_file}"
+' "${verdict_file}" "${status_file}"
 }
 
 validate_native_search_body_stream() {
@@ -790,7 +794,7 @@ probe_native_search_path() {
   local scope="$2"
   local path="$3"
   local kind="$4"
-  local escaped_key payload scratch headers_fifo header_verdict header_pid
+  local escaped_key payload scratch headers_fifo header_verdict status_file header_pid
   local curl_status body_status header_status had_errexit=false
   local -a pipeline_status
 
@@ -813,11 +817,12 @@ probe_native_search_path() {
   scratch="$(mktemp -d "${TMPDIR:-/tmp}/sub2api-native-search-probe.XXXXXX")" || return 1
   headers_fifo="${scratch}/headers.fifo"
   header_verdict="${scratch}/header.verdict"
+  status_file="${STATE_DIR}/${scope}-${kind}-http-status"
   mkfifo "${headers_fifo}" || {
     rm -rf "${scratch}"
     return 1
   }
-  validate_native_search_headers "${header_verdict}" <"${headers_fifo}" &
+  validate_native_search_headers "${header_verdict}" "${status_file}" <"${headers_fifo}" &
   header_pid=$!
 
   [[ $- == *e* ]] && had_errexit=true
@@ -858,6 +863,50 @@ probe_native_search_pair() {
   local scope="$2"
   probe_native_search_path "${base_url}" "${scope}" "${NATIVE_SEARCH_ROOT_PATH}" native-search-root || return 1
   probe_native_search_path "${base_url}" "${scope}" "${NATIVE_SEARCH_V1_PATH}" native-search-v1
+}
+
+probe_native_search_path_with_active_baseline() {
+  local candidate_base_url="${1%/}"
+  local candidate_scope="$2"
+  local active_base_url="${3%/}"
+  local path="$4"
+  local kind="$5"
+  local baseline_scope="${candidate_scope}-active-baseline"
+  local candidate_status_file="${STATE_DIR}/${candidate_scope}-${kind}-http-status"
+  local baseline_status_file="${STATE_DIR}/${baseline_scope}-${kind}-http-status"
+  local candidate_status baseline_status
+
+  if probe_native_search_path "${candidate_base_url}" "${candidate_scope}" "${path}" "${kind}"; then
+    return 0
+  fi
+
+  [[ "${ALLOW_MATCHED_UPSTREAM_DEGRADATION:-true}" == "true" ]] || return 1
+  [[ -s "${candidate_status_file}" ]] || return 1
+  candidate_status="$(cat "${candidate_status_file}")"
+  is_upstream_degradation_status "${candidate_status}" || return 1
+
+  warn "Native Search candidate returned HTTP ${candidate_status}; probing the active production baseline (${path})"
+  if probe_native_search_path "${active_base_url}" "${baseline_scope}" "${path}" "${kind}"; then
+    printf 'candidate native Search failed while active production passed (%s)\n' "${path}" >&2
+    return 1
+  fi
+  [[ -s "${baseline_status_file}" ]] || return 1
+  baseline_status="$(cat "${baseline_status_file}")"
+  is_upstream_degradation_status "${baseline_status}" || return 1
+
+  warn "MATCHED NATIVE SEARCH UPSTREAM DEGRADATION: candidate HTTP ${candidate_status}, active HTTP ${baseline_status}, path=${path}; both real requests were exercised and deployment may continue"
+}
+
+probe_native_search_pair_with_active_baseline() {
+  local candidate_base_url="$1"
+  local candidate_scope="$2"
+  local active_base_url="$3"
+  probe_native_search_path_with_active_baseline \
+    "${candidate_base_url}" "${candidate_scope}" "${active_base_url}" \
+    "${NATIVE_SEARCH_ROOT_PATH}" native-search-root || return 1
+  probe_native_search_path_with_active_baseline \
+    "${candidate_base_url}" "${candidate_scope}" "${active_base_url}" \
+    "${NATIVE_SEARCH_V1_PATH}" native-search-v1
 }
 
 probe_api_pair() {
@@ -930,7 +979,8 @@ probe_api_pair_with_active_baseline() {
     warn "Native Search smoke: SKIPPED BY OPERATOR (scope=${candidate_scope})"
     return 0
   fi
-  probe_native_search_pair "${candidate_base_url}" "${candidate_scope}"
+  probe_native_search_pair_with_active_baseline \
+    "${candidate_base_url}" "${candidate_scope}" "${active_base_url}"
 }
 
 require_commands() {

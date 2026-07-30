@@ -96,6 +96,14 @@ candidate failure while the active container succeeds remains blocking. Set
 `ALLOW_MATCHED_UPSTREAM_DEGRADATION=false` to restore strict success-only
 Compact gating for a deployment.
 
+Native Search uses the same comparative rule for both `/alpha/search` and
+`/v1/alpha/search`. A candidate `429`, `502`, `503`, `504`, or `524` is accepted
+only when the same real request against the active production container also
+returns an upstream-capacity status. Authentication failures, transport errors,
+malformed successful responses, and candidate-only failures still block the
+deployment. This keeps the Search path exercised without requiring a fresh
+OAuth account solely to release an unrelated application change.
+
 Both API probes send paired official-client identity headers (`User-Agent` and
 `originator`) so accounts with `codex_cli_only` exercise the real Codex path.
 The normal Responses probe also requires `status=completed` and an output text

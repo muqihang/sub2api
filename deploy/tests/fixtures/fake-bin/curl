@@ -111,6 +111,11 @@ case "${HOT_DEPLOY_PROBE_KIND:-}" in
   native-search-root|native-search-v1)
     status=200
     content_type=application/json
+	case "${HOT_DEPLOY_PROBE_SCOPE:-}" in
+	  direct) status="${FAKE_DIRECT_NATIVE_SEARCH_HTTP_STATUS:-200}" ;;
+	  public) status="${FAKE_PUBLIC_NATIVE_SEARCH_HTTP_STATUS:-200}" ;;
+	  *-active-baseline) status="${FAKE_BASELINE_NATIVE_SEARCH_HTTP_STATUS:-200}" ;;
+	esac
     if [[ "${HOT_DEPLOY_PROBE_SCOPE:-}" == "public" && \
           "${HOT_DEPLOY_PROBE_KIND:-}" == "native-search-v1" && \
           "${FAKE_PUBLIC_NATIVE_SEARCH_V1_FAIL:-0}" == "1" ]]; then
