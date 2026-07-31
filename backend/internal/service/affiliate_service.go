@@ -90,8 +90,16 @@ type AffiliateDetail struct {
 	// EffectiveRebateRatePercent 是当前用户作为邀请人时实际生效的返利比例：
 	// 优先用户自己的专属比例（aff_rebate_rate_percent），否则回退到全局比例。
 	// 用于在用户的 /affiliate 页面直观展示「分享后能拿到多少」。
-	EffectiveRebateRatePercent float64            `json:"effective_rebate_rate_percent"`
-	Invitees                   []AffiliateInvitee `json:"invitees"`
+	EffectiveRebateRatePercent   float64             `json:"effective_rebate_rate_percent"`
+	RebateRateCustom             bool                `json:"rebate_rate_custom"`
+	EffectiveInviteeCount        int                 `json:"effective_invitee_count"`
+	NextTierInviteeThreshold     int                 `json:"next_tier_invitee_threshold,omitempty"`
+	InviteesUntilNextTier        int                 `json:"invitees_until_next_tier,omitempty"`
+	GrowthMode                   AffiliateGrowthMode `json:"growth_mode"`
+	InviteeFirstPaymentBonusRate float64             `json:"invitee_first_payment_bonus_rate"`
+	TierWindowDays               int                 `json:"tier_window_days"`
+	TierRules                    []AffiliateTierRule `json:"tier_rules,omitempty"`
+	Invitees                     []AffiliateInvitee  `json:"invitees"`
 }
 
 type AffiliateRepository interface {
@@ -114,6 +122,59 @@ type AffiliateRepository interface {
 	ListAffiliateRebateRecords(ctx context.Context, filter AffiliateRecordFilter) ([]AffiliateRebateRecord, int64, error)
 	ListAffiliateTransferRecords(ctx context.Context, filter AffiliateRecordFilter) ([]AffiliateTransferRecord, int64, error)
 	GetAffiliateUserOverview(ctx context.Context, userID int64) (*AffiliateUserOverview, error)
+}
+
+// AffiliateGrowthRepository is an optional capability used only by tiered_v1.
+// Keeping it separate preserves compatibility for legacy repository adapters.
+type AffiliateGrowthRepository interface {
+	CountEffectivePaidInvitees(ctx context.Context, inviterID int64, since time.Time, minNetPaymentAmount float64) (int, error)
+	HasEffectivePaidInvitee(ctx context.Context, inviterID, inviteeUserID int64, since time.Time, minNetPaymentAmount float64) (bool, error)
+}
+
+type AffiliateTieredRewardRepository interface {
+	ApplyTieredOrderRewards(ctx context.Context, input AffiliateTieredRewardLedgerInput) (AffiliateTieredRewardLedgerResult, error)
+}
+
+type AffiliateRewardReversalRepository interface {
+	ReverseOrderRewards(ctx context.Context, sourceOrderID int64, refundAmount, orderAmount float64) (AffiliateRewardReversalResult, error)
+}
+
+type AffiliateOrderRewardInput struct {
+	InviteeUserID    int64
+	BaseAmount       float64
+	NetPaymentAmount float64
+	SourceOrderID    int64
+}
+
+type AffiliateOrderRewardResult struct {
+	InviterRebateAmount float64
+	InviteeBonusAmount  float64
+	RatePercent         float64
+	EffectiveInvitees   int
+}
+
+type AffiliateTieredRewardLedgerInput struct {
+	InviterUserID       int64
+	InviteeUserID       int64
+	SourceOrderID       int64
+	BaseAmount          float64
+	InviterRebateAmount float64
+	InviteeBonusAmount  float64
+	RatePercent         float64
+	EffectiveInvitees   int
+	FreezeHours         int
+}
+
+type AffiliateTieredRewardLedgerResult struct {
+	InviterRebateApplied bool
+	InviteeBonusApplied  bool
+}
+
+type AffiliateRewardReversalResult struct {
+	InviterUserID         int64
+	InviteeUserID         int64
+	InviterRebateReversed float64
+	InviteeBonusReversed  float64
 }
 
 // AffiliateAdminFilter 列表筛选条件
@@ -253,17 +314,71 @@ func (s *AffiliateService) GetAffiliateDetail(ctx context.Context, userID int64)
 	if err != nil {
 		return nil, err
 	}
+	ratePercent := s.resolveRebateRatePercent(ctx, summary)
+	if s.settingService != nil && s.settingService.GetAffiliateGrowthMode(ctx) == AffiliateGrowthModeTieredV1 && summary.AffRebateRatePercent == nil {
+		if tierRate, _, err := s.resolveAccrualRebateRatePercent(ctx, summary); err == nil {
+			ratePercent = tierRate
+		}
+	}
+	effectiveInvitees, nextThreshold, untilNext := s.resolveGrowthProgress(ctx, summary)
+	growthMode := AffiliateGrowthModeLegacy
+	bonusRate := AffiliateInviteeBonusRateDefault
+	tierWindowDays := AffiliateTierWindowDaysDefault
+	if s.settingService != nil {
+		growthMode = s.settingService.GetAffiliateGrowthMode(ctx)
+		bonusRate = s.settingService.GetAffiliateInviteeBonusRatePercent(ctx)
+		tierWindowDays = s.settingService.GetAffiliateTierWindowDays(ctx)
+	}
 	return &AffiliateDetail{
-		UserID:                     summary.UserID,
-		AffCode:                    summary.AffCode,
-		InviterID:                  summary.InviterID,
-		AffCount:                   summary.AffCount,
-		AffQuota:                   summary.AffQuota,
-		AffFrozenQuota:             summary.AffFrozenQuota,
-		AffHistoryQuota:            summary.AffHistoryQuota,
-		EffectiveRebateRatePercent: s.resolveRebateRatePercent(ctx, summary),
-		Invitees:                   invitees,
+		UserID:                       summary.UserID,
+		AffCode:                      summary.AffCode,
+		InviterID:                    summary.InviterID,
+		AffCount:                     summary.AffCount,
+		AffQuota:                     summary.AffQuota,
+		AffFrozenQuota:               summary.AffFrozenQuota,
+		AffHistoryQuota:              summary.AffHistoryQuota,
+		EffectiveRebateRatePercent:   ratePercent,
+		RebateRateCustom:             summary.AffRebateRatePercent != nil,
+		EffectiveInviteeCount:        effectiveInvitees,
+		NextTierInviteeThreshold:     nextThreshold,
+		InviteesUntilNextTier:        untilNext,
+		GrowthMode:                   growthMode,
+		InviteeFirstPaymentBonusRate: bonusRate,
+		TierWindowDays:               tierWindowDays,
+		TierRules:                    s.affiliateTierRules(ctx, growthMode),
+		Invitees:                     invitees,
 	}, nil
+}
+
+func (s *AffiliateService) affiliateTierRules(ctx context.Context, mode AffiliateGrowthMode) []AffiliateTierRule {
+	if mode != AffiliateGrowthModeTieredV1 || s == nil || s.settingService == nil {
+		return nil
+	}
+	return s.settingService.GetAffiliateTierRules(ctx)
+}
+
+func (s *AffiliateService) resolveGrowthProgress(ctx context.Context, inviter *AffiliateSummary) (int, int, int) {
+	if s == nil || s.settingService == nil || s.settingService.GetAffiliateGrowthMode(ctx) != AffiliateGrowthModeTieredV1 || inviter == nil || inviter.AffRebateRatePercent != nil {
+		return 0, 0, 0
+	}
+	repo, ok := s.repo.(AffiliateGrowthRepository)
+	if !ok {
+		return 0, 0, 0
+	}
+	count, err := repo.CountEffectivePaidInvitees(ctx, inviter.UserID, time.Now().AddDate(0, 0, -s.settingService.GetAffiliateTierWindowDays(ctx)), s.settingService.GetAffiliateEffectivePaymentMinAmount(ctx))
+	if err != nil {
+		return 0, 0, 0
+	}
+	policy, err := NewAffiliateGrowthPolicy(s.settingService.GetAffiliateTierRules(ctx))
+	if err != nil {
+		return count, 0, 0
+	}
+	for _, rule := range policy.Rules() {
+		if rule.MinEffectiveInvitees > count {
+			return count, rule.MinEffectiveInvitees, rule.MinEffectiveInvitees - count
+		}
+	}
+	return count, 0, 0
 }
 
 func (s *AffiliateService) BindInviterByCode(ctx context.Context, userID int64, rawCode string) error {
@@ -315,6 +430,128 @@ func (s *AffiliateService) AccrueInviteRebate(ctx context.Context, inviteeUserID
 	return s.AccrueInviteRebateForOrder(ctx, inviteeUserID, baseRechargeAmount, nil)
 }
 
+func (s *AffiliateService) ApplyOrderRewards(ctx context.Context, input AffiliateOrderRewardInput) (AffiliateOrderRewardResult, error) {
+	var result AffiliateOrderRewardResult
+	if s == nil || s.repo == nil || !s.IsEnabled(ctx) {
+		return result, nil
+	}
+	if s.settingService == nil || s.settingService.GetAffiliateGrowthMode(ctx) != AffiliateGrowthModeTieredV1 {
+		rebate, err := s.AccrueInviteRebateForOrder(ctx, input.InviteeUserID, input.BaseAmount, &input.SourceOrderID)
+		result.InviterRebateAmount = rebate
+		return result, err
+	}
+	if input.InviteeUserID <= 0 || input.SourceOrderID <= 0 || !isFinitePositive(input.BaseAmount) || !isFinitePositive(input.NetPaymentAmount) {
+		return result, nil
+	}
+	if input.NetPaymentAmount < s.settingService.GetAffiliateEffectivePaymentMinAmount(ctx) {
+		return result, nil
+	}
+
+	inviteeSummary, err := s.repo.EnsureUserAffiliate(ctx, input.InviteeUserID)
+	if err != nil {
+		return result, err
+	}
+	if inviteeSummary.InviterID == nil || *inviteeSummary.InviterID <= 0 {
+		return result, nil
+	}
+	inviterSummary, err := s.repo.EnsureUserAffiliate(ctx, *inviteeSummary.InviterID)
+	if err != nil {
+		return result, err
+	}
+
+	ratePercent, effectiveInvitees, err := s.resolveAccrualRebateRatePercent(ctx, inviterSummary)
+	if err != nil {
+		return result, err
+	}
+	if inviterSummary.AffRebateRatePercent == nil {
+		growthRepo, ok := s.repo.(AffiliateGrowthRepository)
+		if !ok {
+			return result, infraerrors.ServiceUnavailable("AFFILIATE_GROWTH_REPOSITORY_UNAVAILABLE", "affiliate growth repository unavailable")
+		}
+		windowStart := time.Now().AddDate(0, 0, -s.settingService.GetAffiliateTierWindowDays(ctx))
+		alreadyEffective, lookupErr := growthRepo.HasEffectivePaidInvitee(
+			ctx,
+			inviterSummary.UserID,
+			input.InviteeUserID,
+			windowStart,
+			s.settingService.GetAffiliateEffectivePaymentMinAmount(ctx),
+		)
+		if lookupErr != nil {
+			return result, lookupErr
+		}
+		if !alreadyEffective {
+			effectiveInvitees++
+			policy, policyErr := NewAffiliateGrowthPolicy(s.settingService.GetAffiliateTierRules(ctx))
+			if policyErr != nil {
+				return result, policyErr
+			}
+			ratePercent = policy.RatePercent(effectiveInvitees)
+		}
+	}
+	rebateAmount := roundTo(input.BaseAmount*(ratePercent/100), 8)
+	if perInviteeCap := s.settingService.GetAffiliateRebatePerInviteeCap(ctx); rebateAmount > 0 && perInviteeCap > 0 {
+		existing, getErr := s.repo.GetAccruedRebateFromInvitee(ctx, inviterSummary.UserID, input.InviteeUserID)
+		if getErr != nil {
+			return result, getErr
+		}
+		remaining := perInviteeCap - existing
+		if remaining <= 0 {
+			rebateAmount = 0
+		} else if rebateAmount > remaining {
+			rebateAmount = roundTo(remaining, 8)
+		}
+	}
+	bonusRate := s.settingService.GetAffiliateInviteeBonusRatePercent(ctx)
+	bonusAmount := roundTo(input.BaseAmount*(bonusRate/100), 8)
+	if rebateAmount <= 0 && bonusAmount <= 0 {
+		return result, nil
+	}
+
+	growthRepo, ok := s.repo.(AffiliateTieredRewardRepository)
+	if !ok {
+		return result, infraerrors.ServiceUnavailable("AFFILIATE_GROWTH_REPOSITORY_UNAVAILABLE", "affiliate growth repository unavailable")
+	}
+	ledgerResult, err := growthRepo.ApplyTieredOrderRewards(ctx, AffiliateTieredRewardLedgerInput{
+		InviterUserID:       inviterSummary.UserID,
+		InviteeUserID:       input.InviteeUserID,
+		SourceOrderID:       input.SourceOrderID,
+		BaseAmount:          input.BaseAmount,
+		InviterRebateAmount: rebateAmount,
+		InviteeBonusAmount:  bonusAmount,
+		RatePercent:         ratePercent,
+		EffectiveInvitees:   effectiveInvitees,
+		FreezeHours:         s.settingService.GetAffiliateRebateFreezeHours(ctx),
+	})
+	if err != nil {
+		return result, err
+	}
+	result.RatePercent = ratePercent
+	result.EffectiveInvitees = effectiveInvitees
+	if ledgerResult.InviterRebateApplied {
+		result.InviterRebateAmount = rebateAmount
+	}
+	if ledgerResult.InviteeBonusApplied {
+		result.InviteeBonusAmount = bonusAmount
+	}
+	return result, nil
+}
+
+func (s *AffiliateService) ReverseOrderRewards(ctx context.Context, sourceOrderID int64, refundAmount, orderAmount float64) (AffiliateRewardReversalResult, error) {
+	var result AffiliateRewardReversalResult
+	if s == nil || s.repo == nil || sourceOrderID <= 0 || !isFinitePositive(refundAmount) || !isFinitePositive(orderAmount) {
+		return result, nil
+	}
+	reversalRepo, ok := s.repo.(AffiliateRewardReversalRepository)
+	if !ok {
+		return result, nil
+	}
+	return reversalRepo.ReverseOrderRewards(ctx, sourceOrderID, refundAmount, orderAmount)
+}
+
+func isFinitePositive(value float64) bool {
+	return value > 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
 func (s *AffiliateService) AccrueInviteRebateForOrder(ctx context.Context, inviteeUserID int64, baseRechargeAmount float64, sourceOrderID *int64) (float64, error) {
 	if s == nil || s.repo == nil {
 		return 0, nil
@@ -324,6 +561,11 @@ func (s *AffiliateService) AccrueInviteRebateForOrder(ctx context.Context, invit
 	}
 	// 总开关关闭时，新充值不再产生返利
 	if !s.IsEnabled(ctx) {
+		return 0, nil
+	}
+	if s.settingService != nil && s.settingService.GetAffiliateGrowthMode(ctx) == AffiliateGrowthModeTieredV1 && sourceOrderID == nil {
+		// Tiered mode only rewards auditable real-payment orders. Redeem codes and
+		// legacy callers without an order id cannot qualify for the new program.
 		return 0, nil
 	}
 
@@ -349,7 +591,10 @@ func (s *AffiliateService) AccrueInviteRebateForOrder(ctx context.Context, invit
 		}
 	}
 
-	rebateRatePercent := s.resolveRebateRatePercent(ctx, inviterSummary)
+	rebateRatePercent, _, err := s.resolveAccrualRebateRatePercent(ctx, inviterSummary)
+	if err != nil {
+		return 0, err
+	}
 	rebate := roundTo(baseRechargeAmount*(rebateRatePercent/100), 8)
 	if rebate <= 0 {
 		return 0, nil
@@ -384,6 +629,41 @@ func (s *AffiliateService) AccrueInviteRebateForOrder(ctx context.Context, invit
 		return 0, nil
 	}
 	return rebate, nil
+}
+
+func (s *AffiliateService) resolveAccrualRebateRatePercent(ctx context.Context, inviter *AffiliateSummary) (float64, int, error) {
+	if inviter != nil && inviter.AffRebateRatePercent != nil {
+		v := *inviter.AffRebateRatePercent
+		if !math.IsNaN(v) && !math.IsInf(v, 0) {
+			return clampAffiliateRebateRate(v), 0, nil
+		}
+	}
+	if s == nil || s.settingService == nil || s.settingService.GetAffiliateGrowthMode(ctx) != AffiliateGrowthModeTieredV1 {
+		return s.globalRebateRatePercent(ctx), 0, nil
+	}
+	if inviter == nil || inviter.UserID <= 0 {
+		return s.globalRebateRatePercent(ctx), 0, nil
+	}
+
+	growthRepo, ok := s.repo.(AffiliateGrowthRepository)
+	if !ok {
+		return 0, 0, infraerrors.ServiceUnavailable("AFFILIATE_GROWTH_REPOSITORY_UNAVAILABLE", "affiliate growth repository unavailable")
+	}
+	windowDays := s.settingService.GetAffiliateTierWindowDays(ctx)
+	effectiveInvitees, err := growthRepo.CountEffectivePaidInvitees(
+		ctx,
+		inviter.UserID,
+		time.Now().AddDate(0, 0, -windowDays),
+		s.settingService.GetAffiliateEffectivePaymentMinAmount(ctx),
+	)
+	if err != nil {
+		return 0, 0, err
+	}
+	policy, err := NewAffiliateGrowthPolicy(s.settingService.GetAffiliateTierRules(ctx))
+	if err != nil {
+		return 0, 0, err
+	}
+	return policy.RatePercent(effectiveInvitees), effectiveInvitees, nil
 }
 
 // resolveRebateRatePercent returns the inviter's exclusive rate when set,

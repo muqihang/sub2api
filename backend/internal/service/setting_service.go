@@ -1942,6 +1942,38 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 		settings.AffiliateRebatePerInviteeCap = AffiliateRebatePerInviteeCapDefault
 	}
 	updates[SettingKeyAffiliateRebatePerInviteeCap] = strconv.FormatFloat(settings.AffiliateRebatePerInviteeCap, 'f', 8, 64)
+	if settings.AffiliateGrowthMode == "" {
+		settings.AffiliateGrowthMode = AffiliateGrowthModeDefault
+	}
+	if !IsValidAffiliateGrowthMode(settings.AffiliateGrowthMode) {
+		return nil, infraerrors.BadRequest("INVALID_AFFILIATE_GROWTH_MODE", "invalid affiliate growth mode")
+	}
+	updates[SettingKeyAffiliateGrowthMode] = string(settings.AffiliateGrowthMode)
+	if settings.AffiliateTierWindowDays == 0 {
+		settings.AffiliateTierWindowDays = AffiliateTierWindowDaysDefault
+	}
+	if settings.AffiliateTierWindowDays < 0 || settings.AffiliateTierWindowDays > AffiliateTierWindowDaysMax {
+		return nil, infraerrors.BadRequest("INVALID_AFFILIATE_TIER_WINDOW", "affiliate tier window days out of range")
+	}
+	updates[SettingKeyAffiliateTierWindowDays] = strconv.Itoa(settings.AffiliateTierWindowDays)
+	if len(settings.AffiliateTierRules) == 0 {
+		settings.AffiliateTierRules = DefaultAffiliateTierRules()
+	}
+	policy, err := NewAffiliateGrowthPolicy(settings.AffiliateTierRules)
+	if err != nil {
+		return nil, infraerrors.BadRequest("INVALID_AFFILIATE_TIER_RULES", err.Error())
+	}
+	tierRulesJSON, err := json.Marshal(policy.Rules())
+	if err != nil {
+		return nil, fmt.Errorf("marshal affiliate tier rules: %w", err)
+	}
+	updates[SettingKeyAffiliateTierRules] = string(tierRulesJSON)
+	settings.AffiliateInviteeBonusRate = clampAffiliateRebateRate(settings.AffiliateInviteeBonusRate)
+	updates[SettingKeyAffiliateInviteeBonusRate] = strconv.FormatFloat(settings.AffiliateInviteeBonusRate, 'f', 8, 64)
+	if settings.AffiliateEffectivePaymentMin < 0 || math.IsNaN(settings.AffiliateEffectivePaymentMin) || math.IsInf(settings.AffiliateEffectivePaymentMin, 0) {
+		return nil, infraerrors.BadRequest("INVALID_AFFILIATE_EFFECTIVE_PAYMENT_MIN", "affiliate effective payment minimum must be non-negative")
+	}
+	updates[SettingKeyAffiliateEffectivePaymentMin] = strconv.FormatFloat(settings.AffiliateEffectivePaymentMin, 'f', 8, 64)
 	updates[SettingKeyDefaultUserRPMLimit] = strconv.Itoa(settings.DefaultUserRPMLimit)
 	defaultSubsJSON, err := json.Marshal(settings.DefaultSubscriptions)
 	if err != nil {
@@ -2575,6 +2607,67 @@ func (s *SettingService) GetAffiliateRebatePerInviteeCap(ctx context.Context) fl
 	return cap
 }
 
+func (s *SettingService) GetAffiliateGrowthMode(ctx context.Context) AffiliateGrowthMode {
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyAffiliateGrowthMode)
+	if err != nil {
+		return AffiliateGrowthModeDefault
+	}
+	mode := AffiliateGrowthMode(strings.TrimSpace(raw))
+	if !IsValidAffiliateGrowthMode(mode) {
+		return AffiliateGrowthModeDefault
+	}
+	return mode
+}
+
+func (s *SettingService) GetAffiliateTierWindowDays(ctx context.Context) int {
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyAffiliateTierWindowDays)
+	if err != nil {
+		return AffiliateTierWindowDaysDefault
+	}
+	days, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || days <= 0 {
+		return AffiliateTierWindowDaysDefault
+	}
+	if days > AffiliateTierWindowDaysMax {
+		return AffiliateTierWindowDaysMax
+	}
+	return days
+}
+
+func (s *SettingService) GetAffiliateTierRules(ctx context.Context) []AffiliateTierRule {
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyAffiliateTierRules)
+	if err == nil {
+		if rules, parseErr := ParseAffiliateTierRules(raw); parseErr == nil {
+			return rules
+		}
+	}
+	return DefaultAffiliateTierRules()
+}
+
+func (s *SettingService) GetAffiliateInviteeBonusRatePercent(ctx context.Context) float64 {
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyAffiliateInviteeBonusRate)
+	if err != nil {
+		return AffiliateInviteeBonusRateDefault
+	}
+	rate, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || math.IsNaN(rate) || math.IsInf(rate, 0) {
+		return AffiliateInviteeBonusRateDefault
+	}
+	return clampAffiliateRebateRate(rate)
+}
+
+func (s *SettingService) GetAffiliateEffectivePaymentMinAmount(ctx context.Context) float64 {
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyAffiliateEffectivePaymentMin)
+	if err != nil {
+		return AffiliateEffectivePaymentMinDefault
+	}
+	amount, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || amount < 0 || math.IsNaN(amount) || math.IsInf(amount, 0) {
+		return AffiliateEffectivePaymentMinDefault
+	}
+	return amount
+}
+
 // IsPasswordResetEnabled 检查是否启用密码重置功能
 // 要求：必须同时开启邮件验证
 func (s *SettingService) IsPasswordResetEnabled(ctx context.Context) bool {
@@ -2865,6 +2958,11 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyAffiliateRebateFreezeHours:                strconv.Itoa(AffiliateRebateFreezeHoursDefault),
 		SettingKeyAffiliateRebateDurationDays:               strconv.Itoa(AffiliateRebateDurationDaysDefault),
 		SettingKeyAffiliateRebatePerInviteeCap:              strconv.FormatFloat(AffiliateRebatePerInviteeCapDefault, 'f', 2, 64),
+		SettingKeyAffiliateGrowthMode:                       string(AffiliateGrowthModeDefault),
+		SettingKeyAffiliateTierWindowDays:                   strconv.Itoa(AffiliateTierWindowDaysDefault),
+		SettingKeyAffiliateTierRules:                        DefaultAffiliateTierRulesJSON(),
+		SettingKeyAffiliateInviteeBonusRate:                 strconv.FormatFloat(AffiliateInviteeBonusRateDefault, 'f', 8, 64),
+		SettingKeyAffiliateEffectivePaymentMin:              strconv.FormatFloat(AffiliateEffectivePaymentMinDefault, 'f', 8, 64),
 		SettingKeyDefaultUserRPMLimit:                       "0",
 		SettingKeyDefaultSubscriptions:                      "[]",
 		SettingKeyAuthSourceDefaultEmailBalance:             "0",
@@ -3062,6 +3160,29 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	}
 	if perInviteeCap, err := strconv.ParseFloat(settings[SettingKeyAffiliateRebatePerInviteeCap], 64); err == nil && perInviteeCap >= 0 {
 		result.AffiliateRebatePerInviteeCap = perInviteeCap
+	}
+	result.AffiliateGrowthMode = AffiliateGrowthMode(strings.TrimSpace(settings[SettingKeyAffiliateGrowthMode]))
+	if !IsValidAffiliateGrowthMode(result.AffiliateGrowthMode) {
+		result.AffiliateGrowthMode = AffiliateGrowthModeDefault
+	}
+	result.AffiliateTierWindowDays = AffiliateTierWindowDaysDefault
+	if days, err := strconv.Atoi(settings[SettingKeyAffiliateTierWindowDays]); err == nil && days > 0 {
+		if days > AffiliateTierWindowDaysMax {
+			days = AffiliateTierWindowDaysMax
+		}
+		result.AffiliateTierWindowDays = days
+	}
+	result.AffiliateTierRules = DefaultAffiliateTierRules()
+	if rules, err := ParseAffiliateTierRules(settings[SettingKeyAffiliateTierRules]); err == nil {
+		result.AffiliateTierRules = rules
+	}
+	result.AffiliateInviteeBonusRate = AffiliateInviteeBonusRateDefault
+	if rate, err := strconv.ParseFloat(settings[SettingKeyAffiliateInviteeBonusRate], 64); err == nil && !math.IsNaN(rate) && !math.IsInf(rate, 0) {
+		result.AffiliateInviteeBonusRate = clampAffiliateRebateRate(rate)
+	}
+	result.AffiliateEffectivePaymentMin = AffiliateEffectivePaymentMinDefault
+	if amount, err := strconv.ParseFloat(settings[SettingKeyAffiliateEffectivePaymentMin], 64); err == nil && amount >= 0 && !math.IsNaN(amount) && !math.IsInf(amount, 0) {
+		result.AffiliateEffectivePaymentMin = amount
 	}
 	result.DefaultSubscriptions = parseDefaultSubscriptions(settings[SettingKeyDefaultSubscriptions])
 

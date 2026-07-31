@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -165,7 +166,7 @@ VALUES ($1, 'accrue', $2, $3, $4, NOW(), NOW())`, inviterID, amount, inviteeUser
 func (r *affiliateRepository) GetAccruedRebateFromInvitee(ctx context.Context, inviterID, inviteeUserID int64) (float64, error) {
 	client := clientFromContext(ctx, r.client)
 	rows, err := client.QueryContext(ctx,
-		`SELECT COALESCE(SUM(amount), 0)::double precision FROM user_affiliate_ledger WHERE user_id = $1 AND source_user_id = $2 AND action = 'accrue'`,
+		`SELECT COALESCE(SUM(amount), 0)::double precision FROM user_affiliate_ledger WHERE user_id = $1 AND source_user_id = $2 AND action IN ('accrue', 'rebate_reverse')`,
 		inviterID, inviteeUserID)
 	if err != nil {
 		return 0, fmt.Errorf("query accrued rebate from invitee: %w", err)
@@ -178,6 +179,361 @@ func (r *affiliateRepository) GetAccruedRebateFromInvitee(ctx context.Context, i
 		}
 	}
 	return total, rows.Close()
+}
+
+func (r *affiliateRepository) CountEffectivePaidInvitees(ctx context.Context, inviterID int64, since time.Time, minNetPaymentAmount float64) (int, error) {
+	if inviterID <= 0 {
+		return 0, nil
+	}
+	if minNetPaymentAmount < 0 {
+		minNetPaymentAmount = 0
+	}
+	client := clientFromContext(ctx, r.client)
+	rows, err := client.QueryContext(ctx, `
+SELECT COUNT(DISTINCT ua.user_id)::integer
+FROM user_affiliates ua
+JOIN payment_orders po ON po.user_id = ua.user_id
+WHERE ua.inviter_id = $1
+  AND po.order_type IN ('balance', 'subscription')
+  AND po.status IN ('COMPLETED', 'PARTIALLY_REFUNDED')
+  AND COALESCE(po.completed_at, po.paid_at, po.created_at) >= $2
+  AND CASE
+        WHEN po.amount > 0 THEN
+          po.pay_amount * GREATEST(po.amount - COALESCE(po.refund_amount, 0), 0) / po.amount
+        ELSE 0
+      END >= GREATEST($3, 0.00000001)`, inviterID, since, minNetPaymentAmount)
+	if err != nil {
+		return 0, fmt.Errorf("count effective paid invitees: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var count int
+	if rows.Next() {
+		if err := rows.Scan(&count); err != nil {
+			return 0, err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func (r *affiliateRepository) HasEffectivePaidInvitee(ctx context.Context, inviterID, inviteeUserID int64, since time.Time, minNetPaymentAmount float64) (bool, error) {
+	if inviterID <= 0 || inviteeUserID <= 0 {
+		return false, nil
+	}
+	if minNetPaymentAmount < 0 {
+		minNetPaymentAmount = 0
+	}
+	client := clientFromContext(ctx, r.client)
+	rows, err := client.QueryContext(ctx, `
+SELECT EXISTS (
+    SELECT 1
+    FROM user_affiliates ua
+    JOIN payment_orders po ON po.user_id = ua.user_id
+    WHERE ua.inviter_id = $1
+      AND ua.user_id = $2
+      AND po.order_type IN ('balance', 'subscription')
+      AND po.status IN ('COMPLETED', 'PARTIALLY_REFUNDED')
+      AND COALESCE(po.completed_at, po.paid_at, po.created_at) >= $3
+      AND CASE
+            WHEN po.amount > 0 THEN
+              po.pay_amount * GREATEST(po.amount - COALESCE(po.refund_amount, 0), 0) / po.amount
+            ELSE 0
+          END >= GREATEST($4, 0.00000001)
+)`, inviterID, inviteeUserID, since, minNetPaymentAmount)
+	if err != nil {
+		return false, fmt.Errorf("check effective paid invitee: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	if !rows.Next() {
+		return false, rows.Err()
+	}
+	var effective bool
+	if err := rows.Scan(&effective); err != nil {
+		return false, err
+	}
+	return effective, rows.Err()
+}
+
+func (r *affiliateRepository) ApplyTieredOrderRewards(ctx context.Context, input service.AffiliateTieredRewardLedgerInput) (service.AffiliateTieredRewardLedgerResult, error) {
+	var result service.AffiliateTieredRewardLedgerResult
+	if input.InviterUserID <= 0 || input.InviteeUserID <= 0 || input.SourceOrderID <= 0 {
+		return result, nil
+	}
+
+	err := r.withTx(ctx, func(txCtx context.Context, txClient *dbent.Client) error {
+		if input.InviterRebateAmount > 0 {
+			rows, err := txClient.QueryContext(txCtx, `
+INSERT INTO user_affiliate_ledger (
+    user_id, action, amount, source_user_id, source_order_id, frozen_until,
+    base_amount, rate_percent, effective_invitee_count, growth_mode, created_at, updated_at
+)
+VALUES ($1, 'accrue', $2, $3, $4,
+        CASE WHEN $8 > 0 THEN NOW() + make_interval(hours => $8) ELSE NULL END,
+        $5, $6, $7, 'tiered_v1', NOW(), NOW())
+ON CONFLICT DO NOTHING
+RETURNING id`,
+				input.InviterUserID,
+				input.InviterRebateAmount,
+				input.InviteeUserID,
+				input.SourceOrderID,
+				input.BaseAmount,
+				input.RatePercent,
+				input.EffectiveInvitees,
+				input.FreezeHours,
+			)
+			if err != nil {
+				return fmt.Errorf("insert tiered affiliate rebate ledger: %w", err)
+			}
+			inserted := rows.Next()
+			if rowErr := rows.Err(); rowErr != nil {
+				_ = rows.Close()
+				return rowErr
+			}
+			if closeErr := rows.Close(); closeErr != nil {
+				return closeErr
+			}
+			if inserted {
+				quotaColumn := "aff_quota"
+				if input.FreezeHours > 0 {
+					quotaColumn = "aff_frozen_quota"
+				}
+				res, updateErr := txClient.ExecContext(txCtx, `UPDATE user_affiliates SET `+quotaColumn+` = `+quotaColumn+` + $1, aff_history_quota = aff_history_quota + $1, updated_at = NOW() WHERE user_id = $2`, input.InviterRebateAmount, input.InviterUserID)
+				if updateErr != nil {
+					return fmt.Errorf("apply tiered affiliate rebate quota: %w", updateErr)
+				}
+				affected, _ := res.RowsAffected()
+				if affected == 0 {
+					return fmt.Errorf("apply tiered affiliate rebate quota: inviter profile not found")
+				}
+				result.InviterRebateApplied = true
+			}
+		}
+
+		if input.InviteeBonusAmount > 0 {
+			rows, err := txClient.QueryContext(txCtx, `
+INSERT INTO user_affiliate_ledger (
+    user_id, action, amount, source_user_id, source_order_id,
+    base_amount, rate_percent, growth_mode, created_at, updated_at
+)
+VALUES ($1, 'invitee_bonus', $2, $3, $4, $5, $6, 'tiered_v1', NOW(), NOW())
+ON CONFLICT DO NOTHING
+RETURNING id`,
+				input.InviteeUserID,
+				input.InviteeBonusAmount,
+				input.InviterUserID,
+				input.SourceOrderID,
+				input.BaseAmount,
+				input.InviteeBonusAmount/input.BaseAmount*100,
+			)
+			if err != nil {
+				return fmt.Errorf("insert affiliate invitee bonus ledger: %w", err)
+			}
+			inserted := rows.Next()
+			if rowErr := rows.Err(); rowErr != nil {
+				_ = rows.Close()
+				return rowErr
+			}
+			if closeErr := rows.Close(); closeErr != nil {
+				return closeErr
+			}
+			if inserted {
+				res, updateErr := txClient.ExecContext(txCtx, "UPDATE users SET balance = balance + $1, updated_at = NOW() WHERE id = $2 AND deleted_at IS NULL", input.InviteeBonusAmount, input.InviteeUserID)
+				if updateErr != nil {
+					return fmt.Errorf("apply affiliate invitee bonus: %w", updateErr)
+				}
+				affected, _ := res.RowsAffected()
+				if affected == 0 {
+					return fmt.Errorf("apply affiliate invitee bonus: user not found")
+				}
+				result.InviteeBonusApplied = true
+			}
+		}
+		return nil
+	})
+	return result, err
+}
+
+func (r *affiliateRepository) ReverseOrderRewards(ctx context.Context, sourceOrderID int64, refundAmount, orderAmount float64) (service.AffiliateRewardReversalResult, error) {
+	var result service.AffiliateRewardReversalResult
+	if sourceOrderID <= 0 || refundAmount <= 0 || orderAmount <= 0 {
+		return result, nil
+	}
+	ratio := refundAmount / orderAmount
+	if ratio > 1 {
+		ratio = 1
+	}
+
+	err := r.withTx(ctx, func(txCtx context.Context, txClient *dbent.Client) error {
+		rows, err := txClient.QueryContext(txCtx, `
+SELECT id, user_id, action, amount::double precision, source_user_id, frozen_until
+FROM user_affiliate_ledger
+WHERE source_order_id = $1
+  AND action IN ('accrue', 'invitee_bonus')
+ORDER BY id
+FOR UPDATE`, sourceOrderID)
+		if err != nil {
+			return fmt.Errorf("lock affiliate reward ledger: %w", err)
+		}
+		type originalReward struct {
+			id           int64
+			userID       int64
+			action       string
+			amount       float64
+			sourceUserID sql.NullInt64
+			frozenUntil  sql.NullTime
+		}
+		var originals []originalReward
+		for rows.Next() {
+			var item originalReward
+			if scanErr := rows.Scan(&item.id, &item.userID, &item.action, &item.amount, &item.sourceUserID, &item.frozenUntil); scanErr != nil {
+				_ = rows.Close()
+				return scanErr
+			}
+			originals = append(originals, item)
+		}
+		if rowErr := rows.Err(); rowErr != nil {
+			_ = rows.Close()
+			return rowErr
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+
+		for _, original := range originals {
+			reverseAction := "rebate_reverse"
+			if original.action == "invitee_bonus" {
+				reverseAction = "invitee_bonus_reverse"
+			}
+			var alreadyReversed float64
+			reverseRows, queryErr := txClient.QueryContext(txCtx, `
+SELECT COALESCE(-SUM(amount), 0)::double precision
+FROM user_affiliate_ledger
+WHERE reversal_of_id = $1 AND action = $2`, original.id, reverseAction)
+			if queryErr != nil {
+				return fmt.Errorf("query affiliate reward reversal: %w", queryErr)
+			}
+			if reverseRows.Next() {
+				if scanErr := reverseRows.Scan(&alreadyReversed); scanErr != nil {
+					_ = reverseRows.Close()
+					return scanErr
+				}
+			}
+			if rowErr := reverseRows.Err(); rowErr != nil {
+				_ = reverseRows.Close()
+				return rowErr
+			}
+			if closeErr := reverseRows.Close(); closeErr != nil {
+				return closeErr
+			}
+			target := math.Round(original.amount*ratio*1e8) / 1e8
+			delta := math.Round((target-alreadyReversed)*1e8) / 1e8
+			if delta <= 0 {
+				continue
+			}
+
+			if original.action == "invitee_bonus" {
+				updateResult, updateErr := txClient.ExecContext(txCtx, "UPDATE users SET balance = balance - $1, updated_at = NOW() WHERE id = $2", delta, original.userID)
+				if updateErr != nil {
+					return fmt.Errorf("reverse affiliate invitee bonus: %w", updateErr)
+				}
+				affected, _ := updateResult.RowsAffected()
+				if affected == 0 {
+					return fmt.Errorf("reverse affiliate invitee bonus: user not found")
+				}
+				result.InviteeUserID = original.userID
+				result.InviteeBonusReversed += delta
+			} else {
+				if err := reverseInviterRewardBalances(txCtx, txClient, original.userID, delta, original.frozenUntil.Valid); err != nil {
+					return err
+				}
+				result.InviterUserID = original.userID
+				result.InviterRebateReversed += delta
+			}
+
+			_, insertErr := txClient.ExecContext(txCtx, `
+INSERT INTO user_affiliate_ledger (
+    user_id, action, amount, source_user_id, source_order_id, growth_mode,
+    reversal_of_id, created_at, updated_at
+)
+VALUES ($1, $2, $3, $4, $5, 'tiered_v1', $6, NOW(), NOW())`,
+				original.userID,
+				reverseAction,
+				-delta,
+				nullableSQLInt64Arg(original.sourceUserID),
+				sourceOrderID,
+				original.id,
+			)
+			if insertErr != nil {
+				return fmt.Errorf("insert affiliate reward reversal: %w", insertErr)
+			}
+		}
+		return nil
+	})
+	result.InviterRebateReversed = math.Round(result.InviterRebateReversed*1e8) / 1e8
+	result.InviteeBonusReversed = math.Round(result.InviteeBonusReversed*1e8) / 1e8
+	return result, err
+}
+
+func reverseInviterRewardBalances(ctx context.Context, client *dbent.Client, inviterID int64, amount float64, originallyFrozen bool) error {
+	rows, err := client.QueryContext(ctx, `
+SELECT aff_frozen_quota::double precision, aff_quota::double precision
+FROM user_affiliates
+WHERE user_id = $1
+FOR UPDATE`, inviterID)
+	if err != nil {
+		return fmt.Errorf("lock inviter affiliate balances: %w", err)
+	}
+	var frozenQuota, availableQuota float64
+	if !rows.Next() {
+		_ = rows.Close()
+		return fmt.Errorf("reverse inviter reward: affiliate profile not found")
+	}
+	if err := rows.Scan(&frozenQuota, &availableQuota); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	remaining := amount
+	frozenDeduct := 0.0
+	if originallyFrozen {
+		frozenDeduct = math.Min(remaining, frozenQuota)
+		remaining -= frozenDeduct
+	}
+	availableDeduct := math.Min(remaining, availableQuota)
+	remaining -= availableDeduct
+	if _, err := client.ExecContext(ctx, `
+UPDATE user_affiliates
+SET aff_frozen_quota = GREATEST(aff_frozen_quota - $1, 0),
+    aff_quota = GREATEST(aff_quota - $2, 0),
+    updated_at = NOW()
+WHERE user_id = $3`, frozenDeduct, availableDeduct, inviterID); err != nil {
+		return fmt.Errorf("reverse inviter affiliate quota: %w", err)
+	}
+	if remaining > 0 {
+		result, err := client.ExecContext(ctx, "UPDATE users SET balance = balance - $1, updated_at = NOW() WHERE id = $2", remaining, inviterID)
+		if err != nil {
+			return fmt.Errorf("reverse transferred inviter affiliate reward: %w", err)
+		}
+		affected, _ := result.RowsAffected()
+		if affected == 0 {
+			return fmt.Errorf("reverse transferred inviter affiliate reward: user not found")
+		}
+	}
+	return nil
+}
+
+func nullableSQLInt64Arg(value sql.NullInt64) any {
+	if value.Valid {
+		return value.Int64
+	}
+	return nil
 }
 
 func (r *affiliateRepository) ThawFrozenQuota(ctx context.Context, userID int64) (float64, error) {

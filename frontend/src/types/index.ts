@@ -145,6 +145,17 @@ export interface UserAffiliateDetail {
   aff_history_quota: number
   /** 当前用户作为邀请人时实际生效的返利比例（专属覆盖全局）。0-100。 */
   effective_rebate_rate_percent: number
+  rebate_rate_custom?: boolean
+  effective_invitee_count: number
+  next_tier_invitee_threshold?: number
+  invitees_until_next_tier?: number
+  growth_mode?: string
+  invitee_first_payment_bonus_rate?: number
+  tier_window_days?: number
+  tier_rules?: Array<{
+    min_effective_invitees: number
+    rate_percent: number
+  }>
   invitees: AffiliateInvitee[]
 }
 

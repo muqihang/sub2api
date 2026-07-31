@@ -9,9 +9,36 @@ import (
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
+
+func mustCreateAffiliatePaymentOrder(t *testing.T, ctx context.Context, client *dbent.Client, user *service.User, amount, payAmount float64) *dbent.PaymentOrder {
+	t.Helper()
+	now := time.Now()
+	order, err := client.PaymentOrder.Create().
+		SetUserID(user.ID).
+		SetUserEmail(user.Email).
+		SetUserName(user.Username).
+		SetAmount(amount).
+		SetPayAmount(payAmount).
+		SetFeeRate(0).
+		SetRechargeCode(fmt.Sprintf("AFF-GROWTH-%d", now.UnixNano())).
+		SetOutTradeNo(fmt.Sprintf("aff_growth_%d", now.UnixNano())).
+		SetPaymentType(payment.TypeAlipay).
+		SetPaymentTradeNo(fmt.Sprintf("trade_%d", now.UnixNano())).
+		SetOrderType(payment.OrderTypeBalance).
+		SetStatus(payment.OrderStatusCompleted).
+		SetExpiresAt(now.Add(time.Hour)).
+		SetPaidAt(now).
+		SetCompletedAt(now).
+		SetClientIP("127.0.0.1").
+		SetSrcHost("api.example.com").
+		Save(ctx)
+	require.NoError(t, err)
+	return order
+}
 
 func querySingleFloat(t *testing.T, ctx context.Context, client *dbent.Client, query string, args ...any) float64 {
 	t.Helper()
@@ -416,4 +443,83 @@ func TestAffiliateRepository_ListUsersWithCustomSettings(t *testing.T) {
 	require.InDelta(t, 33.3, *rateEntry.AffRebateRatePercent, 1e-9)
 
 	require.GreaterOrEqual(t, total, int64(2), "total must include at least our 2 custom rows")
+}
+
+func TestAffiliateRepository_TieredRewards_IdempotencyAndReversal(t *testing.T) {
+	ctx := context.Background()
+	tx := testEntTx(t)
+	txCtx := dbent.NewTxContext(ctx, tx)
+	client := tx.Client()
+	repo := NewAffiliateRepository(client, integrationDB)
+	statsRepo, ok := repo.(service.AffiliateGrowthRepository)
+	require.True(t, ok)
+	growthRepo, ok := repo.(service.AffiliateTieredRewardRepository)
+	require.True(t, ok)
+	reversalRepo, ok := repo.(service.AffiliateRewardReversalRepository)
+	require.True(t, ok)
+
+	inviter := mustCreateUser(t, client, &service.User{
+		Email:        fmt.Sprintf("affiliate-growth-inviter-%d@example.com", time.Now().UnixNano()),
+		PasswordHash: "hash", Role: service.RoleUser, Status: service.StatusActive,
+	})
+	invitee := mustCreateUser(t, client, &service.User{
+		Email:        fmt.Sprintf("affiliate-growth-invitee-%d@example.com", time.Now().UnixNano()+1),
+		PasswordHash: "hash", Role: service.RoleUser, Status: service.StatusActive, Balance: 1,
+	})
+	_, err := repo.EnsureUserAffiliate(txCtx, inviter.ID)
+	require.NoError(t, err)
+	_, err = repo.EnsureUserAffiliate(txCtx, invitee.ID)
+	require.NoError(t, err)
+	bound, err := repo.BindInviter(txCtx, invitee.ID, inviter.ID)
+	require.NoError(t, err)
+	require.True(t, bound)
+	order := mustCreateAffiliatePaymentOrder(t, txCtx, client, invitee, 100, 100)
+
+	effective, err := statsRepo.HasEffectivePaidInvitee(txCtx, inviter.ID, invitee.ID, time.Now().Add(-time.Hour), 1)
+	require.NoError(t, err)
+	require.True(t, effective)
+	effectiveCount, err := statsRepo.CountEffectivePaidInvitees(txCtx, inviter.ID, time.Now().Add(-time.Hour), 1)
+	require.NoError(t, err)
+	require.Equal(t, 1, effectiveCount)
+	effective, err = statsRepo.HasEffectivePaidInvitee(txCtx, inviter.ID, invitee.ID, time.Now().Add(-time.Hour), 101)
+	require.NoError(t, err)
+	require.False(t, effective)
+
+	input := service.AffiliateTieredRewardLedgerInput{
+		InviterUserID: inviter.ID, InviteeUserID: invitee.ID, SourceOrderID: order.ID,
+		BaseAmount: 100, InviterRebateAmount: 10, InviteeBonusAmount: 5,
+		RatePercent: 10, EffectiveInvitees: 3, FreezeHours: 24,
+	}
+	applied, err := growthRepo.ApplyTieredOrderRewards(txCtx, input)
+	require.NoError(t, err)
+	require.True(t, applied.InviterRebateApplied)
+	require.True(t, applied.InviteeBonusApplied)
+
+	duplicate, err := growthRepo.ApplyTieredOrderRewards(txCtx, input)
+	require.NoError(t, err)
+	require.False(t, duplicate.InviterRebateApplied)
+	require.False(t, duplicate.InviteeBonusApplied)
+	require.InDelta(t, 10, querySingleFloat(t, txCtx, client, "SELECT aff_frozen_quota::double precision FROM user_affiliates WHERE user_id = $1", inviter.ID), 1e-9)
+	require.InDelta(t, 6, querySingleFloat(t, txCtx, client, "SELECT balance::double precision FROM users WHERE id = $1", invitee.ID), 1e-9)
+	require.Equal(t, 1, querySingleInt(t, txCtx, client, "SELECT COUNT(*) FROM user_affiliate_ledger WHERE source_order_id = $1 AND action = 'accrue'", order.ID))
+	require.Equal(t, 1, querySingleInt(t, txCtx, client, "SELECT COUNT(*) FROM user_affiliate_ledger WHERE source_order_id = $1 AND action = 'invitee_bonus'", order.ID))
+
+	partial, err := reversalRepo.ReverseOrderRewards(txCtx, order.ID, 50, 100)
+	require.NoError(t, err)
+	require.InDelta(t, 5, partial.InviterRebateReversed, 1e-9)
+	require.InDelta(t, 2.5, partial.InviteeBonusReversed, 1e-9)
+	require.InDelta(t, 5, querySingleFloat(t, txCtx, client, "SELECT aff_frozen_quota::double precision FROM user_affiliates WHERE user_id = $1", inviter.ID), 1e-9)
+	require.InDelta(t, 3.5, querySingleFloat(t, txCtx, client, "SELECT balance::double precision FROM users WHERE id = $1", invitee.ID), 1e-9)
+
+	retry, err := reversalRepo.ReverseOrderRewards(txCtx, order.ID, 50, 100)
+	require.NoError(t, err)
+	require.Zero(t, retry.InviterRebateReversed)
+	require.Zero(t, retry.InviteeBonusReversed)
+
+	full, err := reversalRepo.ReverseOrderRewards(txCtx, order.ID, 100, 100)
+	require.NoError(t, err)
+	require.InDelta(t, 5, full.InviterRebateReversed, 1e-9)
+	require.InDelta(t, 2.5, full.InviteeBonusReversed, 1e-9)
+	require.InDelta(t, 0, querySingleFloat(t, txCtx, client, "SELECT aff_frozen_quota::double precision FROM user_affiliates WHERE user_id = $1", inviter.ID), 1e-9)
+	require.InDelta(t, 1, querySingleFloat(t, txCtx, client, "SELECT balance::double precision FROM users WHERE id = $1", invitee.ID), 1e-9)
 }

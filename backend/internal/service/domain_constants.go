@@ -33,6 +33,11 @@ const (
 	AffiliateRebateDurationDaysDefault  = 0     // 0 = 永久有效
 	AffiliateRebateDurationDaysMax      = 3650  // ~10 年
 	AffiliateRebatePerInviteeCapDefault = 0.0   // 0 = 无上限
+	AffiliateGrowthModeDefault          = AffiliateGrowthModeLegacy
+	AffiliateTierWindowDaysDefault      = 90
+	AffiliateTierWindowDaysMax          = 3650
+	AffiliateInviteeBonusRateDefault    = 5.0
+	AffiliateEffectivePaymentMinDefault = 0.0
 )
 
 // Platform constants
@@ -139,14 +144,19 @@ const (
 	SettingKeyAffiliateRebateFreezeHours       = "affiliate_rebate_freeze_hours"       // 返利冻结期（小时，0=不冻结）
 	SettingKeyAffiliateRebateDurationDays      = "affiliate_rebate_duration_days"      // 返利有效期（天，0=永久）
 	SettingKeyAffiliateRebatePerInviteeCap     = "affiliate_rebate_per_invitee_cap"    // 单人返利上限（0=无上限）
-	SettingKeyRiskControlEnabled               = "risk_control_enabled"                // 是否启用风控中心入口与审计链路
-	SettingKeyContentModerationConfig          = "content_moderation_config"           // 内容审计配置（JSON）
-	SettingKeyCyberSessionBlockEnabled         = "cyber_session_block_enabled"         // cyber 命中后会话级自动屏蔽总开关(默认关)
-	SettingKeyCyberSessionBlockTTLSeconds      = "cyber_session_block_ttl_seconds"     // 会话屏蔽 TTL 秒数(默认 3600)
-	SettingKeyLoginAgreementEnabled            = "login_agreement_enabled"             // 登录前是否要求同意条款
-	SettingKeyLoginAgreementMode               = "login_agreement_mode"                // 条款确认展示模式：modal / checkbox
-	SettingKeyLoginAgreementUpdatedAt          = "login_agreement_updated_at"          // 条款更新日期（展示用）
-	SettingKeyLoginAgreementDocuments          = "login_agreement_documents"           // 条款文档列表（JSON，Markdown 内容）
+	SettingKeyAffiliateGrowthMode              = "affiliate_growth_mode"               // legacy | tiered_v1
+	SettingKeyAffiliateTierWindowDays          = "affiliate_tier_window_days"          // 有效付费邀请人滚动窗口
+	SettingKeyAffiliateTierRules               = "affiliate_tier_rules"                // 阶梯返利规则（JSON）
+	SettingKeyAffiliateInviteeBonusRate        = "affiliate_invitee_first_payment_bonus_rate"
+	SettingKeyAffiliateEffectivePaymentMin     = "affiliate_effective_payment_min_amount"
+	SettingKeyRiskControlEnabled               = "risk_control_enabled"            // 是否启用风控中心入口与审计链路
+	SettingKeyContentModerationConfig          = "content_moderation_config"       // 内容审计配置（JSON）
+	SettingKeyCyberSessionBlockEnabled         = "cyber_session_block_enabled"     // cyber 命中后会话级自动屏蔽总开关(默认关)
+	SettingKeyCyberSessionBlockTTLSeconds      = "cyber_session_block_ttl_seconds" // 会话屏蔽 TTL 秒数(默认 3600)
+	SettingKeyLoginAgreementEnabled            = "login_agreement_enabled"         // 登录前是否要求同意条款
+	SettingKeyLoginAgreementMode               = "login_agreement_mode"            // 条款确认展示模式：modal / checkbox
+	SettingKeyLoginAgreementUpdatedAt          = "login_agreement_updated_at"      // 条款更新日期（展示用）
+	SettingKeyLoginAgreementDocuments          = "login_agreement_documents"       // 条款文档列表（JSON，Markdown 内容）
 
 	// 邮件服务设置
 	SettingKeySMTPHost     = "smtp_host"      // SMTP服务器地址

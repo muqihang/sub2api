@@ -5520,7 +5520,7 @@
             </div>
 
             <div v-if="form.affiliate_enabled" class="space-y-6">
-              <div>
+              <div v-if="form.affiliate_growth_mode === 'legacy'">
                 <label class="input-label">
                   {{ t('admin.settings.features.affiliate.rebateRate') }}
                 </label>
@@ -5541,6 +5541,66 @@
                 </p>
               </div>
 
+              <div class="rounded-lg border border-primary-200 bg-primary-50/60 p-4 dark:border-primary-900/50 dark:bg-primary-900/10">
+                <label class="input-label">
+                  {{ t('admin.settings.features.affiliate.growthMode') }}
+                </label>
+                <select v-model="form.affiliate_growth_mode" class="input" @change="handleAffiliateGrowthModeChange">
+                  <option value="legacy">{{ t('admin.settings.features.affiliate.growthModeLegacy') }}</option>
+                  <option value="tiered_v1">{{ t('admin.settings.features.affiliate.growthModeTiered') }}</option>
+                </select>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.features.affiliate.growthModeHint') }}
+                </p>
+              </div>
+
+              <div v-if="form.affiliate_growth_mode === 'tiered_v1'" class="space-y-4 rounded-lg border border-gray-200 p-4 dark:border-dark-700">
+                <div>
+                  <label class="input-label">{{ t('admin.settings.features.affiliate.tierWindowDays') }}</label>
+                  <input v-model.number="form.affiliate_tier_window_days" type="number" min="1" max="3650" step="1" class="input" />
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.features.affiliate.tierWindowDaysHint') }}</p>
+                </div>
+                <div>
+                  <label class="input-label">{{ t('admin.settings.features.affiliate.tierRules') }}</label>
+                  <div class="space-y-2">
+                    <div v-for="(rule, index) in form.affiliate_tier_rules" :key="index" class="grid grid-cols-[1fr_1fr_auto] items-center gap-2">
+                      <input v-model.number="rule.min_effective_invitees" type="number" min="0" step="1" class="input" :placeholder="t('admin.settings.features.affiliate.tierInviteeThreshold')" />
+                      <div class="relative">
+                        <input v-model.number="rule.rate_percent" type="number" min="0" max="100" step="0.01" class="input pr-8" :placeholder="t('admin.settings.features.affiliate.tierRate')" />
+                        <span class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">%</span>
+                      </div>
+                      <button
+                        type="button"
+                        class="btn btn-secondary btn-sm h-9 w-9 p-0"
+                        :disabled="form.affiliate_tier_rules.length <= 1"
+                        :title="t('common.delete')"
+                        :aria-label="t('common.delete')"
+                        @click="form.affiliate_tier_rules.splice(index, 1)"
+                      >
+                        <Icon name="trash" size="sm" />
+                      </button>
+                    </div>
+                  </div>
+                  <button type="button" class="btn btn-secondary btn-sm mt-2" @click="form.affiliate_tier_rules.push({ min_effective_invitees: 0, rate_percent: 0 })">
+                    {{ t('admin.settings.features.affiliate.addTier') }}
+                  </button>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.features.affiliate.tierRulesHint') }}</p>
+                </div>
+                <div>
+                  <label class="input-label">{{ t('admin.settings.features.affiliate.inviteeBonusRate') }}</label>
+                  <div class="relative">
+                    <input v-model.number="form.affiliate_invitee_first_payment_bonus_rate" type="number" min="0" max="100" step="0.01" class="input pr-8" />
+                    <span class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">%</span>
+                  </div>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.features.affiliate.inviteeBonusRateHint') }}</p>
+                </div>
+                <div>
+                  <label class="input-label">{{ t('admin.settings.features.affiliate.effectivePaymentMin') }}</label>
+                  <input v-model.number="form.affiliate_effective_payment_min_amount" type="number" min="0" step="0.01" class="input" />
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.features.affiliate.effectivePaymentMinHint') }}</p>
+                </div>
+              </div>
+
               <div>
                 <label class="input-label">
                   {{ t('admin.settings.features.affiliate.freezeHours') }}
@@ -5558,7 +5618,7 @@
                 </p>
               </div>
 
-              <div>
+              <div v-if="form.affiliate_growth_mode === 'legacy'">
                 <label class="input-label">
                   {{ t('admin.settings.features.affiliate.durationDays') }}
                 </label>
@@ -7296,6 +7356,16 @@ const form = reactive<SettingsForm>({
   affiliate_rebate_freeze_hours: 0,
   affiliate_rebate_duration_days: 0,
   affiliate_rebate_per_invitee_cap: 0,
+  affiliate_growth_mode: "legacy",
+  affiliate_tier_window_days: 90,
+  affiliate_tier_rules: [
+    { min_effective_invitees: 0, rate_percent: 8 },
+    { min_effective_invitees: 3, rate_percent: 10 },
+    { min_effective_invitees: 10, rate_percent: 12 },
+    { min_effective_invitees: 25, rate_percent: 15 },
+  ],
+  affiliate_invitee_first_payment_bonus_rate: 5,
+  affiliate_effective_payment_min_amount: 0,
   default_concurrency: 1,
   default_subscriptions: [],
   force_email_on_third_party_signup: false,
@@ -8285,6 +8355,15 @@ function findDuplicateDefaultSubscription(
   });
 }
 
+function handleAffiliateGrowthModeChange() {
+  if (
+    form.affiliate_growth_mode === "tiered_v1" &&
+    Number(form.affiliate_rebate_freeze_hours) === 0
+  ) {
+    form.affiliate_rebate_freeze_hours = 24;
+  }
+}
+
 async function saveSettings() {
   saving.value = true;
   try {
@@ -8452,6 +8531,14 @@ async function saveSettings() {
       affiliate_rebate_freeze_hours: Math.max(0, Math.min(720, Number(form.affiliate_rebate_freeze_hours) || 0)),
       affiliate_rebate_duration_days: Math.max(0, Math.min(3650, Math.floor(Number(form.affiliate_rebate_duration_days) || 0))),
       affiliate_rebate_per_invitee_cap: Math.max(0, Number(form.affiliate_rebate_per_invitee_cap) || 0),
+      affiliate_growth_mode: form.affiliate_growth_mode,
+      affiliate_tier_window_days: Math.max(1, Math.min(3650, Math.floor(Number(form.affiliate_tier_window_days) || 90))),
+      affiliate_tier_rules: form.affiliate_tier_rules.map((rule) => ({
+        min_effective_invitees: Math.max(0, Math.floor(Number(rule.min_effective_invitees) || 0)),
+        rate_percent: Math.min(100, Math.max(0, Number(rule.rate_percent) || 0)),
+      })),
+      affiliate_invitee_first_payment_bonus_rate: Math.min(100, Math.max(0, Number(form.affiliate_invitee_first_payment_bonus_rate) || 0)),
+      affiliate_effective_payment_min_amount: Math.max(0, Number(form.affiliate_effective_payment_min_amount) || 0),
       default_concurrency: form.default_concurrency,
       default_subscriptions: normalizedDefaultSubscriptions,
       force_email_on_third_party_signup: form.force_email_on_third_party_signup,

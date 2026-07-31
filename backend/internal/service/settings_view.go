@@ -152,6 +152,11 @@ type SystemSettings struct {
 	AffiliateRebateFreezeHours   int
 	AffiliateRebateDurationDays  int
 	AffiliateRebatePerInviteeCap float64
+	AffiliateGrowthMode          AffiliateGrowthMode
+	AffiliateTierWindowDays      int
+	AffiliateTierRules           []AffiliateTierRule
+	AffiliateInviteeBonusRate    float64
+	AffiliateEffectivePaymentMin float64
 	DefaultUserRPMLimit          int
 	DefaultSubscriptions         []DefaultSubscriptionSetting
 

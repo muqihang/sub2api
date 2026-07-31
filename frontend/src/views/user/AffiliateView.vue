@@ -73,13 +73,29 @@
           </div>
 
           <div class="mt-5 rounded-xl border border-primary-200 bg-primary-50 p-4 dark:border-primary-900/40 dark:bg-primary-900/20">
-            <p class="text-sm font-medium text-primary-800 dark:text-primary-200">{{ t('affiliate.tips.title') }}</p>
+            <p class="text-sm font-semibold text-primary-800 dark:text-primary-200">{{ t(detail.growth_mode === 'tiered_v1' ? 'affiliate.tips.growthTitle' : 'affiliate.tips.title') }}</p>
             <ul class="mt-2 space-y-1 text-sm text-primary-700 dark:text-primary-300">
               <li>1. {{ t('affiliate.tips.line1') }}</li>
               <li>2. {{ t('affiliate.tips.line2', { rate: `${formattedRebateRate}%` }) }}</li>
               <li>3. {{ t('affiliate.tips.line3') }}</li>
               <li v-if="detail.aff_frozen_quota > 0">4. {{ t('affiliate.tips.line4') }}</li>
+              <li v-if="detail.growth_mode === 'tiered_v1' && !detail.rebate_rate_custom && (detail.next_tier_invitee_threshold || 0) > 0">{{ t('affiliate.tips.tierProgress', { days: detail.tier_window_days || 90, count: detail.effective_invitee_count, remaining: detail.invitees_until_next_tier || 0, threshold: detail.next_tier_invitee_threshold || 0 }) }}</li>
+              <li v-if="detail.growth_mode === 'tiered_v1' && (detail.invitee_first_payment_bonus_rate || 0) > 0">{{ t('affiliate.tips.inviteeBonus', { rate: `${detail.invitee_first_payment_bonus_rate}%` }) }}</li>
             </ul>
+          </div>
+
+          <div v-if="detail.growth_mode === 'tiered_v1' && detail.tier_rules?.length" class="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-900/40 dark:bg-emerald-900/20">
+            <div class="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
+              <p class="text-sm font-semibold text-emerald-800 dark:text-emerald-200">{{ t('affiliate.tips.tierTitle') }}</p>
+              <p class="text-xs text-emerald-700 dark:text-emerald-300">{{ t('affiliate.tips.effectiveCount', { count: detail.effective_invitee_count, days: detail.tier_window_days || 90 }) }}</p>
+            </div>
+            <div class="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              <div v-for="rule in detail.tier_rules" :key="rule.min_effective_invitees" class="rounded-lg border border-emerald-200/80 bg-white/70 px-3 py-2 dark:border-emerald-800/50 dark:bg-dark-900/30">
+                <p class="text-xs text-emerald-700 dark:text-emerald-300">{{ t('affiliate.tips.tierFrom', { count: rule.min_effective_invitees }) }}</p>
+                <p class="mt-1 text-lg font-bold text-emerald-800 dark:text-emerald-200">{{ rule.rate_percent }}%</p>
+              </div>
+            </div>
+            <p class="mt-3 text-xs text-emerald-700 dark:text-emerald-300">{{ t('affiliate.tips.growthNote') }}</p>
           </div>
         </div>
 

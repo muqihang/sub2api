@@ -556,11 +556,40 @@ func (s *PaymentService) markRefundOk(ctx context.Context, p *RefundPlan) (*Refu
 		fs = OrderStatusPartiallyRefunded
 	}
 	now := time.Now()
-	_, err := s.entClient.PaymentOrder.UpdateOneID(p.OrderID).SetStatus(fs).SetRefundAmount(p.RefundAmount).SetRefundReason(p.Reason).SetRefundAt(now).SetForceRefund(p.Force).Save(ctx)
+	tx, err := s.entClient.Tx(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin refund finalization tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	txCtx := dbent.NewTxContext(ctx, tx)
+	_, err = tx.Client().PaymentOrder.UpdateOneID(p.OrderID).SetStatus(fs).SetRefundAmount(p.RefundAmount).SetRefundReason(p.Reason).SetRefundAt(now).SetForceRefund(p.Force).Save(txCtx)
 	if err != nil {
 		return nil, fmt.Errorf("mark refund: %w", err)
 	}
-	s.writeAuditLog(ctx, p.OrderID, "REFUND_SUCCESS", "admin", map[string]any{"refundAmount": p.RefundAmount, "reason": p.Reason, "balanceDeducted": p.BalanceToDeduct, "force": p.Force})
+	var reversal AffiliateRewardReversalResult
+	if s.affiliateService != nil {
+		reversal, err = s.affiliateService.ReverseOrderRewards(txCtx, p.OrderID, p.RefundAmount, p.Order.Amount)
+		if err != nil {
+			return nil, fmt.Errorf("reverse affiliate rewards: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit refund finalization: %w", err)
+	}
+	if reversal.InviterUserID > 0 {
+		s.affiliateService.invalidateAffiliateCaches(ctx, reversal.InviterUserID)
+	}
+	if reversal.InviteeUserID > 0 {
+		s.affiliateService.invalidateAffiliateCaches(ctx, reversal.InviteeUserID)
+	}
+	s.writeAuditLog(ctx, p.OrderID, "REFUND_SUCCESS", "admin", map[string]any{
+		"refundAmount":                  p.RefundAmount,
+		"reason":                        p.Reason,
+		"balanceDeducted":               p.BalanceToDeduct,
+		"force":                         p.Force,
+		"affiliateRebateReversed":       reversal.InviterRebateReversed,
+		"affiliateInviteeBonusReversed": reversal.InviteeBonusReversed,
+	})
 	return &RefundResult{Success: true, BalanceDeducted: p.BalanceToDeduct, SubDaysDeducted: p.SubDaysToDeduct}, nil
 }
 

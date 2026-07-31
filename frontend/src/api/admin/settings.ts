@@ -619,6 +619,14 @@ export interface SystemSettings {
 
   // Affiliate (邀请返利) feature switch
   affiliate_enabled: boolean;
+  affiliate_growth_mode: "legacy" | "tiered_v1" | string;
+  affiliate_tier_window_days: number;
+  affiliate_tier_rules: Array<{
+    min_effective_invitees: number;
+    rate_percent: number;
+  }>;
+  affiliate_invitee_first_payment_bonus_rate: number;
+  affiliate_effective_payment_min_amount: number;
 
   // Account Management V2 UX rollout flag (opt-in)
   use_new_account_management_ux: boolean;
@@ -651,6 +659,14 @@ export interface UpdateSettingsRequest {
   affiliate_rebate_freeze_hours?: number;
   affiliate_rebate_duration_days?: number;
   affiliate_rebate_per_invitee_cap?: number;
+  affiliate_growth_mode?: "legacy" | "tiered_v1" | string;
+  affiliate_tier_window_days?: number;
+  affiliate_tier_rules?: Array<{
+    min_effective_invitees: number;
+    rate_percent: number;
+  }>;
+  affiliate_invitee_first_payment_bonus_rate?: number;
+  affiliate_effective_payment_min_amount?: number;
   default_concurrency?: number;
   default_user_rpm_limit?: number;
   default_subscriptions?: DefaultSubscriptionSetting[];

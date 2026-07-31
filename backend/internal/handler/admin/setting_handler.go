@@ -235,6 +235,11 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		AffiliateRebateFreezeHours:             settings.AffiliateRebateFreezeHours,
 		AffiliateRebateDurationDays:            settings.AffiliateRebateDurationDays,
 		AffiliateRebatePerInviteeCap:           settings.AffiliateRebatePerInviteeCap,
+		AffiliateGrowthMode:                    settings.AffiliateGrowthMode,
+		AffiliateTierWindowDays:                settings.AffiliateTierWindowDays,
+		AffiliateTierRules:                     settings.AffiliateTierRules,
+		AffiliateInviteeBonusRate:              settings.AffiliateInviteeBonusRate,
+		AffiliateEffectivePaymentMin:           settings.AffiliateEffectivePaymentMin,
 		DefaultUserRPMLimit:                    settings.DefaultUserRPMLimit,
 		DefaultSubscriptions:                   defaultSubscriptions,
 		EnableModelFallback:                    settings.EnableModelFallback,
@@ -527,6 +532,11 @@ type UpdateSettingsRequest struct {
 	AffiliateRebateFreezeHours                *int                              `json:"affiliate_rebate_freeze_hours"`
 	AffiliateRebateDurationDays               *int                              `json:"affiliate_rebate_duration_days"`
 	AffiliateRebatePerInviteeCap              *float64                          `json:"affiliate_rebate_per_invitee_cap"`
+	AffiliateGrowthMode                       *service.AffiliateGrowthMode      `json:"affiliate_growth_mode"`
+	AffiliateTierWindowDays                   *int                              `json:"affiliate_tier_window_days"`
+	AffiliateTierRules                        *[]service.AffiliateTierRule      `json:"affiliate_tier_rules"`
+	AffiliateInviteeBonusRate                 *float64                          `json:"affiliate_invitee_first_payment_bonus_rate"`
+	AffiliateEffectivePaymentMin              *float64                          `json:"affiliate_effective_payment_min_amount"`
 	DefaultUserRPMLimit                       int                               `json:"default_user_rpm_limit"`
 	DefaultSubscriptions                      []dto.DefaultSubscriptionSetting  `json:"default_subscriptions"`
 	AuthSourceDefaultEmailBalance             *float64                          `json:"auth_source_default_email_balance"`
@@ -749,6 +759,26 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	}
 	if affiliateRebatePerInviteeCap < 0 {
 		affiliateRebatePerInviteeCap = service.AffiliateRebatePerInviteeCapDefault
+	}
+	affiliateGrowthMode := previousSettings.AffiliateGrowthMode
+	if req.AffiliateGrowthMode != nil {
+		affiliateGrowthMode = service.AffiliateGrowthMode(strings.TrimSpace(string(*req.AffiliateGrowthMode)))
+	}
+	affiliateTierWindowDays := previousSettings.AffiliateTierWindowDays
+	if req.AffiliateTierWindowDays != nil {
+		affiliateTierWindowDays = *req.AffiliateTierWindowDays
+	}
+	affiliateTierRules := previousSettings.AffiliateTierRules
+	if req.AffiliateTierRules != nil {
+		affiliateTierRules = append([]service.AffiliateTierRule(nil), (*req.AffiliateTierRules)...)
+	}
+	affiliateInviteeBonusRate := previousSettings.AffiliateInviteeBonusRate
+	if req.AffiliateInviteeBonusRate != nil {
+		affiliateInviteeBonusRate = *req.AffiliateInviteeBonusRate
+	}
+	affiliateEffectivePaymentMin := previousSettings.AffiliateEffectivePaymentMin
+	if req.AffiliateEffectivePaymentMin != nil {
+		affiliateEffectivePaymentMin = *req.AffiliateEffectivePaymentMin
 	}
 	// 通用表格配置：兼容旧客户端未传字段时保留当前值。
 	if req.TableDefaultPageSize <= 0 {
@@ -1610,6 +1640,11 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		AffiliateRebateFreezeHours:             affiliateRebateFreezeHours,
 		AffiliateRebateDurationDays:            affiliateRebateDurationDays,
 		AffiliateRebatePerInviteeCap:           affiliateRebatePerInviteeCap,
+		AffiliateGrowthMode:                    affiliateGrowthMode,
+		AffiliateTierWindowDays:                affiliateTierWindowDays,
+		AffiliateTierRules:                     affiliateTierRules,
+		AffiliateInviteeBonusRate:              affiliateInviteeBonusRate,
+		AffiliateEffectivePaymentMin:           affiliateEffectivePaymentMin,
 		DefaultUserRPMLimit:                    req.DefaultUserRPMLimit,
 		DefaultSubscriptions:                   defaultSubscriptions,
 		EnableModelFallback:                    req.EnableModelFallback,
@@ -2078,6 +2113,11 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		AffiliateRebateFreezeHours:             updatedSettings.AffiliateRebateFreezeHours,
 		AffiliateRebateDurationDays:            updatedSettings.AffiliateRebateDurationDays,
 		AffiliateRebatePerInviteeCap:           updatedSettings.AffiliateRebatePerInviteeCap,
+		AffiliateGrowthMode:                    updatedSettings.AffiliateGrowthMode,
+		AffiliateTierWindowDays:                updatedSettings.AffiliateTierWindowDays,
+		AffiliateTierRules:                     updatedSettings.AffiliateTierRules,
+		AffiliateInviteeBonusRate:              updatedSettings.AffiliateInviteeBonusRate,
+		AffiliateEffectivePaymentMin:           updatedSettings.AffiliateEffectivePaymentMin,
 		DefaultUserRPMLimit:                    updatedSettings.DefaultUserRPMLimit,
 		DefaultSubscriptions:                   updatedDefaultSubscriptions,
 		EnableModelFallback:                    updatedSettings.EnableModelFallback,
@@ -2493,6 +2533,21 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.AffiliateRebatePerInviteeCap != after.AffiliateRebatePerInviteeCap {
 		changed = append(changed, "affiliate_rebate_per_invitee_cap")
 	}
+	if before.AffiliateGrowthMode != after.AffiliateGrowthMode {
+		changed = append(changed, "affiliate_growth_mode")
+	}
+	if before.AffiliateTierWindowDays != after.AffiliateTierWindowDays {
+		changed = append(changed, "affiliate_tier_window_days")
+	}
+	if !equalAffiliateTierRules(before.AffiliateTierRules, after.AffiliateTierRules) {
+		changed = append(changed, "affiliate_tier_rules")
+	}
+	if before.AffiliateInviteeBonusRate != after.AffiliateInviteeBonusRate {
+		changed = append(changed, "affiliate_invitee_first_payment_bonus_rate")
+	}
+	if before.AffiliateEffectivePaymentMin != after.AffiliateEffectivePaymentMin {
+		changed = append(changed, "affiliate_effective_payment_min_amount")
+	}
 	if !equalDefaultSubscriptions(before.DefaultSubscriptions, after.DefaultSubscriptions) {
 		changed = append(changed, "default_subscriptions")
 	}
@@ -2848,6 +2903,18 @@ func equalDefaultSubscriptions(a, b []service.DefaultSubscriptionSetting) bool {
 	}
 	for i := range a {
 		if a[i].GroupID != b[i].GroupID || a[i].ValidityDays != b[i].ValidityDays {
+			return false
+		}
+	}
+	return true
+}
+
+func equalAffiliateTierRules(a, b []service.AffiliateTierRule) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].MinEffectiveInvitees != b[i].MinEffectiveInvitees || a[i].RatePercent != b[i].RatePercent {
 			return false
 		}
 	}

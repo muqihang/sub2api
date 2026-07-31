@@ -146,6 +146,9 @@ deploy/docker-compose.override.yml
 .gocache/
 vite.config.js
 docs/*
+!docs/affiliate/
+docs/affiliate/*
+!docs/affiliate/2026-07-31-referral-growth-implementation-plan.md
 !docs/superpowers/
 docs/superpowers/*
 !docs/superpowers/plans/
