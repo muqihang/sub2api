@@ -20,6 +20,14 @@ func BuildVideosGenerationsURL(baseURL string) (string, error) {
 	return buildValidatedEndpointURL(baseURL, "/videos/generations")
 }
 
+func BuildVideosEditsURL(baseURL string) (string, error) {
+	return buildValidatedEndpointURL(baseURL, "/videos/edits")
+}
+
+func BuildVideosExtensionsURL(baseURL string) (string, error) {
+	return buildValidatedEndpointURL(baseURL, "/videos/extensions")
+}
+
 func BuildVideoURL(baseURL, requestID string) (string, error) {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
