@@ -1,6 +1,9 @@
 package service
 
 import (
+	"bufio"
+	"errors"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -180,11 +183,17 @@ func (w *openAICompactKeepaliveWriter) suspend() {
 
 func (w *openAICompactKeepaliveWriter) Header() http.Header {
 	w.suspend()
+	if w.ResponseWriter == nil {
+		return http.Header{}
+	}
 	return w.ResponseWriter.Header()
 }
 
 func (w *openAICompactKeepaliveWriter) Write(data []byte) (int, error) {
 	w.suspend()
+	if w.ResponseWriter == nil {
+		return 0, nil
+	}
 	return w.ResponseWriter.Write(data)
 }
 
@@ -195,17 +204,49 @@ func (w *openAICompactKeepaliveWriter) WriteString(value string) (int, error) {
 
 func (w *openAICompactKeepaliveWriter) WriteHeader(code int) {
 	w.suspend()
+	if w.ResponseWriter == nil {
+		return
+	}
 	w.ResponseWriter.WriteHeader(code)
 }
 
 func (w *openAICompactKeepaliveWriter) WriteHeaderNow() {
 	w.suspend()
+	if w.ResponseWriter == nil {
+		return
+	}
 	w.ResponseWriter.WriteHeaderNow()
 }
 
 func (w *openAICompactKeepaliveWriter) Flush() {
 	w.suspend()
+	if w.ResponseWriter == nil {
+		return
+	}
 	w.ResponseWriter.Flush()
+}
+
+func (w *openAICompactKeepaliveWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if w.ResponseWriter == nil {
+		return nil, nil, errors.New("response writer released")
+	}
+	return w.ResponseWriter.Hijack()
+}
+
+func (w *openAICompactKeepaliveWriter) CloseNotify() <-chan bool {
+	if w.ResponseWriter == nil {
+		ch := make(chan bool)
+		close(ch)
+		return ch
+	}
+	return w.ResponseWriter.CloseNotify()
+}
+
+func (w *openAICompactKeepaliveWriter) Pusher() http.Pusher {
+	if w.ResponseWriter == nil {
+		return nil
+	}
+	return w.ResponseWriter.Pusher()
 }
 
 func (w *openAICompactKeepaliveWriter) Status() int {

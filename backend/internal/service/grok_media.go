@@ -356,7 +356,7 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(ctx context.Context, c *gin.Cont
 	}
 	upstreamReq.Header.Set("Authorization", "Bearer "+token)
 	upstreamReq.Header.Set("Accept", "application/json")
-	upstreamReq.Header.Set("User-Agent", "sub2api-grok/1.0")
+	applyGrokCLIHeaders(upstreamReq.Header)
 	if endpoint.RequiresRequestBody() {
 		if strings.TrimSpace(contentType) == "" {
 			contentType = "application/json"
@@ -582,6 +582,9 @@ func extractGrokMediaVideoRequestID(body []byte) string {
 
 func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, requestIDHeader string, requestedModel string) (*OpenAIForwardResult, error) {
 	body := s.readUpstreamErrorBody(resp)
+	// Reconcile readiness before configurable passthrough branches can return;
+	// otherwise a Grok 429 can remain schedulable.
+	s.handleGrokAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
 	upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(body)))
 	if upstreamMsg == "" {
 		upstreamMsg = fmt.Sprintf("xAI upstream returned status %d", resp.StatusCode)

@@ -52,6 +52,13 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 
 	clientStream := responsesReq.Stream
 	serviceTier := extractOpenAIServiceTierFromBody(body)
+	// custom 工具（如 codex 的 exec）降级为 function 工具转发，回程需按名字还原为
+	// custom_tool_call 项，先记下名字集合；tool_search 工具同理，回程还原为
+	// tool_search_call 项；namespace 子工具（如 MCP 工具）摊平转发，回程按映射还原
+	// 为带 namespace 字段的 function_call 项。
+	customTools := apicompat.CustomToolNames(responsesReq.Tools)
+	toolSearch := apicompat.HasToolSearchTool(responsesReq.Tools)
+	namespaceTools := apicompat.NamespaceToolNames(responsesReq.Tools)
 
 	chatReq, err := apicompat.ResponsesToChatCompletionsRequest(&responsesReq)
 	if err != nil {
@@ -188,15 +195,18 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	}
 
 	if clientStream {
-		return s.streamChatCompletionsAsResponses(c, resp, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+		return s.streamChatCompletionsAsResponses(c, resp, originalModel, customTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 	}
-	return s.bufferChatCompletionsAsResponses(c, resp, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+	return s.bufferChatCompletionsAsResponses(c, resp, originalModel, customTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 }
 
 func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 	c *gin.Context,
 	resp *http.Response,
 	originalModel string,
+	customTools map[string]bool,
+	toolSearch bool,
+	namespaceTools map[string]apicompat.NamespacedToolName,
 	billingModel string,
 	upstreamModel string,
 	reasoningEffort *string,
@@ -256,6 +266,9 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	c *gin.Context,
 	resp *http.Response,
 	originalModel string,
+	customTools map[string]bool,
+	toolSearch bool,
+	namespaceTools map[string]apicompat.NamespacedToolName,
 	billingModel string,
 	upstreamModel string,
 	reasoningEffort *string,

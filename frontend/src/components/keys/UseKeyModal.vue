@@ -265,6 +265,8 @@ const defaultClientTab = computed(() => {
   switch (props.platform) {
     case 'openai':
       return 'codex'
+    case 'grok':
+      return 'grok'
     case 'gemini':
       return 'gemini'
     case 'antigravity':
@@ -379,6 +381,11 @@ const clientTabs = computed((): TabConfig[] => {
         { id: 'gemini', label: t('keys.useKeyModal.cliTabs.geminiCli'), icon: SparkleIcon },
         { id: 'opencode', label: t('keys.useKeyModal.cliTabs.opencode'), icon: TerminalIcon }
       ]
+    case 'grok':
+      return [
+        { id: 'grok', label: t('keys.useKeyModal.cliTabs.grokCli'), icon: TerminalIcon },
+        { id: 'opencode', label: t('keys.useKeyModal.cliTabs.opencode'), icon: TerminalIcon }
+      ]
     default:
       return [
         { id: 'claude', label: t('keys.useKeyModal.cliTabs.claudeCode'), icon: TerminalIcon },
@@ -411,7 +418,7 @@ const showZhumengAgentPanel = computed(() =>
 
 const currentTabs = computed(() => {
   if (!showShellTabs.value) return []
-  if (activeClientTab.value === 'codex' || activeClientTab.value === 'codex-ws') {
+  if (activeClientTab.value === 'codex' || activeClientTab.value === 'codex-ws' || activeClientTab.value === 'grok') {
     return openaiTabs
   }
   return shellTabs
@@ -429,6 +436,8 @@ const platformDescription = computed(() => {
       return t('keys.useKeyModal.gemini.description')
     case 'antigravity':
       return t('keys.useKeyModal.antigravity.description')
+    case 'grok':
+      return t('keys.useKeyModal.grok.description')
     default:
       return t('keys.useKeyModal.description')
   }
@@ -449,6 +458,10 @@ const platformNote = computed(() => {
       return activeClientTab.value === 'claude'
         ? t('keys.useKeyModal.antigravity.claudeNote')
         : t('keys.useKeyModal.antigravity.geminiNote')
+    case 'grok':
+      return activeTab.value === 'windows'
+        ? t('keys.useKeyModal.grok.noteWindows')
+        : t('keys.useKeyModal.grok.note')
     default:
       return t('keys.useKeyModal.note')
   }
@@ -534,6 +547,8 @@ const currentFiles = computed((): FileConfig[] => {
           generateOpenCodeConfig('antigravity-claude', antigravityBase, apiKey, 'opencode.json (Claude)'),
           generateOpenCodeConfig('antigravity-gemini', antigravityGeminiBase, apiKey, 'opencode.json (Gemini)')
         ]
+      case 'grok':
+        return [generateOpenCodeConfig('grok', apiBase, apiKey)]
       default:
         return [generateOpenCodeConfig('openai', apiBase, apiKey)]
     }
@@ -555,6 +570,8 @@ const currentFiles = computed((): FileConfig[] => {
         return [generateGeminiCliContent(`${baseUrl}/antigravity`, apiKey)]
       }
       return generateAnthropicFiles(`${baseUrl}/antigravity`, apiKey)
+    case 'grok':
+      return generateGrokFiles(apiBase, apiKey)
     default:
       return generateAnthropicFiles(baseUrl, apiKey)
   }
@@ -1221,6 +1238,24 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
       }
     }
   }
+  const grokModels = {
+    'grok-4.5': {
+      name: 'Grok 4.5',
+      limit: { context: 1000000, output: 128000 }
+    },
+    'grok-4.3': {
+      name: 'Grok 4.3',
+      limit: { context: 1000000, output: 128000 }
+    },
+    'grok-build-0.1': {
+      name: 'Grok Build 0.1',
+      limit: { context: 256000, output: 128000 }
+    },
+    'grok-composer-2.5-fast': {
+      name: 'Grok Composer 2.5 Fast',
+      limit: { context: 500000, output: 128000 }
+    }
+  }
 
   if (platform === 'gemini') {
     provider[platform].npm = '@ai-sdk/google'
@@ -1237,6 +1272,10 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
     provider[platform].models = antigravityGeminiModels
   } else if (platform === 'openai') {
     provider[platform].models = openaiModels
+  } else if (platform === 'grok') {
+    provider[platform].npm = '@ai-sdk/openai'
+    provider[platform].name = 'Grok via Sub2API'
+    provider[platform].models = grokModels
   }
 
   const agent =

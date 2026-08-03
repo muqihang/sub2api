@@ -79,6 +79,12 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	// 2. Resolve model mapping (same as ForwardAsChatCompletions)
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	grokCacheIdentity := ""
+	if account.Platform == PlatformGrok {
+		// Resolve before image bridging or other body rewrites so the fallback is
+		// anchored to the client's stable conversation prefix.
+		grokCacheIdentity = resolveGrokCacheIdentity(c, body, "", upstreamModel)
+	}
 	reasoningEffort := extractOpenAIReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
 	reasoningEffort = ApplyChineseThinkingEffortFallback(reasoningEffort, body, upstreamModel)
 
@@ -132,6 +138,12 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		upstreamBody, usageErr = ensureOpenAIChatStreamUsage(upstreamBody)
 		if usageErr != nil {
 			return nil, fmt.Errorf("enable stream usage: %w", usageErr)
+		}
+	}
+	if account.Platform == PlatformGrok {
+		upstreamBody, err = stripGrokChatPromptCacheKey(upstreamBody)
+		if err != nil {
+			return nil, fmt.Errorf("remove Responses-only Grok prompt cache key: %w", err)
 		}
 	}
 
@@ -195,6 +207,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 			}
 		}
 	}
+	SetActualOpenAIUpstreamEndpoint(c, grokChatRawEndpoint)
 	customUA := account.GetOpenAIUserAgent()
 	if account.Platform == PlatformGrok {
 		upstreamReq.Header.Set("user-agent", "sub2api-grok/1.0")
@@ -273,6 +286,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	}
 	if result != nil {
 		addOpenAIUsage(&result.Usage, bridgeUsage)
+		result.UpstreamEndpoint = grokChatRawEndpoint
 	}
 	return result, forwardErr
 }
