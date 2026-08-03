@@ -211,9 +211,10 @@
           default-sort-key="name"
           default-sort-order="asc"
           :sort-storage-key="ACCOUNT_SORT_STORAGE_KEY"
-          :estimate-row-height="72"
+          :estimate-row-height="156"
           :overscan="5"
           density="compact"
+          :virtualize-threshold="50"
         >
           <template #header-select>
             <input

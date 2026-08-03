@@ -27,6 +27,17 @@ func (h *OpenAIGatewayHandler) GrokVideoGeneration(c *gin.Context) {
 	h.handleGrokMedia(c, service.GrokMediaEndpointVideosGenerations, "")
 }
 
+// GrokVideoEdit handles asynchronous xAI video edits through Grok groups.
+func (h *OpenAIGatewayHandler) GrokVideoEdit(c *gin.Context) {
+	h.handleGrokMedia(c, service.GrokMediaEndpointVideosEdits, "")
+}
+
+// GrokVideoExtension handles asynchronous xAI video extensions through Grok groups.
+func (h *OpenAIGatewayHandler) GrokVideoExtension(c *gin.Context) {
+	h.handleGrokMedia(c, service.GrokMediaEndpointVideosExtensions, "")
+}
+
+// GrokVideoStatus handles xAI video status retrieval through Grok groups.
 func (h *OpenAIGatewayHandler) GrokVideoStatus(c *gin.Context) {
 	h.handleGrokMedia(c, service.GrokMediaEndpointVideoStatus, c.Param("request_id"))
 }
@@ -182,6 +193,15 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 					reqLog.Error("grok.media.record_usage_failed", zap.Error(err))
 				}
 			})
+			if endpoint.IsGenerationRequest() && strings.TrimSpace(result.ResponseID) != "" {
+				if err := h.gatewayService.BindGrokMediaVideoRequestAccount(requestCtx, apiKey.GroupID, result.ResponseID, account.ID); err != nil {
+					reqLog.Warn("grok_media.bind_video_request_account_failed",
+						zap.Int64("account_id", account.ID),
+						zap.String("request_id", result.ResponseID),
+						zap.Error(err),
+					)
+				}
+			}
 		}
 		return
 	}

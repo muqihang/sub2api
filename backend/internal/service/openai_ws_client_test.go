@@ -294,3 +294,7 @@ func TestShouldUseGorillaOpenAIWSDialer(t *testing.T) {
 	headers.Set("chatgpt-account-id", "acct_123")
 	require.True(t, shouldUseGorillaOpenAIWSDialer(headers))
 }
+
+func TestCoderOpenAIWSClientConn_DoesNotSupportIdlePingWithoutReader(t *testing.T) {
+	require.False(t, (&coderOpenAIWSClientConn{}).SupportsIdlePingWithoutReader())
+}

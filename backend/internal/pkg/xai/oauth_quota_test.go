@@ -90,6 +90,15 @@ func TestBuildAuthorizationURLAndXAIURLValidation(t *testing.T) {
 	require.Equal(t, DefaultCLIBaseURL+"/chat/completions", cliURL)
 }
 
+func TestValidateBaseURLAllowsPublicThirdPartyGrokAPI(t *testing.T) {
+	baseURL, err := ValidateBaseURL("https://grok.example.test/v1/")
+	require.NoError(t, err)
+	require.Equal(t, "https://grok.example.test/v1", baseURL)
+
+	_, err = ValidateTrustedBaseURL("https://grok.example.test/v1")
+	require.Error(t, err)
+}
+
 func TestRuntimeSanityRedactsUnsafeOverrideDetails(t *testing.T) {
 	t.Setenv(EnvBaseURL, "http://127.0.0.1:8080/v1?access_token=secret")
 	t.Setenv(EnvAuthorizeURL, "https://auth.example.test/oauth2/authorize")

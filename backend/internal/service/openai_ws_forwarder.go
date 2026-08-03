@@ -65,6 +65,13 @@ var openAIWSLogValueReplacer = strings.NewReplacer(
 
 var openAIWSIngressPreflightPingIdle = 20 * time.Second
 
+func (s *OpenAIGatewayService) openAIWSIngressInterTurnIdleTimeout() time.Duration {
+	if s == nil || s.cfg == nil || s.cfg.Gateway.OpenAIWS.IngressInterTurnIdleTimeoutSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(s.cfg.Gateway.OpenAIWS.IngressInterTurnIdleTimeoutSeconds) * time.Second
+}
+
 // openAIWSFallbackError 表示可安全回退到 HTTP 的 WS 错误（尚未写下游）。
 type openAIWSFallbackError struct {
 	Reason string
@@ -3052,8 +3059,23 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 
 	readClientMessage := func() ([]byte, error) {
-		msgType, payload, readErr := clientConn.Read(ctx)
+		readCtx := ctx
+		idleTimeout := s.openAIWSIngressInterTurnIdleTimeout()
+		cancelRead := func() {}
+		if idleTimeout > 0 {
+			readCtx, cancelRead = context.WithTimeout(ctx, idleTimeout)
+		}
+		msgType, payload, readErr := clientConn.Read(readCtx)
+		cancelRead()
 		if readErr != nil {
+			if idleTimeout > 0 && errors.Is(readErr, context.DeadlineExceeded) && ctx.Err() == nil {
+				logOpenAIWSModeInfo("ingress_ws_inter_turn_idle_timeout account_id=%d timeout_seconds=%d", account.ID, int(idleTimeout.Seconds()))
+				return nil, NewOpenAIWSClientCloseError(
+					coderws.StatusNormalClosure,
+					"websocket idle timeout",
+					readErr,
+				)
+			}
 			return nil, readErr
 		}
 		if msgType != coderws.MessageText && msgType != coderws.MessageBinary {
@@ -4059,7 +4081,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				unpinSessionConn(sessionConnID)
 			}
 		}
-		shouldPreflightPing := turn > 1 && sessionLease != nil && turnRetry == 0
+		shouldPreflightPing := turn > 1 && sessionLease != nil && sessionLease.SupportsIdlePingWithoutReader() && turnRetry == 0
 		if shouldPreflightPing && openAIWSIngressPreflightPingIdle > 0 && !lastTurnFinishedAt.IsZero() {
 			if time.Since(lastTurnFinishedAt) < openAIWSIngressPreflightPingIdle {
 				shouldPreflightPing = false

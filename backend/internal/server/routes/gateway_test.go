@@ -743,6 +743,27 @@ func TestGatewayRoutesOpenAIImagesPathsAreRegistered(t *testing.T) {
 func TestGatewayRoutesLegacyAugmentEndpointsAreRegistered(t *testing.T) {
 	router := newGatewayRoutesTestRouter()
 
+	for _, path := range []string{
+		"/v1/images/generations",
+		"/v1/images/edits",
+		"/images/generations",
+		"/images/edits",
+		"/v1/videos/generations",
+		"/videos/generations",
+		"/v1/videos/edits",
+		"/videos/edits",
+		"/v1/videos/extensions",
+		"/videos/extensions",
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"grok-imagine","prompt":"draw a cat"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should hit Grok media handler", path)
+		require.NotContains(t, w.Body.String(), "not supported for this platform")
+	}
+
 	tests := []struct {
 		method string
 		path   string
@@ -789,6 +810,14 @@ func TestGatewayRoutesOrdinaryPathsDoNotTouchAugmentGateway(t *testing.T) {
 		{method: http.MethodPost, path: "/v1/messages", body: `{"model":"claude-sonnet-4-5","messages":[]}`},
 		{method: http.MethodGet, path: "/v1beta/models", body: ""},
 		{method: http.MethodPost, path: "/backend-api/codex/responses", body: `{"model":"gpt-5","input":"title"}`},
+		{method: http.MethodPost, path: "/v1/videos/generations", body: `{"model":"grok-imagine-video-1.5","prompt":"waves"}`},
+		{method: http.MethodPost, path: "/videos/generations", body: `{"model":"grok-imagine-video-1.5","prompt":"waves"}`},
+		{method: http.MethodPost, path: "/v1/videos/edits", body: `{"model":"grok-imagine-video","prompt":"waves","video":{"url":"https://example.com/in.mp4"}}`},
+		{method: http.MethodPost, path: "/videos/edits", body: `{"model":"grok-imagine-video","prompt":"waves","video":{"url":"https://example.com/in.mp4"}}`},
+		{method: http.MethodPost, path: "/v1/videos/extensions", body: `{"model":"grok-imagine-video","prompt":"waves","video":{"url":"https://example.com/in.mp4"}}`},
+		{method: http.MethodPost, path: "/videos/extensions", body: `{"model":"grok-imagine-video","prompt":"waves","video":{"url":"https://example.com/in.mp4"}}`},
+		{method: http.MethodGet, path: "/v1/videos/request-123", body: ""},
+		{method: http.MethodGet, path: "/videos/request-123", body: ""},
 	}
 
 	for _, tc := range tests {

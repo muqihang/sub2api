@@ -190,7 +190,7 @@ func RuntimeSanity() RuntimeSanityReport {
 		UnsafeURLOverrides:    AllowUnsafeURLOverrides(),
 		UnsafeHighConcurrency: AllowUnsafeHighConcurrency(),
 		PublicGatewayScope:    "responses_only",
-		ProxyPolicy:           "account_proxy_optional; upstream URL allowlists enforced unless unsafe overrides are enabled",
+		ProxyPolicy:           "account_proxy_optional; OAuth URLs use trusted-host allowlists; API-key base URLs require public HTTPS unless unsafe overrides are enabled",
 	}
 }
 
@@ -253,6 +253,19 @@ func ValidateOAuthEndpointURL(raw string) (string, error) {
 func ValidateBaseURL(raw string) (string, error) {
 	if AllowUnsafeURLOverrides() {
 		return normalizeKnownBaseURLPathFromFormat(raw)
+	}
+	normalized, err := urlvalidator.ValidateHTTPSURL(raw, urlvalidator.ValidationOptions{
+		AllowPrivate: false,
+	})
+	if err != nil {
+		return "", err
+	}
+	return normalizeKnownBaseURLPath(normalized)
+}
+
+func ValidateTrustedBaseURL(raw string) (string, error) {
+	if AllowUnsafeURLOverrides() {
+		return urlvalidator.ValidateURLFormat(raw, true)
 	}
 	normalized, err := urlvalidator.ValidateHTTPSURL(raw, urlvalidator.ValidationOptions{
 		AllowedHosts:     baseURLAllowedHosts,
@@ -442,6 +455,58 @@ func BuildChatCompletionsURL(baseURL string) (string, error) {
 		return "", fmt.Errorf("invalid base url: %w", err)
 	}
 	return validatedBaseURL + "/chat/completions", nil
+}
+
+func BuildImagesGenerationsURL(baseURL string) (string, error) {
+	validatedBaseURL, err := ValidatedBaseURL(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid base url: %w", err)
+	}
+	return validatedBaseURL + "/images/generations", nil
+}
+
+func BuildImagesEditsURL(baseURL string) (string, error) {
+	validatedBaseURL, err := ValidatedBaseURL(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid base url: %w", err)
+	}
+	return validatedBaseURL + "/images/edits", nil
+}
+
+func BuildVideosGenerationsURL(baseURL string) (string, error) {
+	validatedBaseURL, err := ValidatedBaseURL(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid base url: %w", err)
+	}
+	return validatedBaseURL + "/videos/generations", nil
+}
+
+func BuildVideosEditsURL(baseURL string) (string, error) {
+	validatedBaseURL, err := ValidatedBaseURL(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid base url: %w", err)
+	}
+	return validatedBaseURL + "/videos/edits", nil
+}
+
+func BuildVideosExtensionsURL(baseURL string) (string, error) {
+	validatedBaseURL, err := ValidatedBaseURL(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid base url: %w", err)
+	}
+	return validatedBaseURL + "/videos/extensions", nil
+}
+
+func BuildVideoURL(baseURL, requestID string) (string, error) {
+	validatedBaseURL, err := ValidatedBaseURL(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid base url: %w", err)
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return "", fmt.Errorf("request id is required")
+	}
+	return validatedBaseURL + "/videos/" + url.PathEscape(requestID), nil
 }
 
 // TokenResponse represents xAI OAuth token responses.
