@@ -2750,7 +2750,8 @@ func (s *ContentModerationService) RecordCyberPolicyEvent(ctx context.Context, i
 	}
 	errBody := strings.TrimSpace(in.UpstreamMessage)
 	if b := strings.TrimSpace(in.UpstreamBody); b != "" {
-		// 原始 body 不在此预脱敏；写入 log.Error 前由 redactContentModerationSecrets 统一脱敏。
+		// Gateway provides a structured cyber evidence summary; retain the
+		// existing redaction as a defense-in-depth storage boundary.
 		errBody = strings.TrimSpace(errBody + "\n" + b)
 	}
 	if in.UpstreamInTok > 0 || in.UpstreamOutTok > 0 {

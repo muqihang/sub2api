@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -15,9 +15,10 @@ import (
 )
 
 const (
-	grokQuotaUpstreamTimeout = 20 * time.Second
-	grokQuotaProbeInput      = "."
-	grokQuotaDefaultModel    = "grok-4.3"
+	grokQuotaSnapshotExtraKey = "grok_usage_snapshot"
+	grokQuotaUpstreamTimeout  = 20 * time.Second
+	grokQuotaProbeInput       = "."
+	grokQuotaDefaultModel     = "grok-4.3"
 )
 
 type GrokQuotaProbeResult struct {
@@ -43,18 +44,8 @@ type GrokQuotaService struct {
 	httpUpstream  HTTPUpstream
 }
 
-func NewGrokQuotaService(
-	accountRepo AccountRepository,
-	proxyRepo ProxyRepository,
-	tokenProvider *GrokTokenProvider,
-	httpUpstream HTTPUpstream,
-) *GrokQuotaService {
-	return &GrokQuotaService{
-		accountRepo:   accountRepo,
-		proxyRepo:     proxyRepo,
-		tokenProvider: tokenProvider,
-		httpUpstream:  httpUpstream,
-	}
+func NewGrokQuotaService(accountRepo AccountRepository, proxyRepo ProxyRepository, tokenProvider *GrokTokenProvider, httpUpstream HTTPUpstream) *GrokQuotaService {
+	return &GrokQuotaService{accountRepo: accountRepo, proxyRepo: proxyRepo, tokenProvider: tokenProvider, httpUpstream: httpUpstream}
 }
 
 func (s *GrokQuotaService) ProbeUsage(ctx context.Context, accountID int64) (*GrokQuotaProbeResult, error) {
@@ -62,7 +53,6 @@ func (s *GrokQuotaService) ProbeUsage(ctx context.Context, accountID int64) (*Gr
 	if err != nil {
 		return nil, err
 	}
-
 	probeModel := grokQuotaProbeModel()
 	body, err := buildGrokQuotaProbeBody(probeModel)
 	if err != nil {
@@ -88,30 +78,22 @@ func (s *GrokQuotaService) ProbeUsage(ctx context.Context, accountID int64) (*Gr
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadGateway, "GROK_QUOTA_PROBE_REQUEST_FAILED", "upstream probe failed: %v", err)
 	}
+	if resp == nil {
+		return nil, infraerrors.New(http.StatusBadGateway, "GROK_QUOTA_PROBE_REQUEST_FAILED", "upstream probe returned empty response")
+	}
 	defer func() { _ = resp.Body.Close() }()
 
 	snapshot := xai.ObserveQuotaHeaders(resp.Header, resp.StatusCode, "active_probe")
-	_ = s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{
-		grokQuotaSnapshotExtraKey: snapshot,
-	})
+	_ = s.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{grokQuotaSnapshotExtraKey: snapshot})
 
-	result := &GrokQuotaProbeResult{
-		Source:          "active_probe",
-		Model:           probeModel,
-		Snapshot:        snapshot,
-		StatusCode:      resp.StatusCode,
-		HeadersObserved: snapshot.HeadersObserved,
-		ResetSupported:  false,
-		FetchedAt:       time.Now().Unix(),
-	}
+	result := &GrokQuotaProbeResult{Source: "active_probe", Model: probeModel, Snapshot: snapshot, StatusCode: resp.StatusCode, HeadersObserved: snapshot != nil && snapshot.HeadersObserved, ResetSupported: false, FetchedAt: time.Now().Unix()}
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return result, nil
 	}
 	if resp.StatusCode >= 400 {
-		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 240))
-		bodyText := truncate(strings.TrimSpace(string(bodyBytes)), 240)
-		slog.Warn("grok_quota_probe_failed", "account_id", account.ID, "model", probeModel, "status", resp.StatusCode, "body", bodyText)
-		return nil, infraerrors.Newf(mapUpstreamStatus(resp.StatusCode), "GROK_QUOTA_PROBE_UPSTREAM_ERROR", "upstream returned %d for probe model %q: %s", resp.StatusCode, probeModel, bodyText)
+		// Drain a bounded amount so keep-alives are reusable, but never expose raw body in logs/errors.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+		return nil, infraerrors.Newf(mapUpstreamStatusCode(resp.StatusCode), "GROK_QUOTA_PROBE_UPSTREAM_ERROR", "upstream returned status %d", resp.StatusCode)
 	}
 	return result, nil
 }
@@ -131,7 +113,6 @@ func (s *GrokQuotaService) prepareProbe(ctx context.Context, accountID int64) (*
 	if err != nil {
 		return nil, "", "", err
 	}
-
 	token, err := s.tokenProvider.GetAccessToken(ctx, account)
 	if err != nil {
 		return nil, "", "", infraerrors.Newf(http.StatusBadGateway, "GROK_QUOTA_TOKEN_UNAVAILABLE", "failed to acquire access token: %v", err)
@@ -139,7 +120,6 @@ func (s *GrokQuotaService) prepareProbe(ctx context.Context, accountID int64) (*
 	if strings.TrimSpace(token) == "" {
 		return nil, "", "", infraerrors.New(http.StatusBadGateway, "GROK_QUOTA_TOKEN_UNAVAILABLE", "access token is empty")
 	}
-
 	return account, token, s.resolveProxyURL(ctx, account), nil
 }
 
@@ -147,10 +127,10 @@ func (s *GrokQuotaService) resolveProxyURL(ctx context.Context, account *Account
 	if account == nil || account.ProxyID == nil {
 		return ""
 	}
-	switch {
-	case account.Proxy != nil:
+	if account.Proxy != nil {
 		return account.Proxy.URL()
-	case s != nil && s.proxyRepo != nil:
+	}
+	if s != nil && s.proxyRepo != nil {
 		if proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID); err == nil && proxy != nil {
 			return proxy.URL()
 		}
@@ -187,12 +167,43 @@ func buildGrokQuotaProbeBody(model string) ([]byte, error) {
 	if model == "" {
 		model = grokQuotaDefaultModel
 	}
-	return json.Marshal(map[string]any{
-		"model":             model,
-		"input":             grokQuotaProbeInput,
-		"max_output_tokens": 1,
-		"store":             false,
-	})
+	return json.Marshal(map[string]any{"model": model, "input": grokQuotaProbeInput, "max_output_tokens": 1, "store": false})
+}
+
+func grokQuotaSnapshotFromExtra(extra map[string]any) (*xai.QuotaSnapshot, error) {
+	if extra == nil {
+		return nil, nil
+	}
+	raw, ok := extra[grokQuotaSnapshotExtraKey]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	switch snapshot := raw.(type) {
+	case *xai.QuotaSnapshot:
+		return snapshot, nil
+	case xai.QuotaSnapshot:
+		return &snapshot, nil
+	case map[string]any:
+		data, err := json.Marshal(snapshot)
+		if err != nil {
+			return nil, err
+		}
+		var out xai.QuotaSnapshot
+		if err := json.Unmarshal(data, &out); err != nil {
+			return nil, err
+		}
+		return &out, nil
+	default:
+		data, err := json.Marshal(raw)
+		if err != nil {
+			return nil, fmt.Errorf("marshal grok quota snapshot: %w", err)
+		}
+		var out xai.QuotaSnapshot
+		if err := json.Unmarshal(data, &out); err != nil {
+			return nil, err
+		}
+		return &out, nil
+	}
 }
 
 func maxInt(a, b int) int {

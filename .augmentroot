@@ -1,0 +1,2 @@
+# Force Augment workspace indexing to treat this git worktree as the source root.
+# Required because the parent repository ignores .worktrees/.

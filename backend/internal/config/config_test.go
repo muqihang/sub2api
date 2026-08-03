@@ -81,6 +81,175 @@ func TestLoadDefaultSchedulingConfig(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultCCGatewayConfig(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	require.False(t, cfg.Gateway.CCGateway.Enabled)
+	require.Equal(t, "", cfg.Gateway.CCGateway.BaseURL)
+	require.Equal(t, "", cfg.Gateway.CCGateway.Token)
+	require.Equal(t, "", cfg.Gateway.CCGateway.InternalControlToken)
+	require.Equal(t, "", cfg.Gateway.CCGateway.ContextAttestationSecret)
+	require.Equal(t, "", cfg.Gateway.CCGateway.StickySessionHMACKey)
+	require.Equal(t, "", cfg.Gateway.CCGateway.ClaudePlatformAWSWorkspaceBindingHMACKey)
+	require.Equal(t, 600, cfg.Gateway.CCGateway.TimeoutSeconds)
+	require.Equal(t, "default", cfg.Gateway.CCGateway.DefaultEgressBucket)
+	require.False(t, cfg.Gateway.CCGateway.Providers.Anthropic)
+	require.False(t, cfg.Gateway.CCGateway.Providers.Antigravity)
+}
+
+func TestLoadCCGatewayConfigFromEnv(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_CC_GATEWAY_ENABLED", "true")
+	t.Setenv("GATEWAY_CC_GATEWAY_BASE_URL", "http://cc-gateway:8443")
+	t.Setenv("GATEWAY_CC_GATEWAY_TOKEN", "ccg-token")
+	t.Setenv("GATEWAY_CC_GATEWAY_INTERNAL_CONTROL_TOKEN", "internal-control-material-test")
+	t.Setenv("GATEWAY_CC_GATEWAY_CONTEXT_ATTESTATION_SECRET", "formal-pool-attestation-secret-test")
+	t.Setenv("GATEWAY_CC_GATEWAY_STICKY_SESSION_HMAC_KEY", "workspace-ref-material-test")
+	t.Setenv("GATEWAY_CC_GATEWAY_CLAUDE_PLATFORM_AWS_WORKSPACE_BINDING_HMAC_KEY", "workspace-binding-material-test")
+	t.Setenv("GATEWAY_CC_GATEWAY_TIMEOUT_SECONDS", "30")
+	t.Setenv("GATEWAY_CC_GATEWAY_DEFAULT_EGRESS_BUCKET", "bucket-a")
+	t.Setenv("GATEWAY_CC_GATEWAY_PROVIDERS_ANTHROPIC", "true")
+	t.Setenv("GATEWAY_CC_GATEWAY_PROVIDERS_ANTIGRAVITY", "true")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	require.True(t, cfg.Gateway.CCGateway.Enabled)
+	require.Equal(t, "http://cc-gateway:8443", cfg.Gateway.CCGateway.BaseURL)
+	require.Equal(t, "ccg-token", cfg.Gateway.CCGateway.Token)
+	require.Equal(t, "internal-control-material-test", cfg.Gateway.CCGateway.InternalControlToken)
+	require.Equal(t, "formal-pool-attestation-secret-test", cfg.Gateway.CCGateway.ContextAttestationSecret)
+	require.Equal(t, "workspace-ref-material-test", cfg.Gateway.CCGateway.StickySessionHMACKey)
+	require.Equal(t, "workspace-binding-material-test", cfg.Gateway.CCGateway.ClaudePlatformAWSWorkspaceBindingHMACKey)
+	require.Equal(t, 30, cfg.Gateway.CCGateway.TimeoutSeconds)
+	require.Equal(t, "bucket-a", cfg.Gateway.CCGateway.DefaultEgressBucket)
+	require.True(t, cfg.Gateway.CCGateway.Providers.Anthropic)
+	require.True(t, cfg.Gateway.CCGateway.Providers.Antigravity)
+}
+
+func TestLoadRejectsCCGatewayWithoutIndependentInternalControlToken(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_CC_GATEWAY_ENABLED", "true")
+	t.Setenv("GATEWAY_CC_GATEWAY_BASE_URL", "http://cc-gateway:8443")
+	t.Setenv("GATEWAY_CC_GATEWAY_TOKEN", "ccg-token")
+	t.Setenv("GATEWAY_CC_GATEWAY_CONTEXT_ATTESTATION_SECRET", "formal-pool-attestation-secret-test")
+	t.Setenv("GATEWAY_CC_GATEWAY_DEFAULT_EGRESS_BUCKET", "bucket-a")
+	t.Setenv("GATEWAY_CC_GATEWAY_PROVIDERS_ANTHROPIC", "true")
+
+	_, err := Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.cc_gateway.internal_control_token")
+
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_CC_GATEWAY_ENABLED", "true")
+	t.Setenv("GATEWAY_CC_GATEWAY_BASE_URL", "http://cc-gateway:8443")
+	t.Setenv("GATEWAY_CC_GATEWAY_TOKEN", "same-secret")
+	t.Setenv("GATEWAY_CC_GATEWAY_INTERNAL_CONTROL_TOKEN", "same-secret")
+	t.Setenv("GATEWAY_CC_GATEWAY_CONTEXT_ATTESTATION_SECRET", "formal-pool-attestation-secret-test")
+	t.Setenv("GATEWAY_CC_GATEWAY_DEFAULT_EGRESS_BUCKET", "bucket-a")
+	t.Setenv("GATEWAY_CC_GATEWAY_PROVIDERS_ANTHROPIC", "true")
+
+	_, err = Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "internal_control_token must be independent")
+}
+
+func TestLoadRejectsCCGatewayWithoutIndependentContextAttestationSecret(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_CC_GATEWAY_ENABLED", "true")
+	t.Setenv("GATEWAY_CC_GATEWAY_BASE_URL", "http://cc-gateway:8443")
+	t.Setenv("GATEWAY_CC_GATEWAY_TOKEN", "ccg-token")
+	t.Setenv("GATEWAY_CC_GATEWAY_INTERNAL_CONTROL_TOKEN", "internal-control-material-test")
+	t.Setenv("GATEWAY_CC_GATEWAY_DEFAULT_EGRESS_BUCKET", "bucket-a")
+	t.Setenv("GATEWAY_CC_GATEWAY_PROVIDERS_ANTHROPIC", "true")
+
+	_, err := Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.cc_gateway.context_attestation_secret")
+
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_CC_GATEWAY_ENABLED", "true")
+	t.Setenv("GATEWAY_CC_GATEWAY_BASE_URL", "http://cc-gateway:8443")
+	t.Setenv("GATEWAY_CC_GATEWAY_TOKEN", "same-secret")
+	t.Setenv("GATEWAY_CC_GATEWAY_INTERNAL_CONTROL_TOKEN", "internal-control-material-test")
+	t.Setenv("GATEWAY_CC_GATEWAY_CONTEXT_ATTESTATION_SECRET", "same-secret")
+	t.Setenv("GATEWAY_CC_GATEWAY_DEFAULT_EGRESS_BUCKET", "bucket-a")
+	t.Setenv("GATEWAY_CC_GATEWAY_PROVIDERS_ANTHROPIC", "true")
+
+	_, err = Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must be independent")
+
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_CC_GATEWAY_ENABLED", "true")
+	t.Setenv("GATEWAY_CC_GATEWAY_BASE_URL", "http://cc-gateway:8443")
+	t.Setenv("GATEWAY_CC_GATEWAY_TOKEN", "ccg-token")
+	t.Setenv("GATEWAY_CC_GATEWAY_INTERNAL_CONTROL_TOKEN", "same-secret")
+	t.Setenv("GATEWAY_CC_GATEWAY_CONTEXT_ATTESTATION_SECRET", "same-secret")
+	t.Setenv("GATEWAY_CC_GATEWAY_DEFAULT_EGRESS_BUCKET", "bucket-a")
+	t.Setenv("GATEWAY_CC_GATEWAY_PROVIDERS_ANTHROPIC", "true")
+
+	_, err = Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "context_attestation_secret must be independent")
+}
+
+func TestLoadRejectsCCGatewayWithoutIndependentClaudePlatformAWSAuthorityKeys(t *testing.T) {
+	base := func() {
+		resetViperWithJWTSecret(t)
+		t.Setenv("GATEWAY_CC_GATEWAY_ENABLED", "true")
+		t.Setenv("GATEWAY_CC_GATEWAY_BASE_URL", "http://cc-gateway:8443")
+		t.Setenv("GATEWAY_CC_GATEWAY_TOKEN", "ccg-token")
+		t.Setenv("GATEWAY_CC_GATEWAY_INTERNAL_CONTROL_TOKEN", "internal-control-material-test")
+		t.Setenv("GATEWAY_CC_GATEWAY_CONTEXT_ATTESTATION_SECRET", "formal-pool-attestation-secret-test")
+		t.Setenv("GATEWAY_CC_GATEWAY_STICKY_SESSION_HMAC_KEY", "")
+		t.Setenv("GATEWAY_CC_GATEWAY_CLAUDE_PLATFORM_AWS_WORKSPACE_BINDING_HMAC_KEY", "")
+		t.Setenv("GATEWAY_CC_GATEWAY_TIMEOUT_SECONDS", "30")
+		t.Setenv("GATEWAY_CC_GATEWAY_DEFAULT_EGRESS_BUCKET", "bucket-a")
+		t.Setenv("GATEWAY_CC_GATEWAY_PROVIDERS_ANTHROPIC", "true")
+	}
+
+	base()
+	_, err := Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "sticky_session_hmac_key")
+
+	base()
+	t.Setenv("GATEWAY_CC_GATEWAY_STICKY_SESSION_HMAC_KEY", "formal-pool-attestation-secret-test")
+	t.Setenv("GATEWAY_CC_GATEWAY_CLAUDE_PLATFORM_AWS_WORKSPACE_BINDING_HMAC_KEY", "workspace-binding-material-test")
+	_, err = Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "sticky_session_hmac_key must be independent")
+
+	base()
+	t.Setenv("GATEWAY_CC_GATEWAY_STICKY_SESSION_HMAC_KEY", "workspace-ref-material-test")
+	_, err = Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "claude_platform_aws_workspace_binding_hmac_key")
+
+	base()
+	t.Setenv("GATEWAY_CC_GATEWAY_STICKY_SESSION_HMAC_KEY", "workspace-ref-material-test")
+	t.Setenv("GATEWAY_CC_GATEWAY_CLAUDE_PLATFORM_AWS_WORKSPACE_BINDING_HMAC_KEY", "workspace-ref-material-test")
+	_, err = Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "claude_platform_aws_workspace_binding_hmac_key must be independent")
+}
+
+func TestLoadRejectsCCGatewayNonHTTPBaseURL(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("GATEWAY_CC_GATEWAY_ENABLED", "true")
+	t.Setenv("GATEWAY_CC_GATEWAY_BASE_URL", "ftp://cc-gateway")
+	t.Setenv("GATEWAY_CC_GATEWAY_TOKEN", "ccg-token")
+	t.Setenv("GATEWAY_CC_GATEWAY_CONTEXT_ATTESTATION_SECRET", "formal-pool-attestation-secret-test")
+
+	_, err := Load()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.cc_gateway.base_url scheme")
+}
+
 func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
@@ -158,6 +327,9 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	if cfg.Gateway.OpenAIWS.RetryBackoffMaxMS != 2000 {
 		t.Fatalf("Gateway.OpenAIWS.RetryBackoffMaxMS = %d, want 2000", cfg.Gateway.OpenAIWS.RetryBackoffMaxMS)
 	}
+	if cfg.Gateway.OpenAIWS.FirstMessageTimeoutSeconds != 90 {
+		t.Fatalf("Gateway.OpenAIWS.FirstMessageTimeoutSeconds = %d, want 90", cfg.Gateway.OpenAIWS.FirstMessageTimeoutSeconds)
+	}
 	if cfg.Gateway.OpenAIWS.RetryJitterRatio != 0.2 {
 		t.Fatalf("Gateway.OpenAIWS.RetryJitterRatio = %v, want 0.2", cfg.Gateway.OpenAIWS.RetryJitterRatio)
 	}
@@ -167,8 +339,14 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	if cfg.Gateway.OpenAIWS.PayloadLogSampleRate != 0.2 {
 		t.Fatalf("Gateway.OpenAIWS.PayloadLogSampleRate = %v, want 0.2", cfg.Gateway.OpenAIWS.PayloadLogSampleRate)
 	}
+	if cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Reset != 0 {
+		t.Fatalf("Gateway.OpenAIWS.SchedulerScoreWeights.Reset = %v, want 0", cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Reset)
+	}
 	if cfg.Gateway.OpenAIWS.SchedulerScoreWeights.QuotaHeadroom != 0 {
 		t.Fatalf("Gateway.OpenAIWS.SchedulerScoreWeights.QuotaHeadroom = %v, want 0", cfg.Gateway.OpenAIWS.SchedulerScoreWeights.QuotaHeadroom)
+	}
+	if cfg.Gateway.Scheduling.PreferSoonestReset {
+		t.Fatalf("Gateway.Scheduling.PreferSoonestReset = true, want false")
 	}
 	if !cfg.Gateway.OpenAIWS.StoreDisabledForceNewConn {
 		t.Fatalf("Gateway.OpenAIWS.StoreDisabledForceNewConn = false, want true")
@@ -184,21 +362,33 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	}
 }
 
-func TestLoadDefaultOpenAICompactModel(t *testing.T) {
+func TestLoadDefaultAugmentGatewayConfig(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
 	cfg, err := Load()
 	require.NoError(t, err)
-	require.Equal(t, "gpt-5.4", cfg.Gateway.OpenAICompactModel)
+	require.True(t, cfg.Gateway.Augment.Enabled)
+	require.Equal(t, []string{
+		"gpt-5.4",
+		"gpt-5.5",
+		"gpt-5.4-mini",
+		"deepseek-v4-pro",
+		"deepseek-v4-flash",
+	}, cfg.Gateway.Augment.EnabledModels)
+	require.NotContains(t, cfg.Gateway.Augment.EnabledModels, "claude-sonnet-4-5")
+	require.NotContains(t, cfg.Gateway.Augment.EnabledModels, "gemini-2.5-pro")
 }
 
-func TestLoadOpenAICompactModelFromEnv(t *testing.T) {
+func TestLoadDefaultCodexGatewayCurrentClaudeModels(t *testing.T) {
 	resetViperWithJWTSecret(t)
-	t.Setenv("GATEWAY_OPENAI_COMPACT_MODEL", "gpt-5.3-codex")
 
 	cfg, err := Load()
 	require.NoError(t, err)
-	require.Equal(t, "gpt-5.3-codex", cfg.Gateway.OpenAICompactModel)
+	require.Contains(t, cfg.Gateway.Codex.EnabledModels, "claude-opus-4-8")
+	require.Contains(t, cfg.Gateway.Codex.EnabledModels, "claude-sonnet-4-6")
+	require.Contains(t, cfg.Gateway.Codex.EnabledModels, "claude-haiku-4-5-20251001")
+	require.NotContains(t, cfg.Gateway.Codex.EnabledModels, "claude-opus-4-7")
+	require.NotContains(t, cfg.Gateway.Codex.EnabledModels, "claude-opus-4-5-20251101")
 }
 
 func TestLoadDefaultOpenAIHTTP2Enabled(t *testing.T) {
@@ -1630,6 +1820,13 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 		require.Equal(t, 7200, cfg.Gateway.OpenAIWS.StickyResponseIDTTLSeconds)
 	})
 
+	t.Run("http_bridge ingress mode is valid", func(t *testing.T) {
+		cfg := buildValid(t)
+		cfg.Gateway.OpenAIWS.IngressModeDefault = "http_bridge"
+
+		require.NoError(t, cfg.Validate())
+	})
+
 	cases := []struct {
 		name    string
 		mutate  func(*Config)
@@ -1673,6 +1870,11 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 			wantErr: "gateway.openai_ws.dial_timeout_seconds",
 		},
 		{
+			name:    "first_message_timeout_seconds 必须为正数",
+			mutate:  func(c *Config) { c.Gateway.OpenAIWS.FirstMessageTimeoutSeconds = 0 },
+			wantErr: "gateway.openai_ws.first_message_timeout_seconds",
+		},
+		{
 			name:    "read_timeout_seconds 必须为正数",
 			mutate:  func(c *Config) { c.Gateway.OpenAIWS.ReadTimeoutSeconds = 0 },
 			wantErr: "gateway.openai_ws.read_timeout_seconds",
@@ -1703,7 +1905,7 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 			wantErr: "gateway.openai_ws.store_disabled_conn_mode",
 		},
 		{
-			name:    "ingress_mode_default 必须为 off|ctx_pool|passthrough|http_bridge",
+			name:    "ingress_mode_default 必须为 off|ctx_pool|passthrough",
 			mutate:  func(c *Config) { c.Gateway.OpenAIWS.IngressModeDefault = "invalid" },
 			wantErr: "gateway.openai_ws.ingress_mode_default",
 		},
@@ -1743,6 +1945,11 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 		{
 			name:    "scheduler_score_weights 不能为负数",
 			mutate:  func(c *Config) { c.Gateway.OpenAIWS.SchedulerScoreWeights.Queue = -0.1 },
+			wantErr: "gateway.openai_ws.scheduler_score_weights.* must be non-negative",
+		},
+		{
+			name:    "scheduler_score_weights reset 不能为负数",
+			mutate:  func(c *Config) { c.Gateway.OpenAIWS.SchedulerScoreWeights.Reset = -0.1 },
 			wantErr: "gateway.openai_ws.scheduler_score_weights.* must be non-negative",
 		},
 		{
@@ -1790,6 +1997,18 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 		})
 	}
 
+	t.Run("reset 可作为唯一有效调度权重", func(t *testing.T) {
+		cfg := buildValid(t)
+		cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Priority = 0
+		cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Load = 0
+		cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Queue = 0
+		cfg.Gateway.OpenAIWS.SchedulerScoreWeights.ErrorRate = 0
+		cfg.Gateway.OpenAIWS.SchedulerScoreWeights.TTFT = 0
+		cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Reset = 0.1
+
+		require.NoError(t, cfg.Validate())
+	})
+
 	t.Run("quota_headroom 可作为唯一有效调度权重", func(t *testing.T) {
 		cfg := buildValid(t)
 		cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Priority = 0
@@ -1801,6 +2020,368 @@ func TestValidateConfig_OpenAIWSRules(t *testing.T) {
 
 		require.NoError(t, cfg.Validate())
 	})
+}
+
+func TestOpenAICoreConfigValidationRejectsDuplicateBuckets(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.EgressBuckets = []OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true},
+		{Name: "default", Enabled: true},
+	}
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.openai_core.egress_buckets[].name duplicate")
+}
+
+func TestOpenAICoreConfigValidationRejectsMissingDefaultBucket(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "missing"
+	cfg.Gateway.OpenAICore.EgressBuckets = []OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true},
+	}
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.openai_core.default_egress_bucket must reference an existing egress bucket")
+}
+
+func TestOpenAICoreConfigValidationRejectsInvalidProxyURL(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.EgressBuckets = []OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true, ProxyURL: "file:///tmp/proxy.sock"},
+	}
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.openai_core.egress_buckets[default].proxy_url")
+}
+
+func TestOpenAICoreConfigValidationNormalizesSocks5Proxy(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.EgressBuckets = []OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true, ProxyURL: "socks5://127.0.0.1:9001"},
+	}
+
+	require.NoError(t, cfg.Validate())
+	require.Equal(t, "socks5h://127.0.0.1:9001", cfg.Gateway.OpenAICore.EgressBuckets[0].ProxyURL)
+}
+
+func TestOpenAICoreRolloutFlagsDefaultOff(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	require.False(t, cfg.Gateway.OpenAICore.TLSBinding.Enabled)
+	require.False(t, cfg.Gateway.OpenAICore.EntityOrchestration.Enabled)
+	require.False(t, cfg.Gateway.OpenAICore.EntityProfileOverride.Enabled)
+}
+
+func TestOpenAICoreBucketTLSValidationRejectsNoEffectivePolicy(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.EgressBuckets = []OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: OpenAIGatewayBucketTLSConfig{
+				Enabled: true,
+			},
+		},
+	}
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.openai_core.egress_buckets[default].tls requires profile_id or allow_default_fallback or allow_plain_fallback")
+}
+
+func TestOpenAICoreBucketTLSValidationSkipsDisabledBuckets(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.DefaultEgressBucket = "default"
+	cfg.Gateway.OpenAICore.EgressBuckets = []OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: OpenAIGatewayBucketTLSConfig{
+				Enabled:              true,
+				AllowDefaultFallback: true,
+			},
+		},
+		{
+			Name:    "disabled",
+			Enabled: false,
+			TLS: OpenAIGatewayBucketTLSConfig{
+				Enabled: true,
+			},
+		},
+	}
+
+	require.NoError(t, cfg.Validate())
+}
+
+func TestOpenAICoreBucketTLSValidationRejectsNonPositiveProfileID(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.EgressBuckets = []OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: OpenAIGatewayBucketTLSConfig{
+				Enabled:   true,
+				ProfileID: -1,
+			},
+		},
+	}
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.openai_core.egress_buckets[default].tls.profile_id must be positive")
+}
+
+func TestOpenAICoreProductionRejectsImplicitPlainTLSWhenBindingEnabled(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.ProductionMode = true
+	cfg.Gateway.OpenAICore.EgressFailClosed = true
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	cfg.Gateway.OpenAICore.RequireEncryptedCredentials = true
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("11", 32)
+	cfg.Gateway.OpenAICore.OAuthSessionStore = "redis"
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.EgressBuckets = []OpenAIGatewayEgressBucketConfig{
+		{Name: "default", Enabled: true},
+	}
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.openai_core.production_mode requires tls policy for egress bucket default when tls_binding.enabled=true")
+}
+
+func TestOpenAICoreProductionRejectsPlainTLSFallback(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.ProductionMode = true
+	cfg.Gateway.OpenAICore.EgressFailClosed = true
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	cfg.Gateway.OpenAICore.RequireEncryptedCredentials = true
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("11", 32)
+	cfg.Gateway.OpenAICore.OAuthSessionStore = "redis"
+	cfg.Gateway.OpenAICore.TLSBinding.Enabled = true
+	cfg.Gateway.OpenAICore.EgressBuckets = []OpenAIGatewayEgressBucketConfig{
+		{
+			Name:    "default",
+			Enabled: true,
+			TLS: OpenAIGatewayBucketTLSConfig{
+				Enabled:            true,
+				AllowPlainFallback: true,
+			},
+		},
+	}
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.openai_core.production_mode rejects tls.allow_plain_fallback for egress bucket default")
+}
+
+func TestOpenAICoreProductionRejectsDirectFallback(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.ProductionMode = true
+	cfg.Gateway.OpenAICore.EgressFailClosed = false
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = true
+	cfg.Gateway.OpenAICore.AllowDirectFallback = true
+	cfg.Gateway.OpenAICore.RequireEncryptedCredentials = true
+	cfg.Gateway.OpenAICore.OAuthSessionStore = "redis"
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.openai_core.production_mode requires egress_fail_closed=true")
+}
+
+func TestOpenAICoreProductionRequiresCredentialGate(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.ProductionMode = true
+	cfg.Gateway.OpenAICore.EgressFailClosed = true
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	cfg.Gateway.OpenAICore.RequireEncryptedCredentials = false
+	cfg.Gateway.OpenAICore.OAuthSessionStore = "redis"
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.openai_core.production_mode requires require_encrypted_credentials=true")
+}
+
+func TestOpenAICoreProductionRequiresOAuthSessionMode(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.ProductionMode = true
+	cfg.Gateway.OpenAICore.EgressFailClosed = true
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	cfg.Gateway.OpenAICore.RequireEncryptedCredentials = true
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("11", 32)
+	cfg.Gateway.OpenAICore.OAuthSessionStore = "memory"
+	cfg.Gateway.OpenAICore.OAuthCallbackStickySingleInstance = false
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gateway.openai_core.production_mode requires oauth_session_store!=memory or oauth_callback_sticky_single_instance=true")
+}
+
+func TestGeminiProductionRejectsPlaintextTokenCache(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gemini.ProductionMode = true
+	cfg.Gemini.RequireSafeOAuthSessionStore = true
+	cfg.Gemini.RequireThoughtSignatureSessionSafety = true
+	cfg.Gemini.AllowProjectIDFallbackToAIStudio = false
+	cfg.Gemini.AllowUnauthorizedClientRetryFallback = false
+	cfg.Gemini.TokenCacheMode = "plaintext"
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gemini.production_mode rejects token_cache_mode=plaintext")
+}
+
+func TestGeminiProductionRequiresSafeSessionTopology(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gemini.ProductionMode = true
+	cfg.Gemini.RequireSafeOAuthSessionStore = false
+	cfg.Gemini.RequireThoughtSignatureSessionSafety = true
+	cfg.Gemini.AllowProjectIDFallbackToAIStudio = false
+	cfg.Gemini.AllowUnauthorizedClientRetryFallback = false
+	cfg.Gemini.TokenCacheMode = "encrypted"
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("11", 32)
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gemini.production_mode requires safe OAuth session topology")
+}
+
+func TestGeminiProductionRejectsCompatFallbacks(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gemini.ProductionMode = true
+	cfg.Gemini.RequireSafeOAuthSessionStore = true
+	cfg.Gemini.RequireThoughtSignatureSessionSafety = true
+	cfg.Gemini.AllowProjectIDFallbackToAIStudio = true
+	cfg.Gemini.AllowUnauthorizedClientRetryFallback = false
+	cfg.Gemini.TokenCacheMode = "encrypted"
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("11", 32)
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gemini.production_mode requires allow_project_id_fallback_to_ai_studio=false")
+
+	cfg.Gemini.AllowProjectIDFallbackToAIStudio = false
+	cfg.Gemini.AllowUnauthorizedClientRetryFallback = true
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gemini.production_mode requires allow_unauthorized_client_retry_fallback=false")
+}
+
+func TestGeminiProductionRequiresCredentialEncryptionKey(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gemini.ProductionMode = true
+	cfg.Gemini.RequireSafeOAuthSessionStore = true
+	cfg.Gemini.RequireThoughtSignatureSessionSafety = true
+	cfg.Gemini.AllowProjectIDFallbackToAIStudio = false
+	cfg.Gemini.AllowUnauthorizedClientRetryFallback = false
+	cfg.Gemini.TokenCacheMode = "encrypted"
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = ""
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gemini.production_mode requires gateway.openai_core.credential_encryption_key to be configured")
+}
+
+func TestGeminiConfigRejectsInvalidTokenCacheMode(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gemini.TokenCacheMode = "legacy"
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "gemini.token_cache_mode must be one of: plaintext/disabled/encrypted")
+}
+
+func TestOpenAICoreProductionRequiresCredentialEncryptionKey(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.ProductionMode = true
+	cfg.Gateway.OpenAICore.EgressFailClosed = true
+	cfg.Gateway.OpenAICore.AllowAccountProxyFallback = false
+	cfg.Gateway.OpenAICore.AllowDirectFallback = false
+	cfg.Gateway.OpenAICore.RequireEncryptedCredentials = true
+	cfg.Gateway.OpenAICore.OAuthSessionStore = "redis"
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = ""
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "credential_encryption_key")
+}
+
+func TestOpenAICoreRejectsInvalidCredentialEncryptionKeyLength(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.OpenAICore.CredentialEncryptionKey = strings.Repeat("11", 31)
+
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "credential_encryption_key must decode to 32 bytes")
 }
 
 func TestValidateConfig_AutoScaleDisabledIgnoreAutoScaleFields(t *testing.T) {
@@ -1982,4 +2563,25 @@ func TestLoad_DefaultGatewayImageStreamConfig(t *testing.T) {
 	if cfg.Gateway.ImageStreamDataIntervalTimeout <= cfg.Gateway.StreamDataIntervalTimeout {
 		t.Fatalf("image stream timeout = %d, want greater than ordinary stream timeout %d", cfg.Gateway.ImageStreamDataIntervalTimeout, cfg.Gateway.StreamDataIntervalTimeout)
 	}
+}
+
+func TestLoadDefaultFormalPoolRuntimeConfig(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	require.Equal(t, 5*time.Minute, cfg.FormalPool.NonceTTL)
+	require.Empty(t, cfg.FormalPool.PublicOrigin)
+	require.Empty(t, cfg.FormalPool.EgressMatchCIDRWhitelist)
+	require.Equal(t, 60*time.Second, cfg.FormalPool.ProxyEgressCacheSuccessTTL)
+	require.Equal(t, 15*time.Second, cfg.FormalPool.ProxyEgressCacheFailureTTL)
+	require.Equal(t, 3*time.Second, cfg.FormalPool.ProxyEgressProbeTimeout)
+	require.Equal(t, 10, cfg.FormalPool.PublicRouteRatePerNonce)
+	require.Equal(t, 30, cfg.FormalPool.PublicRouteRatePerIP)
+	require.Equal(t, 20, cfg.FormalPool.PublicRouteTotalPerNonce)
+	require.Equal(t, 3, cfg.FormalPool.PublicRouteFallbackPerIP)
+	require.Equal(t, 80*time.Millisecond, cfg.FormalPool.PublicRouteConstantDelayMin)
+	require.Equal(t, 150*time.Millisecond, cfg.FormalPool.PublicRouteConstantDelayMax)
+	require.Empty(t, cfg.FormalPool.RateLimitHMACSecret)
 }

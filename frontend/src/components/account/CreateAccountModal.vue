@@ -54,6 +54,7 @@
           class="input"
           :placeholder="t('admin.accounts.enterAccountName')"
           data-tour="account-form-name"
+          data-testid="account-name-input"
         />
       </div>
       <div>
@@ -70,7 +71,7 @@
       <!-- Platform Selection - Segmented Control Style -->
       <div>
         <label class="input-label">{{ t('admin.accounts.platform') }}</label>
-        <div class="mt-2 flex flex-wrap rounded-lg bg-gray-100 p-1 dark:bg-dark-700" data-tour="account-form-platform">
+        <div class="mt-2 flex rounded-lg bg-gray-100 p-1 dark:bg-dark-700" data-tour="account-form-platform">
           <button
             type="button"
             @click="form.platform = 'anthropic'"
@@ -147,29 +148,17 @@
             <Icon name="cloud" size="sm" />
             Antigravity
           </button>
-          <button
-            type="button"
-            @click="form.platform = 'grok'"
-            :class="[
-              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
-              form.platform === 'grok'
-                ? 'bg-white text-zinc-900 shadow-sm dark:bg-dark-600 dark:text-zinc-100'
-                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
-            ]"
-          >
-            <PlatformIcon platform="grok" size="sm" />
-            Grok
-          </button>
         </div>
       </div>
 
       <!-- Account Type Selection (Anthropic) -->
       <div v-if="form.platform === 'anthropic'">
         <label class="input-label">{{ t('admin.accounts.accountType') }}</label>
-        <div class="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-4" data-tour="account-form-type">
+        <div class="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-5" data-tour="account-form-type">
           <button
             type="button"
             @click="accountCategory = 'oauth-based'"
+            data-testid="account-type-oauth-based"
             :class="[
               'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
               accountCategory === 'oauth-based'
@@ -200,6 +189,7 @@
           <button
             type="button"
             @click="accountCategory = 'apikey'"
+            data-testid="account-type-apikey"
             :class="[
               'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
               accountCategory === 'apikey'
@@ -230,6 +220,7 @@
           <button
             type="button"
             @click="accountCategory = 'bedrock'"
+            data-testid="account-type-bedrock"
             :class="[
               'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
               accountCategory === 'bedrock'
@@ -259,7 +250,45 @@
 
           <button
             type="button"
+            @click="accountCategory = 'claude-platform-aws'"
+            data-testid="account-type-claude-platform-aws"
+            :class="[
+              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
+              accountCategory === 'claude-platform-aws'
+                ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/20'
+                : 'border-gray-200 hover:border-indigo-300 dark:border-dark-600 dark:hover:border-indigo-700'
+            ]"
+          >
+            <div
+              :class="[
+                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                accountCategory === 'claude-platform-aws'
+                  ? 'bg-indigo-500 text-white'
+                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
+              ]"
+            >
+              <Icon name="cloud" size="sm" />
+            </div>
+            <div>
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">{{
+                t('admin.accounts.claudePlatformAWS.label')
+              }}</span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">{{
+                t('admin.accounts.claudePlatformAWS.desc')
+              }}</span>
+              <span
+                data-testid="claude-platform-aws-card-gate-badge"
+                class="mt-1 inline-flex rounded bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+              >
+                {{ t('admin.accounts.claudePlatformAWS.authProfileGate.cardBadge') }}
+              </span>
+            </div>
+          </button>
+
+          <button
+            type="button"
             @click="accountCategory = 'service_account'"
+            data-testid="account-type-service-account"
             :class="[
               'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
               accountCategory === 'service_account'
@@ -350,41 +379,6 @@
           </button>
 
         </div>
-      </div>
-
-      <!-- Account Type Selection (Grok - OAuth only) -->
-      <div v-if="form.platform === 'grok'">
-        <label class="input-label">{{ t('admin.accounts.accountType') }}</label>
-        <div class="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2" data-tour="account-form-type">
-          <button
-            type="button"
-            @click="accountCategory = 'oauth-based'"
-            :class="[
-              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
-              accountCategory === 'oauth-based'
-                ? 'border-zinc-800 bg-zinc-50 dark:bg-zinc-900/30'
-                : 'border-gray-200 hover:border-zinc-400 dark:border-dark-600 dark:hover:border-zinc-600'
-            ]"
-          >
-            <div
-              :class="[
-                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
-                accountCategory === 'oauth-based'
-                  ? 'bg-zinc-900 text-white'
-                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
-              ]"
-            >
-              <PlatformIcon platform="grok" size="sm" />
-            </div>
-            <div>
-              <span class="block text-sm font-medium text-gray-900 dark:text-white">OAuth</span>
-              <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.accounts.types.grokOauth') }}</span>
-            </div>
-          </button>
-        </div>
-        <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
-          {{ t('admin.accounts.oauth.grok.oauthOnlyHint') }}
-        </p>
       </div>
 
       <!-- Account Type Selection (Gemini) -->
@@ -1468,7 +1462,6 @@
           </div>
         </div>
 
-        <!-- Header Override Section (anthropic/openai apikey only) -->
         <div
           v-if="isHeaderOverridePlatform(form.platform)"
           class="border-t border-gray-200 pt-4 dark:border-dark-600"
@@ -1498,13 +1491,9 @@
           </div>
 
           <div v-if="headerOverrideEnabled" class="space-y-3">
-            <div class="rounded-lg bg-blue-50 p-3 dark:bg-blue-900/20">
-              <p class="text-xs text-blue-700 dark:text-blue-400">
-                <Icon name="exclamationCircle" size="sm" class="mr-1 inline" :stroke-width="2" />
-                {{ t('admin.accounts.headerOverride.info') }}
-              </p>
-            </div>
-
+            <p class="rounded-lg bg-blue-50 p-3 text-xs text-blue-700 dark:bg-blue-900/20 dark:text-blue-400">
+              {{ t('admin.accounts.headerOverride.info') }}
+            </p>
             <div v-if="headerOverrideRows.length > 0" class="space-y-2">
               <div
                 v-for="(row, index) in headerOverrideRows"
@@ -1528,44 +1517,24 @@
                   @click="removeHeaderOverrideRow(index)"
                   class="rounded-lg p-2 text-red-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20"
                 >
-                  <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
-                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                    />
-                  </svg>
+                  <Icon name="x" size="sm" :stroke-width="2" />
                 </button>
               </div>
             </div>
-
             <button
               type="button"
               @click="addHeaderOverrideRow"
               class="w-full rounded-lg border-2 border-dashed border-gray-300 px-4 py-2 text-gray-600 transition-colors hover:border-gray-400 hover:text-gray-700 dark:border-dark-500 dark:text-gray-400 dark:hover:border-dark-400 dark:hover:text-gray-300"
             >
-              <svg class="mr-1 inline h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M12 4v16m8-8H4"
-                />
-              </svg>
-              {{ t('admin.accounts.headerOverride.addRow') }}
+              + {{ t('admin.accounts.headerOverride.addRow') }}
             </button>
-
-            <div class="flex flex-wrap gap-2">
-              <button
-                type="button"
-                @click="fillHeaderOverrideTemplate"
-                class="rounded-lg bg-primary-50 px-3 py-1 text-xs text-primary-700 transition-colors hover:bg-primary-100 dark:bg-primary-900/30 dark:text-primary-400 dark:hover:bg-primary-900/50"
-              >
-                + {{ t('admin.accounts.headerOverride.fillTemplate') }}
-              </button>
-            </div>
-
+            <button
+              type="button"
+              @click="fillHeaderOverrideTemplate"
+              class="rounded-lg bg-primary-50 px-3 py-1 text-xs text-primary-700 transition-colors hover:bg-primary-100 dark:bg-primary-900/30 dark:text-primary-400 dark:hover:bg-primary-900/50"
+            >
+              + {{ t('admin.accounts.headerOverride.fillTemplate') }}
+            </button>
             <p class="text-xs text-gray-500 dark:text-gray-400">
               {{ t('admin.accounts.headerOverride.emptyValueHint') }}
             </p>
@@ -1574,8 +1543,132 @@
 
       </div>
 
+      <!-- Claude Platform on AWS batch workspace import -->
+      <div
+        v-if="isClaudePlatformAWSMode"
+        class="space-y-4"
+        data-testid="claude-platform-aws-fields"
+      >
+        <div class="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-800 dark:border-indigo-800/40 dark:bg-indigo-900/20 dark:text-indigo-200">
+          <p>{{ t('admin.accounts.claudePlatformAWS.safetyHint') }}</p>
+        </div>
+
+        <div
+          data-testid="claude-platform-aws-auth-profile-gate"
+          class="rounded-lg border border-amber-300 bg-amber-50 px-3 py-3 text-xs text-amber-900 dark:border-amber-800/50 dark:bg-amber-900/20 dark:text-amber-100"
+        >
+          <p class="font-semibold">{{ t('admin.accounts.claudePlatformAWS.authProfileGate.title') }}</p>
+          <ul class="mt-2 list-disc space-y-1 pl-4">
+            <li>
+              <code class="rounded bg-white/70 px-1 dark:bg-dark-800">x_api_key</code>
+              /
+              <code class="rounded bg-white/70 px-1 dark:bg-dark-800">bearer_api_key</code>
+              {{ t('admin.accounts.claudePlatformAWS.authProfileGate.mutualExclusion') }}
+            </li>
+            <li>
+              <code class="rounded bg-white/70 px-1 dark:bg-dark-800">BLOCKED_AUTH_PROFILE</code>
+              {{ t('admin.accounts.claudePlatformAWS.authProfileGate.cp0Blocked') }}
+              <code class="rounded bg-white/70 px-1 dark:bg-dark-800">anthropic_aws_production_admitted=false</code>
+            </li>
+            <li>
+              {{ t('admin.accounts.claudePlatformAWS.authProfileGate.noSilentFallback') }}
+            </li>
+          </ul>
+        </div>
+
+        <div>
+          <label class="input-label">{{ t('admin.accounts.claudePlatformAWS.apiKeyLabel') }}</label>
+          <input
+            v-model="claudePlatformAWSAPIKey"
+            type="password"
+            required
+            class="input font-mono"
+            :placeholder="t('admin.accounts.claudePlatformAWS.apiKeyPlaceholder')"
+            data-testid="claude-platform-aws-api-key"
+          />
+          <p class="input-hint">{{ t('admin.accounts.claudePlatformAWS.apiKeyHint') }}</p>
+        </div>
+
+        <div>
+          <label class="input-label">{{ t('admin.accounts.claudePlatformAWS.regionLabel') }}</label>
+          <select v-model="claudePlatformAWSRegion" class="input" data-testid="claude-platform-aws-region">
+            <option value="us-east-1">us-east-1</option>
+          </select>
+          <p class="input-hint">
+            {{ t('admin.accounts.claudePlatformAWS.endpointHint', { endpoint: claudePlatformAWSEndpoint }) }}
+          </p>
+        </div>
+
+        <div class="space-y-3">
+          <div class="flex items-center justify-between">
+            <label class="input-label mb-0">{{ t('admin.accounts.claudePlatformAWS.workspacesLabel') }}</label>
+            <button
+              type="button"
+              class="rounded-lg border border-indigo-200 px-3 py-1.5 text-xs font-medium text-indigo-700 transition-colors hover:bg-indigo-50 dark:border-indigo-800/60 dark:text-indigo-300 dark:hover:bg-indigo-900/20"
+              data-testid="claude-platform-aws-add-row"
+              @click="addClaudePlatformAWSRow"
+            >
+              + {{ t('admin.accounts.claudePlatformAWS.addWorkspace') }}
+            </button>
+          </div>
+
+          <div
+            v-for="(row, index) in claudePlatformAWSRows"
+            :key="index"
+            class="rounded-lg border border-gray-200 p-3 dark:border-dark-600"
+            :data-testid="`claude-platform-aws-row-${index}`"
+          >
+            <div class="mb-2 flex items-center justify-between">
+              <span class="text-xs font-medium text-gray-500 dark:text-gray-400">
+                {{ t('admin.accounts.claudePlatformAWS.rowTitle', { index: index + 1 }) }}
+              </span>
+              <button
+                v-if="claudePlatformAWSRows.length > 1"
+                type="button"
+                class="rounded p-1 text-red-500 transition-colors hover:text-red-600"
+                @click="removeClaudePlatformAWSRow(index)"
+              >
+                <Icon name="x" size="sm" :stroke-width="2" />
+              </button>
+            </div>
+
+            <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
+              <div>
+                <label class="input-label">{{ t('admin.accounts.claudePlatformAWS.workspaceLabel') }}</label>
+                <input
+                  v-model="row.workspaceId"
+                  type="password"
+                  required
+                  class="input font-mono"
+                  :placeholder="t('admin.accounts.claudePlatformAWS.workspacePlaceholder')"
+                  :data-testid="`claude-platform-aws-workspace-${index}`"
+                />
+                <p class="input-hint">{{ t('admin.accounts.claudePlatformAWS.workspaceHint') }}</p>
+              </div>
+              <div>
+                <label class="input-label">{{ t('admin.accounts.claudePlatformAWS.proxyLabel') }}</label>
+                <ProxySelector v-model="row.proxyId" :proxies="proxies" />
+                <p class="input-hint">{{ t('admin.accounts.claudePlatformAWS.proxyHint') }}</p>
+              </div>
+            </div>
+
+            <p
+              class="mt-2 text-xs"
+              :class="claudePlatformAWSRowReady(row) ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'"
+              :data-testid="`claude-platform-aws-row-status-${index}`"
+            >
+              {{ t(claudePlatformAWSRowStatusKey(row)) }}
+            </p>
+          </div>
+        </div>
+      </div>
+
       <!-- Bedrock credentials (only for Anthropic Bedrock type) -->
-      <div v-if="form.platform === 'anthropic' && accountCategory === 'bedrock'" class="space-y-4">
+      <div
+        v-if="form.platform === 'anthropic' && accountCategory === 'bedrock'"
+        class="space-y-4"
+        data-testid="bedrock-fields"
+      >
         <!-- Auth Mode Radio -->
         <div>
           <label class="input-label">{{ t('admin.accounts.bedrockAuthMode') }}</label>
@@ -1938,7 +2031,7 @@
 
       <!-- OpenAI OAuth Model Mapping (OAuth 类型没有 apikey 容器，需要独立的模型映射区域) -->
       <div
-        v-if="(form.platform === 'openai' || form.platform === 'grok') && accountCategory === 'oauth-based'"
+        v-if="form.platform === 'openai' && accountCategory === 'oauth-based'"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
@@ -2073,7 +2166,10 @@
       </div>
 
       <!-- Temp Unschedulable Rules -->
-      <div class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4">
+      <div
+        v-if="!isClaudePlatformAWSMode"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600 space-y-4"
+      >
         <div class="mb-3 flex items-center justify-between">
           <div>
             <label class="input-label mb-0">{{ t('admin.accounts.tempUnschedulable.title') }}</label>
@@ -2222,7 +2318,7 @@
 
       <!-- Intercept Warmup Requests (Anthropic/Antigravity) -->
       <div
-        v-if="form.platform === 'anthropic' || form.platform === 'antigravity'"
+        v-if="(form.platform === 'anthropic' || form.platform === 'antigravity') && !isClaudePlatformAWSMode"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
         <div class="flex items-center justify-between">
@@ -2632,7 +2728,7 @@
         </div>
       </div>
 
-      <div>
+      <div v-if="!isClaudePlatformAWSMode">
         <div class="mb-1 flex items-center gap-2">
           <label class="input-label mb-0">{{ t('admin.accounts.proxy') }}</label>
           <ProxyAdBanner />
@@ -2640,13 +2736,18 @@
         <ProxySelector v-model="form.proxy_id" :proxies="proxies" />
       </div>
 
-      <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div
+        :class="[
+          'grid gap-4',
+          isClaudePlatformAWSMode ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-2 lg:grid-cols-4'
+        ]"
+      >
         <div>
           <label class="input-label">{{ t('admin.accounts.concurrency') }}</label>
           <input v-model.number="form.concurrency" type="number" min="1" class="input"
             @input="form.concurrency = Math.max(1, form.concurrency || 1)" />
         </div>
-        <div>
+        <div v-if="!isClaudePlatformAWSMode">
           <label class="input-label">{{ t('admin.accounts.loadFactor') }}</label>
           <input v-model.number="form.load_factor" type="number" min="1"
             class="input" :placeholder="String(form.concurrency || 1)"
@@ -2664,13 +2765,13 @@
           />
           <p class="input-hint">{{ t('admin.accounts.priorityHint') }}</p>
         </div>
-        <div>
+        <div v-if="!isClaudePlatformAWSMode">
           <label class="input-label">{{ t('admin.accounts.billingRateMultiplier') }}</label>
           <input v-model.number="form.rate_multiplier" type="number" min="0" step="0.001" class="input" />
           <p class="input-hint">{{ t('admin.accounts.billingRateMultiplierHint') }}</p>
         </div>
       </div>
-      <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
+      <div v-if="!isClaudePlatformAWSMode" class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <label class="input-label">{{ t('admin.accounts.expiresAt') }}</label>
         <input v-model="expiresAtInput" type="datetime-local" class="input" />
         <p class="input-hint">{{ t('admin.accounts.expiresAtHint') }}</p>
@@ -2768,7 +2869,11 @@
               {{ t('admin.accounts.anthropic.apiKeyAuthSchemeDesc') }}
             </p>
           </div>
-          <select v-model="anthropicAPIKeyAuthScheme" class="input w-52 text-sm">
+          <select
+            v-model="anthropicAPIKeyAuthScheme"
+            class="input w-52 text-sm"
+            data-testid="anthropic-apikey-auth-scheme-select"
+          >
             <option value="x_api_key">{{ t('admin.accounts.anthropic.apiKeyAuthSchemeXApiKey') }}</option>
             <option value="authorization_bearer">{{ t('admin.accounts.anthropic.apiKeyAuthSchemeBearer') }}</option>
           </select>
@@ -2828,23 +2933,23 @@
           class="mt-4 flex items-center justify-between border-l-2 border-gray-200 pl-4 dark:border-dark-600"
         >
           <div>
-            <label class="input-label mb-0">{{ t('admin.accounts.openai.codexCLIOnlyAppServer') }}</label>
+            <label class="input-label mb-0">{{ t('admin.accounts.openai.codexCLIOnlyAllowClaudeCode') }}</label>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              {{ t('admin.accounts.openai.codexCLIOnlyAppServerDesc') }}
+              {{ t('admin.accounts.openai.codexCLIOnlyAllowClaudeCodeDesc') }}
             </p>
           </div>
           <button
             type="button"
-            @click="codexCLIOnlyAppServerEnabled = !codexCLIOnlyAppServerEnabled"
+            @click="codexCLIOnlyAllowClaudeCodeEnabled = !codexCLIOnlyAllowClaudeCodeEnabled"
             :class="[
               'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
-              codexCLIOnlyAppServerEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+              codexCLIOnlyAllowClaudeCodeEnabled ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
             ]"
           >
             <span
               :class="[
                 'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
-                codexCLIOnlyAppServerEnabled ? 'translate-x-5' : 'translate-x-0'
+                codexCLIOnlyAllowClaudeCodeEnabled ? 'translate-x-5' : 'translate-x-0'
               ]"
             />
           </button>
@@ -2940,7 +3045,7 @@
         </div>
       </div>
 
-      <div>
+      <div v-if="!isClaudePlatformAWSMode">
         <div class="flex items-center justify-between">
           <div>
             <label class="input-label mb-0">{{
@@ -3049,10 +3154,10 @@
         :loading="currentOAuthLoading"
         :error="currentOAuthError"
         :show-help="form.platform === 'anthropic'"
-        :show-proxy-warning="form.platform !== 'openai' && form.platform !== 'grok' && !!form.proxy_id"
+        :show-proxy-warning="form.platform !== 'openai' && !!form.proxy_id"
         :allow-multiple="form.platform === 'anthropic'"
         :show-cookie-option="form.platform === 'anthropic'"
-        :show-refresh-token-option="form.platform === 'openai' || form.platform === 'antigravity' || form.platform === 'grok'"
+        :show-refresh-token-option="form.platform === 'openai' || form.platform === 'antigravity'"
         :show-mobile-refresh-token-option="form.platform === 'openai'"
         :show-session-token-option="false"
         :show-access-token-option="false"
@@ -3407,7 +3512,6 @@ import {
 import { useOpenAIOAuth } from '@/composables/useOpenAIOAuth'
 import { useGeminiOAuth } from '@/composables/useGeminiOAuth'
 import { useAntigravityOAuth } from '@/composables/useAntigravityOAuth'
-import { useGrokOAuth } from '@/composables/useGrokOAuth'
 import type {
   Proxy,
   AdminGroup,
@@ -3423,7 +3527,6 @@ import type {
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
-import PlatformIcon from '@/components/common/PlatformIcon.vue'
 import Icon from '@/components/icons/Icon.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import ProxyAdBanner from '@/components/common/ProxyAdBanner.vue'
@@ -3446,7 +3549,6 @@ import {
   OPENAI_WS_MODE_CTX_POOL,
   OPENAI_WS_MODE_OFF,
   OPENAI_WS_MODE_PASSTHROUGH,
-  OPENAI_WS_MODE_HTTP_BRIDGE,
   isOpenAIWSModeEnabled,
   resolveOpenAIWSModeConcurrencyHintKey,
   type OpenAIWSMode
@@ -3475,7 +3577,6 @@ const oauthStepTitle = computed(() => {
   if (form.platform === 'openai') return t('admin.accounts.oauth.openai.title')
   if (form.platform === 'gemini') return t('admin.accounts.oauth.gemini.title')
   if (form.platform === 'antigravity') return t('admin.accounts.oauth.antigravity.title')
-  if (form.platform === 'grok') return t('admin.accounts.oauth.grok.title')
   return t('admin.accounts.oauth.title')
 })
 
@@ -3483,14 +3584,12 @@ const oauthStepTitle = computed(() => {
 const baseUrlHint = computed(() => {
   if (form.platform === 'openai') return t('admin.accounts.openai.baseUrlHint')
   if (form.platform === 'gemini') return t('admin.accounts.gemini.baseUrlHint')
-  if (form.platform === 'grok') return t('admin.accounts.grok.baseUrlHint')
   return t('admin.accounts.baseUrlHint')
 })
 
 const apiKeyHint = computed(() => {
   if (form.platform === 'openai') return t('admin.accounts.openai.apiKeyHint')
   if (form.platform === 'gemini') return t('admin.accounts.gemini.apiKeyHint')
-  if (form.platform === 'grok') return t('admin.accounts.grok.apiKeyHint')
   return t('admin.accounts.apiKeyHint')
 })
 
@@ -3513,14 +3612,12 @@ const oauth = useAccountOAuth() // For Anthropic OAuth
 const openaiOAuth = useOpenAIOAuth() // For OpenAI OAuth
 const geminiOAuth = useGeminiOAuth() // For Gemini OAuth
 const antigravityOAuth = useAntigravityOAuth() // For Antigravity OAuth
-const grokOAuth = useGrokOAuth() // For Grok OAuth
 
 // Computed: current OAuth state for template binding
 const currentAuthUrl = computed(() => {
   if (form.platform === 'openai') return openaiOAuth.authUrl.value
   if (form.platform === 'gemini') return geminiOAuth.authUrl.value
   if (form.platform === 'antigravity') return antigravityOAuth.authUrl.value
-  if (form.platform === 'grok') return grokOAuth.authUrl.value
   return oauth.authUrl.value
 })
 
@@ -3528,7 +3625,6 @@ const currentSessionId = computed(() => {
   if (form.platform === 'openai') return openaiOAuth.sessionId.value
   if (form.platform === 'gemini') return geminiOAuth.sessionId.value
   if (form.platform === 'antigravity') return antigravityOAuth.sessionId.value
-  if (form.platform === 'grok') return grokOAuth.sessionId.value
   return oauth.sessionId.value
 })
 
@@ -3536,7 +3632,6 @@ const currentOAuthLoading = computed(() => {
   if (form.platform === 'openai') return openaiOAuth.loading.value
   if (form.platform === 'gemini') return geminiOAuth.loading.value
   if (form.platform === 'antigravity') return antigravityOAuth.loading.value
-  if (form.platform === 'grok') return grokOAuth.loading.value
   return oauth.loading.value
 })
 
@@ -3544,7 +3639,6 @@ const currentOAuthError = computed(() => {
   if (form.platform === 'openai') return openaiOAuth.error.value
   if (form.platform === 'gemini') return geminiOAuth.error.value
   if (form.platform === 'antigravity') return antigravityOAuth.error.value
-  if (form.platform === 'grok') return grokOAuth.error.value
   return oauth.error.value
 })
 
@@ -3564,10 +3658,15 @@ interface TempUnschedRuleForm {
   description: string
 }
 
+interface ClaudePlatformAWSWorkspaceRow {
+  workspaceId: string
+  proxyId: number | null
+}
+
 // State
 const step = ref(1)
 const submitting = ref(false)
-const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_account'>('oauth-based') // UI selection for account category
+const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_account' | 'claude-platform-aws'>('oauth-based') // UI selection for account category
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
@@ -3632,12 +3731,11 @@ const removeHeaderOverrideRow = (index: number) => {
   headerOverrideRows.value.splice(index, 1)
 }
 
-// 模板按钮：填入标准客户端请求头名称（值留空），跳过已存在的同名行
 const fillHeaderOverrideTemplate = () => {
   const existing = new Set(
-    headerOverrideRows.value.map((row) => row.name.trim().toLowerCase()).filter(Boolean)
+    headerOverrideRows.value.map(row => row.name.trim().toLowerCase()).filter(Boolean)
   )
-  const rows = headerOverrideRows.value.filter((row) => row.name.trim() || row.value.trim())
+  const rows = headerOverrideRows.value.filter(row => row.name.trim() || row.value.trim())
   for (const row of getHeaderOverrideTemplate(form.platform)) {
     if (!existing.has(row.name)) {
       rows.push(row)
@@ -3650,11 +3748,11 @@ const autoPauseOnExpired = ref(true)
 const openaiPassthroughEnabled = ref(false)
 const openAICompactMode = ref<OpenAICompactMode>('auto')
 const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
-const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_completions', 'embeddings'])
+const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_completions', 'embeddings', 'rerank'])
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const codexCLIOnlyEnabled = ref(false)
-const codexCLIOnlyAppServerEnabled = ref(false)
+const codexCLIOnlyAllowClaudeCodeEnabled = ref(false)
 type AnthropicAPIKeyAuthScheme = 'x_api_key' | 'authorization_bearer'
 const anthropicPassthroughEnabled = ref(false)
 const anthropicAPIKeyAuthScheme = ref<AnthropicAPIKeyAuthScheme>('x_api_key')
@@ -3693,6 +3791,12 @@ const bedrockSessionToken = ref('')
 const bedrockRegion = ref('us-east-1')
 const bedrockForceGlobal = ref(false)
 const bedrockApiKeyValue = ref('')
+const claudePlatformAWSAPIKey = ref('')
+const claudePlatformAWSRegion = ref('us-east-1')
+const claudePlatformAWSRows = ref<ClaudePlatformAWSWorkspaceRow[]>([{ workspaceId: '', proxyId: null }])
+const claudePlatformAWSEndpoint = computed(
+  () => `https://aws-external-anthropic.${claudePlatformAWSRegion.value}.api.aws`
+)
 const vertexServiceAccountFileInput = ref<HTMLInputElement | null>(null)
 const vertexServiceAccountJson = ref('')
 const vertexProjectId = ref('')
@@ -3702,7 +3806,8 @@ const vertexServiceAccountDragActive = ref(false)
 const tempUnschedEnabled = ref(false)
 const tempUnschedRules = ref<TempUnschedRuleForm[]>([])
 const getModelMappingKey = createStableObjectKeyResolver<ModelMapping>('create-model-mapping')
-const getHeaderOverrideRowKey = createStableObjectKeyResolver<HeaderOverrideRow>('create-header-override-row')
+const getHeaderOverrideRowKey =
+  createStableObjectKeyResolver<HeaderOverrideRow>('create-header-override-row')
 const getOpenAICompactModelMappingKey = createStableObjectKeyResolver<ModelMapping>('create-openai-compact-model-mapping')
 const getAntigravityModelMappingKey = createStableObjectKeyResolver<ModelMapping>('create-antigravity-model-mapping')
 const getTempUnschedRuleKey = createStableObjectKeyResolver<TempUnschedRuleForm>('create-temp-unsched-rule')
@@ -3729,14 +3834,15 @@ const openAITextEndpointCapabilityLabel = computed(() => {
 })
 const openAIEndpointCapabilityOptions = computed<{ value: OpenAIEndpointCapability; label: string }[]>(() => [
   { value: 'chat_completions', label: openAITextEndpointCapabilityLabel.value },
-  { value: 'embeddings', label: t('admin.accounts.openai.capabilityEmbeddings') }
+  { value: 'embeddings', label: t('admin.accounts.openai.capabilityEmbeddings') },
+  { value: 'rerank', label: t('admin.accounts.openai.capabilityRerank') }
 ])
 const openAITextGenerationCapabilityEnabled = computed(() =>
   openAIEndpointCapabilities.value.includes('chat_completions')
 )
 
 const normalizeOpenAIEndpointCapabilities = (values: OpenAIEndpointCapability[]) => {
-  const allowed: OpenAIEndpointCapability[] = ['chat_completions', 'embeddings']
+  const allowed: OpenAIEndpointCapability[] = ['chat_completions', 'embeddings', 'rerank']
   const selected = allowed.filter((value) => values.includes(value))
   return selected.length > 0 ? selected : allowed
 }
@@ -3764,7 +3870,7 @@ const toggleOpenAIEndpointCapability = (capability: OpenAIEndpointCapability, ev
 
 const applyOpenAIEndpointCapabilities = (credentials: Record<string, unknown>) => {
   const capabilities = normalizeOpenAIEndpointCapabilities(openAIEndpointCapabilities.value)
-  if (capabilities.length === 2) {
+  if (capabilities.length === 3) {
     delete credentials.openai_capabilities
     return
   }
@@ -3838,8 +3944,7 @@ const geminiSelectedTier = computed(() => {
 const openAIWSModeOptions = computed(() => [
   { value: OPENAI_WS_MODE_OFF, label: t('admin.accounts.openai.wsModeOff') },
   { value: OPENAI_WS_MODE_CTX_POOL, label: t('admin.accounts.openai.wsModeCtxPool') },
-  { value: OPENAI_WS_MODE_PASSTHROUGH, label: t('admin.accounts.openai.wsModePassthrough') },
-  { value: OPENAI_WS_MODE_HTTP_BRIDGE, label: t('admin.accounts.openai.wsModeHttpBridge') }
+  { value: OPENAI_WS_MODE_PASSTHROUGH, label: t('admin.accounts.openai.wsModePassthrough') }
 ])
 
 const openaiResponsesWebSocketV2Mode = computed({
@@ -3935,6 +4040,10 @@ const form = reactive({
   expires_at: null as number | null
 })
 
+const isClaudePlatformAWSMode = computed(
+  () => form.platform === 'anthropic' && accountCategory.value === 'claude-platform-aws'
+)
+
 // Helper to check if current type needs OAuth flow
 const isOAuthFlow = computed(() => {
   // Antigravity upstream 类型不需要 OAuth 流程
@@ -3943,6 +4052,10 @@ const isOAuthFlow = computed(() => {
   }
   // Bedrock 类型不需要 OAuth 流程
   if (form.platform === 'anthropic' && accountCategory.value === 'bedrock') {
+    return false
+  }
+  // Claude Platform on AWS uses a dedicated batch import flow.
+  if (isClaudePlatformAWSMode.value) {
     return false
   }
   return accountCategory.value === 'oauth-based'
@@ -3969,9 +4082,6 @@ const canExchangeCode = computed(() => {
   }
   if (form.platform === 'antigravity') {
     return authCode.trim() && antigravityOAuth.sessionId.value && !antigravityOAuth.loading.value
-  }
-  if (form.platform === 'grok') {
-    return authCode.trim() && grokOAuth.sessionId.value && !grokOAuth.loading.value
   }
   return authCode.trim() && oauth.sessionId.value && !oauth.loading.value
 })
@@ -4019,10 +4129,14 @@ watch(
       form.type = 'bedrock' as AccountType
       return
     }
+    if (form.platform === 'anthropic' && category === 'claude-platform-aws') {
+      form.type = 'claude-platform-aws' as AccountType
+      return
+    }
     if ((form.platform === 'gemini' || form.platform === 'anthropic') && category === 'service_account') {
       form.type = 'service_account' as AccountType
     } else if (category === 'oauth-based') {
-      form.type = form.platform === 'anthropic' ? method as AccountType : 'oauth'
+      form.type = method as AccountType // 'oauth' or 'setup-token'
     } else {
       form.type = 'apikey'
     }
@@ -4040,9 +4154,7 @@ watch(
         ? 'https://api.openai.com'
         : newPlatform === 'gemini'
           ? 'https://generativelanguage.googleapis.com'
-          : newPlatform === 'grok'
-            ? 'https://api.x.ai/v1'
-            : 'https://api.anthropic.com'
+          : 'https://api.anthropic.com'
     // Clear model-related settings
     allowedModels.value = []
     modelMappings.value = []
@@ -4062,17 +4174,13 @@ watch(
       antigravityModelMappings.value = []
       antigravityModelRestrictionMode.value = 'mapping'
     }
-    if (newPlatform === 'grok') {
-      accountCategory.value = 'oauth-based'
-      addMethod.value = 'oauth'
-      modelRestrictionMode.value = 'mapping'
-      form.concurrency = 1
-      form.load_factor = null
-    }
     if (newPlatform !== 'gemini' && newPlatform !== 'anthropic' && accountCategory.value === 'service_account') {
       accountCategory.value = 'oauth-based'
     }
     if (newPlatform !== 'anthropic' && accountCategory.value === 'bedrock') {
+      accountCategory.value = 'oauth-based'
+    }
+    if (newPlatform !== 'anthropic' && accountCategory.value === 'claude-platform-aws') {
       accountCategory.value = 'oauth-based'
     }
     // Reset Bedrock fields when switching platforms
@@ -4083,6 +4191,9 @@ watch(
     bedrockForceGlobal.value = false
     bedrockAuthMode.value = 'sigv4'
     bedrockApiKeyValue.value = ''
+    claudePlatformAWSAPIKey.value = ''
+    claudePlatformAWSRegion.value = 'us-east-1'
+    claudePlatformAWSRows.value = [{ workspaceId: '', proxyId: null }]
     vertexServiceAccountJson.value = ''
     vertexProjectId.value = ''
     vertexClientEmail.value = ''
@@ -4093,19 +4204,17 @@ watch(
     }
     if (newPlatform !== 'openai') {
       openaiPassthroughEnabled.value = false
-      openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
+      openAIEndpointCapabilities.value = ['chat_completions', 'embeddings', 'rerank']
       openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
       openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
       codexCLIOnlyEnabled.value = false
-      codexCLIOnlyAppServerEnabled.value = false
+      codexCLIOnlyAllowClaudeCodeEnabled.value = false
     }
     if (newPlatform !== 'anthropic') {
       anthropicPassthroughEnabled.value = false
       anthropicAPIKeyAuthScheme.value = 'x_api_key'
       webSearchEmulationMode.value = 'default'
     }
-    // 请求头覆写为平台相关配置（模板/常用头集合不同），切换平台时清空，
-    // 避免上一平台的模板行被提交到新平台账号
     headerOverrideEnabled.value = false
     headerOverrideRows.value = []
     // Reset OAuth states
@@ -4114,7 +4223,6 @@ watch(
 
     geminiOAuth.resetState()
     antigravityOAuth.resetState()
-    grokOAuth.resetState()
   }
 )
 
@@ -4124,7 +4232,7 @@ watch(
   ([category, platform]) => {
     if (platform === 'openai' && category !== 'oauth-based') {
       codexCLIOnlyEnabled.value = false
-      codexCLIOnlyAppServerEnabled.value = false
+      codexCLIOnlyAllowClaudeCodeEnabled.value = false
     }
     if (platform !== 'anthropic' || category !== 'apikey') {
       anthropicPassthroughEnabled.value = false
@@ -4282,6 +4390,28 @@ const addTempUnschedRule = (preset?: TempUnschedRuleForm) => {
     duration_minutes: 30,
     description: ''
   })
+}
+
+const addClaudePlatformAWSRow = () => {
+  claudePlatformAWSRows.value.push({ workspaceId: '', proxyId: null })
+}
+
+const removeClaudePlatformAWSRow = (index: number) => {
+  if (claudePlatformAWSRows.value.length <= 1) return
+  claudePlatformAWSRows.value.splice(index, 1)
+}
+
+const claudePlatformAWSRowReady = (row: ClaudePlatformAWSWorkspaceRow) =>
+  row.workspaceId.trim().length > 0 && row.proxyId !== null && row.proxyId > 0
+
+const claudePlatformAWSRowStatusKey = (row: ClaudePlatformAWSWorkspaceRow) => {
+  if (!row.workspaceId.trim()) {
+    return 'admin.accounts.claudePlatformAWS.status.needsWorkspace'
+  }
+  if (row.proxyId === null || row.proxyId <= 0) {
+    return 'admin.accounts.claudePlatformAWS.status.needsProxy'
+  }
+  return 'admin.accounts.claudePlatformAWS.status.ready'
 }
 
 const removeTempUnschedRule = (index: number) => {
@@ -4504,11 +4634,11 @@ const resetForm = () => {
   openaiPassthroughEnabled.value = false
   openAICompactMode.value = 'auto'
   openAIResponsesMode.value = 'auto'
-  openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
+  openAIEndpointCapabilities.value = ['chat_completions', 'embeddings', 'rerank']
   openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   codexCLIOnlyEnabled.value = false
-  codexCLIOnlyAppServerEnabled.value = false
+  codexCLIOnlyAllowClaudeCodeEnabled.value = false
   anthropicPassthroughEnabled.value = false
   anthropicAPIKeyAuthScheme.value = 'x_api_key'
   webSearchEmulationMode.value = 'default'
@@ -4536,6 +4666,9 @@ const resetForm = () => {
   antigravityProjectId.value = ''
   upstreamBaseUrl.value = ''
   upstreamApiKey.value = ''
+  claudePlatformAWSAPIKey.value = ''
+  claudePlatformAWSRegion.value = 'us-east-1'
+  claudePlatformAWSRows.value = [{ workspaceId: '', proxyId: null }]
   vertexServiceAccountJson.value = ''
   vertexProjectId.value = ''
   vertexClientEmail.value = ''
@@ -4550,7 +4683,6 @@ const resetForm = () => {
   openaiOAuth.resetState()
   geminiOAuth.resetState()
   antigravityOAuth.resetState()
-  grokOAuth.resetState()
   oauthFlowRef.value?.reset()
   antigravityMixedChannelConfirmed.value = false
   clearMixedChannelDialog()
@@ -4590,15 +4722,14 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   } else {
     delete extra.codex_cli_only
   }
-  delete extra.codex_cli_only_allowed_clients
   if (
     accountCategory.value === 'oauth-based' &&
     codexCLIOnlyEnabled.value &&
-    codexCLIOnlyAppServerEnabled.value
+    codexCLIOnlyAllowClaudeCodeEnabled.value
   ) {
-    extra.codex_cli_only_allow_app_server = true
+    extra.codex_cli_only_allowed_clients = ['claude_code']
   } else {
-    delete extra.codex_cli_only_allow_app_server
+    delete extra.codex_cli_only_allowed_clients
   }
   if (openAICompactMode.value !== 'auto') {
     extra.openai_compact_mode = openAICompactMode.value
@@ -4749,6 +4880,55 @@ const handleSubmit = async () => {
       return
     }
     step.value = 2
+    return
+  }
+
+  // For Claude Platform on AWS, create one formal-pool account per workspace row.
+  if (form.platform === 'anthropic' && accountCategory.value === 'claude-platform-aws') {
+    if (!form.name.trim()) {
+      appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
+      return
+    }
+    if (!claudePlatformAWSAPIKey.value.trim()) {
+      appStore.showError(t('admin.accounts.pleaseEnterApiKey'))
+      return
+    }
+    for (const row of claudePlatformAWSRows.value) {
+      if (!row.workspaceId.trim()) {
+        appStore.showError(t('admin.accounts.claudePlatformAWS.workspaceRequired'))
+        return
+      }
+      if (row.proxyId === null || row.proxyId <= 0) {
+        appStore.showError(t('admin.accounts.claudePlatformAWS.proxyRequired'))
+        return
+      }
+    }
+
+    const baseName = form.name.trim()
+    const rows = claudePlatformAWSRows.value.map((row, index) => ({
+      name: claudePlatformAWSRows.value.length > 1 ? `${baseName} #${index + 1}` : baseName,
+      aws_region: claudePlatformAWSRegion.value,
+      workspace_id: row.workspaceId.trim(),
+      api_key: claudePlatformAWSAPIKey.value.trim(),
+      proxy_id: row.proxyId as number,
+      concurrency: form.concurrency,
+      priority: form.priority
+    }))
+
+    submitting.value = true
+    try {
+      await adminAPI.accounts.createClaudePlatformAWSBatch({
+        group_ids: form.group_ids,
+        rows
+      })
+      appStore.showSuccess(t('admin.accounts.accountCreated'))
+      emit('created')
+      handleClose()
+    } catch (error: any) {
+      appStore.showError(error.response?.data?.message || error.response?.data?.detail || t('admin.accounts.failedToCreate'))
+    } finally {
+      submitting.value = false
+    }
     return
   }
 
@@ -4929,7 +5109,6 @@ const handleSubmit = async () => {
     credentials.custom_error_codes = [...selectedErrorCodes.value]
   }
 
-  // Add header override if enabled (anthropic/openai apikey only)
   if (isHeaderOverridePlatform(form.platform)) {
     if (headerOverrideEnabled.value) {
       const headerError = validateHeaderOverrideRows(headerOverrideRows.value)
@@ -4963,7 +5142,6 @@ const goBackToBasicInfo = () => {
   openaiOAuth.resetState()
   geminiOAuth.resetState()
   antigravityOAuth.resetState()
-  grokOAuth.resetState()
   oauthFlowRef.value?.reset()
 }
 
@@ -4979,8 +5157,6 @@ const handleGenerateUrl = async () => {
     )
   } else if (form.platform === 'antigravity') {
     await antigravityOAuth.generateAuthUrl(form.proxy_id)
-  } else if (form.platform === 'grok') {
-    await grokOAuth.generateAuthUrl(form.proxy_id)
   } else {
     await oauth.generateAuthUrl(addMethod.value, form.proxy_id)
   }
@@ -4991,8 +5167,6 @@ const handleValidateRefreshToken = (rt: string) => {
     handleOpenAIValidateRT(rt)
   } else if (form.platform === 'antigravity') {
     handleAntigravityValidateRT(rt)
-  } else if (form.platform === 'grok') {
-    handleGrokValidateRT(rt)
   }
 }
 
@@ -5056,17 +5230,6 @@ const createAccountAndFinish = async (
       delete credentials.compact_model_mapping
     }
   }
-  if (platform === 'grok') {
-    if (!credentials.base_url) {
-      credentials.base_url = apiKeyBaseUrl.value.trim() || 'https://api.x.ai/v1'
-    }
-    const modelMapping = buildModelMappingObject(modelRestrictionMode.value, allowedModels.value, modelMappings.value)
-    if (modelMapping) {
-      credentials.model_mapping = modelMapping
-    } else {
-      delete credentials.model_mapping
-    }
-  }
   await doCreateAccount({
     name: form.name,
     notes: form.notes,
@@ -5083,95 +5246,6 @@ const createAccountAndFinish = async (
     expires_at: form.expires_at,
     auto_pause_on_expired: autoPauseOnExpired.value
   })
-}
-
-// Grok 手动 RT 批量验证和创建
-const handleGrokValidateRT = async (refreshTokenInput: string) => {
-  if (!refreshTokenInput.trim()) return
-
-  const refreshTokens = refreshTokenInput
-    .split('\n')
-    .map((rt) => rt.trim())
-    .filter((rt) => rt)
-
-  if (refreshTokens.length === 0) {
-    grokOAuth.error.value = t('admin.accounts.oauth.grok.pleaseEnterRefreshToken')
-    return
-  }
-
-  grokOAuth.loading.value = true
-  grokOAuth.error.value = ''
-
-  let successCount = 0
-  let failedCount = 0
-  const errors: string[] = []
-
-  try {
-    for (let i = 0; i < refreshTokens.length; i++) {
-      try {
-        const tokenInfo = await grokOAuth.validateRefreshToken(refreshTokens[i], form.proxy_id)
-        if (!tokenInfo) {
-          failedCount++
-          errors.push(`#${i + 1}: ${grokOAuth.error.value || 'Validation failed'}`)
-          grokOAuth.error.value = ''
-          continue
-        }
-
-        const credentials = grokOAuth.buildCredentials(tokenInfo)
-        const extra = grokOAuth.buildExtraInfo(tokenInfo)
-        const accountName = refreshTokens.length > 1 ? `${form.name || tokenInfo.email || 'Grok OAuth Account'} #${i + 1}` : (form.name || tokenInfo.email || 'Grok OAuth Account')
-
-        const modelMapping = buildModelMappingObject(modelRestrictionMode.value, allowedModels.value, modelMappings.value)
-        if (modelMapping) {
-          credentials.model_mapping = modelMapping
-        }
-        if (!applyTempUnschedConfig(credentials)) {
-          return
-        }
-
-        await adminAPI.accounts.create({
-          name: accountName,
-          notes: form.notes,
-          platform: 'grok',
-          type: 'oauth',
-          credentials,
-          extra,
-          proxy_id: form.proxy_id,
-          concurrency: form.concurrency,
-          load_factor: form.load_factor ?? undefined,
-          priority: form.priority,
-          rate_multiplier: form.rate_multiplier,
-          group_ids: form.group_ids,
-          expires_at: form.expires_at,
-          auto_pause_on_expired: autoPauseOnExpired.value
-        })
-        successCount++
-      } catch (error: any) {
-        failedCount++
-        const errMsg = error.response?.data?.detail || error.message || 'Unknown error'
-        errors.push(`#${i + 1}: ${errMsg}`)
-      }
-    }
-
-    if (successCount > 0 && failedCount === 0) {
-      appStore.showSuccess(
-        refreshTokens.length > 1
-          ? t('admin.accounts.oauth.batchSuccess', { count: successCount })
-          : t('admin.accounts.accountCreated')
-      )
-      emit('created')
-      handleClose()
-    } else if (successCount > 0) {
-      appStore.showWarning(t('admin.accounts.oauth.batchPartialSuccess', { success: successCount, failed: failedCount }))
-      grokOAuth.error.value = errors.join('\n')
-      emit('created')
-    } else {
-      grokOAuth.error.value = errors.join('\n')
-      appStore.showError(t('admin.accounts.oauth.batchFailed'))
-    }
-  } finally {
-    grokOAuth.loading.value = false
-  }
 }
 
 // OpenAI OAuth 授权码兑换
@@ -5397,7 +5471,7 @@ const handleOpenAIImportCodexPAT = async (accessToken: string) => {
       extra
     })
 
-    appStore.showSuccess(t('admin.accounts.messages.accountCreated'))
+    appStore.showSuccess(t('admin.accounts.accountCreated'))
     emit('created')
     handleClose()
   } catch (error: any) {
@@ -5640,19 +5714,26 @@ const handleGeminiExchange = async (authCode: string) => {
       return
     }
 
-    const tokenInfo = await geminiOAuth.exchangeAuthCode({
-      code: authCode.trim(),
-      sessionId: geminiOAuth.sessionId.value,
+    await adminAPI.gemini.createFromOAuth({
+      session_id: geminiOAuth.sessionId.value,
       state: stateToUse,
-      proxyId: form.proxy_id,
-      oauthType: geminiOAuthType.value,
-      tierId: geminiSelectedTier.value
+      code: authCode.trim(),
+      proxy_id: form.proxy_id ?? undefined,
+      oauth_type: geminiOAuthType.value,
+      tier_id: geminiSelectedTier.value || undefined,
+      name: form.name,
+      notes: form.notes || undefined,
+      concurrency: form.concurrency,
+      load_factor: form.load_factor ?? undefined,
+      priority: form.priority,
+      rate_multiplier: form.rate_multiplier ?? undefined,
+      group_ids: form.group_ids,
+      expires_at: form.expires_at ?? undefined,
+      auto_pause_on_expired: autoPauseOnExpired.value
     })
-    if (!tokenInfo) return
-
-    const credentials = geminiOAuth.buildCredentials(tokenInfo)
-    const extra = geminiOAuth.buildExtraInfo(tokenInfo)
-    await createAccountAndFinish('gemini', 'oauth', credentials, extra)
+    appStore.showSuccess(t('admin.accounts.accountCreated'))
+    emit('created')
+    handleClose()
   } catch (error: any) {
     geminiOAuth.error.value = error.response?.data?.detail || t('admin.accounts.oauth.authFailed')
     appStore.showError(geminiOAuth.error.value)
@@ -5704,41 +5785,6 @@ const handleAntigravityExchange = async (authCode: string) => {
     appStore.showError(antigravityOAuth.error.value)
   } finally {
     antigravityOAuth.loading.value = false
-  }
-}
-
-// Grok OAuth 授权码兑换
-const handleGrokExchange = async (authCode: string) => {
-  if (!authCode.trim() || !grokOAuth.sessionId.value) return
-
-  grokOAuth.loading.value = true
-  grokOAuth.error.value = ''
-
-  try {
-    const stateFromInput = oauthFlowRef.value?.oauthState || ''
-    const stateToUse = stateFromInput || grokOAuth.state.value
-    if (!stateToUse) {
-      grokOAuth.error.value = t('admin.accounts.oauth.authFailed')
-      appStore.showError(grokOAuth.error.value)
-      return
-    }
-
-    const tokenInfo = await grokOAuth.exchangeAuthCode({
-      code: authCode.trim(),
-      sessionId: grokOAuth.sessionId.value,
-      state: stateToUse,
-      proxyId: form.proxy_id
-    })
-    if (!tokenInfo) return
-
-    const credentials = grokOAuth.buildCredentials(tokenInfo)
-    const extra = grokOAuth.buildExtraInfo(tokenInfo)
-    await createAccountAndFinish('grok', 'oauth', credentials, extra)
-  } catch (error: any) {
-    grokOAuth.error.value = error.response?.data?.detail || t('admin.accounts.oauth.authFailed')
-    appStore.showError(grokOAuth.error.value)
-  } finally {
-    grokOAuth.loading.value = false
   }
 }
 
@@ -5842,8 +5888,6 @@ const handleExchangeCode = async () => {
       return handleGeminiExchange(authCode)
     case 'antigravity':
       return handleAntigravityExchange(authCode)
-    case 'grok':
-      return handleGrokExchange(authCode)
     default:
       return handleAnthropicExchange(authCode)
   }

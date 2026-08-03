@@ -259,12 +259,6 @@ func TestBackendModeAuthGuard(t *testing.T) {
 			wantStatus: http.StatusOK,
 		},
 		{
-			name:       "enabled_allows_github_complete_registration",
-			enabled:    "true",
-			path:       "/api/v1/auth/oauth/github/complete-registration",
-			wantStatus: http.StatusOK,
-		},
-		{
 			name:       "enabled_blocks_google_oauth_start",
 			enabled:    "true",
 			path:       "/api/v1/auth/oauth/google/start",
@@ -274,6 +268,12 @@ func TestBackendModeAuthGuard(t *testing.T) {
 			name:       "enabled_allows_google_oauth_callback",
 			enabled:    "true",
 			path:       "/api/v1/auth/oauth/google/callback",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "enabled_allows_github_complete_registration",
+			enabled:    "true",
+			path:       "/api/v1/auth/oauth/github/complete-registration",
 			wantStatus: http.StatusOK,
 		},
 		{

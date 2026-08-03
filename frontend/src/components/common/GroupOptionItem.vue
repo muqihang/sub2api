@@ -64,7 +64,7 @@ import { useI18n } from 'vue-i18n'
 import GroupBadge from './GroupBadge.vue'
 import type { SubscriptionType, GroupPlatform } from '@/types'
 import { useAppStore } from '@/stores/app'
-import { formatPeakRateWindow, serverTimezoneLabel } from '@/utils/peak-rate'
+import { formatPeakRateWindow, peakRateMultiplierLabel, serverTimezoneLabel } from '@/utils/peak-rate'
 
 const { t } = useI18n()
 
@@ -108,7 +108,7 @@ const hasPeakRate = computed(() => {
 })
 
 const peakRateText = computed(() => {
-  return formatPeakRateWindow(
+  const window = formatPeakRateWindow(
     {
       peak_rate_enabled: props.peakRateEnabled,
       peak_start: props.peakStart,
@@ -117,6 +117,8 @@ const peakRateText = computed(() => {
     },
     serverTimezoneLabel(appStore.cachedPublicSettings?.server_utc_offset)
   )
+  const multiplier = peakRateMultiplierLabel(props.peakRateMultiplier)
+  return window ? `${window} ${multiplier}` : multiplier
 })
 
 const peakRateTitle = computed(() => {

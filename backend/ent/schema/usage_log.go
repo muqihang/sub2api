@@ -53,6 +53,20 @@ func (UsageLog) Fields() []ent.Field {
 			MaxLen(100).
 			Optional().
 			Nillable(),
+		field.Int64("entity_id").
+			Optional().
+			Nillable().
+			Comment("resolved entity_registry.id snapshot"),
+		field.String("entity_type").
+			MaxLen(64).
+			Optional().
+			Nillable().
+			Comment("resolved entity type snapshot"),
+		field.String("claimed_entity_id").
+			MaxLen(128).
+			Optional().
+			Nillable().
+			Comment("client-claimed entity identifier"),
 		field.Int64("channel_id").Optional().Nillable().Comment("渠道 ID"),
 		field.String("model_mapping_chain").MaxLen(500).Optional().Nillable().Comment("模型映射链"),
 		field.String("billing_tier").MaxLen(50).Optional().Nillable().Comment("计费层级标签"),
@@ -149,8 +163,6 @@ func (UsageLog) Fields() []ent.Field {
 		field.JSON("image_size_breakdown", map[string]int{}).
 			Optional().
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}),
-
-		// 视频生成字段（Grok 视频按秒计费；billing_mode 走 token/其他模式时这些列仍标记视频用量）
 		field.Int("video_count").
 			Default(0).
 			Comment("视频生成数量；>0 表示本行是视频生成用量"),
@@ -215,10 +227,14 @@ func (UsageLog) Indexes() []ent.Index {
 		index.Fields("created_at"),
 		index.Fields("model"),
 		index.Fields("requested_model"),
+		index.Fields("entity_id"),
+		index.Fields("entity_type"),
+		index.Fields("claimed_entity_id"),
 		index.Fields("request_id"),
 		// 复合索引用于时间范围查询
 		index.Fields("user_id", "created_at"),
 		index.Fields("api_key_id", "created_at"),
+		index.Fields("entity_id", "created_at"),
 		// 分组维度时间范围查询（线上由 SQL 迁移创建 group_id IS NOT NULL 的部分索引）
 		index.Fields("group_id", "created_at"),
 	}

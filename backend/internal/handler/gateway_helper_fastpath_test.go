@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
@@ -15,6 +16,11 @@ type concurrencyCacheMock struct {
 	acquireAccountSlotFn func(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error)
 	releaseUserCalled    int32
 	releaseAccountCalled int32
+	trackAPIKeyCalled    int32
+	releaseAPIKeyCalled  int32
+	trackedAPIKeyID      int64
+	releasedAPIKeyID     int64
+	trackedRequestID     string
 }
 
 func (m *concurrencyCacheMock) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
@@ -97,6 +103,27 @@ func (m *concurrencyCacheMock) CleanupStaleProcessSlots(ctx context.Context, act
 	return nil
 }
 
+func (m *concurrencyCacheMock) TrackAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error {
+	atomic.AddInt32(&m.trackAPIKeyCalled, 1)
+	m.trackedAPIKeyID = apiKeyID
+	m.trackedRequestID = requestID
+	return nil
+}
+
+func (m *concurrencyCacheMock) ReleaseAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error {
+	atomic.AddInt32(&m.releaseAPIKeyCalled, 1)
+	m.releasedAPIKeyID = apiKeyID
+	return nil
+}
+
+func (m *concurrencyCacheMock) GetAPIKeyConcurrencyBatch(ctx context.Context, apiKeyIDs []int64) (map[int64]int, error) {
+	result := make(map[int64]int, len(apiKeyIDs))
+	for _, apiKeyID := range apiKeyIDs {
+		result[apiKeyID] = 0
+	}
+	return result, nil
+}
+
 func TestConcurrencyHelper_TryAcquireUserSlot(t *testing.T) {
 	cache := &concurrencyCacheMock{
 		acquireUserSlotFn: func(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
@@ -127,4 +154,27 @@ func TestConcurrencyHelper_TryAcquireAccountSlot_NotAcquired(t *testing.T) {
 	require.False(t, acquired)
 	require.Nil(t, release)
 	require.Equal(t, int32(0), atomic.LoadInt32(&cache.releaseAccountCalled))
+}
+
+func TestConcurrencyHelper_AcquireUserSlotWithWaitTracksAPIKeySlot(t *testing.T) {
+	cache := &concurrencyCacheMock{
+		acquireUserSlotFn: func(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
+			return true, nil
+		},
+	}
+	helper := NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatNone, time.Second)
+	c, _ := newHelperTestContext("POST", "/v1/messages")
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{ID: 555})
+	streamStarted := false
+
+	release, err := helper.AcquireUserSlotWithWait(c, 101, 2, false, &streamStarted)
+	require.NoError(t, err)
+	require.Equal(t, int32(1), atomic.LoadInt32(&cache.trackAPIKeyCalled))
+	require.Equal(t, int64(555), cache.trackedAPIKeyID)
+	require.NotEmpty(t, cache.trackedRequestID)
+
+	release()
+	require.Equal(t, int32(1), atomic.LoadInt32(&cache.releaseUserCalled))
+	require.Equal(t, int32(1), atomic.LoadInt32(&cache.releaseAPIKeyCalled))
+	require.Equal(t, int64(555), cache.releasedAPIKeyID)
 }

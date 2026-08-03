@@ -42,6 +42,9 @@ type dashboardSnapshotV2Filters struct {
 	AccountID   int64
 	GroupID     int64
 	Model       string
+	EntityID    int64
+	EntityType  string
+	ClaimedID   string
 	RequestType *int16
 	Stream      *bool
 	BillingType *int8
@@ -56,6 +59,9 @@ type dashboardSnapshotV2CacheKey struct {
 	AccountID         int64  `json:"account_id"`
 	GroupID           int64  `json:"group_id"`
 	Model             string `json:"model"`
+	EntityID          int64  `json:"entity_id"`
+	EntityType        string `json:"entity_type"`
+	ClaimedID         string `json:"claimed_entity_id"`
 	RequestType       *int16 `json:"request_type"`
 	Stream            *bool  `json:"stream"`
 	BillingType       *int8  `json:"billing_type"`
@@ -101,6 +107,9 @@ func (h *DashboardHandler) GetSnapshotV2(c *gin.Context) {
 		AccountID:         filters.AccountID,
 		GroupID:           filters.GroupID,
 		Model:             filters.Model,
+		EntityID:          filters.EntityID,
+		EntityType:        filters.EntityType,
+		ClaimedID:         filters.ClaimedID,
 		RequestType:       filters.RequestType,
 		Stream:            filters.Stream,
 		BillingType:       filters.BillingType,
@@ -176,14 +185,7 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 			startTime,
 			endTime,
 			granularity,
-			filters.UserID,
-			filters.APIKeyID,
-			filters.AccountID,
-			filters.GroupID,
-			filters.Model,
-			filters.RequestType,
-			filters.Stream,
-			filters.BillingType,
+			filters.toUsageLogFilters(),
 		)
 		if err != nil {
 			return nil, errors.New("failed to get usage trend")
@@ -196,14 +198,8 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 			ctx,
 			startTime,
 			endTime,
-			filters.UserID,
-			filters.APIKeyID,
-			filters.AccountID,
-			filters.GroupID,
+			filters.toUsageLogFilters(),
 			usagestats.ModelSourceRequested,
-			filters.RequestType,
-			filters.Stream,
-			filters.BillingType,
 		)
 		if err != nil {
 			return nil, errors.New("failed to get model statistics")
@@ -216,13 +212,7 @@ func (h *DashboardHandler) buildSnapshotV2Response(
 			ctx,
 			startTime,
 			endTime,
-			filters.UserID,
-			filters.APIKeyID,
-			filters.AccountID,
-			filters.GroupID,
-			filters.RequestType,
-			filters.Stream,
-			filters.BillingType,
+			filters.toUsageLogFilters(),
 		)
 		if err != nil {
 			return nil, errors.New("failed to get group statistics")
@@ -274,6 +264,15 @@ func parseDashboardSnapshotV2Filters(c *gin.Context) (*dashboardSnapshotV2Filter
 		}
 		filters.GroupID = id
 	}
+	if entityIDStr := strings.TrimSpace(c.Query("entity_id")); entityIDStr != "" {
+		id, err := strconv.ParseInt(entityIDStr, 10, 64)
+		if err != nil || id <= 0 {
+			return nil, errors.New("Invalid entity_id")
+		}
+		filters.EntityID = id
+	}
+	filters.EntityType = strings.TrimSpace(c.Query("entity_type"))
+	filters.ClaimedID = strings.TrimSpace(c.Query("claimed_entity_id"))
 
 	if requestTypeStr := strings.TrimSpace(c.Query("request_type")); requestTypeStr != "" {
 		parsed, err := service.ParseUsageRequestType(requestTypeStr)
@@ -300,4 +299,23 @@ func parseDashboardSnapshotV2Filters(c *gin.Context) (*dashboardSnapshotV2Filter
 	}
 
 	return filters, nil
+}
+
+func (f *dashboardSnapshotV2Filters) toUsageLogFilters() usagestats.UsageLogFilters {
+	if f == nil {
+		return usagestats.UsageLogFilters{}
+	}
+	return usagestats.UsageLogFilters{
+		UserID:          f.UserID,
+		APIKeyID:        f.APIKeyID,
+		AccountID:       f.AccountID,
+		GroupID:         f.GroupID,
+		Model:           f.Model,
+		EntityID:        f.EntityID,
+		EntityType:      f.EntityType,
+		ClaimedEntityID: f.ClaimedID,
+		RequestType:     f.RequestType,
+		Stream:          f.Stream,
+		BillingType:     f.BillingType,
+	}
 }

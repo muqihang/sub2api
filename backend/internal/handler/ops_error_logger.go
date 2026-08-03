@@ -398,6 +398,11 @@ func setOpsRequestContext(c *gin.Context, model string, stream bool) {
 	}
 }
 
+func clearOpsRequestBodyContext(c *gin.Context) {
+	// Request-body replay storage was removed upstream; keep this hook as a no-op
+	// so older handler call sites remain source-compatible during the merge.
+}
+
 // setOpsEndpointContext stores upstream model and request type for ops error logging.
 // Called by handlers after model mapping and request type determination.
 func setOpsEndpointContext(c *gin.Context, upstreamModel string, requestType int16) {
@@ -549,10 +554,10 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 			return
 		}
 
+		service.AppendOpsOpenAIRuntimeGuardLocalEvent(c)
 		if shouldSkipOpsErrorLogForCyber(c) {
 			return
 		}
-
 		status := c.Writer.Status()
 		if status < 400 {
 			// Even when the client request succeeds, we still want to persist upstream error attempts
@@ -1036,22 +1041,14 @@ func logOpsStreamError(c *gin.Context, ops *service.OpsService, wireStatus int) 
 	normalizedType := normalizeOpsErrorType(streamErr.ErrType, "")
 	phase, isBusinessLimited, errorOwner, errorSource := classifyOpsErrorLog(c, normalizedType, streamErr.Message, "", classifyStatus)
 
-	apiKey := getOpsAPIKey(c)
-	clientRequestID, _ := c.Request.Context().Value(ctxkey.ClientRequestID).(string)
-
 	model, _ := c.Get(opsModelKey)
 	var modelName string
 	if s, ok := model.(string); ok {
 		modelName = s
 	}
-	accountIDV, _ := c.Get(opsAccountIDKey)
-	var accountID *int64
-	if v, ok := accountIDV.(int64); ok && v > 0 {
-		accountID = &v
-	}
 
 	fallbackPlatform := guessPlatformFromPath(c.Request.URL.Path)
-	platform := resolveOpsPlatform(apiKey, fallbackPlatform)
+	platform := fallbackPlatform
 
 	requestID := c.Writer.Header().Get("X-Request-Id")
 	if requestID == "" {
@@ -1059,10 +1056,7 @@ func logOpsStreamError(c *gin.Context, ops *service.OpsService, wireStatus int) 
 	}
 
 	entry := &service.OpsInsertErrorLogInput{
-		RequestID:       requestID,
-		ClientRequestID: clientRequestID,
-
-		AccountID: accountID,
+		RequestID: requestID,
 		Platform:  platform,
 		Model:     modelName,
 		RequestPath: func() string {
@@ -1096,8 +1090,6 @@ func logOpsStreamError(c *gin.Context, ops *service.OpsService, wireStatus int) 
 			}
 			return nil
 		}(),
-		UserAgent: c.GetHeader("User-Agent"),
-
 		ErrorPhase:        phase,
 		ErrorType:         normalizedType,
 		Severity:          classifyOpsSeverity(normalizedType, classifyStatus),
@@ -1113,24 +1105,6 @@ func logOpsStreamError(c *gin.Context, ops *service.OpsService, wireStatus int) 
 		CreatedAt: time.Now(),
 	}
 	applyOpsLatencyFieldsFromContext(c, entry)
-
-	if apiKey != nil {
-		entry.APIKeyID = &apiKey.ID
-		entry.APIKeyPrefix = keyPrefix(apiKey.Key, 8)
-		if apiKey.User != nil {
-			entry.UserID = &apiKey.User.ID
-		}
-		if apiKey.GroupID != nil {
-			entry.GroupID = apiKey.GroupID
-		}
-		if apiKey.Group != nil && apiKey.Group.Platform != "" {
-			entry.Platform = apiKey.Group.Platform
-		}
-	}
-
-	if clientIP := strings.TrimSpace(ip.GetClientIP(c)); clientIP != "" {
-		entry.ClientIP = &clientIP
-	}
 
 	enqueueOpsErrorLog(ops, entry)
 }

@@ -104,3 +104,177 @@ func TestForwardEmbeddings_APIKeyPassthroughRecordsUsageAndBatchInput(t *testing
 	require.Equal(t, "float", gjson.GetBytes(upstream.lastBody, "encoding_format").String())
 	require.Equal(t, int64(256), gjson.GetBytes(upstream.lastBody, "dimensions").Int())
 }
+
+func TestForwardEmbeddings_AccountAliasForcesConfiguredDimensions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	reqBody := []byte(`{
+		"model":"Zhumeng-embeddings-1536",
+		"input":["hello"],
+		"dimensions":1024
+	}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewReader(reqBody))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(`{
+			"object":"list",
+			"data":[{"object":"embedding","index":0,"embedding":[` +
+			strings.TrimSuffix(strings.Repeat("0.1,", 1536), ",") + `]}],
+			"model":"nvidia/llama-nemotron-embed-1b-v2",
+			"usage":{"prompt_tokens":1,"total_tokens":1}
+		}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	account := &Account{
+		ID:       42,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://integrate.api.nvidia.com/v1",
+			"model_mapping": map[string]any{
+				"Zhumeng-embeddings-1536": "nvidia/llama-nemotron-embed-1b-v2",
+			},
+			"embedding_dimensions": map[string]any{
+				"Zhumeng-embeddings-1536": float64(1536),
+			},
+		},
+	}
+
+	_, err := svc.ForwardEmbeddings(context.Background(), c, account, reqBody, "")
+
+	require.NoError(t, err)
+	require.Equal(t, int64(1536), gjson.GetBytes(upstream.lastBody, "dimensions").Int())
+	require.Equal(t, "Zhumeng-embeddings-1536", gjson.Get(rec.Body.String(), "model").String())
+}
+
+func TestForwardEmbeddings_FixedNativeDimensionOmitsUpstreamDimensions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	reqBody := []byte(`{
+		"model":"Zhumeng-embeddings-1024",
+		"input":["hello"],
+		"dimensions":1536
+	}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewReader(reqBody))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(`{
+			"object":"list",
+			"data":[{"object":"embedding","index":0,"embedding":[0.1,0.2,0.3]}],
+			"model":"native-fixed-model",
+			"usage":{"prompt_tokens":1,"total_tokens":1}
+		}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	account := &Account{
+		ID:       42,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://integrate.api.nvidia.com/v1",
+			"model_mapping": map[string]any{
+				"Zhumeng-embeddings-1024": "native-fixed-model",
+			},
+			"embedding_dimensions": map[string]any{
+				"Zhumeng-embeddings-1024": float64(3),
+			},
+			"embedding_default_input_type": map[string]any{
+				"Zhumeng-embeddings-1024": "query",
+			},
+			"embedding_omit_dimensions": map[string]any{
+				"Zhumeng-embeddings-1024": true,
+			},
+		},
+	}
+
+	_, err := svc.ForwardEmbeddings(context.Background(), c, account, reqBody, "")
+
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(upstream.lastBody, "dimensions").Exists())
+	require.Equal(t, "query", gjson.GetBytes(upstream.lastBody, "input_type").String())
+	require.Equal(t, "Zhumeng-embeddings-1024", gjson.Get(rec.Body.String(), "model").String())
+}
+
+func TestForwardEmbeddings_ExplicitInputTypeOverridesConfiguredDefault(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	reqBody := []byte(`{"model":"Zhumeng-embeddings-1024","input":["hello"],"input_type":"passage"}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewReader(reqBody))
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(`{
+			"data":[{"index":0,"embedding":[0.1]}],
+			"model":"fixed-model"
+		}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	account := &Account{
+		ID:       42,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key": "sk-test",
+			"embedding_default_input_type": map[string]any{
+				"Zhumeng-embeddings-1024": "query",
+			},
+		},
+	}
+
+	_, err := svc.ForwardEmbeddings(context.Background(), c, account, reqBody, "")
+
+	require.NoError(t, err)
+	require.Equal(t, "passage", gjson.GetBytes(upstream.lastBody, "input_type").String())
+}
+
+func TestForwardEmbeddings_ResponseDimensionMismatchTriggersFailover(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	reqBody := []byte(`{"model":"Zhumeng-embeddings-1024","input":["hello"]}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/embeddings", bytes.NewReader(reqBody))
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(`{
+			"data":[{"index":0,"embedding":[0.1,0.2]}],
+			"model":"wrong-dimension-model"
+		}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	account := &Account{
+		ID:       42,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key": "sk-test",
+			"embedding_dimensions": map[string]any{
+				"Zhumeng-embeddings-1024": float64(3),
+			},
+		},
+	}
+
+	_, err := svc.ForwardEmbeddings(context.Background(), c, account, reqBody, "")
+
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+	require.False(t, rec.Result().Header.Get("Content-Type") != "" || rec.Body.Len() > 0)
+}

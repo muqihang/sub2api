@@ -193,6 +193,8 @@ func PrepareBedrockRequestBody(body []byte, modelID string, betaHeader string) (
 
 // PrepareBedrockRequestBodyWithTokens prepares a Bedrock request using pre-resolved beta tokens.
 // ccCompat 启用 CC 兼容模式时额外处理 thinking 类型转换和 tool_use.id 清理。
+// Claude Fable 5 的 Bedrock thinking shape 与 CC 模式相同：无论是否启用 CC 兼容，
+// 都必须将 enabled/budget_tokens 规整为 adaptive，避免普通 Bedrock 转发失败。
 func PrepareBedrockRequestBodyWithTokens(body []byte, modelID string, betaTokens []string, ccCompat bool) ([]byte, error) {
 	var err error
 
@@ -215,13 +217,12 @@ func PrepareBedrockRequestBodyWithTokens(body []byte, modelID string, betaTokens
 			return nil, fmt.Errorf("inject anthropic_beta: %w", err)
 		}
 		logger.LegacyPrintf("service.gateway", "[Bedrock] Injected beta tokens: %v (model=%s ccCompat=%v)", betaTokens, modelID, ccCompat)
-	} else {
-		body, _ = sjson.DeleteBytes(body, "anthropic_beta")
+	} else if gjson.GetBytes(body, "anthropic_beta").Exists() {
+		body, err = sjson.DeleteBytes(body, "anthropic_beta")
+		if err != nil {
+			return nil, fmt.Errorf("remove anthropic_beta field: %w", err)
+		}
 	}
-
-	// 移除 Bedrock 不支持的 Anthropic 直连 API 专有顶层字段
-	body, _ = sjson.DeleteBytes(body, "provider")
-	body, _ = sjson.DeleteBytes(body, "metadata")
 
 	// 移除 model 字段（Bedrock 通过 URL 指定模型）
 	body, err = sjson.DeleteBytes(body, "model")
@@ -233,6 +234,16 @@ func PrepareBedrockRequestBodyWithTokens(body []byte, modelID string, betaTokens
 	body, err = sjson.DeleteBytes(body, "stream")
 	if err != nil {
 		return nil, fmt.Errorf("remove stream field: %w", err)
+	}
+
+	// 移除 Bedrock Invoke 不支持的 OpenAI/Anthropic 兼容层元字段
+	body, err = sjson.DeleteBytes(body, "provider")
+	if err != nil {
+		return nil, fmt.Errorf("remove provider field: %w", err)
+	}
+	body, err = sjson.DeleteBytes(body, "metadata")
+	if err != nil {
+		return nil, fmt.Errorf("remove metadata field: %w", err)
 	}
 
 	// 转换 output_format（Bedrock Invoke 不支持此字段，但可将 schema 内联到最后一条 user message）
@@ -253,9 +264,12 @@ func PrepareBedrockRequestBodyWithTokens(body []byte, modelID string, betaTokens
 	// 清理 cache_control 中 Bedrock 不支持的字段
 	body = sanitizeBedrockCacheControl(body, modelID)
 
-	// CC 兼容模式：修复 CC 发送的 Bedrock 不兼容字段
-	if ccCompat {
+	// CC 兼容模式：修复 CC 发送的 Bedrock 不兼容字段。
+	// Fable 5 的 adaptive thinking 是模型自身限制，必须覆盖普通 Bedrock 路径。
+	if ccCompat || isBedrockFable5(modelID) {
 		body = sanitizeBedrockThinking(body, modelID)
+	}
+	if ccCompat {
 		body = sanitizeBedrockToolUseIDs(body)
 	}
 
@@ -364,6 +378,10 @@ func isBedrockClaude45OrNewer(modelID string) bool {
 	major, _ := strconv.Atoi(matches[1])
 	minor, _ := strconv.Atoi(matches[2])
 	return major > 4 || (major == 4 && minor >= 5)
+}
+
+func isBedrockFable5(modelID string) bool {
+	return strings.Contains(strings.ToLower(modelID), "claude-fable-5")
 }
 
 // sanitizeBedrockCacheControl 清理 system 和 messages 中 cache_control 里
@@ -477,9 +495,9 @@ var bedrockSupportedBetaTokens = map[string]bool{
 	"computer-use-2025-01-24":                true,
 	"computer-use-2025-11-24":                true,
 	"context-1m-2025-08-07":                  true,
-	"context-management-2025-06-27":          true, // compaction + clear_thinking，AWS 文档已支持
+	"context-management-2025-06-27":          true,
 	"compact-2026-01-12":                     true, // 官方支持，仅 InvokeModel API（Opus 4.6+）
-	"fine-grained-tool-streaming-2025-05-14": true, // AWS Tool Use 文档已支持
+	"fine-grained-tool-streaming-2025-05-14": true,
 	// "interleaved-thinking-2025-05-14": false, // 无官方文档支持
 	"tool-search-tool-2025-10-19": true,
 	"tool-examples-2025-10-29":    true,
@@ -668,14 +686,9 @@ func isBedrockOpus47OrNewer(modelID string) bool {
 	return major > 4 || (major == 4 && minor >= 7)
 }
 
-func isBedrockFable5(modelID string) bool {
-	return strings.Contains(strings.ToLower(modelID), "claude-fable-5")
-}
-
 const defaultThinkingBudgetTokens = 10000
 
 // sanitizeBedrockThinking 修复 thinking 字段的 Bedrock 兼容性问题：
-//   - Fable 5: 仅使用 always-on adaptive thinking，不支持手动 budget_tokens
 //   - Opus 4.7+: 仅支持 "adaptive"，将 "enabled" 转换为 "adaptive" 并移除 budget_tokens
 //   - 其他模型: "enabled" 必须带 budget_tokens，缺失时补充默认值
 func sanitizeBedrockThinking(body []byte, modelID string) []byte {
@@ -689,17 +702,7 @@ func sanitizeBedrockThinking(body []byte, modelID string) []byte {
 		return body
 	}
 
-	if isBedrockFable5(modelID) {
-		if thinkingType == "enabled" {
-			body, _ = sjson.SetBytes(body, "thinking.type", "adaptive")
-		}
-		if thinkingType == "enabled" || thinkingType == "adaptive" {
-			body, _ = sjson.DeleteBytes(body, "thinking.budget_tokens")
-		}
-		return body
-	}
-
-	if isBedrockOpus47OrNewer(modelID) {
+	if isBedrockOpus47OrNewer(modelID) || isBedrockFable5(modelID) {
 		if thinkingType == "enabled" {
 			body, _ = sjson.SetBytes(body, "thinking.type", "adaptive")
 			body, _ = sjson.DeleteBytes(body, "thinking.budget_tokens")

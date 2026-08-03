@@ -51,14 +51,7 @@ func TestGrokOAuthClientExchangeAndRefreshUseFormFields(t *testing.T) {
 
 	client := NewGrokOAuthClient()
 
-	exchanged, err := client.ExchangeCode(
-		context.Background(),
-		"auth-code",
-		"verifier",
-		"http://127.0.0.1:56121/callback",
-		"",
-		"client-id",
-	)
+	exchanged, err := client.ExchangeCode(context.Background(), "auth-code", "verifier", "http://127.0.0.1:56121/callback", "", "client-id")
 	require.NoError(t, err)
 	require.Equal(t, "exchange-access", exchanged.AccessToken)
 	require.Equal(t, "exchange-refresh", exchanged.RefreshToken)
@@ -70,20 +63,6 @@ func TestGrokOAuthClientExchangeAndRefreshUseFormFields(t *testing.T) {
 	require.Equal(t, "refresh-access", refreshed.AccessToken)
 	require.Equal(t, "refresh-rotated", refreshed.RefreshToken)
 	require.Equal(t, int64(7200), refreshed.ExpiresIn)
-}
-
-func TestGrokOAuthClientRefreshForbiddenClassifiesEntitlement(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte(`{"error":"subscription required"}`))
-	}))
-	defer server.Close()
-	t.Setenv(xai.EnvTokenURL, server.URL)
-
-	client := NewGrokOAuthClient()
-	_, err := client.RefreshToken(context.Background(), "refresh-token", "", "client-id")
-	require.Error(t, err)
-	require.Contains(t, strings.ToUpper(err.Error()), "GROK_OAUTH_ENTITLEMENT_DENIED")
 }
 
 func TestGrokOAuthClientStatusErrorRedactsSensitiveResponseBody(t *testing.T) {
@@ -104,4 +83,18 @@ func TestGrokOAuthClientStatusErrorRedactsSensitiveResponseBody(t *testing.T) {
 	require.NotContains(t, errText, "access-secret")
 	require.NotContains(t, errText, "refresh-secret")
 	require.NotContains(t, errText, "verifier-secret")
+}
+
+func TestGrokOAuthClientRefreshForbiddenClassifiesEntitlement(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"subscription required"}`))
+	}))
+	defer server.Close()
+	t.Setenv(xai.EnvTokenURL, server.URL)
+
+	client := NewGrokOAuthClient()
+	_, err := client.RefreshToken(context.Background(), "refresh-token", "", "client-id")
+	require.Error(t, err)
+	require.Contains(t, strings.ToUpper(err.Error()), "GROK_OAUTH_ENTITLEMENT_DENIED")
 }

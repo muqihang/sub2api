@@ -57,6 +57,24 @@ interface MockAuthState {
   setupNeedsSetup?: boolean
 }
 
+const backendModeAllowedPaths = ['/home', '/codex-gateway', '/login', '/key-usage', '/setup', '/payment/result', '/plugin/augment/quick-login']
+const backendModeCallbackPaths = [
+  '/auth/callback',
+  '/auth/linuxdo/callback',
+  '/auth/oidc/callback',
+  '/auth/wechat/callback',
+  '/auth/wechat/payment/callback',
+]
+const backendModePendingAuthPaths = ['/register', '/email-verify']
+
+function isBackendModeRouteAllowed(toPath: string, hasPendingAuthSession: boolean): boolean {
+  return (
+    backendModeAllowedPaths.some((path) => toPath === path || toPath.startsWith(path)) ||
+    backendModeCallbackPaths.includes(toPath) ||
+    (hasPendingAuthSession && backendModePendingAuthPaths.includes(toPath))
+  )
+}
+
 /**
  * 将 router/index.ts 中 beforeEach 守卫的核心逻辑提取为可测试的函数
  */
@@ -84,20 +102,7 @@ function simulateGuard(
       return authState.isAdmin ? '/admin/dashboard' : '/dashboard'
     }
     if (authState.backendModeEnabled && !authState.isAuthenticated) {
-      const allowed = ['/login', '/key-usage', '/setup', '/payment/result']
-      const callbackPaths = [
-        '/auth/callback',
-        '/auth/linuxdo/callback',
-        '/auth/oidc/callback',
-        '/auth/wechat/callback',
-        '/auth/wechat/payment/callback',
-      ]
-      const pendingAuthPaths = ['/register', '/email-verify']
-      const isAllowed =
-        allowed.some((path) => toPath === path || toPath.startsWith(path)) ||
-        callbackPaths.includes(toPath) ||
-        (authState.hasPendingAuthSession && pendingAuthPaths.includes(toPath))
-      if (!isAllowed) {
+      if (!isBackendModeRouteAllowed(toPath, authState.hasPendingAuthSession)) {
         return '/login'
       }
     }
@@ -133,20 +138,7 @@ function simulateGuard(
     if (authState.isAuthenticated && authState.isAdmin) {
       return null
     }
-    const allowed = ['/login', '/key-usage', '/setup', '/payment/result']
-    const callbackPaths = [
-      '/auth/callback',
-      '/auth/linuxdo/callback',
-      '/auth/oidc/callback',
-      '/auth/wechat/callback',
-      '/auth/wechat/payment/callback',
-    ]
-    const pendingAuthPaths = ['/register', '/email-verify']
-    const isAllowed =
-      allowed.some((path) => toPath === path || toPath.startsWith(path)) ||
-      callbackPaths.includes(toPath) ||
-      (authState.hasPendingAuthSession && pendingAuthPaths.includes(toPath))
-    if (!isAllowed) {
+    if (!isBackendModeRouteAllowed(toPath, authState.hasPendingAuthSession)) {
       return '/login'
     }
   }
@@ -336,7 +328,7 @@ describe('路由守卫逻辑', () => {
   })
 
   describe('Backend Mode', () => {
-    it('unauthenticated: /home redirects to /login', () => {
+    it('unauthenticated: /home is allowed', () => {
       const authState: MockAuthState = {
         isAuthenticated: false,
         isAdmin: false,
@@ -345,7 +337,7 @@ describe('路由守卫逻辑', () => {
         hasPendingAuthSession: false,
       }
       const redirect = simulateGuard('/home', { requiresAuth: false }, authState)
-      expect(redirect).toBe('/login')
+      expect(redirect).toBeNull()
     })
 
     it('unauthenticated: /login is allowed', () => {
@@ -470,6 +462,42 @@ describe('路由守卫逻辑', () => {
       expect(redirect).toBeNull()
     })
 
+    it('non-admin authenticated: /plugin/augment/quick-login is allowed', () => {
+      const authState: MockAuthState = {
+        isAuthenticated: true,
+        isAdmin: false,
+        isSimpleMode: false,
+        backendModeEnabled: true,
+        hasPendingAuthSession: false,
+      }
+      const redirect = simulateGuard('/plugin/augment/quick-login', {}, authState)
+      expect(redirect).toBeNull()
+    })
+
+    it('non-admin authenticated: /plugin/augment/account redirects to /login', () => {
+      const authState: MockAuthState = {
+        isAuthenticated: true,
+        isAdmin: false,
+        isSimpleMode: false,
+        backendModeEnabled: true,
+        hasPendingAuthSession: false,
+      }
+      const redirect = simulateGuard('/plugin/augment/account', {}, authState)
+      expect(redirect).toBe('/login')
+    })
+
+    it('non-admin authenticated: /plugin/augment/billing redirects to /login', () => {
+      const authState: MockAuthState = {
+        isAuthenticated: true,
+        isAdmin: false,
+        isSimpleMode: false,
+        backendModeEnabled: true,
+        hasPendingAuthSession: false,
+      }
+      const redirect = simulateGuard('/plugin/augment/billing', {}, authState)
+      expect(redirect).toBe('/login')
+    })
+
     it('unauthenticated: callback routes are allowed', () => {
       const authState: MockAuthState = {
         isAuthenticated: false,
@@ -527,6 +555,42 @@ describe('路由守卫逻辑', () => {
         hasPendingAuthSession: false,
       }
       const redirect = simulateGuard('/email-verify', { requiresAuth: false }, authState)
+      expect(redirect).toBe('/login')
+    })
+
+    it('non-admin authenticated: /plugin/augment/quick-login is allowed', () => {
+      const authState: MockAuthState = {
+        isAuthenticated: true,
+        isAdmin: false,
+        isSimpleMode: false,
+        backendModeEnabled: true,
+        hasPendingAuthSession: false,
+      }
+      const redirect = simulateGuard('/plugin/augment/quick-login', {}, authState)
+      expect(redirect).toBeNull()
+    })
+
+    it('non-admin authenticated: /plugin/augment/account redirects to /login', () => {
+      const authState: MockAuthState = {
+        isAuthenticated: true,
+        isAdmin: false,
+        isSimpleMode: false,
+        backendModeEnabled: true,
+        hasPendingAuthSession: false,
+      }
+      const redirect = simulateGuard('/plugin/augment/account', {}, authState)
+      expect(redirect).toBe('/login')
+    })
+
+    it('non-admin authenticated: /plugin/augment/billing redirects to /login', () => {
+      const authState: MockAuthState = {
+        isAuthenticated: true,
+        isAdmin: false,
+        isSimpleMode: false,
+        backendModeEnabled: true,
+        hasPendingAuthSession: false,
+      }
+      const redirect = simulateGuard('/plugin/augment/billing', {}, authState)
       expect(redirect).toBe('/login')
     })
   })

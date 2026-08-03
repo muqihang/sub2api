@@ -73,3 +73,36 @@ func TestAPIKeyRepository_GetByKeyForAuth_PreservesMessagesDispatchModelConfig_S
 	require.NotNil(t, got.Group)
 	require.Equal(t, group.MessagesDispatchModelConfig, got.Group.MessagesDispatchModelConfig)
 }
+func TestAPIKeyRepository_GetByID_LoadsUserAllowedGroupsForManagedDeviceAuth_SQLite(t *testing.T) {
+	repo, client := newAPIKeyRepoSQLite(t)
+	ctx := context.Background()
+	user := mustCreateAPIKeyRepoUser(t, ctx, client, "getbyid-managed-allowed@test.com")
+
+	group, err := client.Group.Create().
+		SetName("g-managed-device-allowed-unit").
+		SetPlatform(service.PlatformAnthropic).
+		SetStatus(service.StatusActive).
+		SetSubscriptionType(service.SubscriptionTypeStandard).
+		SetRateMultiplier(1).
+		SetIsExclusive(true).
+		Save(ctx)
+	require.NoError(t, err)
+
+	_, err = client.User.UpdateOneID(user.ID).AddAllowedGroupIDs(group.ID).Save(ctx)
+	require.NoError(t, err)
+
+	key := &service.APIKey{
+		UserID:  user.ID,
+		Key:     "sk-getbyid-managed-allowed-unit",
+		Name:    "Managed Device Key Unit",
+		GroupID: &group.ID,
+		Status:  service.StatusActive,
+	}
+	require.NoError(t, repo.Create(ctx, key))
+
+	got, err := repo.GetByID(ctx, key.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.User)
+	require.Contains(t, got.User.AllowedGroups, group.ID)
+	require.True(t, got.User.CanBindGroup(group.ID, true))
+}

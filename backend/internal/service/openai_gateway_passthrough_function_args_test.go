@@ -2,6 +2,7 @@ package service
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -20,23 +21,23 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func TestHandleStreamingResponsePassthroughDeduplicatesFunctionCallArguments(t *testing.T) {
+func TestHandleStreamingResponsePassthroughFunctionArgsDeduplicates(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	argsA := `{"cmd":"echo hi","meta":{"nested":[1,{"ok":true}],"quote":"a}b"}}`
-	argsB := `{"path":"/tmp/file","patch":{"ops":[{"op":"replace","value":{"lines":["x","y"]}}]}}`
+	argsB := `[{"path":"/tmp/file","op":"replace"}]`
 	upstreamBody := strings.Join([]string{
 		passthroughSSEData(`{"type":"response.created","response":{"id":"resp_passthrough_args","model":"gpt-5.4"}}`),
 		passthroughSSEData(`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_a","call_id":"call_a","name":"exec_command","arguments":"","status":"in_progress"}}`),
 		passthroughSSEData(functionArgsDeltaJSON(0, "fc_a", "call_a", "exec_command", `{"cmd":`)),
 		passthroughSSEData(functionArgsDeltaJSON(0, "fc_a", "call_a", "exec_command", `"echo hi","meta":{"nested":[1,{"ok":true}],"quote":"a}b"}}`)),
 		passthroughSSEData(functionArgsDoneJSON(0, "fc_a", "call_a", "exec_command", argsA+argsA)),
-		passthroughSSEData(outputItemDoneJSON(0, "fc_a", "call_a", "exec_command", argsA+argsA)),
-		passthroughSSEData(`{"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_b","call_id":"call_b","name":"apply_patch","arguments":"","status":"in_progress"}}`),
-		passthroughSSEData(functionArgsDeltaJSON(1, "fc_b", "call_b", "apply_patch", `{"path":"/tmp/file",`)),
-		passthroughSSEData(functionArgsDeltaJSON(1, "fc_b", "call_b", "apply_patch", `"patch":{"ops":[{"op":"replace","value":{"lines":["x","y"]}}]}}`)),
+		passthroughSSEData(outputItemDoneJSON(0, "function_call", "fc_a", "call_a", "exec_command", argsA+argsA)),
+		passthroughSSEData(`{"type":"response.output_item.added","output_index":1,"item":{"type":"custom_tool_call","id":"fc_b","call_id":"call_b","name":"apply_patch","arguments":"","status":"in_progress"}}`),
+		passthroughSSEData(functionArgsDeltaJSON(1, "fc_b", "call_b", "apply_patch", `[{"path":"/tmp/file",`)),
+		passthroughSSEData(functionArgsDeltaJSON(1, "fc_b", "call_b", "apply_patch", `"op":"replace"}]`)),
 		passthroughSSEData(functionArgsDoneJSON(1, "fc_b", "call_b", "apply_patch", argsB+argsB)),
-		passthroughSSEData(outputItemDoneJSON(1, "fc_b", "call_b", "apply_patch", argsB+argsB)),
+		passthroughSSEData(outputItemDoneJSON(1, "custom_tool_call", "fc_b", "call_b", "apply_patch", argsB+argsB)),
 		passthroughSSEData(completedWithFunctionCallsJSON(argsA+argsA, argsB+argsB)),
 		"data: [DONE]\n\n",
 	}, "")
@@ -58,7 +59,6 @@ func TestHandleStreamingResponsePassthroughDeduplicatesFunctionCallArguments(t *
 	events := collectSSEDataPayloads(t, rec.Body.String())
 	require.Equal(t, argsA, accumulateFunctionArgumentDeltas(events, "call_a"))
 	require.Equal(t, argsB, accumulateFunctionArgumentDeltas(events, "call_b"))
-
 	require.Equal(t, argsA, gjson.Get(findSSEEvent(t, events, "response.function_call_arguments.done", "call_a"), "arguments").String())
 	require.Equal(t, argsB, gjson.Get(findSSEEvent(t, events, "response.function_call_arguments.done", "call_b"), "arguments").String())
 	require.Equal(t, argsA, gjson.Get(findSSEEvent(t, events, "response.output_item.done", "call_a"), "item.arguments").String())
@@ -71,25 +71,56 @@ func TestHandleStreamingResponsePassthroughDeduplicatesFunctionCallArguments(t *
 	requireJSONArgument(t, gjson.Get(completed, "response.output.1.arguments").String())
 }
 
-func TestForwardResponsesChatCompletionsFallbackKeepsFunctionArgumentsSingle(t *testing.T) {
+func TestHandleStreamingResponsePassthroughFunctionArgsKeepsNonDuplicated(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	exactSingle := `{"cmd":"ls"}`
+	nonExact := `{"cmd":"ls"}{"cmd":"pwd"}`
+	nonJSON := `echo hiecho hi`
+	upstreamBody := strings.Join([]string{
+		passthroughSSEData(`{"type":"response.created","response":{"id":"resp_passthrough_args_edges","model":"gpt-5.4"}}`),
+		passthroughSSEData(functionArgsDeltaJSON(0, "fc_single", "call_single", "exec_command", `{"cmd":`)),
+		passthroughSSEData(functionArgsDeltaJSON(0, "fc_single", "call_single", "exec_command", `"ls"}`)),
+		passthroughSSEData(functionArgsDoneJSON(0, "fc_single", "call_single", "exec_command", exactSingle)),
+		passthroughSSEData(functionArgsDoneJSON(1, "fc_non_exact", "call_non_exact", "exec_command", nonExact)),
+		passthroughSSEData(functionArgsDoneJSON(2, "fc_non_json", "call_non_json", "exec_command", nonJSON)),
+		"data: [DONE]\n\n",
+	}, "")
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}
+
+	svc := &OpenAIGatewayService{}
+	_, err := svc.handleStreamingResponsePassthrough(context.Background(), resp, c, &Account{ID: 1}, time.Now(), "gpt-5.4", "gpt-5.4")
+	require.NoError(t, err)
+
+	events := collectSSEDataPayloads(t, rec.Body.String())
+	require.Equal(t, exactSingle, accumulateFunctionArgumentDeltas(events, "call_single"))
+	require.Equal(t, exactSingle, gjson.Get(findSSEEvent(t, events, "response.function_call_arguments.done", "call_single"), "arguments").String())
+	require.Equal(t, nonExact, gjson.Get(findSSEEvent(t, events, "response.function_call_arguments.done", "call_non_exact"), "arguments").String())
+	require.Equal(t, nonJSON, gjson.Get(findSSEEvent(t, events, "response.function_call_arguments.done", "call_non_json"), "arguments").String())
+}
+
+func TestForwardResponsesChatCompletionsFallbackKeepsFunctionArgsSingle(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"gpt-5.4","input":"run a command","stream":true}`)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(string(body)))
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
 	c.Request.Header.Set("Content-Type", "application/json")
 
 	upstreamBody := strings.Join([]string{
-		passthroughSSEData(chatToolCallChunkJSON(true, "")),
-		"",
-		passthroughSSEData(chatToolCallChunkJSON(false, `{"cmd":"echo hi"}`)),
-		"",
-		`data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
-		"",
-		"data: [DONE]",
-		"",
-	}, "\n")
+		passthroughSSEData(chatToolCallChunkJSON(true, `{"cmd":"echo hi"}`)),
+		passthroughSSEData(`{"id":"chatcmpl_tool","object":"chat.completion.chunk","model":"gpt-5.4","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`),
+		"data: [DONE]\n\n",
+	}, "")
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_fallback_tool_args"}},
@@ -100,8 +131,9 @@ func TestForwardResponsesChatCompletionsFallbackKeepsFunctionArgumentsSingle(t *
 		openai_compat.ExtraKeyResponsesMode: string(openai_compat.ResponsesSupportModeForceChatCompletions),
 	}
 	svc := &OpenAIGatewayService{
-		cfg:          passthroughArgsTestConfig(),
-		httpUpstream: upstream,
+		cfg:           passthroughArgsTestConfig(),
+		httpUpstream:  upstream,
+		toolCorrector: NewCodexToolCorrector(),
 	}
 
 	result, err := svc.Forward(context.Background(), c, account, body)
@@ -141,10 +173,11 @@ func functionArgsDoneJSON(outputIndex int, itemID, callID, name, arguments strin
 	)
 }
 
-func outputItemDoneJSON(outputIndex int, itemID, callID, name, arguments string) string {
+func outputItemDoneJSON(outputIndex int, itemType, itemID, callID, name, arguments string) string {
 	return fmt.Sprintf(
-		`{"type":"response.output_item.done","output_index":%d,"item":{"type":"function_call","id":%s,"call_id":%s,"name":%s,"arguments":%s,"status":"completed"}}`,
+		`{"type":"response.output_item.done","output_index":%d,"item":{"type":%s,"id":%s,"call_id":%s,"name":%s,"arguments":%s,"status":"completed"}}`,
 		outputIndex,
+		strconv.Quote(itemType),
 		strconv.Quote(itemID),
 		strconv.Quote(callID),
 		strconv.Quote(name),
@@ -154,7 +187,7 @@ func outputItemDoneJSON(outputIndex int, itemID, callID, name, arguments string)
 
 func completedWithFunctionCallsJSON(argsA, argsB string) string {
 	return fmt.Sprintf(
-		`{"type":"response.completed","response":{"id":"resp_passthrough_args","status":"completed","output":[{"type":"function_call","id":"fc_a","call_id":"call_a","name":"exec_command","arguments":%s,"status":"completed"},{"type":"function_call","id":"fc_b","call_id":"call_b","name":"apply_patch","arguments":%s,"status":"completed"}],"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}`,
+		`{"type":"response.completed","response":{"id":"resp_passthrough_args","status":"completed","output":[{"type":"function_call","id":"fc_a","call_id":"call_a","name":"exec_command","arguments":%s,"status":"completed"},{"type":"custom_tool_call","id":"fc_b","call_id":"call_b","name":"apply_patch","arguments":%s,"status":"completed"}],"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}`,
 		strconv.Quote(argsA),
 		strconv.Quote(argsB),
 	)

@@ -500,22 +500,20 @@ async function handleVerify(): Promise<void> {
     }
 
     if (isPendingOAuthFlow()) {
-      const payload: Record<string, unknown> = {
+      const payload = {
         email: email.value,
         password: password.value,
         verify_code: verifyCode.value.trim(),
+        invitation_code: invitationCode.value || undefined,
         ...oauthAffiliatePayload(affCode.value || loadAffiliateReferralCode()),
+        adopt_display_name: pendingAdoptionDecision.value?.adoptDisplayName,
+        adopt_avatar: pendingAdoptionDecision.value?.adoptAvatar
       }
-      if (invitationCode.value) {
-        payload.invitation_code = invitationCode.value
-      }
-      if (pendingAdoptionDecision.value?.adoptDisplayName !== undefined) {
-        payload.adopt_display_name = pendingAdoptionDecision.value.adoptDisplayName
-      }
-      if (pendingAdoptionDecision.value?.adoptAvatar !== undefined) {
-        payload.adopt_avatar = pendingAdoptionDecision.value.adoptAvatar
-      }
-
+      Object.keys(payload).forEach((key) => {
+        if (payload[key as keyof typeof payload] === undefined) {
+          delete payload[key as keyof typeof payload]
+        }
+      })
       const { data } = await apiClient.post<PendingOAuthCreateAccountResponse>(
         '/auth/oauth/pending/create-account',
         payload

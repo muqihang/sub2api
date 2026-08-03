@@ -39,6 +39,20 @@ function isFreshSuccess(entry: IpGeoEntry | undefined): entry is IpGeoEntry & { 
   return entry?.status === 'success' && typeof entry.fetchedAt === 'number' && Date.now() - entry.fetchedAt <= CACHE_TTL_MS
 }
 
+function persistToStorage(): void {
+  try {
+    const toStore: Record<string, StoredEntry> = {}
+    for (const [ip, entry] of cache.entries()) {
+      if (entry.status === 'success' && entry.label && entry.fetchedAt) {
+        toStore[ip] = { label: entry.label, detail: entry.detail, fetchedAt: entry.fetchedAt }
+      }
+    }
+    localStorage.setItem(CACHE_STORAGE_KEY, JSON.stringify(toStore))
+  } catch {
+    // localStorage can be unavailable in private or hardened browser contexts.
+  }
+}
+
 function getFreshEntry(ip: string): IpGeoEntry | undefined {
   const entry = cache.get(ip)
   if (entry?.status === 'success' && !isFreshSuccess(entry)) {
@@ -47,26 +61,6 @@ function getFreshEntry(ip: string): IpGeoEntry | undefined {
     return undefined
   }
   return entry
-}
-
-export function isPrivateIp(ip: string): boolean {
-  const v4 = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
-  if (v4) {
-    const a = Number(v4[1])
-    const b = Number(v4[2])
-    if (a === 10) return true
-    if (a === 127) return true
-    if (a === 169 && b === 254) return true
-    if (a === 172 && b >= 16 && b <= 31) return true
-    if (a === 192 && b === 168) return true
-    return false
-  }
-  const lower = ip.toLowerCase()
-  if (lower === '::1') return true
-  const firstSegment = lower.split(':', 1)[0]
-  if (/^fe[89ab][0-9a-f]$/.test(firstSegment)) return true
-  if (/^f[cd][0-9a-f]{2}$/.test(firstSegment)) return true
-  return false
 }
 
 function loadFromStorage(): void {
@@ -81,35 +75,42 @@ function loadFromStorage(): void {
       cache.set(ip, { status: 'success', label: stored.label, detail: stored.detail, fetchedAt: stored.fetchedAt })
     }
   } catch {
-    // 忽略损坏的本地缓存
-  }
-}
-
-function persistToStorage(): void {
-  try {
-    const toStore: Record<string, StoredEntry> = {}
-    for (const [ip, entry] of cache.entries()) {
-      if (entry.status === 'success' && entry.label && entry.fetchedAt) {
-        toStore[ip] = { label: entry.label, detail: entry.detail, fetchedAt: entry.fetchedAt }
-      }
-    }
-    localStorage.setItem(CACHE_STORAGE_KEY, JSON.stringify(toStore))
-  } catch {
-    // 存储写入失败（如隐私模式禁用 localStorage）不影响功能
+    // Ignore corrupt client-side cache.
   }
 }
 
 loadFromStorage()
+
+export function isPrivateIp(ip: string): boolean {
+  const v4 = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (v4) {
+    const octets = v4.slice(1).map(Number)
+    if (octets.some((n) => n < 0 || n > 255)) return false
+    const [a, b] = octets
+    if (a === 10) return true
+    if (a === 127) return true
+    if (a === 169 && b === 254) return true
+    if (a === 172 && b >= 16 && b <= 31) return true
+    if (a === 192 && b === 168) return true
+    return false
+  }
+
+  const lower = ip.toLowerCase()
+  if (lower === '::1') return true
+  const firstSegment = lower.split(':', 1)[0]
+  if (/^fe[89ab][0-9a-f]$/.test(firstSegment)) return true
+  if (/^f[cd][0-9a-f]{2}$/.test(firstSegment)) return true
+  return false
+}
 
 export function getEntry(ip: string): IpGeoEntry {
   return getFreshEntry(ip) ?? IDLE_ENTRY
 }
 
 export function formatGeoLabel(detail: IpGeoDetail): string {
-  const parts = [detail.countryCode, detail.region, detail.city].filter(
-    (part): part is string => Boolean(part && part.trim())
-  )
-  return parts.join(' · ')
+  return [detail.countryCode, detail.region, detail.city]
+    .filter((part): part is string => Boolean(part && part.trim()))
+    .join(' · ')
 }
 
 interface RawGeoResponse {
@@ -176,14 +177,14 @@ export async function fetchOne(ip: string, force = false): Promise<void> {
 }
 
 export async function fetchBatch(ips: string[]): Promise<boolean> {
-  const unique = Array.from(new Set(ips))
+  const unique = Array.from(new Set(ips.filter(Boolean)))
   const targets: string[] = []
   for (const ip of unique) {
     if (isPrivateIp(ip)) {
       cache.set(ip, { status: 'private' })
       continue
     }
-    const existing = cache.get(ip)
+    const existing = getFreshEntry(ip)
     if (isFreshSuccess(existing) || existing?.status === 'loading') continue
     targets.push(ip)
   }
@@ -202,8 +203,8 @@ export async function fetchBatch(ips: string[]): Promise<boolean> {
         continue
       }
       const results = (await response.json()) as RawGeoResponse[]
-      const byIp = new Map(results.map((r) => [r.ip, r]))
-      chunk.forEach((ip) => applyResult(ip, byIp.get(ip)))
+      const byIP = new Map(results.map((r) => [r.ip, r]))
+      chunk.forEach((ip) => applyResult(ip, byIP.get(ip)))
       persistToStorage()
     } catch {
       chunk.forEach((ip) => cache.set(ip, { status: 'error' }))

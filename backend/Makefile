@@ -1,9 +1,12 @@
-.PHONY: build generate test test-unit test-integration test-e2e
+.PHONY: build build-api-only generate test test-unit test-integration test-e2e
 
 VERSION ?= $(shell ./scripts/resolve-version.sh)
 LDFLAGS ?= -s -w -X main.Version=$(VERSION)
 
 build:
+	CGO_ENABLED=0 go build -tags embed -ldflags="$(LDFLAGS)" -trimpath -o bin/server ./cmd/server
+
+build-api-only:
 	CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -trimpath -o bin/server ./cmd/server
 
 generate:
@@ -15,7 +18,10 @@ test:
 	golangci-lint run ./...
 
 test-unit:
-	go test -tags=unit ./...
+	go test -tags=unit ./internal/handler
+	@packages="$$(go list -f '{{if ne .ImportPath "github.com/Wei-Shaw/sub2api/internal/handler"}}{{.ImportPath}}{{end}}' ./...)" || exit $$?; \
+	test -n "$$packages" || exit 1; \
+	go test -tags=unit $$packages
 
 test-integration:
 	go test -tags=integration ./...

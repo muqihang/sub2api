@@ -2,9 +2,11 @@ package routes
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	pkgerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -22,15 +24,107 @@ func RegisterGatewayRoutes(
 	settingService *service.SettingService,
 	cfg *config.Config,
 ) {
+	registerGatewayRoutes(r, h, apiKeyAuth, nil, apiKeyService, subscriptionService, opsService, settingService, cfg)
+}
+
+// RegisterGatewayRoutesWithClaudeCodeNativeAuth keeps the public gateway API-key
+// behavior unchanged while allowing the managed Claude Code native guard to
+// authenticate only the native /v1/messages family with managed-device tokens.
+func RegisterGatewayRoutesWithClaudeCodeNativeAuth(
+	r *gin.Engine,
+	h *handler.Handlers,
+	apiKeyAuth middleware.APIKeyAuthMiddleware,
+	claudeCodeNativeAuth middleware.APIKeyAuthMiddleware,
+	apiKeyService *service.APIKeyService,
+	subscriptionService *service.SubscriptionService,
+	opsService *service.OpsService,
+	settingService *service.SettingService,
+	cfg *config.Config,
+) {
+	registerGatewayRoutes(r, h, apiKeyAuth, claudeCodeNativeAuth, apiKeyService, subscriptionService, opsService, settingService, cfg)
+}
+
+func registerGatewayRoutes(
+	r *gin.Engine,
+	h *handler.Handlers,
+	apiKeyAuth middleware.APIKeyAuthMiddleware,
+	claudeCodeNativeAuth middleware.APIKeyAuthMiddleware,
+	apiKeyService *service.APIKeyService,
+	subscriptionService *service.SubscriptionService,
+	opsService *service.OpsService,
+	settingService *service.SettingService,
+	cfg *config.Config,
+) {
 	bodyLimit := middleware.RequestBodyLimit(cfg.Gateway.MaxBodySize)
+	controlPlaneBodyLimit := bodyLimit
+	if cfg == nil || cfg.Gateway.MaxBodySize <= 0 {
+		controlPlaneBodyLimit = middleware.RequestBodyLimit(1 << 20)
+	}
 	clientRequestID := middleware.ClientRequestID()
 	opsErrorLogger := handler.OpsErrorLoggerMiddleware(opsService)
 	endpointNorm := handler.InboundEndpointMiddleware()
 
+	augmentCompat := r.Group("")
+	augmentCompat.Use(bodyLimit)
+	augmentCompat.Use(clientRequestID)
+	augmentCompat.Use(opsErrorLogger)
+	augmentCompat.Use(endpointNorm)
+	{
+		augmentCompat.GET("/usage/api/balance", h.Auth.AugmentLegacyBalance)
+		augmentCompat.GET("/usage/api/get-models", h.Auth.AugmentLegacyModels)
+		augmentCompat.GET("/usage/api/getLoginToken", h.Auth.AugmentLegacyLoginToken)
+		augmentCompat.POST("/get-models", h.Auth.AugmentLegacyInternalGetModels)
+		augmentCompat.POST("/batch-upload", h.Auth.AugmentLegacyBatchUpload)
+		augmentCompat.POST("/checkpoint-blobs", h.Auth.AugmentLegacyCheckpointBlobs)
+		augmentCompat.POST("/find-missing", h.Auth.AugmentLegacyFindMissing)
+		augmentCompat.POST("/save-chat", h.Auth.AugmentLegacySaveChat)
+		augmentCompat.POST("/chat", h.Auth.AugmentLegacyChat)
+		augmentCompat.POST("/chat-stream", h.Auth.AugmentLegacyChatStream)
+		augmentCompat.POST("/prompt-enhancer", h.Auth.AugmentLegacyPromptEnhancer)
+		augmentCompat.POST("/instruction-stream", h.Auth.AugmentLegacyInstructionStream)
+		augmentCompat.POST("/smart-paste-stream", h.Auth.AugmentLegacySmartPasteStream)
+		augmentCompat.POST("/generate-commit-message-stream", h.Auth.AugmentLegacyGenerateCommitMessageStream)
+		augmentCompat.POST("/next_edit_loc", h.Auth.AugmentLegacyNextEditLocation)
+		augmentCompat.POST("/next-edit-stream", h.Auth.AugmentLegacyNextEditStream)
+		augmentCompat.POST("/remote-agents/list", h.Auth.AugmentLegacyListRemoteAgents)
+		augmentCompat.POST("/agents/codebase-retrieval", h.Auth.AugmentLegacyCodebaseRetrieval)
+		augmentCompat.POST("/agents/list-remote-tools", h.Auth.AugmentLegacyListRemoteTools)
+		augmentCompat.POST("/get-implicit-external-sources", h.Auth.AugmentLegacyGetImplicitExternalSources)
+		augmentCompat.POST("/search-external-sources", h.Auth.AugmentLegacySearchExternalSources)
+		augmentCompat.POST("/context-canvas/list", h.Auth.AugmentLegacyContextCanvasList)
+		augmentCompat.GET("/notifications/read", h.Auth.AugmentLegacyNotificationsRead)
+		augmentCompat.POST("/notifications/read", h.Auth.AugmentLegacyNotificationsRead)
+		augmentCompat.POST("/notifications/mark-as-read", h.Auth.AugmentLegacyNotificationsMarkRead)
+		augmentCompat.GET("/subscription-banner", h.Auth.AugmentLegacySubscriptionBanner)
+		augmentCompat.POST("/subscription-banner", h.Auth.AugmentLegacySubscriptionBanner)
+		augmentCompat.POST("/report-error", h.Auth.AugmentLegacyJSONAck)
+		augmentCompat.POST("/report-feature-vector", h.Auth.AugmentLegacyJSONAck)
+		augmentCompat.POST("/client-metrics", h.Auth.AugmentLegacyJSONAck)
+		augmentCompat.POST("/record-session-events", h.Auth.AugmentLegacyJSONAck)
+		augmentCompat.POST("/record-request-events", h.Auth.AugmentLegacyJSONAck)
+		augmentCompat.POST("/record-user-events", h.Auth.AugmentLegacyJSONAck)
+		augmentCompat.POST("/record-preference-sample", h.Auth.AugmentLegacyJSONAck)
+		augmentCompat.POST("/client-completion-timelines", h.Auth.AugmentLegacyJSONAck)
+		augmentCompat.POST("/chat-feedback", h.Auth.AugmentLegacyJSONAck)
+		augmentCompat.POST("/completion-feedback", h.Auth.AugmentLegacyJSONAck)
+		augmentCompat.POST("/next-edit-feedback", h.Auth.AugmentLegacyJSONAck)
+		augmentCompat.POST("/resolve-completions", h.Auth.AugmentLegacyJSONAck)
+		augmentCompat.POST("/resolve-chat-input-completion", h.Auth.AugmentLegacyJSONAck)
+		augmentCompat.POST("/resolve-edit", h.Auth.AugmentLegacyJSONAck)
+		augmentCompat.POST("/resolve-instruction", h.Auth.AugmentLegacyJSONAck)
+		augmentCompat.POST("/resolve-next-edit", h.Auth.AugmentLegacyJSONAck)
+		augmentCompat.POST("/resolve-smart-paste", h.Auth.AugmentLegacyJSONAck)
+	}
+
 	// 未分组 Key 拦截中间件（按协议格式区分错误响应）
 	requireGroupAnthropic := middleware.RequireGroupAssignment(settingService, middleware.AnthropicErrorWriter)
+	requireGroupOpenAI := middleware.RequireGroupAssignment(settingService, middleware.OpenAIErrorWriter)
 	requireGroupGoogle := middleware.RequireGroupAssignment(settingService, middleware.GoogleErrorWriter)
-
+	apiKeyAuthWithAugmentBearer := augmentGatewayAPIKeyAuth(apiKeyAuth, h.Auth)
+	v1GatewayAuth := apiKeyAuth
+	if claudeCodeNativeAuth != nil {
+		v1GatewayAuth = claudeCodeNativeMessagesAuth(apiKeyAuth, claudeCodeNativeAuth)
+	}
 	isOpenAIResponsesCompatibleGatewayPlatform := func(c *gin.Context) bool {
 		switch getGroupPlatform(c) {
 		case service.PlatformOpenAI, service.PlatformGrok:
@@ -39,9 +133,27 @@ func RegisterGatewayRoutes(
 			return false
 		}
 	}
-	isOpenAIGatewayPlatform := func(c *gin.Context) bool {
-		return getGroupPlatform(c) == service.PlatformOpenAI
+	requireOpenAIGroup := func(c *gin.Context) bool {
+		if getGroupPlatform(c) == service.PlatformOpenAI {
+			return true
+		}
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": gin.H{
+				"type":    "not_found_error",
+				"message": "OpenAI Gateway is not supported for this platform",
+			},
+		})
+		return false
 	}
+	openAIGatewayHandler := func(next gin.HandlerFunc) gin.HandlerFunc {
+		return func(c *gin.Context) {
+			if !requireOpenAIGroup(c) {
+				return
+			}
+			next(c)
+		}
+	}
+
 	imagesHandler := func(c *gin.Context) {
 		switch getGroupPlatform(c) {
 		case service.PlatformOpenAI:
@@ -50,12 +162,7 @@ func RegisterGatewayRoutes(
 			h.OpenAIGateway.GrokImages(c)
 		default:
 			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": gin.H{
-					"type":    "not_found_error",
-					"message": "Images API is not supported for this platform",
-				},
-			})
+			c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Images API is not supported for this platform"}})
 		}
 	}
 	videoGenerationHandler := func(c *gin.Context) {
@@ -64,12 +171,7 @@ func RegisterGatewayRoutes(
 			return
 		}
 		service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": gin.H{
-				"type":    "not_found_error",
-				"message": "Videos API is not supported for this platform",
-			},
-		})
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Videos API is not supported for this platform"}})
 	}
 	videoStatusHandler := func(c *gin.Context) {
 		if getGroupPlatform(c) == service.PlatformGrok {
@@ -77,38 +179,41 @@ func RegisterGatewayRoutes(
 			return
 		}
 		service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": gin.H{
-				"type":    "not_found_error",
-				"message": "Videos API is not supported for this platform",
-			},
-		})
+		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"type": "not_found_error", "message": "Videos API is not supported for this platform"}})
 	}
+
+	r.POST("/alpha/search", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm,
+		apiKeyAuthWithAugmentBearer, requireGroupOpenAI,
+		openAIGatewayHandler(h.OpenAIGateway.NativeSearch))
+	r.POST("/v1/alpha/search", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm,
+		gin.HandlerFunc(v1GatewayAuth), requireGroupOpenAI,
+		openAIGatewayHandler(h.OpenAIGateway.NativeSearch))
+
 	// API网关（Claude API兼容）
 	gateway := r.Group("/v1")
 	gateway.Use(bodyLimit)
 	gateway.Use(clientRequestID)
 	gateway.Use(opsErrorLogger)
 	gateway.Use(endpointNorm)
-	gateway.Use(gin.HandlerFunc(apiKeyAuth))
+	gateway.Use(gin.HandlerFunc(v1GatewayAuth))
 	gateway.Use(requireGroupAnthropic)
 	{
 		// /v1/messages: auto-route based on group platform
 		gateway.POST("/messages", func(c *gin.Context) {
-			if isOpenAIResponsesCompatibleGatewayPlatform(c) {
+			if getGroupPlatform(c) == service.PlatformGrok {
+				h.OpenAIGateway.Messages(c)
+				return
+			}
+			if getGroupPlatform(c) == service.PlatformOpenAI && shouldAutoRouteOpenAIGroupToOpenAI(c.Request.Header) {
 				h.OpenAIGateway.Messages(c)
 				return
 			}
 			h.Gateway.Messages(c)
 		})
-		// /v1/messages/count_tokens: OpenAI uses Anthropic-compat bridge; other
-		// OpenAI-compatible platforms keep the prior unsupported response.
+		// /v1/messages/count_tokens: ordinary OpenAI groups use Responses
+		// input_tokens; Claude native/bridge markers keep the local guarded path.
 		gateway.POST("/messages/count_tokens", func(c *gin.Context) {
-			if isOpenAIGatewayPlatform(c) {
-				h.OpenAIGateway.CountTokens(c)
-				return
-			}
-			if isOpenAIResponsesCompatibleGatewayPlatform(c) {
+			if getGroupPlatform(c) == service.PlatformGrok {
 				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
 				c.JSON(http.StatusNotFound, gin.H{
 					"type": "error",
@@ -119,13 +224,25 @@ func RegisterGatewayRoutes(
 				})
 				return
 			}
+			if getGroupPlatform(c) == service.PlatformOpenAI && shouldRejectOpenAIGroupCountTokens(c.Request.Header) {
+				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
+				c.JSON(http.StatusNotFound, gin.H{
+					"type": "error",
+					"error": gin.H{
+						"type":    "not_found_error",
+						"message": "Token counting is not supported for this platform",
+					},
+				})
+				return
+			}
+			if getGroupPlatform(c) == service.PlatformOpenAI && shouldRouteOpenAIGroupCountTokensToOpenAI(c.Request.Header) {
+				h.OpenAIGateway.CountTokens(c)
+				return
+			}
 			h.Gateway.CountTokens(c)
 		})
-		// Codex CLI / Codex app refresh their model picker from the provider's
-		// /models endpoint with a client_version query and expect the ChatGPT
-		// Codex manifest format; other clients keep the OpenAI-style list.
 		gateway.GET("/models", func(c *gin.Context) {
-			if isOpenAIGatewayPlatform(c) && c.Query("client_version") != "" {
+			if getGroupPlatform(c) == service.PlatformOpenAI && c.Query("client_version") != "" {
 				h.OpenAIGateway.CodexModels(c)
 				return
 			}
@@ -138,25 +255,23 @@ func RegisterGatewayRoutes(
 				h.OpenAIGateway.Responses(c)
 				return
 			}
-			h.Gateway.Responses(c)
+			writeAnthropicCompatUnsupportedProtocol(c)
 		})
 		gateway.POST("/responses/*subpath", func(c *gin.Context) {
 			if isOpenAIResponsesCompatibleGatewayPlatform(c) {
 				h.OpenAIGateway.Responses(c)
 				return
 			}
-			h.Gateway.Responses(c)
+			writeAnthropicCompatUnsupportedProtocol(c)
 		})
-		gateway.GET("/responses", func(c *gin.Context) {
-			h.OpenAIGateway.ResponsesWebSocket(c)
-		})
+		gateway.GET("/responses", openAIGatewayHandler(h.OpenAIGateway.ResponsesWebSocket))
 		// OpenAI Chat Completions API: auto-route based on group platform
 		gateway.POST("/chat/completions", func(c *gin.Context) {
 			if isOpenAIResponsesCompatibleGatewayPlatform(c) {
 				h.OpenAIGateway.ChatCompletions(c)
 				return
 			}
-			h.Gateway.ChatCompletions(c)
+			writeAnthropicCompatUnsupportedProtocol(c)
 		})
 		gateway.POST("/embeddings", func(c *gin.Context) {
 			if getGroupPlatform(c) != service.PlatformOpenAI {
@@ -170,6 +285,19 @@ func RegisterGatewayRoutes(
 				return
 			}
 			h.OpenAIGateway.Embeddings(c)
+		})
+		gateway.POST("/rerank", func(c *gin.Context) {
+			if getGroupPlatform(c) != service.PlatformOpenAI {
+				service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
+				c.JSON(http.StatusNotFound, gin.H{
+					"error": gin.H{
+						"type":    "not_found_error",
+						"message": "Rerank API is not supported for this platform",
+					},
+				})
+				return
+			}
+			h.OpenAIGateway.Rerank(c)
 		})
 		gateway.POST("/images/generations", imagesHandler)
 		gateway.POST("/images/edits", imagesHandler)
@@ -210,20 +338,17 @@ func RegisterGatewayRoutes(
 		}
 		h.Gateway.Responses(c)
 	}
-	r.POST("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, responsesHandler)
-	r.POST("/responses/*subpath", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, responsesHandler)
-	r.GET("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
-		h.OpenAIGateway.ResponsesWebSocket(c)
-	})
+	r.POST("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuthWithAugmentBearer, requireGroupAnthropic, responsesHandler)
+	r.POST("/responses/*subpath", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuthWithAugmentBearer, requireGroupAnthropic, responsesHandler)
+	r.GET("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuthWithAugmentBearer, requireGroupAnthropic, openAIGatewayHandler(h.OpenAIGateway.ResponsesWebSocket))
+	r.POST("/backend-api/anthropic/control-plane/intent", controlPlaneBodyLimit, clientRequestID, h.Gateway.ControlPlaneIntent)
 	codexDirect := r.Group("/backend-api/codex")
-	codexDirect.Use(bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic)
+	codexDirect.Use(bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, apiKeyAuthWithAugmentBearer, requireCodexScopedAPIKeyAccess(), requireGroupAnthropic)
 	{
 		codexDirect.POST("/responses", responsesHandler)
 		codexDirect.POST("/responses/*subpath", responsesHandler)
-		codexDirect.GET("/responses", func(c *gin.Context) {
-			h.OpenAIGateway.ResponsesWebSocket(c)
-		})
-		codexDirect.GET("/models", h.OpenAIGateway.CodexModels)
+		codexDirect.GET("/responses", openAIGatewayHandler(h.OpenAIGateway.ResponsesWebSocket))
+		codexDirect.GET("/models", openAIGatewayHandler(h.OpenAIGateway.CodexModels))
 	}
 	// OpenAI Chat Completions API（不带v1前缀的别名）— auto-route based on group platform
 	r.POST("/chat/completions", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
@@ -246,10 +371,47 @@ func RegisterGatewayRoutes(
 		}
 		h.OpenAIGateway.Embeddings(c)
 	})
+	r.POST("/rerank", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
+		if getGroupPlatform(c) != service.PlatformOpenAI {
+			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": gin.H{
+					"type":    "not_found_error",
+					"message": "Rerank API is not supported for this platform",
+				},
+			})
+			return
+		}
+		h.OpenAIGateway.Rerank(c)
+	})
 	r.POST("/images/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, imagesHandler)
 	r.POST("/images/edits", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, imagesHandler)
 	r.POST("/videos/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, videoGenerationHandler)
 	r.GET("/videos/:request_id", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, videoStatusHandler)
+
+	// OpenAI Gateway Core 显式前缀入口（供 OpenAI/Codex 客户端直连）
+	openaiGateway := r.Group("/openai/v1")
+	openaiGateway.Use(bodyLimit)
+	openaiGateway.Use(clientRequestID)
+	openaiGateway.Use(opsErrorLogger)
+	openaiGateway.Use(endpointNorm)
+	openaiGateway.Use(gin.HandlerFunc(apiKeyAuth))
+	openaiGateway.Use(requireGroupOpenAI)
+	{
+		openaiGateway.POST("/responses", openAIGatewayHandler(h.OpenAIGateway.Responses))
+		openaiGateway.POST("/responses/*subpath", openAIGatewayHandler(h.OpenAIGateway.Responses))
+		openaiGateway.GET("/responses", openAIGatewayHandler(h.OpenAIGateway.ResponsesWebSocket))
+		openaiGateway.POST("/chat/completions", openAIGatewayHandler(h.OpenAIGateway.ChatCompletions))
+		openaiGateway.POST("/embeddings", openAIGatewayHandler(h.OpenAIGateway.Embeddings))
+		openaiGateway.POST("/rerank", openAIGatewayHandler(h.OpenAIGateway.Rerank))
+		openaiGateway.POST("/images/generations", openAIGatewayHandler(h.OpenAIGateway.Images))
+		openaiGateway.POST("/images/edits", openAIGatewayHandler(h.OpenAIGateway.Images))
+	}
+
+	r.GET("/openai/_health", h.OpenAIGateway.Health)
+	r.GET("/openai/_verify", h.OpenAIGateway.Verify)
+	r.GET("/openai/_tls_canary", h.OpenAIGateway.TLSCanary)
+	r.POST("/openai/_tls/canary", h.OpenAIGateway.TLSCanary)
 
 	// Antigravity 模型列表
 	r.GET("/antigravity/models", gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.AntigravityModels)
@@ -286,11 +448,125 @@ func RegisterGatewayRoutes(
 
 }
 
+func claudeCodeNativeMessagesAuth(apiKeyAuth, nativeAuth middleware.APIKeyAuthMiddleware) middleware.APIKeyAuthMiddleware {
+	return middleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+		if c != nil && c.Request != nil && c.Request.URL != nil &&
+			service.IsClaudeCodeNativeMarkerPresent(c.Request.Header) &&
+			isClaudeCodeNativeMessagesPath(c.Request.URL.Path) {
+			if strings.TrimSpace(c.GetHeader("X-Zhumeng-Device-ID")) == "" || strings.TrimSpace(c.GetHeader("X-Zhumeng-Managed-Session")) == "" {
+				middleware.AnthropicErrorWriter(c, http.StatusUnauthorized, "Managed Claude Code native headers are required")
+				c.Abort()
+				return
+			}
+			if claudeCodeNativeAuthorizationLooksManagedJWT(c.GetHeader("Authorization")) {
+				gin.HandlerFunc(nativeAuth)(c)
+				return
+			}
+			gin.HandlerFunc(apiKeyAuth)(c)
+			return
+		}
+		gin.HandlerFunc(apiKeyAuth)(c)
+	})
+}
+
+func claudeCodeNativeAuthorizationLooksManagedJWT(authHeader string) bool {
+	authHeader = strings.TrimSpace(authHeader)
+	if authHeader == "" {
+		return false
+	}
+	parts := strings.Fields(authHeader)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return false
+	}
+	token := strings.TrimSpace(parts[1])
+	if !strings.HasPrefix(token, "eyJ") {
+		return false
+	}
+	segments := strings.Split(token, ".")
+	if len(segments) != 3 {
+		return false
+	}
+	for _, segment := range segments {
+		if strings.TrimSpace(segment) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func isClaudeCodeNativeMessagesPath(path string) bool {
+	switch strings.TrimRight(strings.TrimSpace(path), "/") {
+	case service.ClaudeCodeNativeInboundMessages, service.ClaudeCodeNativeInboundCountTokens:
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldAutoRouteOpenAIGroupToOpenAI(headers http.Header) bool {
+	return !service.IsClaudeCodeNativeMarkerPresent(headers) && !service.IsClaudeCodeBridgeMarkerPresent(headers)
+}
+
+func shouldRejectOpenAIGroupCountTokens(headers http.Header) bool {
+	return service.IsClaudeCodeBridgeMarkerPresent(headers)
+}
+
+func shouldRouteOpenAIGroupCountTokensToOpenAI(headers http.Header) bool {
+	return !service.IsClaudeCodeNativeMarkerPresent(headers) && !service.IsClaudeCodeBridgeMarkerPresent(headers)
+}
+
 // getGroupPlatform extracts the group platform from the API Key stored in context.
+
+func writeAnthropicCompatUnsupportedProtocol(c *gin.Context) {
+	c.JSON(http.StatusBadRequest, gin.H{
+		"type": "error",
+		"error": gin.H{
+			"type":    "unsupported_protocol",
+			"message": service.AnthropicCompatUnsupportedProtocolMessage(),
+		},
+	})
+}
+
 func getGroupPlatform(c *gin.Context) string {
 	apiKey, ok := middleware.GetAPIKeyFromContext(c)
 	if !ok || apiKey.Group == nil {
 		return ""
 	}
 	return apiKey.Group.Platform
+}
+
+func augmentGatewayAPIKeyAuth(apiKeyAuth middleware.APIKeyAuthMiddleware, authHandler *handler.AuthHandler) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		originalAuthorization := c.GetHeader("Authorization")
+		if authHandler != nil {
+			if gatewayKey, ok := authHandler.AugmentGatewayAPIKeyFromAuthorization(c.Request.Context(), originalAuthorization, c.FullPath()); ok {
+				c.Request.Header.Set("Authorization", "Bearer "+strings.TrimSpace(gatewayKey))
+			}
+		}
+		gin.HandlerFunc(apiKeyAuth)(c)
+		if originalAuthorization != "" {
+			c.Request.Header.Set("Authorization", originalAuthorization)
+		}
+	}
+}
+
+func requireCodexScopedAPIKeyAccess() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		apiKey, ok := middleware.GetAPIKeyFromContext(c)
+		if !ok || apiKey == nil {
+			c.Next()
+			return
+		}
+		if err := service.ValidateCodexScopedAPIKeyAccess(apiKey, c.Request.URL.Path); err != nil {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": gin.H{
+					"type":    "invalid_request_error",
+					"message": pkgerrors.Message(err),
+				},
+			})
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
 }

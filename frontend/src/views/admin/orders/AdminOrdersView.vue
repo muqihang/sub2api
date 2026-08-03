@@ -153,7 +153,7 @@ const selectedOrder = ref<PaymentOrder | null>(null)
 const showDetailDialog = ref(false)
 const showRefundDialog = ref(false)
 const refundSubmitting = ref(false)
-const refundQueryingIds = ref(new Set<number>())
+const refundQueryingIds = ref<Set<number>>(new Set())
 const orderAuditLogs = ref<AuditLog[]>([])
 const creditedAmountSymbol = currencySymbol('USD')
 
@@ -237,42 +237,15 @@ async function handleRetryOrder(order: PaymentOrder) {
 
 function openRefundDialog(order: PaymentOrder) { selectedOrder.value = order; showRefundDialog.value = true }
 
-function isRefundPendingWarning(warning: string | undefined): boolean {
-  return /pending|处理中|待/.test(String(warning || '').toLowerCase())
-}
-
-async function handleRefund(data: { amount: number; reason: string; deduct_balance: boolean; force: boolean }) {
-  if (!selectedOrder.value) return
-  refundSubmitting.value = true
-  try {
-    const res = await adminPaymentAPI.refundOrder(selectedOrder.value.id, { amount: data.amount, reason: data.reason, deduct_balance: data.deduct_balance, force: data.force })
-    if (res.data.success) {
-      appStore.showSuccess(t('payment.admin.refundSuccess'))
-      showRefundDialog.value = false
-      loadOrders()
-      return
-    }
-    if (isRefundPendingWarning(res.data.warning)) {
-      appStore.showSuccess(t('payment.admin.refundPending'))
-      showRefundDialog.value = false
-      loadOrders()
-      return
-    }
-    appStore.showError(res.data.warning || t('common.error'))
-  } catch (err: unknown) { appStore.showError(extractI18nErrorMessage(err, t, 'payment.errors', t('common.error'))) }
-  finally { refundSubmitting.value = false }
-}
-
 async function handleQueryRefund(order: PaymentOrder) {
   refundQueryingIds.value = new Set(refundQueryingIds.value).add(order.id)
   try {
-    const res = await adminPaymentAPI.queryRefund(order.id)
-    if (res.data.success) {
-      appStore.showSuccess(t('payment.admin.refundSuccess'))
-    } else if (isRefundPendingWarning(res.data.warning)) {
-      appStore.showSuccess(t('payment.admin.refundPending'))
+    const res = await adminPaymentAPI.queryRefundStatus(order.id)
+    const message = res.data?.success ? t('payment.admin.refundSuccess') : (res.data?.warning || t('payment.admin.refundPending'))
+    if (res.data?.success) {
+      appStore.showSuccess(message)
     } else {
-      appStore.showError(res.data.warning || t('common.error'))
+      appStore.showInfo(message)
     }
     loadOrders()
   } catch (err: unknown) {
@@ -282,6 +255,16 @@ async function handleQueryRefund(order: PaymentOrder) {
     next.delete(order.id)
     refundQueryingIds.value = next
   }
+}
+
+async function handleRefund(data: { amount: number; reason: string; deduct_balance: boolean; force: boolean }) {
+  if (!selectedOrder.value) return
+  refundSubmitting.value = true
+  try {
+    await adminPaymentAPI.refundOrder(selectedOrder.value.id, { amount: data.amount, reason: data.reason, deduct_balance: data.deduct_balance, force: data.force })
+    appStore.showSuccess(t('payment.admin.refundSuccess')); showRefundDialog.value = false; loadOrders()
+  } catch (err: unknown) { appStore.showError(extractI18nErrorMessage(err, t, 'payment.errors', t('common.error'))) }
+  finally { refundSubmitting.value = false }
 }
 
 function formatDateTime(dateStr: string): string { return formatOrderDateTime(dateStr) }

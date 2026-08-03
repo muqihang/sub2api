@@ -71,6 +71,7 @@ func TestGetDefaultPlatformQuotas_ReturnsAllowedPlatforms(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// 必须包含全部允许 platform key（补齐契约）
+	require.Contains(t, AllowedQuotaPlatforms, PlatformGrok)
 	for _, platform := range AllowedQuotaPlatforms {
 		if _, ok := got[platform]; !ok {
 			t.Errorf("missing platform key: %q", platform)
@@ -152,7 +153,7 @@ func TestGetAuthSourcePlatformQuotas_AllNegativeOrEmpty_NoEntry(t *testing.T) {
 }
 
 // TestSystemPlatformQuotas_WriteReadRoundTrip 验证系统层 platform quota 经 buildSystemSettingsUpdates（写）
-// 再由 GetDefaultPlatformQuotas（读）正确往返，覆盖真实 write→read 路径并锁住平台补齐契约。
+// 再由 GetDefaultPlatformQuotas（读）正确往返——覆盖真实 write→read 路径，锁住允许平台补齐契约。
 func TestSystemPlatformQuotas_WriteReadRoundTrip(t *testing.T) {
 	svc := newSettingServiceForPlatformQuotaTest(nil)
 	ctx := context.Background()
@@ -171,7 +172,7 @@ func TestSystemPlatformQuotas_WriteReadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 平台补齐契约：无论写了几个 platform，读回必须含全部允许平台
+	// 允许平台补齐契约：无论写了几个 platform，读回必须含全部允许平台
 	for _, p := range AllowedQuotaPlatforms {
 		if _, ok := got[p]; !ok {
 			t.Errorf("allowed-platform contract violated: missing platform %q", p)
@@ -250,6 +251,9 @@ func TestUpdateSettingsWithAuthSourceDefaults_PlatformQuotaRoundTrip(t *testing.
 				"openai": {
 					DailyLimitUSD: floatPtrPQ(0), // 显式禁用
 				},
+				"grok": {
+					WeeklyLimitUSD: floatPtrPQ(7.5),
+				},
 			},
 		},
 	}
@@ -270,6 +274,10 @@ func TestUpdateSettingsWithAuthSourceDefaults_PlatformQuotaRoundTrip(t *testing.
 	oai := got["openai"]
 	if oai == nil || oai.DailyLimitUSD == nil || *oai.DailyLimitUSD != 0 {
 		t.Errorf("openai daily=0 (禁用) round-trip failed: %+v", oai)
+	}
+	grok := got["grok"]
+	if grok == nil || grok.WeeklyLimitUSD == nil || *grok.WeeklyLimitUSD != 7.5 {
+		t.Errorf("grok weekly round-trip failed: %+v", grok)
 	}
 	// 其他 source 不应有 quota（authDefaults 只填了 Email）
 	if linux := svc.GetAuthSourcePlatformQuotas(context.Background(), "linuxdo"); len(linux) != 0 {

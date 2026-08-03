@@ -10,8 +10,19 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      CC_GATEWAY_REPO_ROOT: ${{ github.workspace }}/.ci/cc-gateway
     steps:
       - uses: actions/checkout@v6
+      - name: Checkout pinned CC Gateway integration fixture
+        uses: actions/checkout@v6
+        with:
+          repository: muqihang/cc-gateway
+          ref: 2800d398d9ad98d296dca238d6bc06179b70340a
+          path: .ci/cc-gateway
+      - name: Install CC Gateway integration fixture
+        working-directory: .ci/cc-gateway
+        run: npm ci
       - uses: actions/setup-go@v6
         with:
           go-version-file: backend/go.mod
@@ -52,6 +63,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
           go-version-file: backend/go.mod
@@ -65,5 +78,6 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.9
-          args: --timeout=30m
+          # Preserve the imported lint debt while rejecting every new issue.
+          args: --timeout=30m --new-from-rev=a0c51e3c674c858fb11b09f21d94d72ec909f554
           working-directory: backend

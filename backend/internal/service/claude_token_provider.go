@@ -56,14 +56,15 @@ func (p *ClaudeTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 	if account == nil {
 		return "", errors.New("account is nil")
 	}
-	if account.Platform != PlatformAnthropic || (account.Type != AccountTypeOAuth && account.Type != AccountTypeServiceAccount) {
-		return "", errors.New("not an anthropic oauth or service account")
+	if account.Platform != PlatformAnthropic || (account.Type != AccountTypeOAuth && account.Type != AccountTypeSetupToken && account.Type != AccountTypeServiceAccount) {
+		return "", errors.New("not an anthropic oauth, setup-token, or service account")
 	}
 	if account.Type == AccountTypeServiceAccount {
 		return p.getServiceAccountAccessToken(ctx, account)
 	}
 
 	cacheKey := ClaudeTokenCacheKey(account)
+	refreshPolicy := p.effectiveRefreshPolicy(account)
 
 	// 1) Try cache first.
 	if p.tokenCache != nil {
@@ -85,13 +86,13 @@ func (p *ClaudeTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 	if needsRefresh && p.refreshAPI != nil && p.executor != nil {
 		result, err := p.refreshAPI.RefreshIfNeeded(ctx, account, p.executor, claudeTokenRefreshSkew)
 		if err != nil {
-			if p.refreshPolicy.OnRefreshError == ProviderRefreshErrorReturn {
+			if refreshPolicy.OnRefreshError == ProviderRefreshErrorReturn {
 				return "", err
 			}
 			slog.Warn("claude_token_refresh_failed", "account_id", account.ID, "error", err)
 			refreshFailed = true
 		} else if result.LockHeld {
-			if p.refreshPolicy.OnLockHeld == ProviderLockHeldWaitForCache && p.tokenCache != nil {
+			if refreshPolicy.OnLockHeld == ProviderLockHeldWaitForCache && p.tokenCache != nil {
 				time.Sleep(claudeLockWaitTime)
 				if token, cacheErr := p.tokenCache.GetAccessToken(ctx, cacheKey); cacheErr == nil && strings.TrimSpace(token) != "" {
 					slog.Debug("claude_token_cache_hit_after_wait", "account_id", account.ID)
@@ -135,8 +136,8 @@ func (p *ClaudeTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 		} else {
 			ttl := 30 * time.Minute
 			if refreshFailed {
-				if p.refreshPolicy.FailureTTL > 0 {
-					ttl = p.refreshPolicy.FailureTTL
+				if refreshPolicy.FailureTTL > 0 {
+					ttl = refreshPolicy.FailureTTL
 				} else {
 					ttl = time.Minute
 				}
@@ -161,6 +162,56 @@ func (p *ClaudeTokenProvider) GetAccessToken(ctx context.Context, account *Accou
 	return accessToken, nil
 }
 
+// ForceRefresh refreshes Claude OAuth/setup-token credentials after an upstream 401.
+func (p *ClaudeTokenProvider) ForceRefresh(ctx context.Context, account *Account, staleAccessToken string) (*Account, error) {
+	if p == nil || p.refreshAPI == nil || p.executor == nil {
+		return nil, errors.New("claude token refresh unavailable")
+	}
+	if account == nil || account.Platform != PlatformAnthropic || (account.Type != AccountTypeOAuth && account.Type != AccountTypeSetupToken) {
+		return nil, errors.New("not an anthropic oauth or setup-token account")
+	}
+	result, err := p.refreshAPI.ForceRefresh(ctx, account, p.executor, staleAccessToken)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil || result.LockHeld {
+		return nil, errors.New("claude token refresh lock held")
+	}
+	refreshed := result.Account
+	if refreshed == nil {
+		refreshed = account
+	}
+	if p.tokenCache != nil {
+		_ = p.tokenCache.DeleteAccessToken(ctx, ClaudeTokenCacheKey(account))
+	}
+	return refreshed, nil
+}
+
 func (p *ClaudeTokenProvider) getServiceAccountAccessToken(ctx context.Context, account *Account) (string, error) {
 	return getVertexServiceAccountAccessToken(ctx, p.tokenCache, account)
+}
+
+func (p *ClaudeTokenProvider) effectiveRefreshPolicy(account *Account) ProviderRefreshPolicy {
+	policy := p.refreshPolicy
+	if claudeOAuthRefreshShouldFailClosed(account) {
+		policy.OnRefreshError = ProviderRefreshErrorReturn
+	}
+	return policy
+}
+
+func claudeOAuthRefreshShouldFailClosed(account *Account) bool {
+	if account == nil {
+		return false
+	}
+	return parseClaudeRefreshFailClosedFlag(account.GetExtraString("oauth_refresh_fail_closed")) ||
+		parseClaudeRefreshFailClosedFlag(account.GetExtraString("cc_gateway_canary_only"))
+}
+
+func parseClaudeRefreshFailClosedFlag(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on", "fail_closed", "fail-closed":
+		return true
+	default:
+		return false
+	}
 }

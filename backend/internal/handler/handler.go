@@ -16,6 +16,7 @@ type AdminHandlers struct {
 	OAuth                  *admin.OAuthHandler
 	OpenAIOAuth            *admin.OpenAIOAuthHandler
 	GeminiOAuth            *admin.GeminiOAuthHandler
+	GeminiHealth           *admin.GeminiHealthHandler
 	AntigravityOAuth       *admin.AntigravityOAuthHandler
 	GrokOAuth              *admin.GrokOAuthHandler
 	Proxy                  *admin.ProxyHandler
@@ -30,6 +31,7 @@ type AdminHandlers struct {
 	ErrorPassthrough       *admin.ErrorPassthroughHandler
 	TLSFingerprintProfile  *admin.TLSFingerprintProfileHandler
 	APIKey                 *admin.AdminAPIKeyHandler
+	Entity                 *admin.EntityHandler
 	ScheduledTest          *admin.ScheduledTestHandler
 	Channel                *admin.ChannelHandler
 	ChannelMonitor         *admin.ChannelMonitorHandler
@@ -37,6 +39,10 @@ type AdminHandlers struct {
 	ContentModeration      *admin.ContentModerationHandler
 	Payment                *admin.PaymentHandler
 	Affiliate              *admin.AffiliateHandler
+	AugmentGateway         *admin.AugmentGatewayHandler
+	CodexGateway           *admin.CodexGatewayHandler
+	FormalPoolOnboarding   *admin.FormalPoolOnboardingHandler
+	FormalPoolOperations   *admin.FormalPoolOperationsHandler
 	Compliance             *admin.ComplianceHandler
 }
 
@@ -49,9 +55,12 @@ type Handlers struct {
 	Redeem           *RedeemHandler
 	Subscription     *SubscriptionHandler
 	Announcement     *AnnouncementHandler
+	CodexAgent       *CodexAgentHandler
+	CodexEntryCenter *CodexEntryCenterHandler
 	ChannelMonitor   *ChannelMonitorUserHandler
 	Admin            *AdminHandlers
 	Gateway          *GatewayHandler
+	CodexGateway     *CodexGatewayHandler
 	OpenAIGateway    *OpenAIGatewayHandler
 	Setting          *SettingHandler
 	Totp             *TotpHandler

@@ -609,17 +609,27 @@ func ChatUsageToResponsesUsage(usage *ChatUsage) *ResponsesUsage {
 	if out.TotalTokens == 0 {
 		out.TotalTokens = out.InputTokens + out.OutputTokens
 	}
-	if usage.PromptTokensDetails != nil && (usage.PromptTokensDetails.CachedTokens > 0 ||
-		usage.PromptTokensDetails.CacheCreationTokens > 0 || usage.PromptTokensDetails.CacheWriteTokens > 0) {
+	cachedTokens := 0
+	cacheCreationTokens := 0
+	cacheWriteTokens := 0
+	if usage.PromptTokensDetails != nil {
+		cachedTokens = usage.PromptTokensDetails.CachedTokens
+		cacheCreationTokens = usage.PromptTokensDetails.CacheCreationTokens
+		cacheWriteTokens = usage.PromptTokensDetails.CacheWriteTokens
+	}
+	if usage.PromptCacheHitTokens > 0 {
+		cachedTokens = usage.PromptCacheHitTokens
+	}
+	if cachedTokens > 0 || cacheCreationTokens > 0 || cacheWriteTokens > 0 {
 		out.InputTokensDetails = &ResponsesInputTokensDetails{
-			CachedTokens:        usage.PromptTokensDetails.CachedTokens,
-			CacheCreationTokens: usage.PromptTokensDetails.CacheCreationTokens,
-			CacheWriteTokens:    usage.PromptTokensDetails.CacheWriteTokens,
+			CachedTokens:        cachedTokens,
+			CacheCreationTokens: cacheCreationTokens,
+			CacheWriteTokens:    cacheWriteTokens,
 		}
-		if usage.PromptTokensDetails.CacheWriteTokens > 0 {
-			out.CacheCreationInputTokens = usage.PromptTokensDetails.CacheWriteTokens
+		if cacheWriteTokens > 0 {
+			out.CacheCreationInputTokens = cacheWriteTokens
 		} else {
-			out.CacheCreationInputTokens = usage.PromptTokensDetails.CacheCreationTokens
+			out.CacheCreationInputTokens = cacheCreationTokens
 		}
 	}
 	return out
@@ -749,12 +759,6 @@ func ChatCompletionsChunkToResponsesEvents(
 					copyCall.ID = generateItemID()
 				}
 				copyCall.Type = "function"
-				// Arguments are accumulated by the shared block below so the
-				// emitted delta and the stored value stay in sync. Some upstreams
-				// (e.g. GLM/Zhipu) pack id+name+arguments into the first tool_call
-				// chunk; without this reset the first chunk's arguments would be
-				// counted twice (once from this copy, once from the += below),
-				// producing a doubled, invalid JSON like {"a":1}{"a":1}.
 				copyCall.Function.Arguments = ""
 				state.ToolCalls[idx] = &copyCall
 				stored = &copyCall

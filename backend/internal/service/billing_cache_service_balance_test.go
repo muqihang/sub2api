@@ -1,5 +1,3 @@
-//go:build unit
-
 package service
 
 import (
@@ -21,6 +19,17 @@ type balanceEligibilityCacheStub struct {
 	invalidated              atomic.Bool
 	deductCalls              atomic.Int64
 	invalidateCalls          atomic.Int64
+}
+
+type balanceEligibilityUserRepoStub struct {
+	UserRepository
+	calls   atomic.Int64
+	balance float64
+}
+
+func (s *balanceEligibilityUserRepoStub) GetByID(ctx context.Context, id int64) (*User, error) {
+	s.calls.Add(1)
+	return &User{ID: id, Balance: s.balance}, nil
 }
 
 func (s *balanceEligibilityCacheStub) GetUserBalance(context.Context, int64) (float64, error) {
@@ -68,7 +77,7 @@ func TestSyncBalanceCacheAfterDeduction_InvalidatesExhaustedBalance(t *testing.T
 		balance:                  0.50,
 		cacheMissAfterInvalidate: true,
 	}
-	userRepo := &balanceLoadUserRepoStub{balance: -0.25}
+	userRepo := &balanceEligibilityUserRepoStub{balance: -0.25}
 	cfg := &config.Config{}
 	cfg.Billing.MinimumBalanceReserve = 0.01
 	svc := NewBillingCacheService(cache, userRepo, nil, nil, nil, nil, cfg, nil)

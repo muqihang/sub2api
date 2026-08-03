@@ -46,6 +46,41 @@ func TestIsOpenAIWSClientDisconnectError(t *testing.T) {
 	}
 }
 
+func TestSanitizeOpenAIWSClientPayloadRaw(t *testing.T) {
+	t.Parallel()
+
+	t.Run("strip_context_management", func(t *testing.T) {
+		payload := []byte(`{"type":"response.create","model":"gpt-5.4","context_management":{"mode":"session"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
+
+		updated, removed, err := sanitizeOpenAIWSClientPayloadRaw(payload)
+		require.NoError(t, err)
+		require.True(t, removed)
+		require.False(t, gjson.GetBytes(updated, "context_management").Exists())
+		require.Equal(t, "response.create", gjson.GetBytes(updated, "type").String())
+		require.Equal(t, "gpt-5.4", gjson.GetBytes(updated, "model").String())
+	})
+
+	t.Run("keep_payload_when_context_management_missing", func(t *testing.T) {
+		payload := []byte(`{"type":"response.create","model":"gpt-5.4","input":[]}`)
+
+		updated, removed, err := sanitizeOpenAIWSClientPayloadRaw(payload)
+		require.NoError(t, err)
+		require.False(t, removed)
+		require.JSONEq(t, string(payload), string(updated))
+	})
+
+	t.Run("inject_empty_input_for_generate_false_warmup", func(t *testing.T) {
+		payload := []byte(`{"type":"response.create","generate":false,"model":"gpt-5.4","instructions":"warmup","tools":[]}`)
+
+		updated, removed, err := sanitizeOpenAIWSClientPayloadRaw(payload)
+		require.NoError(t, err)
+		require.True(t, removed)
+		require.True(t, gjson.GetBytes(updated, "input").Exists())
+		require.Equal(t, "[]", gjson.GetBytes(updated, "input").Raw)
+		require.Equal(t, false, gjson.GetBytes(updated, "generate").Bool())
+	})
+}
+
 func TestIsOpenAIWSIngressPreviousResponseNotFound(t *testing.T) {
 	t.Parallel()
 
@@ -153,22 +188,12 @@ func TestStripCodexSparkImageGenerationToolFromRawPayload(t *testing.T) {
 		require.True(t, gjson.GetBytes(updated, `tools.#(type=="function")`).Exists())
 	})
 
-	t.Run("strips_namespace_tools_for_spark", func(t *testing.T) {
-		payload := []byte(`{
-			"type":"response.create",
-			"model":"gpt-5.3-codex-spark",
-			"input":[
-				{"type":"message","role":"user","content":"hello"},
-				{"type":"additional_tools","tools":[{"type":"namespace","name":"image_gen"}]}
-			],
-			"tool_choice":{"type":"namespace","name":"image_gen"}
-		}`)
-		updated, changed, err := stripCodexSparkImageGenerationToolFromRawPayload(payload, "gpt-5.3-codex-spark")
+	t.Run("drops_tools_key_when_only_image_generation_remains", func(t *testing.T) {
+		payload := []byte(`{"type":"response.create","model":"gpt-5.3-codex-spark-high","tools":[{"type":"image_generation","output_format":"png"}]}`)
+		updated, changed, err := stripCodexSparkImageGenerationToolFromRawPayload(payload, "gpt-5.3-codex-spark-high")
 		require.NoError(t, err)
 		require.True(t, changed)
-		require.False(t, IsImageGenerationIntent(openAIResponsesEndpoint, "gpt-5.3-codex-spark", updated))
-		require.Equal(t, "hello", gjson.GetBytes(updated, "input.0.content").String())
-		require.False(t, gjson.GetBytes(updated, "tool_choice").Exists())
+		require.False(t, gjson.GetBytes(updated, "tools").Exists())
 	})
 
 	t.Run("keeps_image_generation_for_non_spark", func(t *testing.T) {
@@ -188,61 +213,24 @@ func TestStripCodexSparkImageGenerationToolFromRawPayload(t *testing.T) {
 	})
 }
 
-func TestStripOpenAIImageGenerationToolsFromRawPayload(t *testing.T) {
-	t.Run("flat image tool", func(t *testing.T) {
-		payload := []byte(`{
-			"type":"response.create",
-			"model":"gpt-5.4",
-			"tools":[
-				{"type":"function","name":"shell"},
-				{"type":"image_generation","output_format":"png"}
-			],
-			"tool_choice":{"type":"image_generation"}
-		}`)
+func TestStripOpenAIImageGenerationToolFromRawPayload(t *testing.T) {
+	payload := []byte(`{
+		"type":"response.create",
+		"model":"gpt-5.4",
+		"tools":[
+			{"type":"function","name":"shell"},
+			{"type":"image_generation","output_format":"png"}
+		],
+		"tool_choice":{"type":"image_generation"}
+	}`)
 
-		updated, changed, err := stripOpenAIImageGenerationToolsFromRawPayload(payload)
+	updated, changed, err := stripOpenAIImageGenerationToolFromRawPayload(payload)
 
-		require.NoError(t, err)
-		require.True(t, changed)
-		require.False(t, gjson.GetBytes(updated, `tools.#(type=="image_generation")`).Exists())
-		require.True(t, gjson.GetBytes(updated, `tools.#(type=="function")`).Exists())
-		require.False(t, gjson.GetBytes(updated, "tool_choice").Exists())
-	})
-
-	t.Run("namespace and Responses Lite tools", func(t *testing.T) {
-		payload := []byte(`{
-			"type":"response.create",
-			"model":"gpt-5.5",
-			"tools":[
-				{"type":"namespace","name":"image_gen","tools":[{"type":"function","name":"imagegen"}]},
-				{"type":"namespace","name":"code_tools","tools":[{"type":"function","name":"run"}]}
-			],
-			"input":[
-				{"type":"message","role":"user","content":"hello"},
-				{"type":"additional_tools","tools":[{"type":"namespace","name":"image_gen"}]}
-			],
-			"tool_choice":{"type":"namespace","name":"image_gen"}
-		}`)
-
-		updated, changed, err := stripOpenAIImageGenerationToolsFromRawPayload(payload)
-
-		require.NoError(t, err)
-		require.True(t, changed)
-		require.False(t, IsImageGenerationIntent(openAIResponsesEndpoint, "gpt-5.5", updated))
-		require.True(t, gjson.GetBytes(updated, `tools.#(name=="code_tools")`).Exists())
-		require.Equal(t, "hello", gjson.GetBytes(updated, "input.0.content").String())
-		require.False(t, gjson.GetBytes(updated, "tool_choice").Exists())
-	})
-
-	t.Run("non-image namespace is unchanged", func(t *testing.T) {
-		payload := []byte(`{"type":"response.create","model":"gpt-5.5","tools":[{"type":"namespace","name":"code_tools"}]}`)
-
-		updated, changed, err := stripOpenAIImageGenerationToolsFromRawPayload(payload)
-
-		require.NoError(t, err)
-		require.False(t, changed)
-		require.Equal(t, payload, updated)
-	})
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.False(t, gjson.GetBytes(updated, `tools.#(type=="image_generation")`).Exists())
+	require.True(t, gjson.GetBytes(updated, `tools.#(type=="function")`).Exists())
+	require.False(t, gjson.GetBytes(updated, "tool_choice").Exists())
 }
 
 func TestAlignStoreDisabledPreviousResponseID(t *testing.T) {

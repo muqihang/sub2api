@@ -70,8 +70,11 @@ func newJWTTestEnv(users map[int64]*service.User) (*gin.Engine, *service.AuthSer
 		subject, _ := GetAuthSubjectFromContext(c)
 		role, _ := GetUserRoleFromContext(c)
 		c.JSON(http.StatusOK, gin.H{
-			"user_id": subject.UserID,
-			"role":    role,
+			"user_id":         subject.UserID,
+			"role":            role,
+			"auth_method":     subject.AuthMethod,
+			"token_version":   subject.TokenVersion,
+			"expires_at_unix": subject.ExpiresAtUnix,
 		})
 	})
 	return r, authSvc
@@ -102,6 +105,9 @@ func TestJWTAuth_ValidToken(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	require.Equal(t, float64(1), body["user_id"])
 	require.Equal(t, "user", body["role"])
+	require.Equal(t, "jwt", body["auth_method"])
+	require.Equal(t, float64(user.TokenVersion), body["token_version"])
+	require.Greater(t, body["expires_at_unix"].(float64), float64(time.Now().Unix()))
 }
 
 func TestJWTAuth_ValidToken_LowercaseBearer(t *testing.T) {

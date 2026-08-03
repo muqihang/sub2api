@@ -28,8 +28,8 @@ import (
 // user-authored prose like "Today is foo." or "His date is 2026-06-30." from
 // being touched.
 var (
-	datelineRegexHyphen = regexp.MustCompile(`Today(['’ʼʹ])s date is (\d{4})-(\d{2})-(\d{2})\.`)
-	datelineRegexSlash  = regexp.MustCompile(`Today(['’ʼʹ])s date is (\d{4})/(\d{2})/(\d{2})\.`)
+	datelineRegexHyphen = regexp.MustCompile("Today(['’ʼʹ])s date is (\\d{4})-(\\d{2})-(\\d{2})\\.")
+	datelineRegexSlash  = regexp.MustCompile("Today(['’ʼʹ])s date is (\\d{4})/(\\d{2})/(\\d{2})\\.")
 )
 
 // systemReminderRegex matches a <system-reminder> block. The dateline lives in
@@ -124,8 +124,8 @@ func NormalizeText(text string) (string, []DatelineHit) {
 			// Already canonical: no rewrite, no hit.
 			continue
 		}
-		_, _ = b.WriteString(text[prev:m.start])
-		_, _ = b.WriteString(canonical)
+		b.WriteString(text[prev:m.start])
+		b.WriteString(canonical)
 		prev = m.end
 		changed = true
 		hits = append(hits, DatelineHit{
@@ -136,7 +136,7 @@ func NormalizeText(text string) (string, []DatelineHit) {
 	if !changed {
 		return text, nil
 	}
-	_, _ = b.WriteString(text[prev:])
+	b.WriteString(text[prev:])
 	return b.String(), hits
 }
 
@@ -159,20 +159,20 @@ func normalizeSystemReminderScopedText(text string) (string, []DatelineHit) {
 	var hits []DatelineHit
 	changed := false
 	for _, loc := range locs {
-		_, _ = b.WriteString(text[prev:loc[0]])
+		b.WriteString(text[prev:loc[0]])
 		block := text[loc[0]:loc[1]]
 		normalized, blockHits := NormalizeText(block)
 		if normalized != block {
 			changed = true
 		}
-		_, _ = b.WriteString(normalized)
+		b.WriteString(normalized)
 		hits = append(hits, blockHits...)
 		prev = loc[1]
 	}
 	if !changed {
 		return text, nil
 	}
-	_, _ = b.WriteString(text[prev:])
+	b.WriteString(text[prev:])
 	return b.String(), hits
 }
 

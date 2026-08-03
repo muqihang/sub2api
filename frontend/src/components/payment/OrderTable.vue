@@ -55,13 +55,13 @@ const props = defineProps<{
   showUser?: boolean
 }>()
 
-function formatDate(dateStr: string) { return new Date(dateStr).toLocaleString() }
-
 const creditedAmountSymbol = currencySymbol('USD')
 
 function paymentAmountSymbol(order: PaymentOrder): string {
   return currencySymbol(order.currency)
 }
+
+function formatDate(dateStr: string) { return new Date(dateStr).toLocaleString() }
 
 const columns = computed((): Column[] => {
   const cols: Column[] = [

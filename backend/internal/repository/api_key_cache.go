@@ -17,6 +17,7 @@ const (
 	apiKeyRateLimitDuration    = 24 * time.Hour
 	apiKeyAuthCachePrefix      = "apikey:auth:"
 	authCacheInvalidateChannel = "auth:cache:invalidate"
+	authCacheSubscribeTimeout  = 2 * time.Second
 )
 
 // apiKeyRateLimitKey generates the Redis key for API key creation rate limiting.
@@ -104,7 +105,9 @@ func (c *apiKeyCache) SubscribeAuthCacheInvalidation(ctx context.Context, handle
 	pubsub := c.rdb.Subscribe(ctx, authCacheInvalidateChannel)
 
 	// Verify subscription is working
-	_, err := pubsub.Receive(ctx)
+	receiveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), authCacheSubscribeTimeout)
+	defer cancel()
+	_, err := pubsub.Receive(receiveCtx)
 	if err != nil {
 		_ = pubsub.Close()
 		return fmt.Errorf("subscribe to auth cache invalidation: %w", err)

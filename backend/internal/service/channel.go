@@ -14,7 +14,7 @@ const (
 	BillingModeToken      BillingMode = "token"       // 按 token 区间计费
 	BillingModePerRequest BillingMode = "per_request" // 按次计费（支持上下文窗口分层）
 	BillingModeImage      BillingMode = "image"       // 图片计费（当前按次，预留 token 计费）
-	BillingModeVideo      BillingMode = "video"       // 视频生成计费（按视频生成次数）
+	BillingModeVideo      BillingMode = "video"       // 视频生成计费（按秒）
 )
 
 // IsValid 检查 BillingMode 是否为合法值
@@ -26,7 +26,6 @@ func (m BillingMode) IsValid() bool {
 	return false
 }
 
-// IsValidUsageFilter 检查 BillingMode 是否可用于使用记录筛选。
 func (m BillingMode) IsValidUsageFilter() bool {
 	switch m {
 	case BillingModeToken, BillingModePerRequest, BillingModeImage, BillingModeVideo, "":
@@ -264,9 +263,25 @@ func (c *Channel) IsBedrockCCCompatEnabled(platform string) bool {
 	if c == nil || c.FeaturesConfig == nil {
 		return false
 	}
-	// 直接检查 bedrock_cc_compat 开关，不再检查 platform 子字段
-	enabled, ok := c.FeaturesConfig[featureKeyBedrockCCCompat].(bool)
-	return ok && enabled
+	switch v := c.FeaturesConfig[featureKeyBedrockCCCompat].(type) {
+	case bool:
+		return v
+	case map[string]any:
+		// Older UI builds wrote bedrock_cc_compat as a platform map. The flag is
+		// now channel-scoped, so preserve any explicitly-enabled legacy value.
+		for _, enabled := range v {
+			if b, ok := enabled.(bool); ok && b {
+				return true
+			}
+		}
+	case map[string]bool:
+		for _, enabled := range v {
+			if enabled {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // deepCopyFeaturesConfig creates a deep copy of FeaturesConfig to prevent cache pollution.

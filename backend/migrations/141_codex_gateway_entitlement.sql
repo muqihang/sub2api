@@ -1,0 +1,2 @@
+ALTER TABLE groups
+    ADD COLUMN IF NOT EXISTS codex_gateway_entitled BOOLEAN NOT NULL DEFAULT FALSE;

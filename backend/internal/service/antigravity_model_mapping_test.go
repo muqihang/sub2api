@@ -5,6 +5,7 @@ package service
 import (
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -69,10 +70,10 @@ func TestAntigravityGatewayService_GetMappedModel(t *testing.T) {
 			expected:       "claude-sonnet-4-6",
 		},
 		{
-			name:           "默认映射 - claude-sonnet-4-5-20250929 → claude-sonnet-4-5",
+			name:           "默认映射 - claude-sonnet-4-5-20250929 → claude-sonnet-4-6",
 			requestedModel: "claude-sonnet-4-5-20250929",
 			accountMapping: nil,
-			expected:       "claude-sonnet-4-5",
+			expected:       "claude-sonnet-4-6",
 		},
 
 		// 3. 默认映射中的透传（映射到自己）
@@ -89,10 +90,10 @@ func TestAntigravityGatewayService_GetMappedModel(t *testing.T) {
 			expected:       "claude-sonnet-4-6",
 		},
 		{
-			name:           "默认映射透传 - claude-sonnet-4-5",
+			name:           "默认映射 - claude-sonnet-4-5 → claude-sonnet-4-6",
 			requestedModel: "claude-sonnet-4-5",
 			accountMapping: nil,
-			expected:       "claude-sonnet-4-5",
+			expected:       "claude-sonnet-4-6",
 		},
 		{
 			name:           "默认映射透传 - claude-opus-4-8",
@@ -113,10 +114,10 @@ func TestAntigravityGatewayService_GetMappedModel(t *testing.T) {
 			expected:       "claude-opus-4-6-thinking",
 		},
 		{
-			name:           "默认映射透传 - claude-sonnet-4-5-thinking",
+			name:           "默认映射 - claude-sonnet-4-5-thinking → claude-sonnet-4-6",
 			requestedModel: "claude-sonnet-4-5-thinking",
 			accountMapping: nil,
-			expected:       "claude-sonnet-4-5-thinking",
+			expected:       "claude-sonnet-4-6",
 		},
 		{
 			name:           "默认映射透传 - gemini-2.5-flash",
@@ -224,11 +225,11 @@ func TestAntigravityGatewayService_IsModelSupported(t *testing.T) {
 		expected bool
 	}{
 		// 直接支持
-		{"直接支持 - claude-fable-5", "claude-fable-5", true},
 		{"直接支持 - claude-sonnet-4-5", "claude-sonnet-4-5", true},
 		{"直接支持 - gemini-3-flash", "gemini-3-flash", true},
 
 		// 可映射（有明确前缀映射）
+		{"可映射 - claude-fable-5", "claude-fable-5", true},
 		{"可映射 - claude-opus-4-8", "claude-opus-4-8", true},
 		{"可映射 - claude-opus-4-6", "claude-opus-4-6", true},
 
@@ -292,7 +293,7 @@ func TestMapAntigravityModel_WildcardTargetEqualsRequest(t *testing.T) {
 			name:           "customtools alias falls back to normalized preview mapping",
 			modelMapping:   map[string]any{"gemini-3.1-pro-preview": "gemini-3.1-pro-high"},
 			requestedModel: "gemini-3.1-pro-preview-customtools",
-			expected:       "gemini-3.1-pro-high",
+			expected:       domain.AntigravityGemini31ProAgentModel,
 		},
 	}
 

@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -64,6 +66,10 @@ type openAIWSAcquireRequest struct {
 	WSURL           string
 	Headers         http.Header
 	ProxyURL        string
+	ProxyHash       string
+	EgressBucket    string
+	ProtocolMode    string
+	EffectiveTLS    *OpenAIGatewayEffectiveTLS
 	PreferredConnID string
 	// ForceNewConn: 强制本次获取新连接（避免复用导致连接内续链状态互相污染）。
 	ForceNewConn bool
@@ -221,8 +227,9 @@ func (l *openAIWSConnLease) Release() {
 }
 
 type openAIWSConn struct {
-	id string
-	ws openAIWSClientConn
+	id            string
+	ws            openAIWSClientConn
+	cacheIdentity string
 
 	handshakeHeaders http.Header
 
@@ -239,11 +246,12 @@ type openAIWSConn struct {
 	prewarmed     atomic.Bool
 }
 
-func newOpenAIWSConn(id string, _ int64, ws openAIWSClientConn, handshakeHeaders http.Header) *openAIWSConn {
+func newOpenAIWSConn(id string, _ int64, ws openAIWSClientConn, handshakeHeaders http.Header, cacheIdentity ...string) *openAIWSConn {
 	now := time.Now()
 	conn := &openAIWSConn{
 		id:               id,
 		ws:               ws,
+		cacheIdentity:    firstOpenAIWSCacheIdentity(cacheIdentity...),
 		handshakeHeaders: cloneHeader(handshakeHeaders),
 		leaseCh:          make(chan struct{}, 1),
 		closedCh:         make(chan struct{}),
@@ -787,6 +795,7 @@ func (p *openAIWSConnPool) acquire(ctx context.Context, req openAIWSAcquireReque
 	}
 
 	accountID := req.Account.ID
+	requestCacheIdentity := buildOpenAIWSPoolCacheIdentity(req)
 	effectiveMaxConns := p.effectiveMaxConnsByAccount(req.Account)
 	if effectiveMaxConns <= 0 {
 		return nil, errOpenAIWSConnQueueFull
@@ -800,6 +809,7 @@ func (p *openAIWSConnPool) acquire(ctx context.Context, req openAIWSAcquireReque
 		evicted = p.cleanupAccountLocked(ap, now, effectiveMaxConns)
 		ap.lastCleanupAt = now
 	}
+	evicted = append(evicted, p.evictIdleConnsWithDifferentCacheIdentityLocked(ap, requestCacheIdentity)...)
 	pickStartedAt := time.Now()
 	allowReuse := !req.ForceNewConn
 	preferredConnID := stringsTrim(req.PreferredConnID)
@@ -814,7 +824,7 @@ func (p *openAIWSConnPool) acquire(ctx context.Context, req openAIWSAcquireReque
 				return nil, errOpenAIWSPreferredConnUnavailable
 			}
 			preferredConn, ok := ap.conns[preferredConnID]
-			if !ok || preferredConn == nil {
+			if !ok || preferredConn == nil || !openAIWSConnMatchesCacheIdentity(preferredConn, requestCacheIdentity) {
 				p.recordConnPickDuration(time.Since(pickStartedAt))
 				ap.mu.Unlock()
 				closeOpenAIWSConns(evicted)
@@ -895,7 +905,7 @@ func (p *openAIWSConnPool) acquire(ctx context.Context, req openAIWSAcquireReque
 		}
 
 		if preferredConnID != "" {
-			if conn, ok := ap.conns[preferredConnID]; ok && conn.tryAcquire() {
+			if conn, ok := ap.conns[preferredConnID]; ok && openAIWSConnMatchesCacheIdentity(conn, requestCacheIdentity) && conn.tryAcquire() {
 				connPick := time.Since(pickStartedAt)
 				p.recordConnPickDuration(connPick)
 				ap.mu.Unlock()
@@ -917,7 +927,7 @@ func (p *openAIWSConnPool) acquire(ctx context.Context, req openAIWSAcquireReque
 			}
 		}
 
-		best := p.pickLeastBusyConnLocked(ap, "")
+		best := p.pickLeastBusyConnLocked(ap, "", requestCacheIdentity)
 		if best != nil && best.tryAcquire() {
 			connPick := time.Since(pickStartedAt)
 			p.recordConnPickDuration(connPick)
@@ -939,7 +949,7 @@ func (p *openAIWSConnPool) acquire(ctx context.Context, req openAIWSAcquireReque
 			return lease, nil
 		}
 		for _, conn := range ap.conns {
-			if conn == nil || conn == best {
+			if conn == nil || conn == best || !openAIWSConnMatchesCacheIdentity(conn, requestCacheIdentity) {
 				continue
 			}
 			if conn.tryAcquire() {
@@ -1016,7 +1026,7 @@ func (p *openAIWSConnPool) acquire(ctx context.Context, req openAIWSAcquireReque
 		return nil, errOpenAIWSConnQueueFull
 	}
 
-	target := p.pickLeastBusyConnLocked(ap, req.PreferredConnID)
+	target := p.pickLeastBusyConnLocked(ap, req.PreferredConnID, requestCacheIdentity)
 	connPick := time.Since(pickStartedAt)
 	p.recordConnPickDuration(connPick)
 	if target == nil {
@@ -1087,6 +1097,37 @@ func (p *openAIWSConnPool) pickOldestIdleConnLocked(ap *openAIWSAccountPool) *op
 		}
 	}
 	return oldest
+}
+
+func (p *openAIWSConnPool) evictIdleConnsWithDifferentCacheIdentityLocked(ap *openAIWSAccountPool, cacheIdentity string) []*openAIWSConn {
+	if ap == nil || len(ap.conns) == 0 {
+		return nil
+	}
+	cacheIdentity = stringsTrim(cacheIdentity)
+	if cacheIdentity == "" {
+		return nil
+	}
+	evicted := make([]*openAIWSConn, 0)
+	for id, conn := range ap.conns {
+		if conn == nil {
+			continue
+		}
+		if openAIWSConnMatchesCacheIdentity(conn, cacheIdentity) {
+			continue
+		}
+		if conn.isLeased() || conn.waiters.Load() > 0 || p.isConnPinnedLocked(ap, conn.id) {
+			continue
+		}
+		delete(ap.conns, id)
+		if len(ap.pinnedConns) > 0 {
+			delete(ap.pinnedConns, id)
+		}
+		evicted = append(evicted, conn)
+	}
+	if len(evicted) > 0 {
+		p.metrics.scaleDownTotal.Add(int64(len(evicted)))
+	}
+	return evicted
 }
 
 func (p *openAIWSConnPool) getOrCreateAccountPool(accountID int64) *openAIWSAccountPool {
@@ -1216,14 +1257,18 @@ func (p *openAIWSConnPool) cleanupAccountLocked(ap *openAIWSAccountPool, now tim
 	return evicted
 }
 
-func (p *openAIWSConnPool) pickLeastBusyConnLocked(ap *openAIWSAccountPool, preferredConnID string) *openAIWSConn {
+func (p *openAIWSConnPool) pickLeastBusyConnLocked(ap *openAIWSAccountPool, preferredConnID string, cacheIdentity ...string) *openAIWSConn {
 	if ap == nil || len(ap.conns) == 0 {
 		return nil
 	}
 	preferredConnID = stringsTrim(preferredConnID)
+	requestCacheIdentity := firstOpenAIWSCacheIdentity(cacheIdentity...)
 	if preferredConnID != "" {
 		if conn, ok := ap.conns[preferredConnID]; ok {
-			return conn
+			if openAIWSConnMatchesCacheIdentity(conn, requestCacheIdentity) {
+				return conn
+			}
+			return nil
 		}
 	}
 	var best *openAIWSConn
@@ -1231,6 +1276,9 @@ func (p *openAIWSConnPool) pickLeastBusyConnLocked(ap *openAIWSAccountPool, pref
 	var bestLastUsed time.Time
 	for _, conn := range ap.conns {
 		if conn == nil {
+			continue
+		}
+		if !openAIWSConnMatchesCacheIdentity(conn, requestCacheIdentity) {
 			continue
 		}
 		waiters := conn.waiters.Load()
@@ -1485,7 +1533,7 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 	if p == nil || p.clientDialer == nil {
 		return nil, errors.New("openai ws client dialer is nil")
 	}
-	conn, status, handshakeHeaders, err := p.clientDialer.Dial(ctx, req.WSURL, req.Headers, req.ProxyURL)
+	conn, status, handshakeHeaders, err := p.clientDialer.Dial(ctx, req.WSURL, req.Headers, req.ProxyURL, req.EffectiveTLS)
 	if err != nil {
 		return nil, &openAIWSDialError{
 			StatusCode:      status,
@@ -1501,7 +1549,7 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 		}
 	}
 	id := p.nextConnID(req.Account.ID)
-	return newOpenAIWSConn(id, req.Account.ID, conn, handshakeHeaders), nil
+	return newOpenAIWSConn(id, req.Account.ID, conn, handshakeHeaders, buildOpenAIWSPoolCacheIdentity(req)), nil
 }
 
 func (p *openAIWSConnPool) nextConnID(accountID int64) string {
@@ -1667,8 +1715,83 @@ func cloneOpenAIWSAcquireRequest(req openAIWSAcquireRequest) openAIWSAcquireRequ
 	copied.Headers = cloneHeader(req.Headers)
 	copied.WSURL = stringsTrim(req.WSURL)
 	copied.ProxyURL = stringsTrim(req.ProxyURL)
+	copied.ProxyHash = stringsTrim(req.ProxyHash)
+	copied.EgressBucket = stringsTrim(req.EgressBucket)
+	copied.ProtocolMode = stringsTrim(req.ProtocolMode)
 	copied.PreferredConnID = stringsTrim(req.PreferredConnID)
 	return copied
+}
+
+func firstOpenAIWSCacheIdentity(values ...string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return stringsTrim(values[0])
+}
+
+func openAIWSConnMatchesCacheIdentity(conn *openAIWSConn, cacheIdentity string) bool {
+	if conn == nil {
+		return false
+	}
+	cacheIdentity = stringsTrim(cacheIdentity)
+	if cacheIdentity == "" {
+		return true
+	}
+	connIdentity := stringsTrim(conn.cacheIdentity)
+	if connIdentity == "" {
+		return strings.Contains(cacheIdentity, "tls=plain_legacy")
+	}
+	return connIdentity == cacheIdentity
+}
+
+func buildOpenAIWSPoolCacheIdentity(req openAIWSAcquireRequest) string {
+	protocol := stringsTrim(req.ProtocolMode)
+	if protocol == "" {
+		protocol = "default"
+	}
+	bucket := stringsTrim(req.EgressBucket)
+	if bucket == "" {
+		bucket = "default"
+	}
+	proxy := stringsTrim(req.ProxyHash)
+	if proxy == "" {
+		proxy = openAIWSProxyHashForCache(req.ProxyURL)
+	}
+	tlsIdentity := openAIWSEffectiveTLSCacheIdentity(req.EffectiveTLS)
+	return fmt.Sprintf("bucket=%s|proxy=%s|tls=%s|protocol=%s", bucket, proxy, tlsIdentity, protocol)
+}
+
+func openAIWSEffectiveTLSCacheIdentity(effectiveTLS *OpenAIGatewayEffectiveTLS) string {
+	if effectiveTLS == nil {
+		return "plain_legacy"
+	}
+	enabled := "plain"
+	if effectiveTLS.Enabled {
+		enabled = "bound"
+	}
+	identity := stringsTrim(effectiveTLS.CacheIdentity)
+	if identity == "" {
+		identity = stringsTrim(effectiveTLS.ProfileHash)
+	}
+	if identity == "" && effectiveTLS.ProfileID > 0 {
+		identity = "profile_id:" + strconv.FormatInt(effectiveTLS.ProfileID, 10)
+	}
+	if identity == "" {
+		identity = stringsTrim(effectiveTLS.Source)
+	}
+	if identity == "" {
+		identity = "unknown"
+	}
+	return enabled + ":" + identity
+}
+
+func openAIWSProxyHashForCache(proxyURL string) string {
+	proxyURL = stringsTrim(proxyURL)
+	if proxyURL == "" {
+		return "direct"
+	}
+	sum := sha256.Sum256([]byte(proxyURL))
+	return hex.EncodeToString(sum[:])
 }
 
 func cloneOpenAIWSAcquireRequestPtr(req *openAIWSAcquireRequest) *openAIWSAcquireRequest {

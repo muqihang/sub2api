@@ -1,0 +1,52 @@
+{
+  "name": "structured_tool_output_input_image_request",
+  "mode": "request",
+  "request": {
+    "model": "deepseek-v4-pro",
+    "input": [
+      {
+        "type": "function_call",
+        "call_id": "call_img",
+        "name": "capture_screen",
+        "arguments": "{}"
+      },
+      {
+        "type": "function_call_output",
+        "call_id": "call_img",
+        "output": [
+          {
+            "type": "input_text",
+            "text": "screenshot follows"
+          },
+          {
+            "type": "input_image",
+            "image_url": "data:image/png;base64,QUJDRA==",
+            "detail": "high"
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "name": "capture_screen",
+        "parameters": {
+          "type": "object"
+        }
+      }
+    ]
+  },
+  "expect": {
+    "messages_contains": [
+      "capture_screen",
+      "call_img",
+      "screenshot follows",
+      "binary_or_image",
+      "sha256"
+    ],
+    "messages_not_contains": [
+      "QUJDRA==",
+      "data:image/png;base64,QUJDRA=="
+    ]
+  }
+}

@@ -563,6 +563,7 @@ func (w *Wxpay) CancelPayment(ctx context.Context, tradeNo string) error {
 }
 
 var (
-	_ payment.Provider           = (*Wxpay)(nil)
-	_ payment.CancelableProvider = (*Wxpay)(nil)
+	_ payment.Provider            = (*Wxpay)(nil)
+	_ payment.RefundQueryProvider = (*Wxpay)(nil)
+	_ payment.CancelableProvider  = (*Wxpay)(nil)
 )

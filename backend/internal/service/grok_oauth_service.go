@@ -22,11 +22,7 @@ type GrokOAuthService struct {
 }
 
 func NewGrokOAuthService(proxyRepo ProxyRepository, oauthClient GrokOAuthClient) *GrokOAuthService {
-	return &GrokOAuthService{
-		sessionStore: xai.NewSessionStore(),
-		proxyRepo:    proxyRepo,
-		oauthClient:  oauthClient,
-	}
+	return &GrokOAuthService{sessionStore: xai.NewSessionStore(), proxyRepo: proxyRepo, oauthClient: oauthClient}
 }
 
 type GrokAuthURLResult struct {
@@ -52,35 +48,18 @@ func (s *GrokOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64, 
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusInternalServerError, "GROK_OAUTH_SESSION_FAILED", "failed to generate session ID: %v", err)
 	}
-
 	proxyURL, err := s.proxyURL(ctx, proxyID)
 	if err != nil {
 		return nil, err
 	}
 	redirectURI = xai.EffectiveRedirectURI(redirectURI)
 	codeChallenge := xai.GenerateCodeChallenge(codeVerifier)
-
 	authURL, err := xai.BuildAuthorizationURL(state, codeChallenge, redirectURI, nonce)
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadRequest, "GROK_OAUTH_INVALID_AUTHORIZE_URL", "%v", err)
 	}
-
-	s.sessionStore.Set(sessionID, &xai.OAuthSession{
-		State:         state,
-		CodeVerifier:  codeVerifier,
-		CodeChallenge: codeChallenge,
-		ClientID:      xai.EffectiveClientID(),
-		Scope:         xai.EffectiveScope(),
-		ProxyURL:      proxyURL,
-		RedirectURI:   redirectURI,
-		CreatedAt:     time.Now(),
-	})
-
-	return &GrokAuthURLResult{
-		AuthURL:   authURL,
-		SessionID: sessionID,
-		State:     state,
-	}, nil
+	s.sessionStore.Set(sessionID, &xai.OAuthSession{State: state, CodeVerifier: codeVerifier, CodeChallenge: codeChallenge, ClientID: xai.EffectiveClientID(), Scope: xai.EffectiveScope(), ProxyURL: proxyURL, RedirectURI: redirectURI, CreatedAt: time.Now()})
+	return &GrokAuthURLResult{AuthURL: authURL, SessionID: sessionID, State: state}, nil
 }
 
 type GrokExchangeCodeInput struct {
@@ -130,7 +109,6 @@ func (s *GrokOAuthService) ExchangeCode(ctx context.Context, input *GrokExchange
 	if state != "" && subtle.ConstantTimeCompare([]byte(state), []byte(session.State)) != 1 {
 		return nil, infraerrors.New(http.StatusBadRequest, "GROK_OAUTH_INVALID_STATE", "invalid oauth state")
 	}
-
 	proxyURL := session.ProxyURL
 	if input.ProxyID != nil {
 		var err error
@@ -143,7 +121,6 @@ func (s *GrokOAuthService) ExchangeCode(ctx context.Context, input *GrokExchange
 	if strings.TrimSpace(input.RedirectURI) != "" {
 		redirectURI = input.RedirectURI
 	}
-
 	tokenResp, err := s.oauthClient.ExchangeCode(ctx, code, session.CodeVerifier, redirectURI, proxyURL, session.ClientID)
 	if err != nil {
 		return nil, err
@@ -182,7 +159,6 @@ func (s *GrokOAuthService) RefreshAccountToken(ctx context.Context, account *Acc
 	if account.Type != AccountTypeOAuth {
 		return nil, infraerrors.New(http.StatusBadRequest, "GROK_OAUTH_INVALID_ACCOUNT_TYPE", "account is not an OAuth account")
 	}
-
 	proxyURL, err := s.proxyURL(ctx, account.ProxyID)
 	if err != nil {
 		return nil, err
@@ -191,7 +167,6 @@ func (s *GrokOAuthService) RefreshAccountToken(ctx context.Context, account *Acc
 	if strings.TrimSpace(refreshToken) == "" {
 		return nil, infraerrors.New(http.StatusBadRequest, "GROK_OAUTH_NO_REFRESH_TOKEN", "no refresh token available")
 	}
-
 	clientID := account.GetCredential("client_id")
 	tokenInfo, err := s.RefreshToken(ctx, refreshToken, proxyURL, clientID)
 	if err != nil {
@@ -207,10 +182,7 @@ func (s *GrokOAuthService) BuildAccountCredentials(tokenInfo *GrokTokenInfo) map
 		return nil
 	}
 	expiresAt := time.Unix(tokenInfo.ExpiresAt, 0).UTC().Format(time.RFC3339)
-	creds := map[string]any{
-		"access_token": tokenInfo.AccessToken,
-		"expires_at":   expiresAt,
-	}
+	creds := map[string]any{"access_token": tokenInfo.AccessToken, "expires_at": expiresAt}
 	if tokenInfo.RefreshToken != "" {
 		creds["refresh_token"] = tokenInfo.RefreshToken
 	}
@@ -239,9 +211,7 @@ func (s *GrokOAuthService) BuildAccountCredentials(tokenInfo *GrokTokenInfo) map
 	return creds
 }
 
-func (s *GrokOAuthService) Stop() {
-	s.sessionStore.Stop()
-}
+func (s *GrokOAuthService) Stop() { s.sessionStore.Stop() }
 
 func (s *GrokOAuthService) tokenInfoFromResponse(tokenResp *xai.TokenResponse, clientID string, existing map[string]any) *GrokTokenInfo {
 	now := time.Now()
@@ -249,16 +219,7 @@ func (s *GrokOAuthService) tokenInfoFromResponse(tokenResp *xai.TokenResponse, c
 	if expiresIn <= 0 {
 		expiresIn = int64(grokDefaultAccessTokenTTL.Seconds())
 	}
-	info := &GrokTokenInfo{
-		AccessToken:  tokenResp.AccessToken,
-		RefreshToken: tokenResp.RefreshToken,
-		IDToken:      tokenResp.IDToken,
-		TokenType:    tokenResp.TokenType,
-		ExpiresIn:    expiresIn,
-		ExpiresAt:    now.Add(time.Duration(expiresIn) * time.Second).Unix(),
-		ClientID:     strings.TrimSpace(clientID),
-		Scope:        tokenResp.Scope,
-	}
+	info := &GrokTokenInfo{AccessToken: tokenResp.AccessToken, RefreshToken: tokenResp.RefreshToken, IDToken: tokenResp.IDToken, TokenType: tokenResp.TokenType, ExpiresIn: expiresIn, ExpiresAt: now.Add(time.Duration(expiresIn) * time.Second).Unix(), ClientID: strings.TrimSpace(clientID), Scope: tokenResp.Scope}
 	if info.ClientID == "" {
 		info.ClientID = xai.EffectiveClientID()
 	}

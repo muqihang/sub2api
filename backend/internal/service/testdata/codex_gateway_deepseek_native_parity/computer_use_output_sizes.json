@@ -1,0 +1,24 @@
+{
+  "fixture_label": "computer_use_output_size_visibility",
+  "source_baseline": "successful_codex_native_deepseek_bridge_child_session",
+  "samples": [
+    {
+      "raw_output_chars": 86000,
+      "app_state_chars": 4000,
+      "screenshot_chars": 81000,
+      "app_state_close_marker_present": true,
+      "deepseek_visible_normalized_output_retained_computer_screenshot": true,
+      "deepseek_visible_normalized_output_retained_operable_lines": true,
+      "deepseek_visible_normalized_output_retained_lower_screen_actionable_lines": true
+    },
+    {
+      "raw_output_chars": 108000,
+      "app_state_chars": 5000,
+      "screenshot_chars": 102000,
+      "app_state_close_marker_present": true,
+      "deepseek_visible_normalized_output_retained_computer_screenshot": true,
+      "deepseek_visible_normalized_output_retained_operable_lines": true,
+      "deepseek_visible_normalized_output_retained_lower_screen_actionable_lines": true
+    }
+  ]
+}

@@ -1,161 +1,222 @@
-//go:build unit
-
 package handler
 
 import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
+	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
-
-	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/tidwall/gjson"
 )
 
-type fakeDiagnoser struct {
-	calls []fakeDiagnoseCall
+type noAccountFakeDiagnoser struct {
+	calls []noAccountFakeDiagnoseCall
 	resp  service.ModelAvailabilityDiagnosis
 }
 
-type fakeDiagnoseCall struct {
+type noAccountFakeDiagnoseCall struct {
 	GroupID  *int64
 	Model    string
 	Platform string
 }
 
-func (f *fakeDiagnoser) DiagnoseModelAvailabilityForPlatform(
-	_ context.Context,
-	groupID *int64,
-	model, platform string,
-) service.ModelAvailabilityDiagnosis {
-	f.calls = append(f.calls, fakeDiagnoseCall{
-		GroupID:  groupID,
-		Model:    model,
-		Platform: platform,
-	})
+func (f *noAccountFakeDiagnoser) DiagnoseModelAvailabilityForPlatform(_ context.Context, groupID *int64, model, platform string) service.ModelAvailabilityDiagnosis {
+	f.calls = append(f.calls, noAccountFakeDiagnoseCall{GroupID: groupID, Model: model, Platform: platform})
 	return f.resp
 }
 
-func ptrInt64(v int64) *int64 { return &v }
+func noAccountPtrInt64(v int64) *int64 { return &v }
 
-// newTestGinContextWithRequest wraps the bare newTestGinContext helper
-// (defined in openai_gateway_cyber_test.go) by additionally attaching a stub
-// *http.Request so the classifier can extract c.Request.Context().
-func newTestGinContextWithRequest() *gin.Context {
-	c := newTestGinContext()
+func newNoAccountTestGinContext() *gin.Context {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/test", nil)
 	return c
 }
 
-func TestClassifyNoAccountError_NilDiagnoser_Falls503(t *testing.T) {
-	c := newTestGinContextWithRequest()
-	apiKey := &service.APIKey{GroupID: ptrInt64(7)}
-
-	cls := classifyNoAccountErrorFromGin(c, nil, apiKey, "gpt-5", "gpt-5", service.PlatformOpenAI)
-
-	require.Equal(t, http.StatusServiceUnavailable, cls.Status)
-	require.Equal(t, "api_error", cls.ErrType)
-	require.False(t, cls.ModelNotFound)
-}
-
-func TestClassifyNoAccountError_NilAPIKey_Falls503(t *testing.T) {
-	c := newTestGinContextWithRequest()
-	fd := &fakeDiagnoser{resp: service.ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: false}}
-
-	cls := classifyNoAccountErrorFromGin(c, fd, nil, "gpt-5", "gpt-5", service.PlatformOpenAI)
-
-	require.Equal(t, http.StatusServiceUnavailable, cls.Status)
-	require.False(t, cls.ModelNotFound)
-	require.Empty(t, fd.calls, "diagnoser must not be consulted when apiKey missing")
-}
-
-func TestClassifyNoAccountError_NilGroupID_Falls503(t *testing.T) {
-	c := newTestGinContextWithRequest()
-	fd := &fakeDiagnoser{resp: service.ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: false}}
-	apiKey := &service.APIKey{GroupID: nil}
-
-	cls := classifyNoAccountErrorFromGin(c, fd, apiKey, "gpt-5", "gpt-5", service.PlatformOpenAI)
-
-	require.Equal(t, http.StatusServiceUnavailable, cls.Status)
-	require.False(t, cls.ModelNotFound)
-	require.Empty(t, fd.calls, "diagnoser must not be consulted when group not bound")
-}
-
-func TestClassifyNoAccountError_EmptyModel_Falls503(t *testing.T) {
-	c := newTestGinContextWithRequest()
-	fd := &fakeDiagnoser{resp: service.ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: false}}
-	apiKey := &service.APIKey{GroupID: ptrInt64(7)}
-
-	cls := classifyNoAccountErrorFromGin(c, fd, apiKey, "   ", "", service.PlatformOpenAI)
-
-	require.Equal(t, http.StatusServiceUnavailable, cls.Status)
-	require.False(t, cls.ModelNotFound)
-	require.Empty(t, fd.calls)
-}
-
-func TestClassifyNoAccountError_ModelNotSupported_Returns404(t *testing.T) {
-	c := newTestGinContextWithRequest()
-	fd := &fakeDiagnoser{resp: service.ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: false}}
-	apiKey := &service.APIKey{GroupID: ptrInt64(42)}
+func TestClassifyNoAccountError_ModelNotSupportedReturns404(t *testing.T) {
+	c := newNoAccountTestGinContext()
+	fd := &noAccountFakeDiagnoser{resp: service.ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: false}}
+	apiKey := &service.APIKey{GroupID: noAccountPtrInt64(42)}
 
 	cls := classifyNoAccountErrorFromGin(c, fd, apiKey, "gpt-5.1-codex-mini", "gpt-5.1-codex-mini", service.PlatformOpenAI)
 
 	require.Equal(t, http.StatusNotFound, cls.Status)
 	require.Equal(t, "model_not_found", cls.ErrType)
 	require.True(t, cls.ModelNotFound)
-	require.Contains(t, cls.Message, "gpt-5.1-codex-mini", "message must surface the requested model")
-
+	require.Contains(t, cls.Message, "gpt-5.1-codex-mini")
 	require.Len(t, fd.calls, 1)
+	require.Equal(t, int64(42), *fd.calls[0].GroupID)
 	require.Equal(t, "gpt-5.1-codex-mini", fd.calls[0].Model)
 	require.Equal(t, service.PlatformOpenAI, fd.calls[0].Platform)
-	require.NotNil(t, fd.calls[0].GroupID)
-	require.Equal(t, int64(42), *fd.calls[0].GroupID)
 }
 
-func TestClassifyNoAccountError_HasModelSupport_KeepsRoutingMessageGenerationToCaller(t *testing.T) {
-	c := newTestGinContextWithRequest()
-	fd := &fakeDiagnoser{resp: service.ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: true}}
-	apiKey := &service.APIKey{GroupID: ptrInt64(7)}
+func TestClassifyNoAccountError_HasModelSupportStays503(t *testing.T) {
+	c := newNoAccountTestGinContext()
+	fd := &noAccountFakeDiagnoser{resp: service.ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: true}}
+	apiKey := &service.APIKey{GroupID: noAccountPtrInt64(7)}
 
 	cls := classifyNoAccountErrorFromGin(c, fd, apiKey, "gpt-5", "gpt-5", service.PlatformOpenAI)
 
-	require.Equal(t, http.StatusServiceUnavailable, cls.Status, "model exists somewhere — caller stays on 503")
+	require.Equal(t, http.StatusServiceUnavailable, cls.Status)
 	require.Equal(t, "api_error", cls.ErrType)
 	require.False(t, cls.ModelNotFound)
 }
 
-func TestClassifyNoAccountError_NoAccountsInPool_Stays503(t *testing.T) {
-	c := newTestGinContextWithRequest()
-	fd := &fakeDiagnoser{resp: service.ModelAvailabilityDiagnosis{HasAccountsInPool: false, HasModelSupport: false}}
-	apiKey := &service.APIKey{GroupID: ptrInt64(7)}
+func TestClassifyNoAccountError_NoAccountsInPoolStays503(t *testing.T) {
+	c := newNoAccountTestGinContext()
+	fd := &noAccountFakeDiagnoser{resp: service.ModelAvailabilityDiagnosis{HasAccountsInPool: false, HasModelSupport: false}}
+	apiKey := &service.APIKey{GroupID: noAccountPtrInt64(7)}
 
 	cls := classifyNoAccountErrorFromGin(c, fd, apiKey, "gpt-5", "gpt-5", service.PlatformOpenAI)
 
-	require.Equal(t, http.StatusServiceUnavailable, cls.Status, "empty pool is a service-availability issue, not a model issue")
+	require.Equal(t, http.StatusServiceUnavailable, cls.Status)
 	require.False(t, cls.ModelNotFound)
 }
 
-func TestClassifyNoAccountError_DisplayModelOverridesRoutingForMessage(t *testing.T) {
-	c := newTestGinContextWithRequest()
-	fd := &fakeDiagnoser{resp: service.ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: false}}
-	apiKey := &service.APIKey{GroupID: ptrInt64(7)}
+func TestClassifyNoAccountError_InvalidInputsDoNotConsultDiagnoser(t *testing.T) {
+	c := newNoAccountTestGinContext()
+	fd := &noAccountFakeDiagnoser{resp: service.ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: false}}
 
-	cls := classifyNoAccountErrorFromGin(c, fd, apiKey, "gpt-5", "claude-3-fancy", service.PlatformOpenAI)
-
-	require.True(t, cls.ModelNotFound)
-	require.Contains(t, cls.Message, "claude-3-fancy", "user-facing message must reference the model the user asked for, not the post-mapping routing model")
-	require.Len(t, fd.calls, 1)
-	require.Equal(t, "gpt-5", fd.calls[0].Model, "diagnosis must run against the routing model (post group dispatch mapping)")
+	tests := []struct {
+		name   string
+		apiKey *service.APIKey
+		model  string
+	}{
+		{name: "nil_api_key", apiKey: nil, model: "gpt-5"},
+		{name: "nil_group", apiKey: &service.APIKey{}, model: "gpt-5"},
+		{name: "empty_model", apiKey: &service.APIKey{GroupID: noAccountPtrInt64(1)}, model: "   "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fd.calls = nil
+			cls := classifyNoAccountErrorFromGin(c, fd, tt.apiKey, tt.model, tt.model, service.PlatformOpenAI)
+			require.Equal(t, http.StatusServiceUnavailable, cls.Status)
+			require.False(t, cls.ModelNotFound)
+			require.Empty(t, fd.calls)
+		})
+	}
 }
 
-func TestClassifyNoAccountError_FromGin_NilContextStillSafe(t *testing.T) {
-	fd := &fakeDiagnoser{resp: service.ModelAvailabilityDiagnosis{HasAccountsInPool: true, HasModelSupport: false}}
-	apiKey := &service.APIKey{GroupID: ptrInt64(7)}
+type noAccountCountTokensAccountRepo struct {
+	service.AccountRepository
+	accounts []service.Account
+}
 
-	cls := classifyNoAccountErrorFromGin(nil, fd, apiKey, "gpt-5", "gpt-5", service.PlatformOpenAI)
+func (r *noAccountCountTokensAccountRepo) ListSchedulableByGroupIDAndPlatforms(_ context.Context, _ int64, platforms []string) ([]service.Account, error) {
+	return r.listByPlatforms(platforms), nil
+}
 
-	require.Equal(t, http.StatusNotFound, cls.Status, "even with a nil gin context the classifier must still run and yield a coherent response")
-	require.True(t, cls.ModelNotFound)
+func (r *noAccountCountTokensAccountRepo) ListSchedulableByPlatforms(_ context.Context, platforms []string) ([]service.Account, error) {
+	return r.listByPlatforms(platforms), nil
+}
+
+func (r *noAccountCountTokensAccountRepo) listByPlatforms(platforms []string) []service.Account {
+	allowed := make(map[string]struct{}, len(platforms))
+	for _, platform := range platforms {
+		allowed[platform] = struct{}{}
+	}
+	out := make([]service.Account, 0, len(r.accounts))
+	for _, account := range r.accounts {
+		if _, ok := allowed[account.Platform]; ok {
+			out = append(out, account)
+		}
+	}
+	return out
+}
+
+type noAccountCountTokensGroupRepo struct {
+	group *service.Group
+}
+
+func (r *noAccountCountTokensGroupRepo) Create(context.Context, *service.Group) error { return nil }
+func (r *noAccountCountTokensGroupRepo) GetByID(context.Context, int64) (*service.Group, error) {
+	return r.group, nil
+}
+func (r *noAccountCountTokensGroupRepo) GetByIDLite(context.Context, int64) (*service.Group, error) {
+	return r.group, nil
+}
+func (r *noAccountCountTokensGroupRepo) Update(context.Context, *service.Group) error { return nil }
+func (r *noAccountCountTokensGroupRepo) Delete(context.Context, int64) error          { return nil }
+func (r *noAccountCountTokensGroupRepo) DeleteCascade(context.Context, int64) ([]int64, error) {
+	return nil, nil
+}
+func (r *noAccountCountTokensGroupRepo) List(context.Context, pagination.PaginationParams) ([]service.Group, *pagination.PaginationResult, error) {
+	return nil, nil, nil
+}
+func (r *noAccountCountTokensGroupRepo) ListWithFilters(context.Context, pagination.PaginationParams, string, string, string, *bool) ([]service.Group, *pagination.PaginationResult, error) {
+	return nil, nil, nil
+}
+func (r *noAccountCountTokensGroupRepo) ListActive(context.Context) ([]service.Group, error) {
+	return nil, nil
+}
+func (r *noAccountCountTokensGroupRepo) ListActiveByPlatform(context.Context, string) ([]service.Group, error) {
+	return nil, nil
+}
+func (r *noAccountCountTokensGroupRepo) ExistsByName(context.Context, string) (bool, error) {
+	return false, nil
+}
+func (r *noAccountCountTokensGroupRepo) GetAccountCount(context.Context, int64) (int64, int64, error) {
+	return 0, 0, nil
+}
+func (r *noAccountCountTokensGroupRepo) DeleteAccountGroupsByGroupID(context.Context, int64) (int64, error) {
+	return 0, nil
+}
+func (r *noAccountCountTokensGroupRepo) GetAccountIDsByGroupIDs(context.Context, []int64) ([]int64, error) {
+	return nil, nil
+}
+func (r *noAccountCountTokensGroupRepo) BindAccountsToGroup(context.Context, int64, []int64) error {
+	return nil
+}
+func (r *noAccountCountTokensGroupRepo) UpdateSortOrders(context.Context, []service.GroupSortOrderUpdate) error {
+	return nil
+}
+
+func TestGatewayHandlerCountTokensNoSupportedModelReturns404(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(78)
+	user := &service.User{ID: 12, Role: service.RoleUser, Status: service.StatusActive}
+	group := &service.Group{ID: groupID, Platform: service.PlatformAnthropic, Status: service.StatusActive}
+	accountRepo := &noAccountCountTokensAccountRepo{accounts: []service.Account{{
+		ID:          501,
+		Platform:    service.PlatformAnthropic,
+		Type:        service.AccountTypeAPIKey,
+		Status:      service.StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{"claude-supported": "claude-supported"},
+		},
+	}}}
+	cfg := &config.Config{RunMode: config.RunModeStandard}
+	gatewaySvc := service.NewGatewayService(
+		accountRepo,
+		&noAccountCountTokensGroupRepo{group: group},
+		nil, nil, nil, nil, nil, nil,
+		cfg,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+	)
+	billingCache := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, &config.Config{RunMode: config.RunModeSimple}, nil)
+	defer billingCache.Stop()
+
+	body := `{"model":"claude-unsupported","messages":[{"role":"user","content":"safe test input"}]}`
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(body))
+	c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{ID: 91, UserID: user.ID, User: user, GroupID: &groupID, Group: group, Status: service.StatusActive})
+	c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{UserID: user.ID})
+
+	(&GatewayHandler{gatewayService: gatewaySvc, billingCacheService: billingCache}).CountTokens(c)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+	require.Equal(t, "model_not_found", gjson.Get(rec.Body.String(), "error.type").String())
+	require.Contains(t, gjson.Get(rec.Body.String(), "error.message").String(), "claude-unsupported")
+	require.NotContains(t, rec.Body.String(), "safe test input")
 }

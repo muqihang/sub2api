@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/redis/go-redis/v9"
 )
@@ -427,6 +428,35 @@ func (c *schedulerCache) mgetChunked(ctx context.Context, keys []string) ([]any,
 }
 
 func buildSchedulerMetadataAccount(account service.Account) service.Account {
+	credentials := filterSchedulerCredentials(account.Credentials)
+	extra := filterSchedulerExtra(account.Extra)
+	if probeModel := account.OpenAIResponsesProbeModel(); probeModel != "" {
+		if currentTarget := account.OpenAIResponsesTargetFingerprint(probeModel); currentTarget != "" {
+			if extra == nil {
+				extra = make(map[string]any)
+			}
+			extra[openai_compat.ExtraKeyResponsesCurrentTarget] = currentTarget
+		}
+	}
+	if probeModel := account.OpenAIResponsesCustomToolsProbeModel(); probeModel != "" {
+		if currentTarget := account.OpenAIResponsesCustomToolsTargetFingerprint(probeModel); currentTarget != "" {
+			if extra == nil {
+				extra = make(map[string]any)
+			}
+			extra[openai_compat.ExtraKeyResponsesCustomToolsCurrentTarget] = currentTarget
+		}
+	}
+	if account.OpenAIWebSearchProbeTarget() != "" {
+		currentTarget := account.OpenAIWebSearchTargetFingerprint()
+		if extra == nil {
+			extra = make(map[string]any)
+		}
+		extra[openai_compat.ExtraKeyWebSearchCurrentTarget] = currentTarget
+	}
+	if account.IsClaudePlatformAWS() {
+		credentials = nil
+	}
+
 	return service.Account{
 		ID:                      account.ID,
 		Name:                    account.Name,
@@ -453,8 +483,9 @@ func buildSchedulerMetadataAccount(account service.Account) service.Account {
 		QuotaDimension:          account.QuotaDimension,
 		AccountGroups:           filterSchedulerAccountGroups(account.AccountGroups),
 		GroupIDs:                filterSchedulerGroupIDs(account.GroupIDs, account.AccountGroups),
-		Credentials:             filterSchedulerCredentials(account.Credentials),
-		Extra:                   filterSchedulerExtra(account.Extra),
+		Credentials:             credentials,
+		ProxyID:                 account.ProxyID,
+		Extra:                   extra,
 	}
 }
 
@@ -518,7 +549,7 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 	if len(credentials) == 0 {
 		return nil
 	}
-	keys := []string{"model_mapping", "compact_model_mapping", "api_key", "project_id", "oauth_type", "plan_type"}
+	keys := []string{"model_mapping", "compact_model_mapping", "openai_capabilities", "api_key", "project_id", "oauth_type"}
 	filtered := make(map[string]any)
 	for _, key := range keys {
 		if value, ok := credentials[key]; ok && value != nil {
@@ -548,8 +579,63 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		"responses_websockets_v2_enabled",
 		"openai_ws_enabled",
 		"openai_ws_force_http",
+		service.FormalPoolExtraOnboardingStage,
+		service.FormalPoolExtraOnboardingStageUpdatedAt,
+		service.FormalPoolExtraOnboardingLastCheck,
+		service.FormalPoolExtraOnboardingLastCheckAt,
+		service.FormalPoolExtraOnboardingLastErrorCode,
+		service.FormalPoolExtraOnboardingLastErrorBucket,
+		service.FormalPoolExtraHealthcheckStatus,
+		service.FormalPoolExtraHealthcheckStatusCodeBucket,
+		service.FormalPoolExtraHealthcheckRawRef,
+		service.FormalPoolExtraHealthcheckCCGatewaySeen,
+		service.FormalPoolExtraHealthcheckFallbackDetected,
+		service.FormalPoolExtraHealthcheckProxyMismatch,
+		service.FormalPoolExtraHealthcheckRiskTextDetected,
+		service.FormalPoolExtraRuntimeRegistered,
+		service.FormalPoolExtraRuntimeRegisteredAt,
+		service.FormalPoolExtraWarmingUntil,
+		service.FormalPoolExtraPoolProfileRequested,
+		service.FormalPoolExtraPoolProfileEffective,
+		service.FormalPoolExtraPoolWeightMode,
+		service.FormalPoolExtraQuarantineReason,
+		"cc_gateway_enabled",
+		"cc_gateway_canary_only",
+		"cc_gateway_policy_version",
+		"cc_gateway_routes",
+		"cc_gateway_routes_deny",
+		"cc_gateway_egress_bucket_enabled",
+		"cc_gateway_egress_bucket",
+		"cc_gateway_account_ref",
+		"cc_gateway_credential_ref",
+		"cc_gateway_credential_binding_hmac",
+		"cc_gateway_proxy_identity_ref",
+		"cc_gateway_persona_profile",
+		"cc_gateway_trusted_egress_profile_ref",
+		"cc_gateway_profile_policy_version",
+		"cc_gateway_billing_shape_policy",
+		"claude_code_device_id",
+		service.ClaudePlatformAWSExtraWorkspaceRef,
+		service.ClaudePlatformAWSExtraWorkspaceBindingHMAC,
+		service.ClaudePlatformAWSExtraEndpointRef,
+		service.ClaudePlatformAWSExtraRegion,
+		service.ClaudePlatformAWSExtraAuthScheme,
+		service.ClaudePlatformAWSExtraRequestShapeProfileRef,
+		service.ClaudePlatformAWSExtraCacheParityProfileRef,
+		service.ClaudePlatformAWSExtraBetaPolicyRef,
+		service.ClaudePlatformAWSExtraCP0AuthProfileEvidenceStatus,
+		service.ClaudePlatformAWSExtraCP0RegionWorkspaceEvidenceStatus,
+		service.ClaudePlatformAWSExtraProductionAdmitted,
 		"openai_responses_mode",
 		"openai_responses_supported",
+		"openai_responses_probe_model",
+		"openai_responses_probe_target",
+		"openai_responses_custom_tools_supported",
+		"openai_responses_custom_tools_probe_model",
+		"openai_responses_custom_tools_probe_target",
+		"openai_web_search_supported",
+		"openai_web_search_probe_model",
+		"openai_web_search_probe_target",
 		"codex_5h_used_percent",
 		"codex_7d_used_percent",
 		"codex_5h_reset_at",

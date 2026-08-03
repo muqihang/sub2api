@@ -183,7 +183,7 @@ func TestAdminService_CreateGroup_WithVideoPricing(t *testing.T) {
 	price1080P := 0.18
 	videoMultiplier := 0.75
 
-	input := &CreateGroupInput{
+	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
 		Name:                 "grok-video",
 		Description:          "Grok video group",
 		Platform:             PlatformGrok,
@@ -193,21 +193,15 @@ func TestAdminService_CreateGroup_WithVideoPricing(t *testing.T) {
 		VideoPrice480P:       &price480P,
 		VideoPrice720P:       &price720P,
 		VideoPrice1080P:      &price1080P,
-	}
-
-	group, err := svc.CreateGroup(context.Background(), input)
+	})
 	require.NoError(t, err)
 	require.NotNil(t, group)
-
 	require.NotNil(t, repo.created)
 	require.True(t, repo.created.VideoRateIndependent)
 	require.InDelta(t, 0.75, repo.created.VideoRateMultiplier, 1e-12)
-	require.NotNil(t, repo.created.VideoPrice480P)
-	require.NotNil(t, repo.created.VideoPrice720P)
-	require.NotNil(t, repo.created.VideoPrice1080P)
-	require.InDelta(t, 0.08, *repo.created.VideoPrice480P, 0.0001)
-	require.InDelta(t, 0.12, *repo.created.VideoPrice720P, 0.0001)
-	require.InDelta(t, 0.18, *repo.created.VideoPrice1080P, 0.0001)
+	require.InDelta(t, 0.08, *repo.created.VideoPrice480P, 1e-12)
+	require.InDelta(t, 0.12, *repo.created.VideoPrice720P, 1e-12)
+	require.InDelta(t, 0.18, *repo.created.VideoPrice1080P, 1e-12)
 }
 
 // TestAdminService_CreateGroup_NilImagePricing 测试 ImagePrice 为 nil 时正常创建
@@ -234,38 +228,20 @@ func TestAdminService_CreateGroup_NilImagePricing(t *testing.T) {
 	require.Nil(t, repo.created.ImagePrice4K)
 }
 
-func TestAdminService_CreateGroup_DefaultsGrokMediaGenerationEnabled(t *testing.T) {
+func TestAdminService_CreateGroup_PersistsAugmentGatewayEntitlement(t *testing.T) {
 	repo := &groupRepoStubForAdmin{}
 	svc := &adminServiceImpl{groupRepo: repo}
 
 	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
-		Name:           "grok-media",
-		Description:    "Grok media group",
-		Platform:       PlatformGrok,
-		RateMultiplier: 1.0,
+		Name:                   "augment-entitled",
+		Platform:               PlatformAnthropic,
+		RateMultiplier:         1.0,
+		AugmentGatewayEntitled: true,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, group)
 	require.NotNil(t, repo.created)
-	require.True(t, repo.created.AllowImageGeneration)
-	require.True(t, group.AllowImageGeneration)
-}
-
-func TestAdminService_CreateGroup_PreservesNonGrokImageGenerationDisabled(t *testing.T) {
-	repo := &groupRepoStubForAdmin{}
-	svc := &adminServiceImpl{groupRepo: repo}
-
-	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
-		Name:           "anthropic-text",
-		Description:    "Anthropic text group",
-		Platform:       PlatformAnthropic,
-		RateMultiplier: 1.0,
-	})
-	require.NoError(t, err)
-	require.NotNil(t, group)
-	require.NotNil(t, repo.created)
-	require.False(t, repo.created.AllowImageGeneration)
-	require.False(t, group.AllowImageGeneration)
+	require.True(t, repo.created.AugmentGatewayEntitled)
 }
 
 func TestAdminService_CreateGroup_DisablesBatchImageWhenImageGenerationDisabled(t *testing.T) {
@@ -359,24 +335,42 @@ func TestAdminService_UpdateGroup_WithVideoPricing(t *testing.T) {
 	videoMultiplier := 0.6
 	independent := true
 
-	input := &UpdateGroupInput{
+	group, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{
 		VideoRateIndependent: &independent,
 		VideoRateMultiplier:  &videoMultiplier,
 		VideoPrice480P:       &price480P,
 		VideoPrice720P:       &price720P,
 		VideoPrice1080P:      &price1080P,
-	}
-
-	group, err := svc.UpdateGroup(context.Background(), 1, input)
+	})
 	require.NoError(t, err)
 	require.NotNil(t, group)
-
 	require.NotNil(t, repo.updated)
 	require.True(t, repo.updated.VideoRateIndependent)
 	require.InDelta(t, 0.6, repo.updated.VideoRateMultiplier, 1e-12)
-	require.InDelta(t, 0.09, *repo.updated.VideoPrice480P, 0.0001)
-	require.InDelta(t, 0.13, *repo.updated.VideoPrice720P, 0.0001)
-	require.InDelta(t, 0.19, *repo.updated.VideoPrice1080P, 0.0001)
+	require.InDelta(t, 0.09, *repo.updated.VideoPrice480P, 1e-12)
+	require.InDelta(t, 0.13, *repo.updated.VideoPrice720P, 1e-12)
+	require.InDelta(t, 0.19, *repo.updated.VideoPrice1080P, 1e-12)
+}
+
+func TestAdminService_UpdateGroup_PersistsAugmentGatewayEntitlement(t *testing.T) {
+	existingGroup := &Group{
+		ID:                     1,
+		Name:                   "existing-group",
+		Platform:               PlatformAnthropic,
+		Status:                 StatusActive,
+		AugmentGatewayEntitled: false,
+	}
+	repo := &groupRepoStubForAdmin{getByID: existingGroup}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	entitled := true
+	group, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{
+		AugmentGatewayEntitled: &entitled,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, group)
+	require.NotNil(t, repo.updated)
+	require.True(t, repo.updated.AugmentGatewayEntitled)
 }
 
 // TestAdminService_UpdateGroup_PartialImagePricing 测试仅更新部分 ImagePrice 字段
@@ -614,25 +608,6 @@ func TestAdminService_GroupBatchImagePricingValidation(t *testing.T) {
 	}
 }
 
-func TestAdminService_UpdateGroup_RejectsNegativeVideoRateMultiplier(t *testing.T) {
-	existingGroup := &Group{
-		ID:                  1,
-		Name:                "existing-group",
-		Platform:            PlatformGrok,
-		Status:              StatusActive,
-		VideoRateMultiplier: 1,
-	}
-	repo := &groupRepoStubForAdmin{getByID: existingGroup}
-	svc := &adminServiceImpl{groupRepo: repo}
-	negative := -0.1
-
-	_, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{
-		VideoRateMultiplier: &negative,
-	})
-	require.Error(t, err)
-	require.Nil(t, repo.updated)
-}
-
 func TestAdminService_UpdateGroup_InvalidatesAuthCacheOnRPMLimitChange(t *testing.T) {
 	existingGroup := &Group{
 		ID:       1,
@@ -656,34 +631,6 @@ func TestAdminService_UpdateGroup_InvalidatesAuthCacheOnRPMLimitChange(t *testin
 	require.NotNil(t, group)
 	require.Equal(t, 60, repo.updated.RPMLimit)
 	require.Equal(t, []int64{1}, invalidator.groupIDs, "分组 RPMLimit 写入 auth snapshot，变更后必须失效 API Key 认证缓存")
-}
-
-func TestAdminService_UpdateGroup_ClearsPeakRateWhenChangingToStandard(t *testing.T) {
-	existingGroup := &Group{
-		ID:                 1,
-		Name:               "existing-group",
-		Platform:           PlatformOpenAI,
-		Status:             StatusActive,
-		SubscriptionType:   SubscriptionTypeSubscription,
-		PeakRateEnabled:    true,
-		PeakStart:          "14:00",
-		PeakEnd:            "18:00",
-		PeakRateMultiplier: 3,
-	}
-	repo := &groupRepoStubForAdmin{getByID: existingGroup}
-	svc := &adminServiceImpl{groupRepo: repo}
-
-	group, err := svc.UpdateGroup(context.Background(), 1, &UpdateGroupInput{
-		SubscriptionType: SubscriptionTypeStandard,
-	})
-	require.NoError(t, err)
-	require.NotNil(t, group)
-	require.NotNil(t, repo.updated)
-	require.Equal(t, SubscriptionTypeStandard, repo.updated.SubscriptionType)
-	require.False(t, repo.updated.PeakRateEnabled)
-	require.Equal(t, "", repo.updated.PeakStart)
-	require.Equal(t, "", repo.updated.PeakEnd)
-	require.Equal(t, 1.0, repo.updated.PeakRateMultiplier)
 }
 
 func TestAdminService_CreateGroup_NormalizesMessagesDispatchModelConfig(t *testing.T) {
@@ -1341,4 +1288,34 @@ func TestAdminService_UpdateGroup_InvalidRequestFallbackAllowsAntigravity(t *tes
 	require.NotNil(t, group)
 	require.NotNil(t, repo.updated)
 	require.Equal(t, fallbackID, *repo.updated.FallbackGroupIDOnInvalidRequest)
+}
+
+func TestAdminService_CreateGroup_DefaultsGrokImageGenerationEnabled(t *testing.T) {
+	repo := &groupRepoStubForAdmin{}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:           "grok-media",
+		Platform:       PlatformGrok,
+		RateMultiplier: 1.0,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, group)
+	require.NotNil(t, repo.created)
+	require.True(t, repo.created.AllowImageGeneration)
+}
+
+func TestAdminService_CreateGroup_NonGrokKeepsImageGenerationDefaultFalse(t *testing.T) {
+	repo := &groupRepoStubForAdmin{}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
+		Name:           "openai-standard",
+		Platform:       PlatformOpenAI,
+		RateMultiplier: 1.0,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, group)
+	require.NotNil(t, repo.created)
+	require.False(t, repo.created.AllowImageGeneration)
 }

@@ -187,18 +187,16 @@ const emit = defineEmits<{
   (e: 'cancel'): void
 }>()
 
-const creditedAmountSymbol = currencySymbol('USD')
-
-const paymentAmountSymbol = computed(() => currencySymbol(props.order?.currency))
-
 const form = reactive({
   amount: 0,
   reason: '',
   deduct_balance: true,
   force: false,
 })
+const creditedAmountSymbol = currencySymbol('USD')
+const paymentAmountSymbol = computed(() => currencySymbol(props.order?.currency))
 
-// In REFUND_REQUESTED / REFUND_PENDING status, refund_amount is requested/pending, not actually refunded.
+// In REFUND_REQUESTED status, refund_amount is the REQUESTED amount, not actually refunded.
 // Only PARTIALLY_REFUNDED / REFUNDED have real refund amounts.
 const actuallyRefunded = computed(() => {
   if (!props.order) return 0

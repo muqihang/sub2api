@@ -27,7 +27,6 @@ func (c *grokOAuthClient) ExchangeCode(ctx context.Context, code, codeVerifier, 
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadGateway, "GROK_OAUTH_CLIENT_INIT_FAILED", "create HTTP client: %v", err)
 	}
-
 	clientID = strings.TrimSpace(clientID)
 	if clientID == "" {
 		clientID = xai.EffectiveClientID()
@@ -61,7 +60,6 @@ func (c *grokOAuthClient) RefreshToken(ctx context.Context, refreshToken, proxyU
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadGateway, "GROK_OAUTH_CLIENT_INIT_FAILED", "create HTTP client: %v", err)
 	}
-
 	clientID = strings.TrimSpace(clientID)
 	if clientID == "" {
 		clientID = xai.EffectiveClientID()
@@ -89,10 +87,7 @@ func (c *grokOAuthClient) RefreshToken(ctx context.Context, refreshToken, proxyU
 }
 
 func createGrokReqClient(proxyURL string) (*req.Client, error) {
-	return getSharedReqClient(reqClientOptions{
-		ProxyURL: proxyURL,
-		Timeout:  60 * time.Second,
-	})
+	return getSharedReqClient(reqClientOptions{ProxyURL: proxyURL, Timeout: 60 * time.Second})
 }
 
 func grokOAuthStatusError(code, message string, resp *req.Response) error {

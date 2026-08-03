@@ -9,48 +9,59 @@ import (
 )
 
 var codexModelMap = map[string]string{
-	"gpt-5.6-sol":          "gpt-5.6-sol",
-	"gpt-5.6-terra":        "gpt-5.6-terra",
-	"gpt-5.6-luna":         "gpt-5.6-luna",
-	"gpt-5.5":              "gpt-5.5",
-	"gpt-5.5-pro":          "gpt-5.5-pro",
-	"codex-auto-review":    "codex-auto-review",
-	"gpt-5.4":              "gpt-5.4",
-	"gpt-5.4-mini":         "gpt-5.4-mini",
-	"gpt-5.4-none":         "gpt-5.4",
-	"gpt-5.4-low":          "gpt-5.4",
-	"gpt-5.4-medium":       "gpt-5.4",
-	"gpt-5.4-high":         "gpt-5.4",
-	"gpt-5.4-xhigh":        "gpt-5.4",
-	"gpt-5.4-chat-latest":  "gpt-5.4",
-	"gpt-5.3":              "gpt-5.3-codex",
-	"gpt-5.3-none":         "gpt-5.3-codex",
-	"gpt-5.3-low":          "gpt-5.3-codex",
-	"gpt-5.3-medium":       "gpt-5.3-codex",
-	"gpt-5.3-high":         "gpt-5.3-codex",
-	"gpt-5.3-xhigh":        "gpt-5.3-codex",
-	"gpt-5.3-codex":        "gpt-5.3-codex",
-	"gpt-5.3-codex-spark":  "gpt-5.3-codex-spark",
-	"gpt-5.3-codex-low":    "gpt-5.3-codex",
-	"gpt-5.3-codex-medium": "gpt-5.3-codex",
-	"gpt-5.3-codex-high":   "gpt-5.3-codex",
-	"gpt-5.3-codex-xhigh":  "gpt-5.3-codex",
-	"gpt-5.2":              "gpt-5.2",
-	"gpt-5.2-none":         "gpt-5.2",
-	"gpt-5.2-low":          "gpt-5.2",
-	"gpt-5.2-medium":       "gpt-5.2",
-	"gpt-5.2-high":         "gpt-5.2",
-	"gpt-5.2-xhigh":        "gpt-5.2",
-	"gpt-5":                "gpt-5.4",
-	"gpt-5-mini":           "gpt-5.4",
-	"gpt-5-nano":           "gpt-5.4",
-	"gpt-5.1":              "gpt-5.4",
-	"gpt-5.1-codex":        "gpt-5.3-codex",
-	"gpt-5.1-codex-max":    "gpt-5.3-codex",
-	"gpt-5.1-codex-mini":   "gpt-5.3-codex",
-	"gpt-5.2-codex":        "gpt-5.2",
-	"codex-mini-latest":    "gpt-5.3-codex",
-	"gpt-5-codex":          "gpt-5.3-codex",
+	"gpt-5.6-sol":                "gpt-5.6-sol",
+	"gpt-5.6-terra":              "gpt-5.6-terra",
+	"gpt-5.6-luna":               "gpt-5.6-luna",
+	"gpt-5.5":                    "gpt-5.5",
+	"gpt-5.5-pro":                "gpt-5.5-pro",
+	"codex-auto-review":          "codex-auto-review",
+	"gpt-5.4":                    "gpt-5.4",
+	"gpt-5.4-mini":               "gpt-5.4-mini",
+	"gpt-5.4-none":               "gpt-5.4",
+	"gpt-5.4-low":                "gpt-5.4",
+	"gpt-5.4-medium":             "gpt-5.4",
+	"gpt-5.4-high":               "gpt-5.4",
+	"gpt-5.4-xhigh":              "gpt-5.4",
+	"gpt-5.4-thinking":           "gpt-5.4",
+	"gpt-5.4-pro":                "gpt-5.4-pro",
+	"gpt-5.4-pro-none":           "gpt-5.4-pro",
+	"gpt-5.4-pro-low":            "gpt-5.4-pro",
+	"gpt-5.4-pro-medium":         "gpt-5.4-pro",
+	"gpt-5.4-pro-high":           "gpt-5.4-pro",
+	"gpt-5.4-pro-xhigh":          "gpt-5.4-pro",
+	"gpt-5.4-chat-latest":        "gpt-5.4",
+	"gpt-5.3":                    "gpt-5.3-codex",
+	"gpt-5.3-none":               "gpt-5.3-codex",
+	"gpt-5.3-low":                "gpt-5.3-codex",
+	"gpt-5.3-medium":             "gpt-5.3-codex",
+	"gpt-5.3-high":               "gpt-5.3-codex",
+	"gpt-5.3-xhigh":              "gpt-5.3-codex",
+	"gpt-5.3-codex":              "gpt-5.3-codex",
+	"gpt-5.3-codex-spark":        "gpt-5.3-codex-spark",
+	"gpt-5.3-codex-spark-low":    "gpt-5.3-codex-spark",
+	"gpt-5.3-codex-spark-medium": "gpt-5.3-codex-spark",
+	"gpt-5.3-codex-spark-high":   "gpt-5.3-codex-spark",
+	"gpt-5.3-codex-spark-xhigh":  "gpt-5.3-codex-spark",
+	"gpt-5.3-codex-low":          "gpt-5.3-codex",
+	"gpt-5.3-codex-medium":       "gpt-5.3-codex",
+	"gpt-5.3-codex-high":         "gpt-5.3-codex",
+	"gpt-5.3-codex-xhigh":        "gpt-5.3-codex",
+	"gpt-5.2":                    "gpt-5.2",
+	"gpt-5.2-none":               "gpt-5.2",
+	"gpt-5.2-low":                "gpt-5.2",
+	"gpt-5.2-medium":             "gpt-5.2",
+	"gpt-5.2-high":               "gpt-5.2",
+	"gpt-5.2-xhigh":              "gpt-5.2",
+	"gpt-5":                      "gpt-5.4",
+	"gpt-5-mini":                 "gpt-5.4",
+	"gpt-5-nano":                 "gpt-5.4",
+	"gpt-5.1":                    "gpt-5.4",
+	"gpt-5.1-codex":              "gpt-5.3-codex",
+	"gpt-5.1-codex-max":          "gpt-5.3-codex",
+	"gpt-5.1-codex-mini":         "gpt-5.3-codex",
+	"gpt-5.2-codex":              "gpt-5.2",
+	"codex-mini-latest":          "gpt-5.3-codex",
+	"gpt-5-codex":                "gpt-5.3-codex",
 }
 
 var codexVersionModelPrefixes = []struct {
@@ -62,6 +73,7 @@ var codexVersionModelPrefixes = []struct {
 	{prefix: "gpt-5.6-luna", target: "gpt-5.6-luna"},
 	{prefix: "gpt-5.3-codex-spark", target: "gpt-5.3-codex-spark"},
 	{prefix: "gpt-5.3-codex", target: "gpt-5.3-codex"},
+	{prefix: "gpt-5.4-pro", target: "gpt-5.4-pro"},
 	{prefix: "gpt-5.4-mini", target: "gpt-5.4-mini"},
 	{prefix: "gpt-5.4-nano", target: "gpt-5.4-nano"},
 	{prefix: "gpt-5.5-pro", target: "gpt-5.5-pro"},
@@ -216,9 +228,9 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 		}
 	}
 
-	// ChatGPT internal Codex endpoint does not accept role:"system".
-	// Keep the guidance in input as developer for Responses JSON mode, and
-	// also mirror it into instructions because Codex OAuth requires it.
+	// ChatGPT internal Codex endpoint does not accept role:"system". Keep the
+	// guidance in input as developer for Responses JSON mode, and mirror it
+	// into instructions because Codex OAuth requires it.
 	if extractSystemMessagesFromInput(reqBody) {
 		result.Modified = true
 	}
@@ -230,8 +242,6 @@ func applyCodexOAuthTransformWithOptions(reqBody map[string]any, opts codexOAuth
 	if isCodexSparkModel(normalizedModel) && applyCodexSparkImageUnsupportedInstructions(reqBody) {
 		result.Modified = true
 	}
-	// gpt-5.3-codex-spark rejects the image_generation tool upstream (HTTP 400,
-	// param=tools); Codex CLI advertises it by default, so strip it for spark.
 	if isCodexSparkModel(normalizedModel) && stripCodexSparkImageGenerationTools(reqBody) {
 		result.Modified = true
 	}
@@ -649,8 +659,6 @@ func inputContainsImageGenerationTool(rawInput any) bool {
 	return false
 }
 
-// stripOpenAIImageGenerationTools keeps account-level strip policy symmetric
-// across standard Responses tools, Responses Lite additional_tools, and tool_choice.
 func stripOpenAIImageGenerationTools(reqBody map[string]any) bool {
 	if reqBody == nil {
 		return false
@@ -678,7 +686,8 @@ func stripOpenAIImageGenerationToolList(container map[string]any, key string) bo
 	filtered := make([]any, 0, len(tools))
 	removed := false
 	for _, rawTool := range tools {
-		if toolMap, ok := rawTool.(map[string]any); ok && isOpenAIImageGenerationToolMap(toolMap) {
+		toolMap, ok := rawTool.(map[string]any)
+		if ok && isOpenAIImageGenerationToolMap(toolMap) {
 			removed = true
 			continue
 		}
@@ -700,7 +709,6 @@ func stripOpenAIImageGenerationToolsFromInput(reqBody map[string]any) bool {
 	if !ok {
 		return false
 	}
-
 	filteredInput := make([]any, 0, len(input))
 	modified := false
 	for _, rawItem := range input {
@@ -717,8 +725,6 @@ func stripOpenAIImageGenerationToolsFromInput(reqBody map[string]any) bool {
 		if _, hasTools := item["tools"]; hasTools {
 			filteredInput = append(filteredInput, rawItem)
 		}
-		// An empty additional_tools carrier is not useful upstream; drop the item
-		// after its only declared capability has been removed.
 	}
 	if modified {
 		reqBody["input"] = filteredInput
@@ -726,33 +732,11 @@ func stripOpenAIImageGenerationToolsFromInput(reqBody map[string]any) bool {
 	return modified
 }
 
-// stripOpenAIImageGenerationToolsFromRawPayload is the shared adapter for paths
-// that forward raw HTTP or WebSocket payloads without the normal request map.
-func stripOpenAIImageGenerationToolsFromRawPayload(payload []byte) ([]byte, bool, error) {
-	if !openAIRequestBodyHasImageGenerationDeclaration(payload) {
-		if json.Valid(payload) {
-			return payload, false, nil
-		}
-		var invalidPayload map[string]any
-		return payload, false, json.Unmarshal(payload, &invalidPayload)
-	}
-	payloadMap := make(map[string]any)
-	if err := json.Unmarshal(payload, &payloadMap); err != nil {
-		return payload, false, err
-	}
-	if !stripOpenAIImageGenerationTools(payloadMap) {
-		return payload, false, nil
-	}
-	rebuilt, err := json.Marshal(payloadMap)
-	if err != nil {
-		return payload, false, err
-	}
-	return rebuilt, true, nil
-}
-
-// stripCodexSparkImageGenerationTools removes image tool declarations and choices.
-// gpt-5.3-codex-spark rejects those capabilities upstream, while Codex clients may
-// advertise them by default.
+// stripCodexSparkImageGenerationTools removes image_generation tool entries from
+// reqBody["tools"]. gpt-5.3-codex-spark rejects that tool upstream with HTTP 400
+// (invalid_request_error, param=tools), and Codex CLI advertises it by default, so
+// it must be dropped for spark. When the tools list becomes empty the key is removed.
+// Returns true when the body was modified.
 func stripCodexSparkImageGenerationTools(reqBody map[string]any) bool {
 	return stripOpenAIImageGenerationTools(reqBody)
 }
@@ -1089,6 +1073,7 @@ func extractSystemMessagesFromInput(reqBody map[string]any) bool {
 
 	var systemTexts []string
 	modified := false
+
 	for _, item := range input {
 		m, ok := item.(map[string]any)
 		if !ok {
@@ -1270,38 +1255,17 @@ func filterCodexInputWithOptions(input []any, opts codexInputFilterOptions) []an
 		}
 		typ, _ := m["type"].(string)
 
-		// chatgpt.com codex (OAuth path) runs with store=false (forced by
-		// applyCodexOAuthTransform). Replaying a reasoning item with its rs_*
-		// id but no encrypted_content 404s upstream ("Item with id 'rs_...'
-		// not found") — the 404 is triggered by the id lookup, not by the
-		// reasoning item itself. So strip the id (always, independent of
-		// PreserveReferences) yet keep the item: under store=false
-		// encrypted_content is the official channel for carrying reasoning
-		// context across turns, and dropping the whole item silently degrades
-		// multi-turn agent reasoning. Preserve encrypted_content/content/
-		// summary and every other field verbatim. Upstream additionally
-		// requires a summary field — a missing one is rejected with 400
-		// "Missing required parameter 'input[N].summary'" — so backfill an
-		// empty array when it is absent. Contracts verified end-to-end against
-		// chatgpt.com codex (gpt-5.5); see issue #1957.
-		// compaction_summary items (cmp_*) are the other encrypted_content
-		// carrier. Verified against the live backend: they require
-		// encrypted_content (a missing one is rejected with 400), and with it
-		// present the cmp_* id does not 404 whether kept or stripped. Being
-		// neither reasoning nor tool calls, they flow through the generic path
-		// below (id stripped when !PreserveReferences, encrypted_content
-		// preserved either way), which is safe and needs no special-casing.
+		// The OAuth path forces store=false. A replayed rs_* ID causes an
+		// upstream lookup that fails, but encrypted_content carries reasoning
+		// context across turns and must remain available to Codex.
 		if typ == "reasoning" {
 			newItem := make(map[string]any, len(m))
 			for key, value := range m {
-				if key == "id" {
-					// rs_* id replayed under store=false 404s; strip it.
-					continue
+				if key != "id" {
+					newItem[key] = value
 				}
-				newItem[key] = value
 			}
 			if summary, ok := newItem["summary"]; !ok || summary == nil {
-				// Upstream requires a summary field; an empty array satisfies it.
 				newItem["summary"] = []any{}
 			}
 			filtered = append(filtered, newItem)
@@ -1421,6 +1385,7 @@ func isCodexToolCallItemType(typ string) bool {
 		"custom_tool_call",
 		"mcp_tool_call",
 		"function_call_output",
+		"local_shell_call_output",
 		"mcp_tool_call_output",
 		"custom_tool_call_output",
 		"tool_search_output":
@@ -1483,16 +1448,15 @@ func normalizeCodexTools(reqBody map[string]any) bool {
 			continue
 		}
 
-		// OpenAI Responses-style tools use top-level name/parameters.
-		if name, ok := toolMap["name"].(string); ok && strings.TrimSpace(name) != "" {
-			validTools = append(validTools, toolMap)
-			continue
-		}
-
 		// ChatCompletions-style tools use {type:"function", function:{...}}.
 		functionValue, hasFunction := toolMap["function"]
 		function, ok := functionValue.(map[string]any)
 		if !hasFunction || functionValue == nil || !ok || function == nil {
+			// OpenAI Responses-style tools use top-level name/parameters.
+			if name, ok := toolMap["name"].(string); ok && strings.TrimSpace(name) != "" {
+				validTools = append(validTools, toolMap)
+				continue
+			}
 			// Drop invalid function tools.
 			modified = true
 			continue
@@ -1521,6 +1485,10 @@ func normalizeCodexTools(reqBody map[string]any) bool {
 				toolMap["strict"] = strict
 				modified = true
 			}
+		}
+		if _, ok := toolMap["function"]; ok {
+			delete(toolMap, "function")
+			modified = true
 		}
 
 		validTools = append(validTools, toolMap)

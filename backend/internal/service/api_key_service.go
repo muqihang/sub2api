@@ -22,8 +22,28 @@ import (
 )
 
 var (
-	ErrAPIKeyNotFound     = infraerrors.NotFound("API_KEY_NOT_FOUND", "api key not found")
-	ErrGroupNotAllowed    = infraerrors.Forbidden("GROUP_NOT_ALLOWED", "user is not allowed to bind this group")
+	ErrAPIKeyNotFound       = infraerrors.NotFound("API_KEY_NOT_FOUND", "api key not found")
+	ErrGroupNotAllowed      = infraerrors.Forbidden("GROUP_NOT_ALLOWED", "user is not allowed to bind this group")
+	ErrAugmentGroupRequired = infraerrors.BadRequest(
+		"AUGMENT_GROUP_REQUIRED",
+		"an Augment-only API key requires an Augment-enabled group",
+	)
+	ErrCodexGroupRequired = infraerrors.BadRequest(
+		"CODEX_GROUP_REQUIRED",
+		"a Codex-only API key requires a Codex-enabled group",
+	)
+	ErrAugmentGroupNotEntitled = infraerrors.Forbidden(
+		"AUGMENT_GROUP_NOT_ENTITLED",
+		"selected group is not enabled for Augment gateway access",
+	)
+	ErrCodexGroupNotEntitled = infraerrors.Forbidden(
+		"CODEX_GROUP_NOT_ENTITLED",
+		"selected group is not enabled for Codex gateway access",
+	)
+	ErrAPIKeyClientProductConflict = infraerrors.BadRequest(
+		"API_KEY_CLIENT_PRODUCT_CONFLICT",
+		"augment_only and codex_only cannot both be enabled",
+	)
 	ErrAPIKeyExists       = infraerrors.Conflict("API_KEY_EXISTS", "api key already exists")
 	ErrAPIKeyTooShort     = infraerrors.BadRequest("API_KEY_TOO_SHORT", "api key must be at least 16 characters")
 	ErrAPIKeyInvalidChars = infraerrors.BadRequest("API_KEY_INVALID_CHARS", "api key can only contain letters, numbers, underscores, and hyphens")
@@ -160,6 +180,8 @@ type APIKeyAuthCacheInvalidator interface {
 type CreateAPIKeyRequest struct {
 	Name        string   `json:"name"`
 	GroupID     *int64   `json:"group_id"`
+	AugmentOnly bool     `json:"augment_only"`
+	CodexOnly   bool     `json:"codex_only"`
 	CustomKey   *string  `json:"custom_key"`   // 可选的自定义key
 	IPWhitelist []string `json:"ip_whitelist"` // IP 白名单
 	IPBlacklist []string `json:"ip_blacklist"` // IP 黑名单
@@ -178,6 +200,8 @@ type CreateAPIKeyRequest struct {
 type UpdateAPIKeyRequest struct {
 	Name        *string  `json:"name"`
 	GroupID     *int64   `json:"group_id"`
+	AugmentOnly *bool    `json:"augment_only"`
+	CodexOnly   *bool    `json:"codex_only"`
 	Status      *string  `json:"status"`
 	IPWhitelist []string `json:"ip_whitelist"` // IP 白名单（空数组清空）
 	IPBlacklist []string `json:"ip_blacklist"` // IP 黑名单（空数组清空）
@@ -209,13 +233,13 @@ type APIKeyService struct {
 	userGroupRateRepo     UserGroupRateRepository
 	cache                 APIKeyCache
 	rateLimitCacheInvalid RateLimitCacheInvalidator // optional: invalidate Redis rate limit cache
-	concurrencyService    *ConcurrencyService
 	cfg                   *config.Config
 	authCacheL1           *ristretto.Cache
 	authCfg               apiKeyAuthCacheConfig
 	authGroup             singleflight.Group
 	lastUsedTouchL1       sync.Map // keyID -> nextAllowedAt(time.Time)
 	lastUsedTouchSF       singleflight.Group
+	concurrencyService    *ConcurrencyService
 }
 
 // NewAPIKeyService 创建API Key服务实例
@@ -241,14 +265,18 @@ func NewAPIKeyService(
 	return svc
 }
 
+// SetConcurrencyService attaches the optional stats-only concurrency reader.
+func (s *APIKeyService) SetConcurrencyService(concurrencyService *ConcurrencyService) {
+	if s == nil {
+		return
+	}
+	s.concurrencyService = concurrencyService
+}
+
 // SetRateLimitCacheInvalidator sets the optional rate limit cache invalidator.
 // Called after construction (e.g. in wire) to avoid circular dependencies.
 func (s *APIKeyService) SetRateLimitCacheInvalidator(inv RateLimitCacheInvalidator) {
 	s.rateLimitCacheInvalid = inv
-}
-
-func (s *APIKeyService) SetConcurrencyService(concurrencyService *ConcurrencyService) {
-	s.concurrencyService = concurrencyService
 }
 
 func (s *APIKeyService) compileAPIKeyIPRules(apiKey *APIKey) {
@@ -339,6 +367,90 @@ func (s *APIKeyService) canUserBindGroup(ctx context.Context, user *User, group 
 	return user.CanBindGroup(group.ID, group.IsExclusive)
 }
 
+func restrictedClientProductForScopeFlags(augmentOnly, codexOnly bool) (*string, error) {
+	if augmentOnly && codexOnly {
+		return nil, ErrAPIKeyClientProductConflict
+	}
+	switch {
+	case augmentOnly:
+		product := AugmentClientProductZhumeng
+		return &product, nil
+	case codexOnly:
+		product := CodexUsageClientProduct
+		return &product, nil
+	default:
+		return nil, nil
+	}
+}
+
+func (s *APIKeyService) validateAPIKeyBindingGroup(ctx context.Context, user *User, groupID *int64, restrictedClientProduct string) (*Group, error) {
+	if groupID == nil {
+		switch restrictedClientProduct {
+		case AugmentClientProductZhumeng:
+			return nil, ErrAugmentGroupRequired
+		case CodexUsageClientProduct:
+			return nil, ErrCodexGroupRequired
+		}
+		return nil, nil
+	}
+
+	group, err := s.groupRepo.GetByID(ctx, *groupID)
+	if err != nil {
+		return nil, fmt.Errorf("get group: %w", err)
+	}
+	if !s.canUserBindGroup(ctx, user, group) {
+		return nil, ErrGroupNotAllowed
+	}
+	switch restrictedClientProduct {
+	case AugmentClientProductZhumeng:
+		if !group.AugmentGatewayEntitled {
+			return nil, ErrAugmentGroupNotEntitled
+		}
+	case CodexUsageClientProduct:
+		if !group.CodexGatewayEntitled {
+			return nil, ErrCodexGroupNotEntitled
+		}
+	}
+	return group, nil
+}
+
+func (s *APIKeyService) resolveDefaultBindingGroup(ctx context.Context, user *User, restrictedClientProduct string) (*int64, error) {
+	if user == nil || restrictedClientProduct != CodexUsageClientProduct || s.groupRepo == nil {
+		return nil, nil
+	}
+
+	groups, err := s.groupRepo.ListActive(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list active groups: %w", err)
+	}
+	for _, group := range groups {
+		if !group.CodexGatewayEntitled {
+			continue
+		}
+		if !s.canUserBindGroup(ctx, user, &group) {
+			continue
+		}
+		groupID := group.ID
+		return &groupID, nil
+	}
+	return nil, nil
+}
+
+func (s *APIKeyService) validateScopeFlags(augmentOnly, codexOnly bool) (*string, error) {
+	product, err := restrictedClientProductForScopeFlags(augmentOnly, codexOnly)
+	if err != nil {
+		return nil, err
+	}
+	return product, nil
+}
+
+func clientProductValue(product *string) string {
+	if product == nil {
+		return ""
+	}
+	return strings.TrimSpace(*product)
+}
+
 // Create 创建API Key
 func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIKeyRequest) (*APIKey, error) {
 	// 验证用户存在
@@ -361,17 +473,19 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 		}
 	}
 
-	// 验证分组权限（如果指定了分组）
-	if req.GroupID != nil {
-		group, err := s.groupRepo.GetByID(ctx, *req.GroupID)
+	restrictedClientProduct, err := s.validateScopeFlags(req.AugmentOnly, req.CodexOnly)
+	if err != nil {
+		return nil, err
+	}
+	if req.GroupID == nil {
+		resolvedGroupID, err := s.resolveDefaultBindingGroup(ctx, user, clientProductValue(restrictedClientProduct))
 		if err != nil {
-			return nil, fmt.Errorf("get group: %w", err)
+			return nil, err
 		}
-
-		// 检查用户是否可以绑定该分组
-		if !s.canUserBindGroup(ctx, user, group) {
-			return nil, ErrGroupNotAllowed
-		}
+		req.GroupID = resolvedGroupID
+	}
+	if _, err := s.validateAPIKeyBindingGroup(ctx, user, req.GroupID, clientProductValue(restrictedClientProduct)); err != nil {
+		return nil, err
 	}
 
 	var key string
@@ -411,18 +525,19 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 
 	// 创建API Key记录
 	apiKey := &APIKey{
-		UserID:      userID,
-		Key:         key,
-		Name:        html.EscapeString(req.Name),
-		GroupID:     req.GroupID,
-		Status:      StatusActive,
-		IPWhitelist: req.IPWhitelist,
-		IPBlacklist: req.IPBlacklist,
-		Quota:       req.Quota,
-		QuotaUsed:   0,
-		RateLimit5h: req.RateLimit5h,
-		RateLimit1d: req.RateLimit1d,
-		RateLimit7d: req.RateLimit7d,
+		UserID:                  userID,
+		Key:                     key,
+		Name:                    html.EscapeString(req.Name),
+		GroupID:                 req.GroupID,
+		Status:                  StatusActive,
+		RestrictedClientProduct: restrictedClientProduct,
+		IPWhitelist:             req.IPWhitelist,
+		IPBlacklist:             req.IPBlacklist,
+		Quota:                   req.Quota,
+		QuotaUsed:               0,
+		RateLimit5h:             req.RateLimit5h,
+		RateLimit1d:             req.RateLimit1d,
+		RateLimit7d:             req.RateLimit7d,
 	}
 
 	// Set expiration time if specified
@@ -524,36 +639,6 @@ func apiKeyPaginationResult(total int64, params pagination.PaginationParams) *pa
 	}
 }
 
-func (s *APIKeyService) fillCurrentConcurrency(ctx context.Context, keys []APIKey) {
-	if s == nil || s.concurrencyService == nil || len(keys) == 0 {
-		return
-	}
-	ids := make([]int64, 0, len(keys))
-	for i := range keys {
-		if keys[i].ID > 0 {
-			ids = append(ids, keys[i].ID)
-		}
-	}
-	counts, err := s.concurrencyService.GetAPIKeyConcurrencyBatch(ctx, ids)
-	if err != nil {
-		return
-	}
-	for i := range keys {
-		keys[i].CurrentConcurrency = counts[keys[i].ID]
-	}
-}
-
-func (s *APIKeyService) currentConcurrencyForAPIKey(ctx context.Context, apiKeyID int64) int {
-	if s == nil || s.concurrencyService == nil || apiKeyID <= 0 {
-		return 0
-	}
-	counts, err := s.concurrencyService.GetAPIKeyConcurrencyBatch(ctx, []int64{apiKeyID})
-	if err != nil {
-		return 0
-	}
-	return counts[apiKeyID]
-}
-
 func (s *APIKeyService) VerifyOwnership(ctx context.Context, userID int64, apiKeyIDs []int64) ([]int64, error) {
 	if len(apiKeyIDs) == 0 {
 		return []int64{}, nil
@@ -573,10 +658,36 @@ func (s *APIKeyService) GetByID(ctx context.Context, id int64) (*APIKey, error) 
 		return nil, fmt.Errorf("get api key: %w", err)
 	}
 	s.compileAPIKeyIPRules(apiKey)
-	if apiKey != nil {
-		apiKey.CurrentConcurrency = s.currentConcurrencyForAPIKey(ctx, apiKey.ID)
-	}
+	s.fillCurrentConcurrencyForKey(ctx, apiKey)
 	return apiKey, nil
+}
+
+func (s *APIKeyService) fillCurrentConcurrency(ctx context.Context, keys []APIKey) {
+	if s == nil || s.concurrencyService == nil || len(keys) == 0 {
+		return
+	}
+	ids := make([]int64, 0, len(keys))
+	for i := range keys {
+		if keys[i].ID > 0 {
+			ids = append(ids, keys[i].ID)
+		}
+	}
+	counts, err := s.concurrencyService.GetAPIKeyConcurrencyBatch(ctx, ids)
+	if err != nil {
+		return
+	}
+	for i := range keys {
+		keys[i].CurrentConcurrency = counts[keys[i].ID]
+	}
+}
+
+func (s *APIKeyService) fillCurrentConcurrencyForKey(ctx context.Context, apiKey *APIKey) {
+	if apiKey == nil {
+		return
+	}
+	keys := []APIKey{*apiKey}
+	s.fillCurrentConcurrency(ctx, keys)
+	apiKey.CurrentConcurrency = keys[0].CurrentConcurrency
 }
 
 // GetByKey 根据Key字符串获取API Key（用于认证）
@@ -662,23 +773,38 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 		apiKey.Name = html.EscapeString(*req.Name)
 	}
 
+	targetGroupID := apiKey.GroupID
 	if req.GroupID != nil {
-		// 验证分组权限
+		targetGroupID = req.GroupID
+	}
+	targetAugmentOnly := apiKey.IsAugmentOnly()
+	if req.AugmentOnly != nil {
+		targetAugmentOnly = *req.AugmentOnly
+	}
+	targetCodexOnly := apiKey.IsCodexOnly()
+	if req.CodexOnly != nil {
+		targetCodexOnly = *req.CodexOnly
+	}
+	restrictedClientProduct, err := s.validateScopeFlags(targetAugmentOnly, targetCodexOnly)
+	if err != nil {
+		return nil, err
+	}
+
+	if req.GroupID != nil || req.AugmentOnly != nil || req.CodexOnly != nil {
 		user, err := s.userRepo.GetByID(ctx, userID)
 		if err != nil {
 			return nil, fmt.Errorf("get user: %w", err)
 		}
-
-		group, err := s.groupRepo.GetByID(ctx, *req.GroupID)
-		if err != nil {
-			return nil, fmt.Errorf("get group: %w", err)
+		if _, err := s.validateAPIKeyBindingGroup(ctx, user, targetGroupID, clientProductValue(restrictedClientProduct)); err != nil {
+			return nil, err
 		}
+	}
 
-		if !s.canUserBindGroup(ctx, user, group) {
-			return nil, ErrGroupNotAllowed
-		}
-
+	if req.GroupID != nil {
 		apiKey.GroupID = req.GroupID
+	}
+	if req.AugmentOnly != nil || req.CodexOnly != nil {
+		apiKey.RestrictedClientProduct = restrictedClientProduct
 	}
 
 	if req.Status != nil {
@@ -889,12 +1015,26 @@ func (s *APIKeyService) GetAvailableGroups(ctx context.Context, userID int64) ([
 	// 过滤出用户有权限的分组
 	availableGroups := make([]Group, 0)
 	for _, group := range allGroups {
+		if isInternalAugmentRoutingGroup(&group) {
+			continue
+		}
 		if s.canUserBindGroupInternal(user, &group, subscribedGroupIDs) {
 			availableGroups = append(availableGroups, group)
 		}
 	}
 
 	return availableGroups, nil
+}
+
+func isInternalAugmentRoutingGroup(group *Group) bool {
+	if group == nil {
+		return false
+	}
+	name := strings.ToLower(strings.TrimSpace(group.Name))
+	if name == "" {
+		return false
+	}
+	return strings.HasPrefix(name, "augment-") && strings.HasSuffix(name, "-routing")
 }
 
 // canUserBindGroupInternal 内部方法，检查用户是否可以绑定分组（使用预加载的订阅数据）

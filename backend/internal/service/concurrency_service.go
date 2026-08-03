@@ -37,7 +37,7 @@ type ConcurrencyCache interface {
 	ReleaseUserSlot(ctx context.Context, userID int64, requestID string) error
 	GetUserConcurrency(ctx context.Context, userID int64) (int, error)
 
-	// 等待队列计数（每次入队都会刷新 TTL，避免长时间排队时计数提前过期）
+	// 等待队列计数（只在首次创建时设置 TTL）
 	IncrementWaitCount(ctx context.Context, userID int64, maxWait int) (bool, error)
 	DecrementWaitCount(ctx context.Context, userID int64) error
 
@@ -53,6 +53,8 @@ type ConcurrencyCache interface {
 	CleanupStaleProcessSlots(ctx context.Context, activeRequestPrefix string) error
 }
 
+// APIKeyConcurrencyCache is an optional stats-only extension implemented by
+// cache backends that can expose API-key scoped active request counts.
 type APIKeyConcurrencyCache interface {
 	TrackAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error
 	ReleaseAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error
@@ -95,9 +97,8 @@ const (
 
 	defaultAccountLoadBatchCacheTTL = 200 * time.Millisecond
 	accountLoadBatchFetchTimeout    = 3 * time.Second
-	maxAccountLoadBatchCacheEntries = 256
 	apiKeyConcurrencyFetchTimeout   = 3 * time.Second
-	apiKeySlotTrackTimeout          = 2 * time.Second
+	maxAccountLoadBatchCacheEntries = 256
 )
 
 // ConcurrencyService 管理账号和用户的并发限制。
@@ -246,9 +247,8 @@ func (s *ConcurrencyService) AcquireUserSlot(ctx context.Context, userID int64, 
 	}, nil
 }
 
-// TrackAPIKeySlot records one active request slot for an API key without
-// applying key-level concurrency limits. It is fail-open: Redis errors are
-// logged and return a no-op release function.
+// TrackAPIKeySlot records API-key scoped active requests for display only.
+// It never enforces a limit and fails open to avoid affecting request flow.
 func (s *ConcurrencyService) TrackAPIKeySlot(ctx context.Context, apiKeyID int64) func() {
 	if s == nil || s.cache == nil || apiKeyID <= 0 {
 		return func() {}
@@ -257,37 +257,25 @@ func (s *ConcurrencyService) TrackAPIKeySlot(ctx context.Context, apiKeyID int64
 	if !ok {
 		return func() {}
 	}
-
 	requestID := generateRequestID()
-	baseCtx := context.Background()
-	if ctx != nil {
-		baseCtx = context.WithoutCancel(ctx)
-	}
-	trackCtx, cancel := context.WithTimeout(baseCtx, apiKeySlotTrackTimeout)
-	err := cache.TrackAPIKeySlot(trackCtx, apiKeyID, requestID)
-	cancel()
-	if err != nil {
-		logger.LegacyPrintf("service.concurrency", "Warning: failed to track api key slot for %d (req=%s): %v", apiKeyID, requestID, err)
+	if err := cache.TrackAPIKeySlot(ctx, apiKeyID, requestID); err != nil {
+		logger.LegacyPrintf("service.concurrency", "Warning: track api key concurrency slot failed: %v", err)
 		return func() {}
 	}
-
 	return func() {
 		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := cache.ReleaseAPIKeySlot(bgCtx, apiKeyID, requestID); err != nil {
-			logger.LegacyPrintf("service.concurrency", "Warning: failed to release api key slot for %d (req=%s): %v", apiKeyID, requestID, err)
+			logger.LegacyPrintf("service.concurrency", "Warning: release api key concurrency slot failed: %v", err)
 		}
 	}
 }
 
-// GetAPIKeyConcurrencyBatch gets real-time active request counts for API keys.
-// Stats are best-effort: missing Redis support or Redis errors return zeroes.
+// GetAPIKeyConcurrencyBatch gets active request counts for API keys.
+// Missing cache support or Redis errors return zeroes because this is stats-only.
 func (s *ConcurrencyService) GetAPIKeyConcurrencyBatch(ctx context.Context, apiKeyIDs []int64) (map[int64]int, error) {
 	result := zeroAPIKeyConcurrencyMap(apiKeyIDs)
-	if len(apiKeyIDs) == 0 {
-		return result, nil
-	}
-	if s == nil || s.cache == nil {
+	if len(apiKeyIDs) == 0 || s == nil || s.cache == nil {
 		return result, nil
 	}
 	cache, ok := s.cache.(APIKeyConcurrencyCache)
@@ -295,7 +283,11 @@ func (s *ConcurrencyService) GetAPIKeyConcurrencyBatch(ctx context.Context, apiK
 		return result, nil
 	}
 
-	redisCtx, cancel := context.WithTimeout(context.Background(), apiKeyConcurrencyFetchTimeout)
+	baseCtx := context.Background()
+	if ctx != nil {
+		baseCtx = context.WithoutCancel(ctx)
+	}
+	redisCtx, cancel := context.WithTimeout(baseCtx, apiKeyConcurrencyFetchTimeout)
 	defer cancel()
 
 	counts, err := cache.GetAPIKeyConcurrencyBatch(redisCtx, apiKeyIDs)

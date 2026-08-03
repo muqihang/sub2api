@@ -1,0 +1,402 @@
+{
+  "captured_at": "2026-06-16T16:45:00-07:00",
+  "checkpoint": "CP8",
+  "mode": "loopback_live_matrix_fixture",
+  "official_docs_snapshot": {
+    "captured_at": "2026-06-16",
+    "observations": {
+      "deepseek": {
+        "anthropic_base_url": "https://api.deepseek.com/anthropic",
+        "cache_observability": "cache_read_input_tokens/cache_creation_input_tokens",
+        "context_windows": {
+          "deepseek-v4-flash": 1000000,
+          "deepseek-v4-pro": 1000000,
+          "deepseek-v4-pro[1m]": 1000000
+        },
+        "models": [
+          "deepseek-v4-pro",
+          "deepseek-v4-pro[1m]",
+          "deepseek-v4-flash"
+        ],
+        "openai_base_url": "https://api.deepseek.com",
+        "preferred_claude_code_protocol": "anthropic_messages",
+        "reasoning_effort_levels": [
+          "high",
+          "max"
+        ]
+      },
+      "kimi": {
+        "anthropic_base_url": "https://api.moonshot.ai/anthropic",
+        "cache_usage_field": "usage.cached_tokens",
+        "coding_models": [
+          "kimi-k2.7-code",
+          "kimi-k2.7-code-highspeed"
+        ],
+        "openai_base_url": "https://api.moonshot.ai/v1",
+        "prompt_cache_key": true
+      },
+      "openai": {
+        "cache_observability": "usage.prompt_tokens_details.cached_tokens",
+        "preferred_api": "responses",
+        "recommended_model": "gpt-5.5"
+      },
+      "zai_glm": {
+        "anthropic_base_url": "https://api.z.ai/api/anthropic",
+        "claude_code_display_models": [
+          "glm-5.2",
+          "glm-5.2[1m]",
+          "glm-5-turbo",
+          "glm-4.7",
+          "glm-4.5-air"
+        ],
+        "latest_coding_model": "glm-5.2"
+      }
+    },
+    "sources": {
+      "anthropic_messages": "https://docs.anthropic.com/en/api/messages",
+      "deepseek_anthropic_api": "https://api-docs.deepseek.com/guides/anthropic_api",
+      "deepseek_kv_cache": "https://api-docs.deepseek.com/guides/kv_cache",
+      "deepseek_thinking_mode": "https://api-docs.deepseek.com/guides/thinking_mode",
+      "kimi_agent_support": "https://platform.kimi.ai/docs/guide/agent-support",
+      "openai_prompt_caching": "https://developers.openai.com/api/docs/guides/prompt-caching",
+      "openai_reasoning": "https://developers.openai.com/api/docs/guides/reasoning",
+      "zai_claude_code": "https://docs.z.ai/devpack/tool/claude",
+      "zai_latest_model": "https://docs.z.ai/devpack/latest-model"
+    }
+  },
+  "provider_release_classification": {
+    "agnes": {
+      "evidence": "checkpoint0_conditional_probe_required",
+      "reason": "probe_and_strict_live_required",
+      "status": "live-disabled"
+    },
+    "claude_native": {
+      "evidence": "checkpoint0_scope_frozen_strict_live_required",
+      "reason": "strict_live_evidence_pending",
+      "status": "fixture-pass-only"
+    },
+    "deepseek": {
+      "evidence": "checkpoint0_scope_frozen_strict_live_required",
+      "reason": "strict_live_evidence_pending",
+      "status": "fixture-pass-only"
+    },
+    "glm": {
+      "evidence": "checkpoint0_catalog_visible_live_disabled",
+      "reason": "outside_l8_live_scope",
+      "status": "live-disabled"
+    },
+    "kimi": {
+      "evidence": "checkpoint0_catalog_visible_live_disabled",
+      "reason": "outside_l8_live_scope",
+      "status": "live-disabled"
+    },
+    "openai": {
+      "evidence": "checkpoint0_scope_frozen_strict_live_required",
+      "reason": "strict_live_evidence_pending",
+      "status": "fixture-pass-only"
+    }
+  },
+  "scenarios": {
+    "cache_account_audit": {
+      "artifact_refs": [
+        {
+          "path": "artifacts/cache_account_audit.json",
+          "sensitive_scan_clean": true,
+          "sha256": "sha256:2eb030f74f38d53bea73643354f739038681f3baa0623dd640c0c7981ead839b"
+        }
+      ],
+      "audit_summary_only": true,
+      "cache_provider_evidence": {
+        "claude_native": {
+          "cache_usage_fields": [
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens"
+          ],
+          "live_usage_fields_observed": false,
+          "mechanism": "anthropic_cache_control",
+          "raw_sensitive_stored": false,
+          "request_shape_preserved": true
+        },
+        "deepseek": {
+          "cache_control_provider_ignored": true,
+          "cache_usage_fields": [
+            "prompt_cache_hit_tokens",
+            "prompt_cache_miss_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens"
+          ],
+          "live_cache_hit_observed": true,
+          "live_cache_miss_observed": false,
+          "live_cache_write_observed": true,
+          "live_usage_fields_observed": true,
+          "mechanism": "deepseek_prefix_kv",
+          "raw_sensitive_stored": false,
+          "request_shape_preserved": true,
+          "stable_prefix_hmac_present": true,
+          "treats_cache_control_as_cache_mechanism": false
+        },
+        "openai": {
+          "cache_usage_fields": [
+            "usage.prompt_tokens_details.cached_tokens"
+          ],
+          "live_usage_fields_observed": false,
+          "mechanism": "openai_prompt_cache",
+          "raw_sensitive_stored": false,
+          "request_shape_preserved": true
+        }
+      },
+      "deepseek_cache_observability": "cache_read_input_tokens/cache_creation_input_tokens",
+      "live_provider_verified": false,
+      "raw_sensitive_stored": false,
+      "safe_summary_hash_stable": true,
+      "safe_tool_result_hash_stable": true,
+      "stable_prefix_invalidated": false,
+      "status": "pass",
+      "ttl_fast_switch_boundary_miss_count": 1,
+      "usage_accounting_split_by_route": true
+    },
+    "claude_deepseek_subagent_claude": {
+      "anthropic_body_foreign_markers": [],
+      "artifact_refs": [
+        {
+          "path": "artifacts/transcript_boundary.json",
+          "sensitive_scan_clean": true,
+          "sha256": "sha256:9247ddd675f7f144596578f11263f6c72a1ec642aba7f273d7db43390a524461"
+        }
+      ],
+      "child_hidden_reasoning_replayed": false,
+      "child_provider": "deepseek",
+      "live_provider_verified": false,
+      "parent_provider": "claude",
+      "provider_private_history_replayed": false,
+      "raw_sensitive_stored": false,
+      "returned_artifacts": [
+        "safe_final_answer",
+        "safe_tool_result",
+        "evidence_summary"
+      ],
+      "status": "pass"
+    },
+    "claude_native": {
+      "artifact_refs": [
+        {
+          "path": "artifacts/claude_native_summary.jsonl",
+          "sensitive_scan_clean": true,
+          "sha256": "sha256:856f4c1dd8609bf17c5ffcf7e36b26e38297dbf6dd31df3bdee5b8783661b5e6"
+        }
+      ],
+      "bridge_request_count": 0,
+      "client_type": "claude_code_native",
+      "formal_pool_allowed": true,
+      "live_provider_verified": false,
+      "models": [
+        "claude-opus-4-6",
+        "claude-sonnet-4-6"
+      ],
+      "native_attestation": true,
+      "native_egress_count": 2,
+      "raw_sensitive_stored": false,
+      "route": "claude_code_native",
+      "shape_equality_verified": true,
+      "status": "pass"
+    },
+    "deepseek_bridge": {
+      "artifact_refs": [
+        {
+          "path": "artifacts/deepseek_bridge_summary.jsonl",
+          "sensitive_scan_clean": true,
+          "sha256": "sha256:23043f25e12ec9691f50ede9c8b6e1cc68960f9c7d1398941431416726ca3e80"
+        }
+      ],
+      "bridge_request_count": 3,
+      "cache_observability": "cache_read_input_tokens/cache_creation_input_tokens",
+      "client_type": "claude_code_bridge_deepseek",
+      "fallback_protocol": "openai_chat_completions",
+      "fallback_reason": "",
+      "formal_pool_allowed": false,
+      "live_provider_verified": false,
+      "models": [
+        "deepseek-v4-pro",
+        "deepseek-v4-pro[1m]",
+        "deepseek-v4-flash"
+      ],
+      "native_attestation": false,
+      "native_egress_count": 0,
+      "preferred_claude_code_protocol": "anthropic_messages",
+      "raw_sensitive_stored": false,
+      "reasoning_safety": "foreign_reasoning_never_native_replay",
+      "route": "deepseek_bridge",
+      "status": "pass"
+    },
+    "gpt_bridge": {
+      "artifact_refs": [
+        {
+          "path": "artifacts/gpt_bridge_summary.jsonl",
+          "sensitive_scan_clean": true,
+          "sha256": "sha256:bf354baab8ca82580cf5c28859c03f752606e69323fa2fd65db80bab9962cd0f"
+        }
+      ],
+      "bridge_request_count": 2,
+      "client_type": "claude_code_bridge_openai",
+      "fallback_reason": "",
+      "formal_pool_allowed": false,
+      "live_provider_verified": false,
+      "models": [
+        "gpt-5.5",
+        "gpt-5.4-mini"
+      ],
+      "native_attestation": false,
+      "native_egress_count": 0,
+      "preferred_claude_code_protocol": "responses",
+      "raw_sensitive_stored": false,
+      "route": "openai_bridge",
+      "status": "pass"
+    },
+    "interruption": {
+      "artifact_refs": [
+        {
+          "path": "artifacts/transcript_boundary.json",
+          "sensitive_scan_clean": true,
+          "sha256": "sha256:9247ddd675f7f144596578f11263f6c72a1ec642aba7f273d7db43390a524461"
+        }
+      ],
+      "interruption_exercised": true,
+      "live_provider_verified": false,
+      "mid_tool_loop_fail_closed_or_summarized": true,
+      "no_partial_tool_history_replayed": true,
+      "raw_sensitive_stored": false,
+      "status": "pass"
+    },
+    "long_context": {
+      "artifact_refs": [
+        {
+          "path": "artifacts/cache_account_audit.json",
+          "sensitive_scan_clean": true,
+          "sha256": "sha256:2eb030f74f38d53bea73643354f739038681f3baa0623dd640c0c7981ead839b"
+        }
+      ],
+      "cache_prefix_stable": true,
+      "live_provider_verified": false,
+      "long_context_exercised": true,
+      "max_context_tokens": 1000000,
+      "raw_sensitive_stored": false,
+      "stable_prefix_reordered": false,
+      "status": "pass"
+    },
+    "manual_provider_switch": {
+      "anthropic_body_foreign_markers": [],
+      "artifact_refs": [
+        {
+          "path": "artifacts/transcript_boundary.json",
+          "sensitive_scan_clean": true,
+          "sha256": "sha256:9247ddd675f7f144596578f11263f6c72a1ec642aba7f273d7db43390a524461"
+        }
+      ],
+      "claude_private_metadata_in_bridge": false,
+      "foreign_cache_metadata_in_anthropic": false,
+      "foreign_reasoning_in_anthropic": false,
+      "live_provider_verified": false,
+      "raw_sensitive_stored": false,
+      "role_order_tool_pairing_verified": true,
+      "same_provider_preserved": true,
+      "sequence": [
+        "claude",
+        "deepseek",
+        "gpt",
+        "claude"
+      ],
+      "status": "pass"
+    },
+    "netwatch_bypass": {
+      "artifact_refs": [
+        {
+          "path": "artifacts/netwatch_summary.json",
+          "sensitive_scan_clean": true,
+          "sha256": "sha256:2d099cfbc03ed841598630d6cc23e0cf14f3d98e870bfa5756b62bcc549ff3f5"
+        }
+      ],
+      "live_provider_verified": false,
+      "loopback_guard_connection_count": 3,
+      "official_or_public_bypass_count": 0,
+      "potential_guard_bypass_count": 0,
+      "raw_sensitive_stored": false,
+      "status": "pass",
+      "stores_headers": false,
+      "stores_payload": false
+    },
+    "subagent": {
+      "artifact_refs": [
+        {
+          "path": "artifacts/transcript_boundary.json",
+          "sensitive_scan_clean": true,
+          "sha256": "sha256:9247ddd675f7f144596578f11263f6c72a1ec642aba7f273d7db43390a524461"
+        }
+      ],
+      "default_model_policy": "inherit_first",
+      "live_provider_verified": false,
+      "provider_local_fast_model": true,
+      "raw_sensitive_stored": false,
+      "status": "pass",
+      "unexpected_formal_pool_egress": 0
+    },
+    "toolsearch_mcp": {
+      "artifact_refs": [
+        {
+          "path": "artifacts/toolsearch_mcp_sse.json",
+          "sensitive_scan_clean": true,
+          "sha256": "sha256:ed3406c1dafb2b068d15732c22cd9709d5abfa81e35587ed321d03bd9a95dafe"
+        }
+      ],
+      "bridge_provider_toolsearch": {
+        "deepseek": {
+          "degraded_reason": "unresolved_lazy_shapes_fail_closed",
+          "mode": "disabled",
+          "toolsearch_degraded": true,
+          "unresolved_defer_loading_upstream": false,
+          "unresolved_tool_reference_upstream": false
+        },
+        "openai": {
+          "degraded_reason": "unresolved_lazy_shapes_fail_closed",
+          "mode": "disabled",
+          "toolsearch_degraded": true,
+          "unresolved_defer_loading_upstream": false,
+          "unresolved_tool_reference_upstream": false
+        }
+      },
+      "bridge_tool_use_sse_golden_diff": true,
+      "input_json_delta_verified": true,
+      "live_provider_verified": false,
+      "mcp_tools_exercised": true,
+      "raw_sensitive_stored": false,
+      "status": "pass",
+      "stop_reason_tool_use_verified": true,
+      "toolsearch_mode": "degraded_disabled"
+    },
+    "workflow": {
+      "active_profile_dynamic_resolution": true,
+      "artifact_refs": [
+        {
+          "path": "artifacts/workflow_background.json",
+          "sensitive_scan_clean": true,
+          "sha256": "sha256:1bf9b14ca84d4ac1bb33c37328d2c0c0bb198b8d9cf4364b63f675d684d25a7b"
+        }
+      ],
+      "hardcoded_claude_model_consumed": false,
+      "live_provider_verified": false,
+      "non_claude_background_native_egress": 0,
+      "raw_sensitive_stored": false,
+      "required_background_tasks": [
+        "title",
+        "compact",
+        "summary",
+        "probe",
+        "fast",
+        "simple",
+        "haiku"
+      ],
+      "status": "pass",
+      "workflow_alias_resolved_provider_local": true
+    }
+  },
+  "schema_version": "cp8-live-matrix-v1"
+}

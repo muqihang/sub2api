@@ -24,8 +24,9 @@ import (
 )
 
 type Application struct {
-	Server  *http.Server
-	Cleanup func()
+	Server                                     *http.Server
+	Cleanup                                    func()
+	FormalPoolRuntimeRegistrationStartupReplay *service.FormalPoolRuntimeRegistrationStartupReplay
 }
 
 func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
@@ -53,7 +54,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 		provideCleanup,
 
 		// Application struct
-		wire.Struct(new(Application), "Server", "Cleanup"),
+		wire.Struct(new(Application), "Server", "Cleanup", "FormalPoolRuntimeRegistrationStartupReplay"),
 	)
 	return nil, nil
 }
@@ -98,10 +99,12 @@ func provideCleanup(
 	antigravityOAuth *service.AntigravityOAuthService,
 	grokOAuth *service.GrokOAuthService,
 	openAIGateway *service.OpenAIGatewayService,
+	openAIAgentIdentityAdmission *service.OpenAIAgentIdentityAdmissionWorker,
 	scheduledTestRunner *service.ScheduledTestRunnerService,
 	backupSvc *service.BackupService,
 	paymentOrderExpiry *service.PaymentOrderExpiryService,
 	channelMonitorRunner *service.ChannelMonitorRunner,
+	openAIResponsesProbeScheduler *service.OpenAIResponsesProbeScheduler,
 	quotaFlusher *service.UserPlatformQuotaUsageFlusher,
 ) func() {
 	return func() {
@@ -249,6 +252,12 @@ func provideCleanup(
 				}
 				return nil
 			}},
+			{"OpenAIAgentIdentityAdmissionWorker", func() error {
+				if openAIAgentIdentityAdmission != nil {
+					openAIAgentIdentityAdmission.Stop()
+				}
+				return nil
+			}},
 			{"ScheduledTestRunnerService", func() error {
 				if scheduledTestRunner != nil {
 					scheduledTestRunner.Stop()
@@ -270,6 +279,12 @@ func provideCleanup(
 			{"ChannelMonitorRunner", func() error {
 				if channelMonitorRunner != nil {
 					channelMonitorRunner.Stop()
+				}
+				return nil
+			}},
+			{"OpenAIResponsesProbeScheduler", func() error {
+				if openAIResponsesProbeScheduler != nil {
+					openAIResponsesProbeScheduler.Stop()
 				}
 				return nil
 			}},

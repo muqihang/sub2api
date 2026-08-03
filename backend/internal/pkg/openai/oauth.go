@@ -25,10 +25,11 @@ const (
 	// Default redirect URI (can be customized)
 	DefaultRedirectURI = "http://localhost:1455/auth/callback"
 
-	// Scopes
-	DefaultScopes = "openid profile email offline_access"
-	// RefreshScopes - scope for token refresh (without offline_access, aligned with CRS project)
-	RefreshScopes = "openid profile email"
+	// Scopes match the official Codex CLI browser login flow.
+	DefaultScopes = "openid profile email offline_access api.connectors.read api.connectors.invoke"
+
+	// DefaultOriginator identifies the official Codex CLI login surface.
+	DefaultOriginator = "codex_cli_rs"
 
 	// Session TTL
 	SessionTTL = 30 * time.Minute
@@ -41,12 +42,24 @@ const (
 
 // OAuthSession stores OAuth flow state for OpenAI
 type OAuthSession struct {
-	State        string    `json:"state"`
-	CodeVerifier string    `json:"code_verifier"`
-	ClientID     string    `json:"client_id,omitempty"`
-	ProxyURL     string    `json:"proxy_url,omitempty"`
-	RedirectURI  string    `json:"redirect_uri"`
-	CreatedAt    time.Time `json:"created_at"`
+	State         string    `json:"state"`
+	CodeVerifier  string    `json:"code_verifier"`
+	ClientID      string    `json:"client_id,omitempty"`
+	ProxyURL      string    `json:"proxy_url,omitempty"`
+	EgressBucket  string    `json:"egress_bucket,omitempty"`
+	ProxySelected bool      `json:"proxy_selected,omitempty"`
+	ProxyLabel    string    `json:"proxy_label,omitempty"`
+	ProxyHash     string    `json:"proxy_hash,omitempty"`
+	RedirectURI   string    `json:"redirect_uri"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+type OAuthSessionStore interface {
+	Set(sessionID string, session *OAuthSession) error
+	Get(sessionID string) (*OAuthSession, bool, error)
+	Consume(sessionID string) (*OAuthSession, bool, error)
+	Delete(sessionID string) error
+	Stop() error
 }
 
 // SessionStore manages OAuth sessions in memory
@@ -69,39 +82,57 @@ func NewSessionStore() *SessionStore {
 }
 
 // Set stores a session
-func (s *SessionStore) Set(sessionID string, session *OAuthSession) {
+func (s *SessionStore) Set(sessionID string, session *OAuthSession) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessions[sessionID] = session
+	return nil
 }
 
 // Get retrieves a session
-func (s *SessionStore) Get(sessionID string) (*OAuthSession, bool) {
+func (s *SessionStore) Get(sessionID string) (*OAuthSession, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	session, ok := s.sessions[sessionID]
 	if !ok {
-		return nil, false
+		return nil, false, nil
 	}
 	// Check if expired
 	if time.Since(session.CreatedAt) > SessionTTL {
-		return nil, false
+		return nil, false, nil
 	}
-	return session, true
+	return session, true, nil
+}
+
+func (s *SessionStore) Consume(sessionID string) (*OAuthSession, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok := s.sessions[sessionID]
+	if !ok {
+		return nil, false, nil
+	}
+	if time.Since(session.CreatedAt) > SessionTTL {
+		delete(s.sessions, sessionID)
+		return nil, false, nil
+	}
+	delete(s.sessions, sessionID)
+	return session, true, nil
 }
 
 // Delete removes a session
-func (s *SessionStore) Delete(sessionID string) {
+func (s *SessionStore) Delete(sessionID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, sessionID)
+	return nil
 }
 
 // Stop stops the cleanup goroutine
-func (s *SessionStore) Stop() {
+func (s *SessionStore) Stop() error {
 	s.stopOnce.Do(func() {
 		close(s.stopCh)
 	})
+	return nil
 }
 
 // cleanup removes expired sessions periodically
@@ -201,6 +232,7 @@ func BuildAuthorizationURLForPlatform(state, codeChallenge, redirectURI, platfor
 	params.Set("id_token_add_organizations", "true")
 	if codexFlow {
 		params.Set("codex_cli_simplified_flow", "true")
+		params.Set("originator", DefaultOriginator)
 	}
 
 	return fmt.Sprintf("%s?%s", AuthorizeURL, params.Encode())
@@ -248,6 +280,7 @@ type IDTokenClaims struct {
 	Aud           []string `json:"aud"` // OpenAI returns aud as an array
 	Exp           int64    `json:"exp"`
 	Iat           int64    `json:"iat"`
+	SCP           []string `json:"scp,omitempty"`
 
 	// OpenAI specific claims (nested under https://api.openai.com/auth)
 	OpenAIAuth *OpenAIAuthClaims `json:"https://api.openai.com/auth,omitempty"`
@@ -291,7 +324,6 @@ func BuildRefreshTokenRequest(refreshToken string) *RefreshTokenRequest {
 		GrantType:    "refresh_token",
 		RefreshToken: refreshToken,
 		ClientID:     ClientID,
-		Scope:        RefreshScopes,
 	}
 }
 
@@ -312,7 +344,9 @@ func (r *RefreshTokenRequest) ToFormData() string {
 	params.Set("grant_type", r.GrantType)
 	params.Set("client_id", r.ClientID)
 	params.Set("refresh_token", r.RefreshToken)
-	params.Set("scope", r.Scope)
+	if strings.TrimSpace(r.Scope) != "" {
+		params.Set("scope", r.Scope)
+	}
 	return params.Encode()
 }
 

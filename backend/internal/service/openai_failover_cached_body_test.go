@@ -23,6 +23,26 @@ func (panicOnReadCloser) Read(_ []byte) (int, error) {
 
 func (panicOnReadCloser) Close() error { return nil }
 
+func TestOpenAIGatewayService_HandleFailoverSideEffects_DoesNotRereadResponseBody(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{
+		ID:       88,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{},
+		Body:       panicOnReadCloser{},
+	}
+
+	require.NotPanics(t, func() {
+		svc.handleFailoverSideEffects(context.Background(), resp, account, []byte(`{"error":{"type":"rate_limit_error","message":"rate limited"}}`))
+	})
+
+	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
+}
+
 func TestOpenAIGatewayService_Forward_FailoverReparsesCachedBodyForNextAccount(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -108,26 +128,6 @@ func TestOpenAIGatewayService_Forward_FailoverReparsesCachedBodyForNextAccount(t
 			require.Equal(t, tt.wantSecond, gjson.GetBytes(upstream.bodies[1], "model").String())
 		})
 	}
-}
-
-func TestOpenAIGatewayService_HandleFailoverSideEffects_DoesNotRereadResponseBody(t *testing.T) {
-	svc := &OpenAIGatewayService{}
-	account := &Account{
-		ID:       88,
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeOAuth,
-	}
-	resp := &http.Response{
-		StatusCode: http.StatusTooManyRequests,
-		Header:     http.Header{},
-		Body:       panicOnReadCloser{},
-	}
-
-	require.NotPanics(t, func() {
-		svc.handleFailoverSideEffects(context.Background(), resp, account, []byte(`{"error":{"type":"rate_limit_error","message":"rate limited"}}`))
-	})
-
-	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
 }
 
 func TestGetOpenAIRequestBodyMap_IgnoresLegacyContextCache(t *testing.T) {

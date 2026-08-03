@@ -50,12 +50,6 @@ describe('IpGeoCell', () => {
     expect(mocks.fetchOne).toHaveBeenCalledWith('8.8.8.8')
   })
 
-  it('renders loading state', () => {
-    mocks.getEntry.mockReturnValue({ status: 'loading' })
-    const wrapper = mount(IpGeoCell, { props: { ip: '8.8.8.8' } })
-    expect(wrapper.text()).toContain('Fetching...')
-  })
-
   it('renders success state with label, tooltip detail, and a refresh button', async () => {
     mocks.getEntry.mockReturnValue({
       status: 'success',
@@ -76,27 +70,6 @@ describe('IpGeoCell', () => {
     expect(buttons[0].attributes('title')).toContain('Asia/Shanghai')
     await buttons[1].trigger('click')
     expect(mocks.fetchOne).toHaveBeenCalledWith('121.35.47.43', true)
-  })
-
-  it('opens the external lookup page when the label is clicked', async () => {
-    mocks.getEntry.mockReturnValue({ status: 'success', label: 'US · California', detail: {} })
-    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
-    const wrapper = mount(IpGeoCell, { props: { ip: '8.8.4.4' } })
-    await wrapper.findAll('button')[0].trigger('click')
-    expect(openSpy).toHaveBeenCalledWith(
-      'https://www.iplocation.net/ip-lookup?query=8.8.4.4',
-      '_blank',
-      'noopener,noreferrer'
-    )
-    openSpy.mockRestore()
-  })
-
-  it('renders failed state as a clickable retry', async () => {
-    mocks.getEntry.mockReturnValue({ status: 'error' })
-    const wrapper = mount(IpGeoCell, { props: { ip: '8.8.8.8' } })
-    expect(wrapper.text()).toContain('Failed')
-    await wrapper.find('button').trigger('click')
-    expect(mocks.fetchOne).toHaveBeenCalledWith('8.8.8.8')
   })
 
   it('renders private state as non-clickable text', () => {

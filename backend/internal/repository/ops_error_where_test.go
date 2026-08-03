@@ -85,21 +85,19 @@ func TestBuildOpsErrorLogsWhere_CyberPolicyStatusExemption(t *testing.T) {
 		t.Fatalf("default filter must still include the status >= 400 guard for non-cyber rows\nfull: %s", where)
 	}
 
-	// phase=upstream WITHOUT the recovered-upstream opt-in keeps the status guard:
-	// request-error list endpoints filter by phase=upstream as a plain condition.
+	// The local upstream view requires an explicit recovered-row opt-in. Without
+	// it, the request-list guard remains active while still admitting cyber rows.
 	whereUpstream, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{Phase: "upstream"})
-	if !strings.Contains(whereUpstream, "COALESCE(e.status_code, 0) >= 400") {
-		t.Fatalf("upstream phase without IncludeRecoveredUpstream must keep the status guard\nfull: %s", whereUpstream)
-	}
-	if !strings.Contains(whereUpstream, "e.error_phase = $") {
-		t.Fatalf("upstream phase filter must emit the error_phase condition\nfull: %s", whereUpstream)
+	if !strings.Contains(whereUpstream, "e.error_type = 'cyber_policy'") {
+		t.Fatalf("non-opted-in upstream filter must still admit cyber rows\nfull: %s", whereUpstream)
 	}
 
-	// phase=upstream WITH IncludeRecoveredUpstream (ops 上游列表) skips the guard,
-	// exposing recovered (<400) upstream rows.
-	whereRecovered, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{Phase: "upstream", IncludeRecoveredUpstream: true})
+	whereRecovered, _ := buildOpsErrorLogsWhere(&service.OpsErrorLogFilter{
+		Phase:                    "upstream",
+		IncludeRecoveredUpstream: true,
+	})
 	if strings.Contains(whereRecovered, "status_code") {
-		t.Fatalf("upstream phase with IncludeRecoveredUpstream must not add any status_code clause\nfull: %s", whereRecovered)
+		t.Fatalf("explicit recovered-upstream filter must not add a status_code clause\nfull: %s", whereRecovered)
 	}
 }
 

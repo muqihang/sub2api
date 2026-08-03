@@ -132,28 +132,6 @@ describe('PaymentStatusPanel', () => {
     openSpy.mockRestore()
   })
 
-  it('uses generic QR copy for custom methods that contain built-in names', async () => {
-    const wrapper = mount(PaymentStatusPanel, {
-      props: {
-        orderId: 42,
-        qrCode: 'https://pay.example.com/qr/42',
-        expiresAt: '2099-01-01T12:30:00Z',
-        paymentType: 'card_alipay',
-        orderType: 'balance',
-      },
-      global: {
-        stubs: {
-          Icon: true,
-        },
-      },
-    })
-
-    await flushPromises()
-
-    expect(wrapper.text()).toContain('payment.qr.scanToPay')
-    expect(wrapper.text()).not.toContain('payment.qr.scanAlipay')
-  })
-
   it('actively verifies a stuck pending order and settles it when upstream confirms payment', async () => {
     pollOrderStatus.mockResolvedValue(orderFactory('PENDING'))
     verifyOrder.mockResolvedValue({
@@ -183,5 +161,61 @@ describe('PaymentStatusPanel', () => {
     expect(verifyOrder).toHaveBeenCalledWith('sub2_20260420abcd1234')
     expect(wrapper.text()).toContain('payment.result.success')
     expect(wrapper.emitted('success')).toHaveLength(1)
+  })
+
+  it('uses paid order currency for pay amount and USD for credited amount', async () => {
+    pollOrderStatus.mockResolvedValue({
+      ...orderFactory('COMPLETED'),
+      amount: 100,
+      pay_amount: 108,
+      currency: 'CNY',
+      order_type: 'subscription',
+    })
+
+    const wrapper = mount(PaymentStatusPanel, {
+      props: {
+        orderId: 42,
+        qrCode: 'https://pay.example.com/qr/42',
+        expiresAt: '2099-01-01T12:30:00Z',
+        paymentType: 'alipay',
+        orderType: 'subscription',
+        currency: 'USD',
+      },
+      global: {
+        stubs: {
+          Icon: true,
+        },
+      },
+    })
+
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(3000)
+    await flushPromises()
+
+    expect(pollOrderStatus).toHaveBeenCalledWith(42)
+    expect(wrapper.text()).toContain('$100.00')
+    expect(wrapper.text()).toContain('¥108.00')
+  })
+
+  it('does not treat custom payment types containing alipay as built-in Alipay', async () => {
+    const wrapper = mount(PaymentStatusPanel, {
+      props: {
+        orderId: 42,
+        qrCode: 'https://pay.example.com/qr/42',
+        expiresAt: '2099-01-01T12:30:00Z',
+        paymentType: 'card_alipay',
+        orderType: 'balance',
+      },
+      global: {
+        stubs: {
+          Icon: true,
+        },
+      },
+    })
+
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('payment.qr.scanToPay')
+    expect(wrapper.text()).not.toContain('payment.qr.scanAlipay')
   })
 })

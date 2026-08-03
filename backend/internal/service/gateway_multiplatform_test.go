@@ -95,9 +95,6 @@ func (m *mockAccountRepoForPlatform) List(ctx context.Context, params pagination
 func (m *mockAccountRepoForPlatform) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode string) ([]Account, *pagination.PaginationResult, error) {
 	return nil, nil, nil
 }
-func (m *mockAccountRepoForPlatform) ListAllWithFilters(ctx context.Context, platform, accountType, status, search string, groupID int64, privacyMode string) ([]Account, error) {
-	return nil, nil
-}
 func (m *mockAccountRepoForPlatform) ListByGroup(ctx context.Context, groupID int64) ([]Account, error) {
 	return nil, nil
 }
@@ -246,6 +243,30 @@ func (m *mockGatewayCacheForPlatform) DeleteSessionAccountID(ctx context.Context
 	}
 	m.deletedSessions[sessionHash]++
 	delete(m.sessionBindings, sessionHash)
+	return nil
+}
+
+func (m *mockGatewayCacheForPlatform) IncrModelCallCount(ctx context.Context, accountID int64, model string) (int64, error) {
+	return 0, nil
+}
+
+func (m *mockGatewayCacheForPlatform) GetModelLoadBatch(ctx context.Context, accountIDs []int64, model string) (map[int64]*ModelLoadInfo, error) {
+	return nil, nil
+}
+
+func (m *mockGatewayCacheForPlatform) RecordOpenAICacheSample(ctx context.Context, accountID int64, model string, inputTokens int64, cacheReadTokens int64) error {
+	return nil
+}
+
+func (m *mockGatewayCacheForPlatform) GetOpenAICacheHealthBatch(ctx context.Context, accountIDs []int64, model string) (map[int64]*OpenAICacheHealthInfo, error) {
+	return map[int64]*OpenAICacheHealthInfo{}, nil
+}
+
+func (m *mockGatewayCacheForPlatform) FindGeminiSession(ctx context.Context, groupID int64, prefixHash, digestChain string) (uuid string, accountID int64, found bool) {
+	return "", 0, false
+}
+
+func (m *mockGatewayCacheForPlatform) SaveGeminiSession(ctx context.Context, groupID int64, prefixHash, digestChain, uuid string, accountID int64) error {
 	return nil
 }
 

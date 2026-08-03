@@ -8,63 +8,6 @@ import (
 	"time"
 )
 
-type outboxCleanupCache struct {
-	watermark     int64
-	setWatermarks []int64
-	updateErr     error
-}
-
-func (c *outboxCleanupCache) GetSnapshot(ctx context.Context, bucket SchedulerBucket) ([]*Account, bool, error) {
-	return nil, false, nil
-}
-
-func (c *outboxCleanupCache) SetSnapshot(ctx context.Context, bucket SchedulerBucket, accounts []Account) error {
-	return nil
-}
-
-func (c *outboxCleanupCache) GetAccount(ctx context.Context, accountID int64) (*Account, error) {
-	return nil, nil
-}
-
-func (c *outboxCleanupCache) SetAccount(ctx context.Context, account *Account) error {
-	return nil
-}
-
-func (c *outboxCleanupCache) DeleteAccount(ctx context.Context, accountID int64) error {
-	return nil
-}
-
-func (c *outboxCleanupCache) UpdateLastUsed(ctx context.Context, updates map[int64]time.Time) error {
-	return c.updateErr
-}
-
-func (c *outboxCleanupCache) TryLockBucket(ctx context.Context, bucket SchedulerBucket, ttl time.Duration) (bool, error) {
-	return true, nil
-}
-
-func (c *outboxCleanupCache) UnlockBucket(ctx context.Context, bucket SchedulerBucket) error {
-	return nil
-}
-
-func (c *outboxCleanupCache) ListBuckets(ctx context.Context) ([]SchedulerBucket, error) {
-	return nil, nil
-}
-
-func (c *outboxCleanupCache) GetOutboxWatermark(ctx context.Context) (int64, error) {
-	return c.watermark, nil
-}
-
-func (c *outboxCleanupCache) SetOutboxWatermark(ctx context.Context, id int64) error {
-	c.watermark = id
-	c.setWatermarks = append(c.setWatermarks, id)
-	return nil
-}
-
-type outboxCleanupDeleteCall struct {
-	watermark int64
-	limit     int
-}
-
 type outboxCleanupRepo struct {
 	events       []SchedulerOutboxEvent
 	rows         []int64
@@ -72,6 +15,11 @@ type outboxCleanupRepo struct {
 	lockAttempts int
 	releaseCount int
 	deleteCalls  []outboxCleanupDeleteCall
+}
+
+type outboxCleanupDeleteCall struct {
+	watermark int64
+	limit     int
 }
 
 func (r *outboxCleanupRepo) ListAfterAndReleaseDedup(ctx context.Context, afterID int64, limit int) ([]SchedulerOutboxEvent, error) {
@@ -99,14 +47,10 @@ func (r *outboxCleanupRepo) MaxID(ctx context.Context) (int64, error) {
 }
 
 func (r *outboxCleanupRepo) DeleteConsumedUpTo(ctx context.Context, watermark int64, limit int) (int64, error) {
-	r.deleteCalls = append(r.deleteCalls, outboxCleanupDeleteCall{
-		watermark: watermark,
-		limit:     limit,
-	})
+	r.deleteCalls = append(r.deleteCalls, outboxCleanupDeleteCall{watermark: watermark, limit: limit})
 	if watermark <= 0 || limit <= 0 {
 		return 0, nil
 	}
-
 	deleted := int64(0)
 	kept := make([]int64, 0, len(r.rows))
 	for _, id := range r.rows {
@@ -125,9 +69,7 @@ func (r *outboxCleanupRepo) TryAcquireCleanupLock(ctx context.Context) (Schedule
 	if !r.lockAcquired {
 		return nil, false, nil
 	}
-	return outboxCleanupLease{release: func() {
-		r.releaseCount++
-	}}, true, nil
+	return outboxCleanupLease{release: func() { r.releaseCount++ }}, true, nil
 }
 
 type outboxCleanupLease struct {
@@ -140,12 +82,42 @@ func (l outboxCleanupLease) Release() {
 	}
 }
 
+type outboxCleanupCache struct {
+	watermark     int64
+	setWatermarks []int64
+	updateErr     error
+}
+
+func (c *outboxCleanupCache) GetSnapshot(context.Context, SchedulerBucket) ([]*Account, bool, error) {
+	return nil, false, nil
+}
+func (c *outboxCleanupCache) SetSnapshot(context.Context, SchedulerBucket, []Account) error {
+	return nil
+}
+func (c *outboxCleanupCache) GetAccount(context.Context, int64) (*Account, error) { return nil, nil }
+func (c *outboxCleanupCache) SetAccount(context.Context, *Account) error          { return nil }
+func (c *outboxCleanupCache) DeleteAccount(context.Context, int64) error          { return nil }
+func (c *outboxCleanupCache) UpdateLastUsed(context.Context, map[int64]time.Time) error {
+	return c.updateErr
+}
+func (c *outboxCleanupCache) TryLockBucket(context.Context, SchedulerBucket, time.Duration) (bool, error) {
+	return true, nil
+}
+func (c *outboxCleanupCache) UnlockBucket(context.Context, SchedulerBucket) error    { return nil }
+func (c *outboxCleanupCache) ListBuckets(context.Context) ([]SchedulerBucket, error) { return nil, nil }
+func (c *outboxCleanupCache) GetOutboxWatermark(context.Context) (int64, error) {
+	return c.watermark, nil
+}
+func (c *outboxCleanupCache) SetOutboxWatermark(_ context.Context, id int64) error {
+	c.watermark = id
+	c.setWatermarks = append(c.setWatermarks, id)
+	return nil
+}
+
 func TestSchedulerSnapshotServicePollOutboxCleansConsumedRowsAfterWatermark(t *testing.T) {
 	cache := &outboxCleanupCache{}
 	repo := &outboxCleanupRepo{
-		events: []SchedulerOutboxEvent{
-			{ID: 10000, EventType: SchedulerOutboxEventAccountLastUsed},
-		},
+		events:       []SchedulerOutboxEvent{{ID: 10000, EventType: SchedulerOutboxEventAccountLastUsed}},
 		rows:         int64Range(1, 10003),
 		lockAcquired: true,
 	}
@@ -178,9 +150,7 @@ func TestSchedulerSnapshotServicePollOutboxCleansConsumedRowsAfterWatermark(t *t
 func TestSchedulerSnapshotServicePollOutboxSkipsCleanupWhenLockUnavailable(t *testing.T) {
 	cache := &outboxCleanupCache{}
 	repo := &outboxCleanupRepo{
-		events: []SchedulerOutboxEvent{
-			{ID: 3, EventType: SchedulerOutboxEventAccountLastUsed},
-		},
+		events:       []SchedulerOutboxEvent{{ID: 3, EventType: SchedulerOutboxEventAccountLastUsed}},
 		rows:         []int64{1, 2, 3, 4},
 		lockAcquired: false,
 	}
@@ -206,19 +176,13 @@ func TestSchedulerSnapshotServicePollOutboxSkipsCleanupWhenLockUnavailable(t *te
 }
 
 func TestSchedulerSnapshotServicePollOutboxDoesNotCleanupOnHandleFailure(t *testing.T) {
-	cache := &outboxCleanupCache{
-		updateErr: errors.New("cache update failed"),
-	}
+	cache := &outboxCleanupCache{updateErr: errors.New("cache update failed")}
 	repo := &outboxCleanupRepo{
-		events: []SchedulerOutboxEvent{
-			{
-				ID:        5,
-				EventType: SchedulerOutboxEventAccountLastUsed,
-				Payload: map[string]any{
-					"last_used": map[string]any{"101": float64(123)},
-				},
-			},
-		},
+		events: []SchedulerOutboxEvent{{
+			ID:        5,
+			EventType: SchedulerOutboxEventAccountLastUsed,
+			Payload:   map[string]any{"last_used": map[string]any{"101": float64(123)}},
+		}},
 		rows:         []int64{1, 2, 3, 4, 5, 6},
 		lockAcquired: true,
 	}
@@ -241,10 +205,7 @@ func TestSchedulerSnapshotServicePollOutboxDoesNotCleanupOnHandleFailure(t *test
 }
 
 func TestSchedulerSnapshotServiceCleanupSkipsNonPositiveWatermark(t *testing.T) {
-	repo := &outboxCleanupRepo{
-		rows:         []int64{1, 2, 3},
-		lockAcquired: true,
-	}
+	repo := &outboxCleanupRepo{rows: []int64{1, 2, 3}, lockAcquired: true}
 	svc := NewSchedulerSnapshotService(&outboxCleanupCache{}, repo, nil, nil, nil)
 
 	svc.cleanupConsumedOutbox(0)

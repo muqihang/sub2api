@@ -11,12 +11,6 @@ export const supportsImagePricingPlatform = (platform: string): boolean =>
 export const supportsVideoPricingPlatform = (platform: string): boolean =>
   platform === "grok";
 
-export const imagePricingI18nKey = (_platform: string, key: string): string =>
-  `admin.groups.imagePricing.${key}`;
-
-export const videoPricingI18nKey = (key: string): string =>
-  `admin.groups.videoPricing.${key}`;
-
 type ImagePricingTierKey = "image_price_1k" | "image_price_2k" | "image_price_4k";
 type VideoPricingTierKey =
   | "video_price_480p"
@@ -39,8 +33,6 @@ const defaultImagePricePlaceholders: Record<
   },
 };
 
-// 视频价为每秒单价（USD/s）。480p/720p 取 grok-imagine-video（文生视频实际走该模型）的
-// 官方每秒价；1080p 仅 grok-imagine-video-1.5 图生视频支持，取 1.5 的每秒价。
 const defaultVideoPricePlaceholders: Record<
   string,
   Record<VideoPricingTierKey, string>
@@ -72,11 +64,7 @@ export const getDefaultImagePreviewPrice = (
   platform: string,
   tier: ImagePricingTierKey,
 ): number | null => {
-  const placeholder = getImagePricePlaceholder(platform, tier);
-  if (placeholder === "") {
-    return null;
-  }
-  const value = Number(placeholder);
+  const value = Number(getImagePricePlaceholder(platform, tier));
   return Number.isFinite(value) ? value : null;
 };
 

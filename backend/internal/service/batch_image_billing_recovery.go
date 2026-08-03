@@ -23,6 +23,44 @@ type BatchImageBillingRecoveryService struct {
 	Limit      int
 }
 
+func (s *BatchImageBillingRecoveryService) RequeueSubmittedFailuresOnce(ctx context.Context) (int, error) {
+	if s == nil || s.Repo == nil || s.Queue == nil {
+		return 0, nil
+	}
+	repo, ok := s.Repo.(BatchImageQueueRecoveryRepository)
+	if !ok {
+		return 0, nil
+	}
+	limit := s.Limit
+	if limit <= 0 {
+		limit = defaultBatchImageBillingRecoveryLimit
+	}
+	jobs, err := repo.ListBatchImageJobsPendingEnqueue(ctx, limit)
+	if err != nil {
+		return 0, err
+	}
+	requeued := 0
+	var lastErr error
+	for _, job := range jobs {
+		if job == nil {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return requeued, err
+		}
+		if err := s.Queue.Enqueue(ctx, job.BatchID); err != nil && !errors.Is(err, ErrBatchImageAlreadyQueued) {
+			lastErr = err
+			continue
+		}
+		if err := repo.MarkBatchImageJobQueueRecovered(ctx, job.BatchID); err != nil {
+			lastErr = err
+			continue
+		}
+		requeued++
+	}
+	return requeued, lastErr
+}
+
 func (s *BatchImageBillingRecoveryService) ReleaseStaleUnsubmittedOnce(ctx context.Context) (int, error) {
 	if s == nil || s.Repo == nil || s.Billing == nil {
 		return 0, nil

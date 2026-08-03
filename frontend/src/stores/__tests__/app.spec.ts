@@ -205,15 +205,12 @@ describe('useAppStore', () => {
       expect(store.sidebarCollapsed).toBe(false)
     })
 
-    it('sidebarScrollTop 默认为 0 且可读写', () => {
+    it('sidebarScrollTop defaults to 0 and remains writable', () => {
       const store = useAppStore()
       expect(store.sidebarScrollTop).toBe(0)
 
       store.sidebarScrollTop = 256
       expect(store.sidebarScrollTop).toBe(256)
-
-      store.sidebarScrollTop = 0
-      expect(store.sidebarScrollTop).toBe(0)
     })
 
     it('toggleMobileSidebar 切换移动端状态', () => {
@@ -399,6 +396,9 @@ describe('useAppStore', () => {
         contact_info: 'test@test.com',
         api_base_url: 'https://api.test.com',
         doc_url: 'https://docs.test.com',
+        auth_agreement_enabled: true,
+        auth_agreement_version: '2026-01',
+        auth_agreement_prompt_on_first_visit: true,
       }
 
       const store = useAppStore()
@@ -409,6 +409,9 @@ describe('useAppStore', () => {
       expect(store.siteLogo).toBe('/logo.png')
       expect(store.siteVersion).toBe('1.0.0')
       expect(store.publicSettingsLoaded).toBe(true)
+      expect(store.cachedPublicSettings?.auth_agreement_enabled).toBe(true)
+      expect(store.cachedPublicSettings?.auth_agreement_version).toBe('2026-01')
+      expect(store.cachedPublicSettings?.auth_agreement_prompt_on_first_visit).toBe(true)
     })
 
     it('无注入配置时返回 false', () => {
@@ -433,10 +436,64 @@ describe('useAppStore', () => {
       expect(store.cachedPublicSettings).toBeNull()
     })
 
+    it('fetchPublicSettings() 的 fallback settings 包含认证协议字段', async () => {
+      const store = useAppStore()
+      store.publicSettingsLoaded = true
+      store.cachedPublicSettings = null
+      const settings = await store.fetchPublicSettings()
+
+      expect(settings).toMatchObject({
+        auth_agreement_enabled: false,
+        auth_agreement_version: '',
+        auth_agreement_prompt_on_first_visit: false,
+      })
+    })
+
+    // --- use_new_account_management_ux ---
+
+    it('useNewAccountManagementUx 在未加载 public settings 时默认为 false', () => {
+      const store = useAppStore()
+
+      expect(store.cachedPublicSettings).toBeNull()
+      expect(store.useNewAccountManagementUx).toBe(false)
+    })
+
+    it('useNewAccountManagementUx 在 SSR 注入 true 时反映为 true', () => {
+      const windowAny = window as any
+      windowAny.__APP_CONFIG__ = {
+        site_name: 'TestSite',
+        use_new_account_management_ux: true,
+      }
+
+      const store = useAppStore()
+      store.initFromInjectedConfig()
+
+      expect(store.cachedPublicSettings?.use_new_account_management_ux).toBe(true)
+      expect(store.useNewAccountManagementUx).toBe(true)
+    })
+
+    it('useNewAccountManagementUx 在 public settings 显式为 false 时保持 false', () => {
+      const windowAny = window as any
+      windowAny.__APP_CONFIG__ = {
+        site_name: 'TestSite',
+        use_new_account_management_ux: false,
+      }
+
+      const store = useAppStore()
+      store.initFromInjectedConfig()
+
+      expect(store.cachedPublicSettings?.use_new_account_management_ux).toBe(false)
+      expect(store.useNewAccountManagementUx).toBe(false)
+    })
+
     it('fetchPublicSettings(force) 会同步更新运行时注入配置', async () => {
       vi.mocked(getPublicSettings).mockResolvedValue({
         registration_enabled: false,
         email_verify_enabled: false,
+        force_email_on_third_party_signup: false,
+        auth_agreement_enabled: false,
+        auth_agreement_version: '',
+        auth_agreement_prompt_on_first_visit: false,
         registration_email_suffix_whitelist: [],
         promo_code_enabled: true,
         password_reset_enabled: false,

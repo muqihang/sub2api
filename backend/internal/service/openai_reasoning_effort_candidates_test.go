@@ -22,49 +22,48 @@ func TestExtractOpenAIReasoningEffortFromBodyModelCandidates(t *testing.T) {
 		name       string
 		body       []byte
 		candidates []string
-		want       string // "" 表示期望 nil
+		want       string
 	}{
 		{
-			name:       "后缀推导回退到原始模型（OAuth 上游模型已剥后缀）",
+			name:       "falls back to original model suffix",
 			body:       bodyWithoutEffort,
 			candidates: []string{"gpt-5.4", "gpt-5.4", "gpt-5.4-xhigh"},
 			want:       "xhigh",
 		},
 		{
-			name:       "GPT-5.6 后缀 max 经原始模型推导保留",
+			name:       "preserves GPT 5.6 max suffix",
 			body:       bodyWithoutEffort,
 			candidates: []string{"gpt-5.6-sol", "gpt-5.6-sol", "gpt-5.6-sol-max"},
 			want:       "max",
 		},
 		{
-			name:       "显式 max 用第一个非空候选（映射后模型）判定",
+			name:       "uses mapped model for explicit max",
 			body:       bodyWithMax,
 			candidates: []string{"gpt-5.6-sol", "sol"},
 			want:       "max",
 		},
 		{
-			name:       "显式 max 非 5.6 首候选仍折叠为 xhigh",
+			name:       "normalizes max for non GPT 5.6 model",
 			body:       bodyWithMax,
 			candidates: []string{"gpt-5.4", "sol"},
 			want:       "xhigh",
 		},
 		{
-			name:       "所有候选均无后缀时返回 nil",
+			name:       "returns nil without an effort suffix",
 			body:       bodyWithoutEffort,
 			candidates: []string{"gpt-5.4", "gpt-5.4", "gpt-5.4"},
-			want:       "",
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := extractOpenAIReasoningEffortFromBody(tt.body, tt.candidates...)
-			if tt.want == "" {
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := extractOpenAIReasoningEffortFromBody(testCase.body, testCase.candidates...)
+			if testCase.want == "" {
 				require.Nil(t, got)
 				return
 			}
 			require.NotNil(t, got)
-			require.Equal(t, tt.want, *got)
+			require.Equal(t, testCase.want, *got)
 		})
 	}
 }
@@ -78,9 +77,6 @@ func TestExtractOpenAIReasoningEffortModelCandidates(t *testing.T) {
 	require.Equal(t, "high", *got)
 }
 
-// 回归：OAuth 账号请求后缀式模型（无显式 reasoning 字段）时，上游模型被
-// normalizeCodexModel 剥掉 effort 后缀，用量元数据的 effort 必须仍能从
-// 原始模型名后缀推导出来。
 func TestOpenAIGatewayServiceForwardOAuthDerivesEffortFromSuffixModel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := &httpUpstreamRecorder{
@@ -95,7 +91,6 @@ func TestOpenAIGatewayServiceForwardOAuthDerivesEffortFromSuffixModel(t *testing
 	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
 	account := &Account{
 		ID:          11,
-		Name:        "openai-oauth-suffix",
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Concurrency: 1,
@@ -106,13 +101,13 @@ func TestOpenAIGatewayServiceForwardOAuthDerivesEffortFromSuffixModel(t *testing
 		Status:      StatusActive,
 		Schedulable: true,
 	}
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
-	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	ginContext.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+	SetOpenAIClientTransport(ginContext, OpenAIClientTransportHTTP)
 
 	body := []byte(`{"model":"gpt-5.3-codex-xhigh","instructions":"suffix-test","input":"hello","stream":false}`)
-	result, err := svc.Forward(context.Background(), c, account, body)
+	result, err := svc.Forward(context.Background(), ginContext, account, body)
 
 	require.NoError(t, err)
 	require.NotNil(t, result)

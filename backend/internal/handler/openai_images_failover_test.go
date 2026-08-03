@@ -1,5 +1,3 @@
-//go:build unit
-
 package handler
 
 import (
@@ -84,7 +82,7 @@ func (u *openAIImagesFailoverHTTPUpstream) calls() []int64 {
 	return append([]int64(nil), u.accountIDs...)
 }
 
-func TestOpenAIGatewayHandlerImages_ServerErrorFailsOverAndReturnsClearErrorWhenExhausted(t *testing.T) {
+func TestOpenAIGatewayHandlerImages_ServerErrorFailsOverToNextAccount(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	groupID := int64(3130)
 	accounts := []service.Account{
@@ -114,6 +112,8 @@ func TestOpenAIGatewayHandlerImages_ServerErrorFailsOverAndReturnsClearErrorWhen
 	accountRepo := openAIImagesFailoverAccountRepo{accounts: accounts}
 	upstream := &openAIImagesFailoverHTTPUpstream{}
 	cfg := &config.Config{RunMode: config.RunModeSimple}
+	cfg.Gateway.OpenAICore.Enabled = true
+	gatewayCoreService := service.NewOpenAIGatewayCoreService(nil, cfg, nil)
 	gatewayService := service.NewOpenAIGatewayService(
 		accountRepo,
 		nil,
@@ -131,22 +131,15 @@ func TestOpenAIGatewayHandlerImages_ServerErrorFailsOverAndReturnsClearErrorWhen
 		upstream,
 		nil,
 		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
 	)
 	billingService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
 	t.Cleanup(billingService.Stop)
-	concurrencyService := service.NewConcurrencyService(nil)
 	handler := NewOpenAIGatewayHandler(
 		gatewayService,
-		concurrencyService,
+		service.NewConcurrencyService(nil),
+		gatewayCoreService,
 		billingService,
 		service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg),
-		nil,
 		nil,
 		nil,
 		nil,
@@ -154,7 +147,7 @@ func TestOpenAIGatewayHandlerImages_ServerErrorFailsOverAndReturnsClearErrorWhen
 	)
 	handler.maxAccountSwitches = 10
 
-	body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat"}`)
+	body := []byte(`{"prompt":"draw a cat"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

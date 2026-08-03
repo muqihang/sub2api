@@ -1,0 +1,473 @@
+{
+  "cli_version": "2.1.146",
+  "status": "PARTIAL",
+  "notes": [
+    "Covered --no-session-persistence, default persistence first turn, continue-most-recent, and local 500-once error path.",
+    "Attempted stream-json but it did not produce a safe reproducible capture and is not counted as covered.",
+    "Did not exercise explicit --resume/--session-id because non-interactive minimal localhost flow did not surface a safe reproducible session identifier without reading persisted session payloads."
+  ],
+  "scenarios": [
+    {
+      "name": "no_session_json",
+      "command_redacted": [
+        "claude",
+        "-p",
+        "<PROMPT_REDACTED>",
+        "--output-format",
+        "json",
+        "--no-session-persistence"
+      ],
+      "mode": "success",
+      "exit_code": 0,
+      "timed_out": false,
+      "stdout_omitted_reason": "digest_omitted_by_policy",
+      "stderr_omitted_reason": "digest_omitted_by_policy",
+      "request_count": 2,
+      "paths": [
+        "/v1/messages?beta=true",
+        "/v1/messages?beta=true"
+      ],
+      "header_key_orders": [
+        [
+          "Accept",
+          "Authorization",
+          "Content-Type",
+          "User-Agent",
+          "X-Claude-Code-Session-Id",
+          "X-Stainless-Arch",
+          "X-Stainless-Lang",
+          "X-Stainless-OS",
+          "X-Stainless-Package-Version",
+          "X-Stainless-Retry-Count",
+          "X-Stainless-Runtime",
+          "X-Stainless-Runtime-Version",
+          "X-Stainless-Timeout",
+          "anthropic-beta",
+          "anthropic-dangerous-direct-browser-access",
+          "anthropic-version",
+          "x-app",
+          "Connection",
+          "Host",
+          "Accept-Encoding",
+          "Content-Length"
+        ],
+        [
+          "Accept",
+          "Authorization",
+          "Content-Type",
+          "User-Agent",
+          "X-Claude-Code-Session-Id",
+          "X-Stainless-Arch",
+          "X-Stainless-Lang",
+          "X-Stainless-OS",
+          "X-Stainless-Package-Version",
+          "X-Stainless-Retry-Count",
+          "X-Stainless-Runtime",
+          "X-Stainless-Runtime-Version",
+          "X-Stainless-Timeout",
+          "anthropic-beta",
+          "anthropic-dangerous-direct-browser-access",
+          "anthropic-version",
+          "x-app",
+          "Connection",
+          "Host",
+          "Accept-Encoding",
+          "Content-Length"
+        ]
+      ],
+      "safe_header_refes_omitted_reason": "digest_omitted_by_policy",
+      "safe_refes_omitted_reason": "digest_omitted_by_policy",
+      "metadata_user_id_fields": [
+        [
+          "account_uuid",
+          "device_id",
+          "session_id"
+        ]
+      ],
+      "body_keys_per_request": [
+        [
+          "max_tokens",
+          "messages",
+          "metadata",
+          "model",
+          "output_config",
+          "stream",
+          "system",
+          "temperature",
+          "tools"
+        ],
+        [
+          "context_management",
+          "max_tokens",
+          "messages",
+          "metadata",
+          "model",
+          "output_config",
+          "stream",
+          "system",
+          "thinking",
+          "tools"
+        ]
+      ],
+      "stream_values": [
+        true,
+        true
+      ],
+      "retry_counts": [
+        "0",
+        "0"
+      ],
+      "billing_block_present": [
+        true,
+        true
+      ],
+      "cch_present": [
+        true,
+        true
+      ]
+    },
+    {
+      "name": "default_session_json_first",
+      "command_redacted": [
+        "claude",
+        "-p",
+        "<PROMPT_REDACTED>",
+        "--output-format",
+        "json"
+      ],
+      "mode": "success",
+      "exit_code": 0,
+      "timed_out": false,
+      "stdout_omitted_reason": "digest_omitted_by_policy",
+      "stderr_omitted_reason": "digest_omitted_by_policy",
+      "request_count": 2,
+      "paths": [
+        "/v1/messages?beta=true",
+        "/v1/messages?beta=true"
+      ],
+      "header_key_orders": [
+        [
+          "Accept",
+          "Authorization",
+          "Content-Type",
+          "User-Agent",
+          "X-Claude-Code-Session-Id",
+          "X-Stainless-Arch",
+          "X-Stainless-Lang",
+          "X-Stainless-OS",
+          "X-Stainless-Package-Version",
+          "X-Stainless-Retry-Count",
+          "X-Stainless-Runtime",
+          "X-Stainless-Runtime-Version",
+          "X-Stainless-Timeout",
+          "anthropic-beta",
+          "anthropic-dangerous-direct-browser-access",
+          "anthropic-version",
+          "x-app",
+          "Connection",
+          "Host",
+          "Accept-Encoding",
+          "Content-Length"
+        ],
+        [
+          "Accept",
+          "Authorization",
+          "Content-Type",
+          "User-Agent",
+          "X-Claude-Code-Session-Id",
+          "X-Stainless-Arch",
+          "X-Stainless-Lang",
+          "X-Stainless-OS",
+          "X-Stainless-Package-Version",
+          "X-Stainless-Retry-Count",
+          "X-Stainless-Runtime",
+          "X-Stainless-Runtime-Version",
+          "X-Stainless-Timeout",
+          "anthropic-beta",
+          "anthropic-dangerous-direct-browser-access",
+          "anthropic-version",
+          "x-app",
+          "Connection",
+          "Host",
+          "Accept-Encoding",
+          "Content-Length"
+        ]
+      ],
+      "safe_header_refes_omitted_reason": "digest_omitted_by_policy",
+      "safe_refes_omitted_reason": "digest_omitted_by_policy",
+      "metadata_user_id_fields": [
+        [
+          "account_uuid",
+          "device_id",
+          "session_id"
+        ]
+      ],
+      "body_keys_per_request": [
+        [
+          "max_tokens",
+          "messages",
+          "metadata",
+          "model",
+          "output_config",
+          "stream",
+          "system",
+          "temperature",
+          "tools"
+        ],
+        [
+          "context_management",
+          "max_tokens",
+          "messages",
+          "metadata",
+          "model",
+          "output_config",
+          "stream",
+          "system",
+          "thinking",
+          "tools"
+        ]
+      ],
+      "stream_values": [
+        true,
+        true
+      ],
+      "retry_counts": [
+        "0",
+        "0"
+      ],
+      "billing_block_present": [
+        true,
+        true
+      ],
+      "cch_present": [
+        true,
+        true
+      ]
+    },
+    {
+      "name": "default_session_continue_json",
+      "command_redacted": [
+        "claude",
+        "-c",
+        "-p",
+        "<PROMPT_REDACTED>",
+        "--output-format",
+        "json"
+      ],
+      "mode": "success",
+      "exit_code": 0,
+      "timed_out": false,
+      "stdout_omitted_reason": "digest_omitted_by_policy",
+      "stderr_omitted_reason": "digest_omitted_by_policy",
+      "request_count": 1,
+      "paths": [
+        "/v1/messages?beta=true"
+      ],
+      "header_key_orders": [
+        [
+          "Accept",
+          "Authorization",
+          "Content-Type",
+          "User-Agent",
+          "X-Claude-Code-Session-Id",
+          "X-Stainless-Arch",
+          "X-Stainless-Lang",
+          "X-Stainless-OS",
+          "X-Stainless-Package-Version",
+          "X-Stainless-Retry-Count",
+          "X-Stainless-Runtime",
+          "X-Stainless-Runtime-Version",
+          "X-Stainless-Timeout",
+          "anthropic-beta",
+          "anthropic-dangerous-direct-browser-access",
+          "anthropic-version",
+          "x-app",
+          "Connection",
+          "Host",
+          "Accept-Encoding",
+          "Content-Length"
+        ]
+      ],
+      "safe_header_refes_omitted_reason": "digest_omitted_by_policy",
+      "safe_refes_omitted_reason": "digest_omitted_by_policy",
+      "metadata_user_id_fields": [
+        [
+          "account_uuid",
+          "device_id",
+          "session_id"
+        ]
+      ],
+      "body_keys_per_request": [
+        [
+          "context_management",
+          "max_tokens",
+          "messages",
+          "metadata",
+          "model",
+          "output_config",
+          "stream",
+          "system",
+          "thinking",
+          "tools"
+        ]
+      ],
+      "stream_values": [
+        true
+      ],
+      "retry_counts": [
+        "0"
+      ],
+      "billing_block_present": [
+        true
+      ],
+      "cch_present": [
+        true
+      ]
+    },
+    {
+      "name": "no_session_stream_json",
+      "command_redacted": [
+        "claude",
+        "-p",
+        "<PROMPT_REDACTED>",
+        "--output-format",
+        "stream-json",
+        "--no-session-persistence"
+      ],
+      "mode": "success",
+      "exit_code": 1,
+      "timed_out": false,
+      "stdout_omitted_reason": "digest_omitted_by_policy",
+      "stderr_omitted_reason": "digest_omitted_by_policy",
+      "request_count": 0,
+      "paths": [],
+      "header_key_orders": [],
+      "safe_header_refes_omitted_reason": "digest_omitted_by_policy",
+      "safe_refes_omitted_reason": "digest_omitted_by_policy",
+      "metadata_user_id_fields": [],
+      "body_keys_per_request": [],
+      "stream_values": [],
+      "retry_counts": [],
+      "billing_block_present": [],
+      "cch_present": []
+    },
+    {
+      "name": "error_once_default_json",
+      "command_redacted": [
+        "claude",
+        "-p",
+        "<PROMPT_REDACTED>",
+        "--output-format",
+        "json"
+      ],
+      "mode": "error_once",
+      "exit_code": 0,
+      "timed_out": false,
+      "stdout_omitted_reason": "digest_omitted_by_policy",
+      "stderr_omitted_reason": "digest_omitted_by_policy",
+      "request_count": 2,
+      "paths": [
+        "/v1/messages?beta=true",
+        "/v1/messages?beta=true"
+      ],
+      "header_key_orders": [
+        [
+          "Accept",
+          "Authorization",
+          "Content-Type",
+          "User-Agent",
+          "X-Claude-Code-Session-Id",
+          "X-Stainless-Arch",
+          "X-Stainless-Lang",
+          "X-Stainless-OS",
+          "X-Stainless-Package-Version",
+          "X-Stainless-Retry-Count",
+          "X-Stainless-Runtime",
+          "X-Stainless-Runtime-Version",
+          "X-Stainless-Timeout",
+          "anthropic-beta",
+          "anthropic-dangerous-direct-browser-access",
+          "anthropic-version",
+          "x-app",
+          "Connection",
+          "Host",
+          "Accept-Encoding",
+          "Content-Length"
+        ],
+        [
+          "Accept",
+          "Authorization",
+          "Content-Type",
+          "User-Agent",
+          "X-Claude-Code-Session-Id",
+          "X-Stainless-Arch",
+          "X-Stainless-Lang",
+          "X-Stainless-OS",
+          "X-Stainless-Package-Version",
+          "X-Stainless-Retry-Count",
+          "X-Stainless-Runtime",
+          "X-Stainless-Runtime-Version",
+          "X-Stainless-Timeout",
+          "anthropic-beta",
+          "anthropic-dangerous-direct-browser-access",
+          "anthropic-version",
+          "x-app",
+          "Connection",
+          "Host",
+          "Accept-Encoding",
+          "Content-Length"
+        ]
+      ],
+      "safe_header_refes_omitted_reason": "digest_omitted_by_policy",
+      "safe_refes_omitted_reason": "digest_omitted_by_policy",
+      "metadata_user_id_fields": [
+        [
+          "account_uuid",
+          "device_id",
+          "session_id"
+        ]
+      ],
+      "body_keys_per_request": [
+        [
+          "max_tokens",
+          "messages",
+          "metadata",
+          "model",
+          "output_config",
+          "stream",
+          "system",
+          "temperature",
+          "tools"
+        ],
+        [
+          "context_management",
+          "max_tokens",
+          "messages",
+          "metadata",
+          "model",
+          "output_config",
+          "stream",
+          "system",
+          "thinking",
+          "tools"
+        ]
+      ],
+      "stream_values": [
+        true,
+        true
+      ],
+      "retry_counts": [
+        "0",
+        "0"
+      ],
+      "billing_block_present": [
+        true,
+        true
+      ],
+      "cch_present": [
+        true,
+        true
+      ]
+    }
+  ]
+}

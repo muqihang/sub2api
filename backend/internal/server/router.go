@@ -8,6 +8,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	"github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/server/routes"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -24,10 +25,13 @@ func SetupRouter(
 	r *gin.Engine,
 	handlers *handler.Handlers,
 	jwtAuth middleware2.JWTAuthMiddleware,
+	formalPoolJWTAuth middleware2.FormalPoolOnboardingJWTAuthMiddleware,
+	formalPoolPrincipalResolver admin.FormalPoolOnboardingPrincipalResolver,
 	adminAuth middleware2.AdminAuthMiddleware,
 	apiKeyAuth middleware2.APIKeyAuthMiddleware,
 	apiKeyService *service.APIKeyService,
 	subscriptionService *service.SubscriptionService,
+	codexAgentService *service.CodexAgentService,
 	opsService *service.OpsService,
 	settingService *service.SettingService,
 	cfg *config.Config,
@@ -53,7 +57,7 @@ func SetupRouter(
 	// 应用中间件
 	r.Use(middleware2.RequestLogger())
 	r.Use(middleware2.Logger())
-	r.Use(middleware2.CORS(cfg.CORS))
+	usePreRoutingProtocolMiddleware(r, cfg.CORS)
 	r.Use(middleware2.SecurityHeaders(cfg.Security.CSP, func() []string {
 		if p := cachedFrameOrigins.Load(); p != nil {
 			return *p
@@ -81,9 +85,14 @@ func SetupRouter(
 	}
 
 	// 注册路由
-	registerRoutes(r, handlers, jwtAuth, adminAuth, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, cfg, redisClient)
+	registerRoutes(r, handlers, jwtAuth, formalPoolJWTAuth, formalPoolPrincipalResolver, adminAuth, apiKeyAuth, apiKeyService, subscriptionService, codexAgentService, opsService, settingService, cfg, redisClient)
 
 	return r
+}
+
+func usePreRoutingProtocolMiddleware(r *gin.Engine, corsConfig config.CORSConfig) {
+	r.Use(middleware2.NativeSearchNamespaceGuard())
+	r.Use(middleware2.CORS(corsConfig))
 }
 
 // registerRoutes 注册所有 HTTP 路由
@@ -91,10 +100,13 @@ func registerRoutes(
 	r *gin.Engine,
 	h *handler.Handlers,
 	jwtAuth middleware2.JWTAuthMiddleware,
+	formalPoolJWTAuth middleware2.FormalPoolOnboardingJWTAuthMiddleware,
+	formalPoolPrincipalResolver admin.FormalPoolOnboardingPrincipalResolver,
 	adminAuth middleware2.AdminAuthMiddleware,
 	apiKeyAuth middleware2.APIKeyAuthMiddleware,
 	apiKeyService *service.APIKeyService,
 	subscriptionService *service.SubscriptionService,
+	codexAgentService *service.CodexAgentService,
 	opsService *service.OpsService,
 	settingService *service.SettingService,
 	cfg *config.Config,
@@ -109,9 +121,15 @@ func registerRoutes(
 	// 注册各模块路由
 	routes.RegisterAuthRoutes(v1, h, jwtAuth, redisClient, settingService)
 	routes.RegisterUserRoutes(v1, h, jwtAuth, settingService)
+	routes.RegisterCodexAgentRoutes(v1, h, jwtAuth, settingService)
+	routes.RegisterFormalPoolOnboardingPublicRoutes(v1, h)
+	routes.RegisterFormalPoolOnboardingAdminRoutes(v1, h, formalPoolJWTAuth, formalPoolPrincipalResolver, settingService)
 	routes.RegisterAdminRoutes(v1, h, adminAuth, settingService)
-	routes.RegisterGatewayRoutes(r, h, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, cfg)
+	codexGatewayAPIKeyAuth := middleware2.NewCodexGatewayAPIKeyAuthMiddleware(apiKeyService, subscriptionService, cfg)
+	codexGatewayAuth := middleware2.APIKeyAuthMiddleware(middleware2.ManagedDeviceOrAPIKeyAuth(codexAgentService, codexGatewayAPIKeyAuth, apiKeyService, subscriptionService, cfg))
+	routes.RegisterGatewayRoutesWithClaudeCodeNativeAuth(r, h, apiKeyAuth, codexGatewayAuth, apiKeyService, subscriptionService, opsService, settingService, cfg)
+	routes.RegisterCodexGatewayRoutes(r, h, codexGatewayAuth, opsService, settingService, cfg)
 	routes.RegisterPaymentRoutes(v1, h.Payment, h.PaymentWebhook, h.Admin.Payment, jwtAuth, adminAuth, settingService)
-
+	routes.RegisterCodexEntryCenterRoutes(v1, h, jwtAuth, settingService)
 	handler.RegisterPageRoutes(v1, cfg.Pricing.DataDir, gin.HandlerFunc(jwtAuth), gin.HandlerFunc(adminAuth), settingService)
 }

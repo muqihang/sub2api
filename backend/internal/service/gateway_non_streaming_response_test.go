@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,19 +16,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type nonJSONTempUnschedAccountRepo struct {
+type gatewayNonJSONTempUnschedAccountRepo struct {
 	AccountRepository
 	tempUnschedCalls int
 	tempReason       string
 }
 
-func (r *nonJSONTempUnschedAccountRepo) SetTempUnschedulable(_ context.Context, _ int64, _ time.Time, reason string) error {
+func (r *gatewayNonJSONTempUnschedAccountRepo) SetTempUnschedulable(_ context.Context, _ int64, _ time.Time, reason string) error {
 	r.tempUnschedCalls++
 	r.tempReason = reason
 	return nil
 }
 
-func TestHandleNonStreamingResponse_NonJSON2xxTriggersFailover(t *testing.T) {
+func TestGatewayNonStreamingResponse_NonJSON2xxTriggersFailover(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -56,9 +57,10 @@ func TestHandleNonStreamingResponse_NonJSON2xxTriggersFailover(t *testing.T) {
 	require.Equal(t, body, failoverErr.ResponseBody)
 	require.Equal(t, "rid-invalid-json", failoverErr.ResponseHeaders.Get("x-request-id"))
 	require.False(t, c.Writer.Written(), "invalid upstream response must not be committed before failover")
+	require.Empty(t, rec.Body.String())
 }
 
-func TestHandleNonStreamingResponse_ValidJSONUnchanged(t *testing.T) {
+func TestGatewayNonStreamingResponse_ValidJSONUnchanged(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -81,10 +83,11 @@ func TestHandleNonStreamingResponse_ValidJSONUnchanged(t *testing.T) {
 	require.NotNil(t, usage)
 	require.Equal(t, 12, usage.InputTokens)
 	require.Equal(t, 7, usage.OutputTokens)
+	require.True(t, c.Writer.Written())
 	require.JSONEq(t, string(body), rec.Body.String())
 }
 
-func TestHandleNonStreamingResponseAnthropicAPIKeyPassthrough_NonJSON2xxTriggersFailover(t *testing.T) {
+func TestGatewayNonStreamingResponseAnthropicAPIKeyPassthrough_NonJSON2xxTriggersFailover(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -93,8 +96,11 @@ func TestHandleNonStreamingResponseAnthropicAPIKeyPassthrough_NonJSON2xxTriggers
 	body := []byte("(upstream request failed)")
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"text/plain"}},
-		Body:       io.NopCloser(bytes.NewReader(body)),
+		Header: http.Header{
+			"Content-Type": []string{"text/plain"},
+			"X-Request-Id": []string{"rid-passthrough-invalid-json"},
+		},
+		Body: io.NopCloser(bytes.NewReader(body)),
 	}
 	svc := &GatewayService{cfg: &config.Config{}}
 
@@ -105,10 +111,12 @@ func TestHandleNonStreamingResponseAnthropicAPIKeyPassthrough_NonJSON2xxTriggers
 	require.True(t, errors.As(err, &failoverErr))
 	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
 	require.Equal(t, body, failoverErr.ResponseBody)
+	require.Equal(t, "rid-passthrough-invalid-json", failoverErr.ResponseHeaders.Get("x-request-id"))
 	require.False(t, c.Writer.Written(), "invalid passthrough response must not be committed before failover")
+	require.Empty(t, rec.Body.String())
 }
 
-func TestHandleNonStreamingResponseAnthropicAPIKeyPassthrough_ValidJSONUnchanged(t *testing.T) {
+func TestGatewayNonStreamingResponseAnthropicAPIKeyPassthrough_ValidJSONUnchanged(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -128,25 +136,27 @@ func TestHandleNonStreamingResponseAnthropicAPIKeyPassthrough_ValidJSONUnchanged
 	require.NotNil(t, usage)
 	require.Equal(t, 5, usage.InputTokens)
 	require.Equal(t, 3, usage.OutputTokens)
+	require.True(t, c.Writer.Written())
 	require.JSONEq(t, string(body), rec.Body.String())
 }
 
-func TestHandleNonStreamingResponse_NonJSON2xxMatchesTempUnschedulableRule(t *testing.T) {
+func TestGatewayNonStreamingResponse_NonJSON2xxMatchesTempUnschedulableRule(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 
-	repo := &nonJSONTempUnschedAccountRepo{}
-	rateLimitService := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	repo := &gatewayNonJSONTempUnschedAccountRepo{}
 	svc := &GatewayService{
 		cfg:              &config.Config{},
-		rateLimitService: rateLimitService,
+		rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil),
 	}
 	account := &Account{
-		ID:       3,
-		Platform: PlatformAnthropic,
-		Type:     AccountTypeAPIKey,
+		ID:          3,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
 		Credentials: map[string]any{
 			"temp_unschedulable_enabled": true,
 			"temp_unschedulable_rules": []any{
@@ -165,8 +175,9 @@ func TestHandleNonStreamingResponse_NonJSON2xxMatchesTempUnschedulableRule(t *te
 		Body:       io.NopCloser(bytes.NewReader(body)),
 	}
 
-	_, err := svc.handleNonStreamingResponse(context.Background(), resp, c, account, "claude-sonnet-4-6", "claude-sonnet-4-6")
+	usage, err := svc.handleNonStreamingResponse(context.Background(), resp, c, account, "claude-sonnet-4-6", "claude-sonnet-4-6")
 
+	require.Nil(t, usage)
 	var failoverErr *UpstreamFailoverError
 	require.True(t, errors.As(err, &failoverErr))
 	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
@@ -174,4 +185,6 @@ func TestHandleNonStreamingResponse_NonJSON2xxMatchesTempUnschedulableRule(t *te
 	require.Equal(t, 1, repo.tempUnschedCalls)
 	require.Contains(t, repo.tempReason, `"status_code":502`)
 	require.Contains(t, repo.tempReason, `"matched_keyword":"upstream request failed"`)
+	require.NotContains(t, repo.tempReason, "gateway-account-name")
+	require.False(t, strings.Contains(repo.tempReason, `"account_id"`))
 }

@@ -3,6 +3,11 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -55,15 +60,166 @@ func ProvideBatchImageCleanupService(repo BatchImageRepository, accountRepo Acco
 	return svc
 }
 
-// ProvideOpenAIOAuthService creates OpenAIOAuthService with privacy/account enrichment support.
-func ProvideOpenAIOAuthService(
-	proxyRepo ProxyRepository,
-	oauthClient OpenAIOAuthClient,
-	privacyClientFactory PrivacyClientFactory,
-) *OpenAIOAuthService {
-	svc := NewOpenAIOAuthService(proxyRepo, oauthClient)
-	svc.SetPrivacyClientFactory(privacyClientFactory)
-	return svc
+func ProvideCodexEntryCenterConfig(cfg *config.Config) *CodexEntryCenterConfig {
+	frontendURL := ""
+	if cfg != nil {
+		frontendURL = cfg.Server.FrontendURL
+	}
+	return &CodexEntryCenterConfig{ServerOrigin: frontendURL, GatewayOrigin: ""}
+}
+
+func ProvideFormalPoolConfig(cfg *config.Config) (FormalPoolConfig, error) {
+	return formalPoolConfigFromAppConfig(cfg)
+}
+
+func ProvideFormalPoolRiskEventWriter() FormalPoolRiskEventWriter {
+	return NewFormalPoolRiskEventWriter(newDefaultSessionBudgetObserveSink())
+}
+
+func ProvideFormalPoolEgressRateLimiter(formalPoolCfg FormalPoolConfig) FormalPoolEgressRateLimiter {
+	return NewFormalPoolEgressRateLimiter(formalPoolCfg, time.Now)
+}
+
+func ProvideFormalPoolOnboardingService(adminService AdminService, oauthService *OAuthService, cfg *config.Config, formalPoolCfg FormalPoolConfig, riskWriter FormalPoolRiskEventWriter, accountRepo AccountRepository, groupRepo GroupRepository, httpUpstream HTTPUpstream, cacheInvalidator TokenCacheInvalidator, schedulerCache SchedulerCache, principalRevalidator FormalPoolOnboardingPrincipalRevalidator) *FormalPoolOnboardingService {
+	oauthFacade := NewFormalPoolClaudeOAuthFacade(oauthService)
+	quarantine := NewAccountQuarantineService(accountRepo, newDefaultSessionBudgetObserveSink())
+	return NewFormalPoolOnboardingService(FormalPoolOnboardingDeps{
+		Config:               formalPoolCfg,
+		OAuth:                oauthFacade,
+		Refresh:              oauthFacade,
+		Proxy:                NewFormalPoolAdminProxyVerifier(adminService),
+		Accounts:             NewFormalPoolAdminAccountManager(adminService),
+		CCGateway:            NewFormalPoolStaticCCGatewayReadinessVerifier(),
+		CCGatewayRuntime:     NewFormalPoolHTTPCCGatewayRuntimeRegistrar(cfg),
+		Healthcheck:          NewFormalPoolGatewayHealthcheckRunner(accountRepo, httpUpstream, cfg, quarantine),
+		Risk:                 riskWriter,
+		CacheInvalidator:     cacheInvalidator,
+		SchedulerCache:       schedulerCache,
+		Groups:               groupRepo,
+		PrincipalRevalidator: principalRevalidator,
+		PublicURLPrefix:      formalPoolCfg.PublicOrigin,
+	})
+}
+
+func formalPoolConfigFromAppConfig(cfg *config.Config) (FormalPoolConfig, error) {
+	formalPoolCfg := DefaultFormalPoolConfig()
+	if cfg == nil {
+		return formalPoolCfg, nil
+	}
+	runtimeCfg := cfg.FormalPool
+	publicOrigin, err := NormalizeFormalPoolPublicOrigin(runtimeCfg.PublicOrigin)
+	if err != nil {
+		return FormalPoolConfig{}, fmt.Errorf("invalid formal_pool public_origin")
+	}
+	formalPoolCfg.PublicOrigin = publicOrigin
+	if runtimeCfg.NonceTTL > 0 {
+		formalPoolCfg.NonceTTL = runtimeCfg.NonceTTL
+	}
+	allowlist, err := ParseFormalPoolCIDRAllowlist(runtimeCfg.EgressMatchCIDRWhitelist)
+	if err != nil {
+		return FormalPoolConfig{}, fmt.Errorf("invalid formal_pool egress_match_cidr_whitelist")
+	}
+	formalPoolCfg.EgressMatchCIDRWhitelist = allowlist
+	if runtimeCfg.ProxyEgressCacheSuccessTTL > 0 {
+		formalPoolCfg.ProxyEgressCacheSuccessTTL = runtimeCfg.ProxyEgressCacheSuccessTTL
+	}
+	if runtimeCfg.ProxyEgressCacheFailureTTL > 0 {
+		formalPoolCfg.ProxyEgressCacheFailureTTL = runtimeCfg.ProxyEgressCacheFailureTTL
+	}
+	if runtimeCfg.ProxyEgressProbeTimeout > 0 {
+		formalPoolCfg.ProxyEgressProbeTimeout = runtimeCfg.ProxyEgressProbeTimeout
+	}
+	if runtimeCfg.PublicRouteRatePerNonce > 0 {
+		formalPoolCfg.PublicRouteRatePerNonce = runtimeCfg.PublicRouteRatePerNonce
+	}
+	if runtimeCfg.PublicRouteRatePerIP > 0 {
+		formalPoolCfg.PublicRouteRatePerIP = runtimeCfg.PublicRouteRatePerIP
+	}
+	if runtimeCfg.PublicRouteTotalPerNonce > 0 {
+		formalPoolCfg.PublicRouteTotalPerNonce = runtimeCfg.PublicRouteTotalPerNonce
+	}
+	if runtimeCfg.PublicRouteFallbackPerIP > 0 {
+		formalPoolCfg.PublicRouteFallbackPerIP = runtimeCfg.PublicRouteFallbackPerIP
+	}
+	if runtimeCfg.PublicRouteConstantDelayMin > 0 {
+		formalPoolCfg.PublicRouteConstantDelayMin = runtimeCfg.PublicRouteConstantDelayMin
+	}
+	if runtimeCfg.PublicRouteConstantDelayMax > 0 {
+		formalPoolCfg.PublicRouteConstantDelayMax = runtimeCfg.PublicRouteConstantDelayMax
+	}
+	if strings.TrimSpace(runtimeCfg.RateLimitHMACSecret) != "" {
+		secret, err := ParseFormalPoolHMACSecretHex(runtimeCfg.RateLimitHMACSecret)
+		if err != nil {
+			return FormalPoolConfig{}, fmt.Errorf("invalid formal_pool rate_limit_hmac_secret")
+		}
+		formalPoolCfg.RateLimitHMACSecret = secret
+	}
+	formalPoolCfg.CCGatewayContextAttestationSecret = strings.TrimSpace(cfg.Gateway.CCGateway.ContextAttestationSecret)
+	return formalPoolCfg, nil
+}
+
+func ProvideFormalPoolOperationsService(adminService AdminService, oauthService *OAuthService, cfg *config.Config, accountRepo AccountRepository, httpUpstream HTTPUpstream, cacheInvalidator TokenCacheInvalidator, schedulerCache SchedulerCache) *FormalPoolOperationsService {
+	oauthFacade := NewFormalPoolClaudeOAuthFacade(oauthService)
+	quarantine := NewAccountQuarantineService(accountRepo, newDefaultSessionBudgetObserveSink())
+	return NewFormalPoolOperationsService(FormalPoolOperationsDeps{
+		Accounts:                          NewFormalPoolOperationsAdminAccountStore(adminService),
+		OAuth:                             oauthFacade,
+		Proxy:                             NewFormalPoolOperationsAdminProxyStore(adminService),
+		CCGatewayRuntime:                  NewFormalPoolHTTPCCGatewayRuntimeRegistrar(cfg),
+		Healthcheck:                       NewFormalPoolGatewayHealthcheckRunner(accountRepo, httpUpstream, cfg, quarantine),
+		Quarantine:                        quarantine,
+		Audit:                             NewFormalPoolOperationStructuredLogAuditWriter(),
+		CacheInvalidator:                  cacheInvalidator,
+		SchedulerCache:                    schedulerCache,
+		Now:                               time.Now,
+		CCGatewayContextAttestationSecret: strings.TrimSpace(cfg.Gateway.CCGateway.ContextAttestationSecret),
+		CCGatewayStickySessionHMACKey:     strings.TrimSpace(cfg.Gateway.CCGateway.StickySessionHMACKey),
+		CCGatewayClaudePlatformAWSWorkspaceBindingHMACKey: strings.TrimSpace(cfg.Gateway.CCGateway.ClaudePlatformAWSWorkspaceBindingHMACKey),
+	})
+}
+
+func ProvideFormalPoolRuntimeRegistrationStartupReplay(accountRepo AccountRepository, adminService AdminService, cfg *config.Config) *FormalPoolRuntimeRegistrationStartupReplay {
+	return ProvideFormalPoolRuntimeRegistrationStartupReplayWithDeps(
+		NewFormalPoolRuntimeRegistrationReplayAccountStore(accountRepo),
+		NewFormalPoolOperationsAdminProxyStore(adminService),
+		NewFormalPoolHTTPCCGatewayRuntimeRegistrar(cfg),
+		time.Now,
+		strings.TrimSpace(cfg.Gateway.CCGateway.ContextAttestationSecret),
+		strings.TrimSpace(cfg.Gateway.CCGateway.StickySessionHMACKey),
+		strings.TrimSpace(cfg.Gateway.CCGateway.ClaudePlatformAWSWorkspaceBindingHMACKey),
+	)
+}
+
+func ProvideFormalPoolRuntimeRegistrationStartupReplayWithDeps(
+	accounts FormalPoolRuntimeRegistrationReplayAccountStore,
+	proxy FormalPoolOperationsProxyStore,
+	registrar FormalPoolCCGatewayRuntimeRegistrar,
+	now func() time.Time,
+	contextAttestationSecret ...string,
+) *FormalPoolRuntimeRegistrationStartupReplay {
+	secret := ""
+	stickySecret := ""
+	workspaceBindingSecret := ""
+	if len(contextAttestationSecret) > 0 {
+		secret = strings.TrimSpace(contextAttestationSecret[0])
+	}
+	if len(contextAttestationSecret) > 1 {
+		stickySecret = strings.TrimSpace(contextAttestationSecret[1])
+	}
+	if len(contextAttestationSecret) > 2 {
+		workspaceBindingSecret = strings.TrimSpace(contextAttestationSecret[2])
+	}
+	replay := NewFormalPoolRuntimeRegistrationReplayService(FormalPoolRuntimeRegistrationReplayDeps{Accounts: accounts, Proxy: proxy, CCGatewayRuntime: registrar, Now: now, CCGatewayContextAttestationSecret: secret, CCGatewayStickySessionHMACKey: stickySecret, CCGatewayClaudePlatformAWSWorkspaceBindingHMACKey: workspaceBindingSecret})
+	runner := NewFormalPoolRuntimeRegistrationStartupReplay(replay)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result := runner.Start(ctx)
+	if result.Error != nil {
+		logger.LegacyPrintf("service.formal_pool_runtime_replay", "startup replay failed: %v", result.Error)
+		return runner
+	}
+	logger.LegacyPrintf("service.formal_pool_runtime_replay", "startup replay completed scanned=%d registered=%d failed=%d skipped=%v", result.Scanned, result.Registered, result.Failed, result.Skipped)
+	return runner
 }
 
 // ProvideTokenRefreshService creates and starts TokenRefreshService
@@ -73,7 +229,6 @@ func ProvideTokenRefreshService(
 	openaiOAuthService *OpenAIOAuthService,
 	geminiOAuthService *GeminiOAuthService,
 	antigravityOAuthService *AntigravityOAuthService,
-	grokOAuthService *GrokOAuthService,
 	cacheInvalidator TokenCacheInvalidator,
 	schedulerCache SchedulerCache,
 	cfg *config.Config,
@@ -83,7 +238,7 @@ func ProvideTokenRefreshService(
 	refreshAPI *OAuthRefreshAPI,
 	runtimeBlocker AccountRuntimeBlocker,
 ) *TokenRefreshService {
-	svc := NewTokenRefreshService(accountRepo, oauthService, openaiOAuthService, geminiOAuthService, antigravityOAuthService, cacheInvalidator, schedulerCache, cfg, tempUnschedCache, grokOAuthService)
+	svc := NewTokenRefreshService(accountRepo, oauthService, openaiOAuthService, geminiOAuthService, antigravityOAuthService, cacheInvalidator, schedulerCache, cfg, tempUnschedCache)
 	// 注入 OpenAI privacy opt-out 依赖
 	svc.SetPrivacyDeps(privacyClientFactory, proxyRepo)
 	// 注入统一 OAuth 刷新 API（消除 TokenRefreshService 与 TokenProvider 之间的竞争条件）
@@ -93,6 +248,195 @@ func ProvideTokenRefreshService(
 	svc.SetAccountRuntimeBlocker(runtimeBlocker)
 	svc.Start()
 	return svc
+}
+
+func ProvideAdminService(
+	userRepo UserRepository,
+	groupRepo GroupRepository,
+	accountRepo AccountRepository,
+	proxyRepo ProxyRepository,
+	apiKeyRepo APIKeyRepository,
+	redeemCodeRepo RedeemCodeRepository,
+	userGroupRateRepo UserGroupRateRepository,
+	userRPMCache UserRPMCache,
+	billingCacheService *BillingCacheService,
+	proxyProber ProxyExitInfoProber,
+	proxyLatencyCache ProxyLatencyCache,
+	authCacheInvalidator APIKeyAuthCacheInvalidator,
+	entClient *dbent.Client,
+	settingService *SettingService,
+	defaultSubAssigner DefaultSubscriptionAssigner,
+	userSubRepo UserSubscriptionRepository,
+	privacyClientFactory PrivacyClientFactory,
+	entityRegistryRepo EntityRegistryRepository,
+	runtimeBlocker AccountRuntimeBlocker,
+) AdminService {
+	return NewAdminService(
+		userRepo,
+		groupRepo,
+		accountRepo,
+		proxyRepo,
+		apiKeyRepo,
+		redeemCodeRepo,
+		userGroupRateRepo,
+		userRPMCache,
+		billingCacheService,
+		proxyProber,
+		proxyLatencyCache,
+		authCacheInvalidator,
+		entClient,
+		settingService,
+		defaultSubAssigner,
+		userSubRepo,
+		privacyClientFactory,
+		entityRegistryRepo,
+		runtimeBlocker,
+	)
+}
+
+func ProvideOpenAIGatewayService(
+	accountRepo AccountRepository,
+	usageLogRepo UsageLogRepository,
+	usageBillingRepo UsageBillingRepository,
+	userRepo UserRepository,
+	userSubRepo UserSubscriptionRepository,
+	userGroupRateRepo UserGroupRateRepository,
+	cache GatewayCache,
+	cfg *config.Config,
+	schedulerSnapshot *SchedulerSnapshotService,
+	concurrencyService *ConcurrencyService,
+	billingService *BillingService,
+	rateLimitService *RateLimitService,
+	billingCacheService *BillingCacheService,
+	httpUpstream HTTPUpstream,
+	deferredService *DeferredService,
+	openAITokenProvider *OpenAITokenProvider,
+	gatewayCoreService *OpenAIGatewayCoreService,
+	resolver *ModelPricingResolver,
+	channelService *ChannelService,
+	balanceNotifyService *BalanceNotifyService,
+	settingService *SettingService,
+	entityRegistryRepo EntityRegistryRepository,
+	entityRateLimitService *EntityRateLimitService,
+	contentModerationService *ContentModerationService,
+	optionalDeps ...any,
+) *OpenAIGatewayService {
+	deps := []any{
+		gatewayCoreService,
+		resolver,
+		channelService,
+		balanceNotifyService,
+		settingService,
+		entityRegistryRepo,
+		entityRateLimitService,
+		NewContentModerationOpenAIContentSafetyProvider(contentModerationService),
+	}
+	deps = append(deps, optionalDeps...)
+	return NewOpenAIGatewayService(
+		accountRepo,
+		usageLogRepo,
+		usageBillingRepo,
+		userRepo,
+		userSubRepo,
+		userGroupRateRepo,
+		cache,
+		cfg,
+		schedulerSnapshot,
+		concurrencyService,
+		billingService,
+		rateLimitService,
+		billingCacheService,
+		httpUpstream,
+		deferredService,
+		openAITokenProvider,
+		deps...,
+	)
+}
+
+func ProvideOpenAIGatewayServiceForWire(
+	accountRepo AccountRepository,
+	usageLogRepo UsageLogRepository,
+	usageBillingRepo UsageBillingRepository,
+	userRepo UserRepository,
+	userSubRepo UserSubscriptionRepository,
+	userGroupRateRepo UserGroupRateRepository,
+	cache GatewayCache,
+	cfg *config.Config,
+	schedulerSnapshot *SchedulerSnapshotService,
+	concurrencyService *ConcurrencyService,
+	billingService *BillingService,
+	rateLimitService *RateLimitService,
+	billingCacheService *BillingCacheService,
+	httpUpstream HTTPUpstream,
+	deferredService *DeferredService,
+	openAITokenProvider *OpenAITokenProvider,
+	grokTokenProvider *GrokTokenProvider,
+	gatewayCoreService *OpenAIGatewayCoreService,
+	resolver *ModelPricingResolver,
+	channelService *ChannelService,
+	balanceNotifyService *BalanceNotifyService,
+	settingService *SettingService,
+	entityRegistryRepo EntityRegistryRepository,
+	entityRateLimitService *EntityRateLimitService,
+	userPlatformQuotaRepo UserPlatformQuotaRepository,
+	contentModerationService *ContentModerationService,
+) *OpenAIGatewayService {
+	return NewOpenAIGatewayService(
+		accountRepo,
+		usageLogRepo,
+		usageBillingRepo,
+		userRepo,
+		userSubRepo,
+		userGroupRateRepo,
+		cache,
+		cfg,
+		schedulerSnapshot,
+		concurrencyService,
+		billingService,
+		rateLimitService,
+		billingCacheService,
+		httpUpstream,
+		deferredService,
+		openAITokenProvider,
+		grokTokenProvider,
+		gatewayCoreService,
+		resolver,
+		channelService,
+		balanceNotifyService,
+		settingService,
+		entityRegistryRepo,
+		entityRateLimitService,
+		userPlatformQuotaRepo,
+		NewContentModerationOpenAIContentSafetyProvider(contentModerationService),
+	)
+}
+
+func ProvideCodexEntryCenterService(
+	repo CodexAgentRepository,
+	apiKeyReader codexManagedAPIKeyReader,
+	apiKeyCreator codexAPIKeyCreator,
+	cfg *CodexEntryCenterConfig,
+	modelRegistry *CodexGatewayModelRegistry,
+	pricingResolver *ModelPricingResolver,
+) *CodexEntryCenterServiceImpl {
+	return NewCodexEntryCenterService(repo, apiKeyReader, apiKeyCreator, cfg, modelRegistry, pricingResolver)
+}
+
+// ProvideOpenAIAgentIdentityAdmissionWorker starts the isolated admission
+// pipeline for Agent Identity imports. Imported accounts remain quarantined
+// until Responses, Compact, and Native Search all pass.
+func ProvideOpenAIAgentIdentityAdmissionWorker(
+	accountRepo AccountRepository,
+	openAIGateway *OpenAIGatewayService,
+) *OpenAIAgentIdentityAdmissionWorker {
+	prober := NewOpenAIAgentIdentityAdmissionGatewayProber(openAIGateway)
+	worker := NewOpenAIAgentIdentityAdmissionWorker(
+		accountRepo,
+		prober,
+		OpenAIAgentIdentityAdmissionWorkerOptions{},
+	)
+	worker.Start()
+	return worker
 }
 
 // ProvideClaudeTokenProvider creates ClaudeTokenProvider with OAuthRefreshAPI injection
@@ -110,38 +454,39 @@ func ProvideClaudeTokenProvider(
 }
 
 // ProvideOpenAITokenProvider creates OpenAITokenProvider with OAuthRefreshAPI injection
+// ProvideOpenAIQuotaService wires the OpenAI quota query/reset service.
+func ProvideOpenAIQuotaService(accountRepo AccountRepository, proxyRepo ProxyRepository, tokenProvider *OpenAITokenProvider, privacyClientFactory PrivacyClientFactory) *OpenAIQuotaService {
+	return NewOpenAIQuotaService(accountRepo, proxyRepo, tokenProvider, privacyClientFactory)
+}
+
 func ProvideOpenAITokenProvider(
 	accountRepo AccountRepository,
 	tokenCache GeminiTokenCache,
 	openaiOAuthService *OpenAIOAuthService,
 	refreshAPI *OAuthRefreshAPI,
+	cfg *config.Config,
 ) *OpenAITokenProvider {
-	p := NewOpenAITokenProvider(accountRepo, tokenCache, openaiOAuthService)
+	p := NewOpenAITokenProvider(accountRepo, tokenCache, openaiOAuthService, cfg)
 	executor := NewOpenAITokenRefresher(openaiOAuthService, accountRepo)
 	p.SetRefreshAPI(refreshAPI, executor)
 	p.SetRefreshPolicy(OpenAIProviderRefreshPolicy())
 	return p
 }
 
-// ProvideOpenAIQuotaService wires the OpenAI quota query/reset service.
-// It depends on the OpenAI token provider for refreshed access tokens and the
-// privacy client factory for the impersonated upstream HTTP client.
-func ProvideOpenAIQuotaService(
+func ProvideAccountUsageService(
 	accountRepo AccountRepository,
-	proxyRepo ProxyRepository,
-	tokenProvider *OpenAITokenProvider,
-	privacyClientFactory PrivacyClientFactory,
-) *OpenAIQuotaService {
-	return NewOpenAIQuotaService(accountRepo, proxyRepo, tokenProvider, privacyClientFactory)
-}
-
-func ProvideGrokQuotaService(
-	accountRepo AccountRepository,
-	proxyRepo ProxyRepository,
-	tokenProvider *GrokTokenProvider,
-	httpUpstream HTTPUpstream,
-) *GrokQuotaService {
-	return NewGrokQuotaService(accountRepo, proxyRepo, tokenProvider, httpUpstream)
+	usageLogRepo UsageLogRepository,
+	usageFetcher ClaudeUsageFetcher,
+	geminiQuotaService *GeminiQuotaService,
+	antigravityQuotaFetcher *AntigravityQuotaFetcher,
+	grokQuotaFetcher *GrokQuotaFetcher,
+	openAIQuotaService *OpenAIQuotaService,
+	cache *UsageCache,
+	identityCache IdentityCache,
+	tlsFPProfileService *TLSFingerprintProfileService,
+	cfg *config.Config,
+) *AccountUsageService {
+	return NewAccountUsageService(accountRepo, usageLogRepo, usageFetcher, geminiQuotaService, antigravityQuotaFetcher, grokQuotaFetcher, openAIQuotaService, cache, identityCache, tlsFPProfileService, cfg)
 }
 
 // ProvideGeminiTokenProvider creates GeminiTokenProvider with OAuthRefreshAPI injection
@@ -188,6 +533,16 @@ func ProvideGrokTokenProvider(
 	p.SetRefreshPolicy(AntigravityProviderRefreshPolicy())
 	p.SetTempUnschedCache(tempUnschedCache)
 	return p
+}
+
+// ProvideGrokQuotaService wires active Grok quota probes through the shared upstream client.
+func ProvideGrokQuotaService(
+	accountRepo AccountRepository,
+	proxyRepo ProxyRepository,
+	tokenProvider *GrokTokenProvider,
+	httpUpstream HTTPUpstream,
+) *GrokQuotaService {
+	return NewGrokQuotaService(accountRepo, proxyRepo, tokenProvider, httpUpstream)
 }
 
 // ProvideDashboardAggregationService 创建并启动仪表盘聚合服务
@@ -292,12 +647,15 @@ func ProvideRateLimitService(
 	openAI403CounterCache OpenAI403CounterCache,
 	settingService *SettingService,
 	tokenCacheInvalidator TokenCacheInvalidator,
+	refreshAPI *OAuthRefreshAPI,
+	openaiOAuthService *OpenAIOAuthService,
 ) *RateLimitService {
 	svc := NewRateLimitService(accountRepo, usageRepo, cfg, geminiQuotaService, tempUnschedCache)
 	svc.SetTimeoutCounterCache(timeoutCounterCache)
 	svc.SetOpenAI403CounterCache(openAI403CounterCache)
 	svc.SetSettingService(settingService)
 	svc.SetTokenCacheInvalidator(tokenCacheInvalidator)
+	svc.SetOpenAIAuthRecovery(refreshAPI, NewOpenAITokenRefresher(openaiOAuthService, accountRepo))
 	return svc
 }
 
@@ -513,12 +871,6 @@ func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupReposit
 	if err := svc.LoadAPIKeyACLTrustForwardedIPSetting(context.Background()); err != nil {
 		logger.LegacyPrintf("service.setting", "Warning: load api key acl forwarded ip setting failed: %v", err)
 	}
-	if err := svc.MigrateOpenAIAllowClaudeCodeCodexPluginSetting(context.Background()); err != nil {
-		logger.LegacyPrintf("service.setting", "Warning: migrate openai allow Claude Code Codex plugin setting failed: %v", err)
-	}
-	if err := svc.MigrateCodexBodyFingerprintToSignals(context.Background()); err != nil {
-		logger.LegacyPrintf("service.setting", "Warning: migrate codex body fingerprint to signals failed: %v", err)
-	}
 	antigravity.SetUserAgentVersionResolver(svc.GetAntigravityUserAgentVersion)
 	return svc
 }
@@ -547,11 +899,228 @@ func ProvideAPIKeyService(
 	cache APIKeyCache,
 	cfg *config.Config,
 	billingCacheService *BillingCacheService,
-	concurrencyService *ConcurrencyService,
 ) *APIKeyService {
 	svc := NewAPIKeyService(apiKeyRepo, userRepo, groupRepo, userSubRepo, userGroupRateRepo, cache, cfg)
 	svc.SetRateLimitCacheInvalidator(billingCacheService)
-	svc.SetConcurrencyService(concurrencyService)
+	return svc
+}
+
+func ProvideAugmentPluginService(
+	cfg *config.Config,
+	authService *AuthService,
+	userService *UserService,
+	apiKeyService *APIKeyService,
+	subscriptionService *SubscriptionService,
+	settingService *SettingService,
+) *AugmentPluginService {
+	return NewAugmentPluginService(cfg, authService, userService, apiKeyService, subscriptionService, settingService)
+}
+
+func ProvideAugmentSessionVaultCipher(cfg *config.Config) (*AugmentSessionVaultCipher, error) {
+	if keysetJSON := strings.TrimSpace(os.Getenv("AUGMENT_SESSION_VAULT_KEYSET")); keysetJSON != "" {
+		var raw struct {
+			ActiveKeyID string            `json:"active_key_id"`
+			Keys        map[string]string `json:"keys"`
+		}
+		if err := json.Unmarshal([]byte(keysetJSON), &raw); err != nil {
+			return nil, fmt.Errorf("parse AUGMENT_SESSION_VAULT_KEYSET: %w", err)
+		}
+		keyset := AugmentSessionVaultKeyset{
+			ActiveKeyID: strings.TrimSpace(raw.ActiveKeyID),
+			Keys:        make(map[string][]byte, len(raw.Keys)),
+		}
+		for keyID, keyHex := range raw.Keys {
+			keyBytes, err := hex.DecodeString(strings.TrimSpace(keyHex))
+			if err != nil {
+				return nil, fmt.Errorf("decode augment session vault key %q: %w", keyID, err)
+			}
+			keyset.Keys[keyID] = keyBytes
+		}
+		return NewAugmentSessionVaultCipher(keyset)
+	}
+
+	if cfg == nil || strings.TrimSpace(cfg.Totp.EncryptionKey) == "" || !cfg.Totp.EncryptionKeyConfigured {
+		return nil, nil
+	}
+	keyBytes, err := hex.DecodeString(strings.TrimSpace(cfg.Totp.EncryptionKey))
+	if err != nil {
+		return nil, fmt.Errorf("decode fallback augment session vault key: %w", err)
+	}
+	return NewAugmentSessionVaultCipher(AugmentSessionVaultKeyset{
+		ActiveKeyID: "fallback",
+		Keys: map[string][]byte{
+			"fallback": keyBytes,
+		},
+	})
+}
+
+func ProvideAugmentOfficialSessionService(
+	store AugmentOfficialSessionStore,
+	cipher *AugmentSessionVaultCipher,
+	cfg *config.Config,
+) *AugmentOfficialSessionService {
+	if store == nil || cipher == nil {
+		return nil
+	}
+	secret := strings.TrimSpace(os.Getenv("AUGMENT_SESSION_BIND_TOKEN_SECRET"))
+	if secret == "" && cfg != nil {
+		secret = strings.TrimSpace(cfg.JWT.Secret)
+	}
+	if secret == "" {
+		return nil
+	}
+	return NewAugmentOfficialSessionService(store, cipher, secret)
+}
+
+func ProvideAugmentOfficialPoolSessionService(
+	store AugmentOfficialPoolSessionStore,
+	cipher *AugmentSessionVaultCipher,
+	adminService *AugmentGatewayAdminService,
+	cfg *config.Config,
+) *AugmentOfficialPoolSessionService {
+	if store == nil || cipher == nil {
+		return nil
+	}
+	secret := strings.TrimSpace(os.Getenv("AUGMENT_SESSION_BIND_TOKEN_SECRET"))
+	if secret == "" && cfg != nil {
+		secret = strings.TrimSpace(cfg.JWT.Secret)
+	}
+	if secret == "" {
+		return nil
+	}
+	svc := NewAugmentOfficialPoolSessionService(store, cipher, secret)
+	svc.SetSourcePriorityProvider(adminService)
+	return svc
+}
+
+func ProvideAugmentGatewayUsageService(usageRepo UsageLogRepository) *AugmentGatewayUsageService {
+	return NewAugmentGatewayUsageService(usageRepo)
+}
+
+func ProvideAugmentGatewayAdminService(
+	store AugmentGatewaySettingsStore,
+	groupRepo GroupRepository,
+	cfg *config.Config,
+) *AugmentGatewayAdminService {
+	if cfg == nil {
+		return NewAugmentGatewayAdminService(store, groupRepo, config.GatewayAugmentConfig{
+			Enabled:       true,
+			EnabledModels: defaultAugmentGatewayEnabledModelIDs(),
+		})
+	}
+	return NewAugmentGatewayAdminService(store, groupRepo, cfg.Gateway.Augment)
+}
+
+func ProvideAugmentGatewayModelRegistry(cfg *config.Config, adminService *AugmentGatewayAdminService) *AugmentGatewayModelRegistry {
+	if cfg == nil {
+		return NewDefaultAugmentGatewayModelRegistry()
+	}
+	return NewAugmentGatewayModelRegistry(cfg.Gateway.Augment, WithAugmentGatewayRegistryStateSource(adminService))
+}
+
+func ProvideCodexGatewayModelRegistry(cfg *config.Config, adminService *CodexGatewayAdminService, pricingResolver *ModelPricingResolver) *CodexGatewayModelRegistry {
+	options := []CodexGatewayModelRegistryOption{
+		WithCodexGatewayRegistryStateSource(adminService),
+		WithCodexGatewayModelPricingResolver(NewCodexGatewayDatabaseModelPricingResolver(pricingResolver)),
+	}
+	if cfg == nil {
+		return NewCodexGatewayModelRegistry(
+			config.GatewayCodexConfig{
+				EnabledModels: defaultCodexGatewayEnabledModelSlugs(),
+			},
+			options...,
+		)
+	}
+	return NewCodexGatewayModelRegistry(cfg.Gateway.Codex, options...)
+}
+
+func ProvideCodexGatewayModelRegistryWithVariantChecker(cfg *config.Config, adminService *CodexGatewayAdminService, gatewayService *GatewayService, pricingResolver *ModelPricingResolver) *CodexGatewayModelRegistry {
+	options := []CodexGatewayModelRegistryOption{
+		WithCodexGatewayRegistryStateSource(adminService),
+		WithCodexGatewayVariantReadyChecker(newCodexGatewayAnthropicVariantReadyChecker(gatewayService)),
+		WithCodexGatewayModelPricingResolver(NewCodexGatewayDatabaseModelPricingResolver(pricingResolver)),
+	}
+	if cfg == nil {
+		return NewCodexGatewayModelRegistry(
+			config.GatewayCodexConfig{
+				EnabledModels: defaultCodexGatewayEnabledModelSlugs(),
+			},
+			options...,
+		)
+	}
+	return NewCodexGatewayModelRegistry(cfg.Gateway.Codex, options...)
+}
+
+func ProvideCodexGatewayStateStore(cfg *config.Config) *CodexGatewayStateStore {
+	storeCfg := CodexGatewayStateStoreConfig{}
+	if cfg != nil {
+		if cfg.Gateway.Codex.StateStoreTTLSeconds > 0 {
+			storeCfg.TTL = time.Duration(cfg.Gateway.Codex.StateStoreTTLSeconds) * time.Second
+		}
+		storeCfg.MaxItems = cfg.Gateway.Codex.MaxStateItems
+	}
+	return NewCodexGatewayStateStore(storeCfg)
+}
+
+func ProvideCodexGatewayProviderExecutor(cfg *config.Config, openaiGateway *OpenAIGatewayService, gatewayService *GatewayService, stateStore *CodexGatewayStateStore, adminService *CodexGatewayAdminService) *CodexGatewayProviderExecutor {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	return NewCodexGatewayProviderExecutor(cfg, openaiGateway, gatewayService, stateStore, adminService)
+}
+
+func ProvideCodexGatewayCaptureManager(cfg *config.Config) *CodexGatewayCaptureManager {
+	if cfg == nil {
+		return NewCodexGatewayCaptureManager(config.GatewayCodexCaptureConfig{})
+	}
+	return NewCodexGatewayCaptureManager(cfg.Gateway.Codex.Capture)
+}
+
+func ProvideCodexGatewayService(registry *CodexGatewayModelRegistry, executor *CodexGatewayProviderExecutor, capture *CodexGatewayCaptureManager) *CodexGatewayService {
+	return NewCodexGatewayService(registry, executor, capture)
+}
+
+func ProvideCodexGatewayAdminService(cfg *config.Config, stateStore *CodexGatewayStateStore) *CodexGatewayAdminService {
+	adminCfg := config.GatewayCodexConfig{
+		Enabled:       true,
+		EnabledModels: defaultCodexGatewayEnabledModelSlugs(),
+	}
+	if cfg != nil {
+		adminCfg = cfg.Gateway.Codex
+	}
+	admin := NewCodexGatewayAdminService(adminCfg, stateStore)
+	if cfg != nil {
+		admin.variantChecker = newCodexGatewayAnthropicVariantReadyChecker(nil)
+	}
+	return admin
+}
+
+func ProvideCodexGatewayAdminServiceWithVariantChecker(cfg *config.Config, stateStore *CodexGatewayStateStore, gatewayService *GatewayService) *CodexGatewayAdminService {
+	adminCfg := config.GatewayCodexConfig{
+		Enabled:       true,
+		EnabledModels: defaultCodexGatewayEnabledModelSlugs(),
+	}
+	if cfg != nil {
+		adminCfg = cfg.Gateway.Codex
+	}
+	admin := NewCodexGatewayAdminService(adminCfg, stateStore)
+	admin.variantChecker = newCodexGatewayAnthropicVariantReadyChecker(gatewayService)
+	return admin
+}
+
+func ProvideAugmentGatewayRouter(registry *AugmentGatewayModelRegistry) *AugmentGatewayRouter {
+	return NewAugmentGatewayRouter(registry)
+}
+
+func ProvideOpenAIGatewayCoreService(
+	accountRepo AccountRepository,
+	cfg *config.Config,
+	openAITokenProvider *OpenAITokenProvider,
+	openAIOAuthService *OpenAIOAuthService,
+	tlsProfileService *TLSFingerprintProfileService,
+) *OpenAIGatewayCoreService {
+	svc := NewOpenAIGatewayCoreService(accountRepo, cfg, openAITokenProvider, tlsProfileService)
+	openAIOAuthService.SetGatewayCoreService(svc)
 	return svc
 }
 
@@ -559,8 +1128,30 @@ func ProvideAPIKeyService(
 var ProviderSet = wire.NewSet(
 	// Core services
 	NewAuthService,
+	ProvideAugmentPluginService,
+	ProvideAugmentSessionVaultCipher,
+	ProvideAugmentOfficialSessionService,
+	ProvideAugmentOfficialPoolSessionService,
+	ProvideAugmentGatewayUsageService,
+	ProvideAugmentGatewayAdminService,
+	ProvideAugmentGatewayModelRegistry,
+	ProvideAugmentGatewayRouter,
+	ProvideCodexGatewayModelRegistryWithVariantChecker,
+	ProvideCodexGatewayStateStore,
+	ProvideCodexGatewayProviderExecutor,
+	ProvideCodexGatewayCaptureManager,
+	ProvideCodexGatewayService,
+	ProvideCodexGatewayAdminServiceWithVariantChecker,
+	ProvideCodexEntryCenterConfig,
+	ProvideCodexEntryCenterService,
+	wire.Bind(new(CodexEntryCenterService), new(*CodexEntryCenterServiceImpl)),
+	NewAugmentGatewayReasoningTurnStore,
+	NewAugmentGatewayProviderExecutor,
+	NewAugmentGatewayService,
 	NewUserService,
 	ProvideAPIKeyService,
+	wire.Bind(new(codexManagedAPIKeyReader), new(*APIKeyService)),
+	wire.Bind(new(codexAPIKeyCreator), new(*APIKeyService)),
 	ProvideAPIKeyAuthCacheInvalidator,
 	NewGroupService,
 	NewAccountService,
@@ -573,9 +1164,12 @@ var ProviderSet = wire.NewSet(
 	NewBillingService,
 	ProvideBillingCacheService,
 	NewAnnouncementService,
-	NewAdminService,
+	ProvideAdminService,
 	NewGatewayService,
-	NewOpenAIGatewayService,
+	ProvideOpenAIGatewayCoreService,
+	NewEntityRateLimitService,
+	ProvideOpenAIGatewayServiceForWire,
+	ProvideOpenAIAgentIdentityAdmissionWorker,
 	ProvideBatchImageModelPricingResolver,
 	NewBatchImagePublicService,
 	NewBatchImageDownloadService,
@@ -583,13 +1177,22 @@ var ProviderSet = wire.NewSet(
 	ProvideBatchImageWorkerRuntime,
 	wire.Bind(new(AccountRuntimeBlocker), new(*OpenAIGatewayService)),
 	NewOAuthService,
+	ProvideFormalPoolConfig,
+	ProvideFormalPoolRiskEventWriter,
+	ProvideFormalPoolEgressRateLimiter,
+	ProvideFormalPoolOnboardingService,
+	ProvideFormalPoolOperationsService,
+	ProvideFormalPoolRuntimeRegistrationStartupReplay,
+	ProvideOpenAIOAuthSessionStore,
 	ProvideOpenAIOAuthService,
-	NewGrokOAuthService,
-	NewGeminiOAuthService,
+	ProvideGeminiOAuthSessionStore,
+	ProvideGeminiOAuthService,
+	NewGeminiHealthService,
 	NewGeminiQuotaService,
 	NewCompositeTokenCacheInvalidator,
 	wire.Bind(new(TokenCacheInvalidator), new(*CompositeTokenCacheInvalidator)),
 	NewAntigravityOAuthService,
+	NewGrokOAuthService,
 	ProvideOAuthRefreshAPI,
 	ProvideGeminiTokenProvider,
 	NewGeminiMessagesCompatService,
@@ -598,11 +1201,14 @@ var ProviderSet = wire.NewSet(
 	ProvideOpenAITokenProvider,
 	ProvideOpenAIQuotaService,
 	ProvideGrokQuotaService,
+	NewGrokQuotaFetcher,
+	ProvideOpenAISecretProtector,
 	ProvideClaudeTokenProvider,
 	NewAntigravityGatewayService,
 	ProvideRateLimitService,
-	NewAccountUsageService,
+	ProvideAccountUsageService,
 	NewAccountTestService,
+	ProvideOpenAIResponsesProbeScheduler,
 	ProvideSettingService,
 	NewDataManagementService,
 	ProvideBackupService,
@@ -635,11 +1241,11 @@ var ProviderSet = wire.NewSet(
 	ProvideUsageCleanupService,
 	ProvideDeferredService,
 	NewAntigravityQuotaFetcher,
-	NewGrokQuotaFetcher,
 	NewUserAttributeService,
 	NewUsageCache,
 	NewTotpService,
 	NewErrorPassthroughService,
+	NewCodexAgentService,
 	NewTLSFingerprintProfileService,
 	NewDigestSessionStore,
 	ProvideIdempotencyCoordinator,
@@ -709,10 +1315,18 @@ func ProvideChannelMonitorService(
 // ProvideChannelMonitorRunner 创建并启动渠道监控调度器。
 // 通过 SetScheduler 注入回 service 后再 Start，确保启动时加载所有 enabled monitor，
 // 后续 CRUD 也能即时同步任务表。Runner.Stop 由 cleanup function 调用。
-// settingService 用于 runner 每次 fire 读取功能开关。
-func ProvideChannelMonitorRunner(svc *ChannelMonitorService, settingService *SettingService) *ChannelMonitorRunner {
-	r := NewChannelMonitorRunner(svc, settingService)
+// settingService 用于 runner 每次 fire 读取功能开关；leaderLock 保证热部署保留的
+// 多个应用实例在一个完整 interval 内只会有一个实例执行真实上游探测。
+func ProvideChannelMonitorRunner(svc *ChannelMonitorService, settingService *SettingService, leaderLock LeaderLockCache) *ChannelMonitorRunner {
+	r := NewChannelMonitorRunner(svc, settingService, leaderLock)
 	svc.SetScheduler(r)
 	r.Start()
 	return r
+}
+
+func ProvideOpenAIResponsesProbeScheduler(accountRepo AccountRepository, accountTestService *AccountTestService) *OpenAIResponsesProbeScheduler {
+	scheduler := NewOpenAIResponsesProbeScheduler(accountRepo, accountTestService)
+	accountTestService.SetOpenAIResponsesProbeScheduler(scheduler)
+	scheduler.Start()
+	return scheduler
 }

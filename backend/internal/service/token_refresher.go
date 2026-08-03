@@ -38,13 +38,11 @@ func (r *ClaudeTokenRefresher) CacheKey(account *Account) string {
 }
 
 // CanRefresh 检查是否能处理此账号
-// 处理 anthropic 平台的 oauth 与 setup-token 类型账号。
-// 两者的 access_token 均为短期令牌（expires_in=28800，即 8h），到期都需刷新；
-// setup-token 之前被排除会导致其 access_token 过期后请求 401。
-// 此处与手动刷新入口（account.IsOAuth()）保持一致，实际是否刷新由 NeedsRefresh
-// 基于 expires_at 门控，并在分布式锁保护下执行，不会造成过度刷新。
+// Anthropic oauth 与 setup-token 账号都使用 OAuth-like 刷新凭证；
+// setup-token 登录态可能较长寿，但 access token 仍会过期并需要刷新。
 func (r *ClaudeTokenRefresher) CanRefresh(account *Account) bool {
-	return account.Platform == PlatformAnthropic && account.IsOAuth()
+	return account.Platform == PlatformAnthropic &&
+		(account.Type == AccountTypeOAuth || account.Type == AccountTypeSetupToken)
 }
 
 // NeedsRefresh 检查token是否需要刷新
@@ -92,24 +90,27 @@ func (r *OpenAITokenRefresher) CacheKey(account *Account) string {
 
 // CanRefresh 检查是否能处理此账号
 func (r *OpenAITokenRefresher) CanRefresh(account *Account) bool {
-	if account.IsCredentialShadow() {
-		return false
-	}
-	return account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth
+	return account != nil && account.ShouldParticipateInOpenAIManagedRefresh()
 }
 
 // NeedsRefresh 检查token是否需要刷新
 // expires_at 缺失且处于限流状态时需要刷新，防止限流期间 token 静默过期
 func (r *OpenAITokenRefresher) NeedsRefresh(account *Account, refreshWindow time.Duration) bool {
+	if account == nil {
+		return false
+	}
 	if account.IsOpenAIPersonalAccessToken() {
 		return false
 	}
 	if strings.TrimSpace(account.GetOpenAIRefreshToken()) == "" {
 		return false
 	}
+	if account.GetOpenAIAuthState() == OpenAIAuthStateCooling {
+		return true
+	}
 	expiresAt := account.GetCredentialAsTime("expires_at")
 	if expiresAt == nil {
-		return account.IsRateLimited()
+		return account.IsRateLimited() || account.Status == StatusDisabled
 	}
 
 	return time.Until(*expiresAt) < refreshWindow
@@ -124,9 +125,19 @@ func (r *OpenAITokenRefresher) Refresh(ctx context.Context, account *Account) (m
 	}
 
 	// 使用服务提供的方法构建新凭证，并保留原有字段
-	newCredentials := r.openaiOAuthService.BuildAccountCredentials(tokenInfo)
-	newCredentials = MergeCredentials(account.Credentials, newCredentials)
+	newCredentials, err := r.openaiOAuthService.BuildAccountCredentials(tokenInfo)
+	if err != nil {
+		return nil, err
+	}
+	newCredentials, err = MergeProtectedOpenAICredentials(account.Credentials, newCredentials, r.openaiOAuthService.CredentialAccessor())
+	if err != nil {
+		return nil, err
+	}
 	newCredentials = NormalizeOpenAIPersonalAccessTokenCredentials(account, tokenInfo, newCredentials)
+	capability := evaluateOpenAITokenCapability(tokenInfo)
+	if r.accountRepo != nil {
+		_ = r.accountRepo.UpdateExtra(ctx, account.ID, buildOpenAITokenCapabilityExtra(capability))
+	}
 
 	return newCredentials, nil
 }

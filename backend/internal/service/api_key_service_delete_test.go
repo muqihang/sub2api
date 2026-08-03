@@ -83,10 +83,7 @@ func (s *apiKeyRepoStub) GetByKeyForAuth(ctx context.Context, key string) (*APIK
 }
 
 func (s *apiKeyRepoStub) Update(ctx context.Context, key *APIKey) error {
-	if key != nil {
-		s.updatedKeys = append(s.updatedKeys, *key)
-	}
-	return s.updateErr
+	panic("unexpected Update call")
 }
 
 // Delete 记录被删除的 API Key ID 并返回预设的错误。

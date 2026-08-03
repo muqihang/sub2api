@@ -25,13 +25,15 @@ func TestDefaultAntigravityModelMapping_ImageCompatibilityAliases(t *testing.T) 
 	}
 }
 
-func TestDefaultAntigravityModelMapping_ContainsNewClaudeModels(t *testing.T) {
+func TestDefaultAntigravityModelMapping_Claude45AliasesFallbackTo46(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]string{
-		"claude-fable-5":  "claude-fable-5",
-		"claude-opus-4-8": "claude-opus-4-8",
+		"claude-sonnet-4-5":          "claude-sonnet-4-6",
+		"claude-sonnet-4-5-thinking": "claude-sonnet-4-6",
+		"claude-sonnet-4-5-20250929": "claude-sonnet-4-6",
 	}
+
 	for from, want := range cases {
 		got, ok := DefaultAntigravityModelMapping[from]
 		if !ok {
@@ -40,6 +42,30 @@ func TestDefaultAntigravityModelMapping_ContainsNewClaudeModels(t *testing.T) {
 		if got != want {
 			t.Fatalf("unexpected mapping for %q: got %q want %q", from, got, want)
 		}
+	}
+}
+
+func TestDefaultAntigravityModelMapping_ContainsOpus48(t *testing.T) {
+	t.Parallel()
+
+	got, ok := DefaultAntigravityModelMapping["claude-opus-4-8"]
+	if !ok {
+		t.Fatal("expected mapping for claude-opus-4-8 to exist")
+	}
+	if got != "claude-opus-4-8" {
+		t.Fatalf("unexpected claude-opus-4-8 mapping: got %q", got)
+	}
+}
+
+func TestDefaultAntigravityModelMapping_ContainsFable5(t *testing.T) {
+	t.Parallel()
+
+	got, ok := DefaultAntigravityModelMapping["claude-fable-5"]
+	if !ok {
+		t.Fatal("expected mapping for claude-fable-5 to exist")
+	}
+	if got != "claude-fable-5" {
+		t.Fatalf("unexpected claude-fable-5 mapping: got %q", got)
 	}
 }
 
@@ -65,20 +91,38 @@ func TestDefaultAntigravityModelMapping_Gemini31ProAliases(t *testing.T) {
 	}
 }
 
-func TestDefaultBedrockModelMapping_ContainsNewClaudeModels(t *testing.T) {
+func TestDefaultBedrockModelMapping_ContainsOpus48(t *testing.T) {
 	t.Parallel()
 
-	cases := map[string]string{
-		"claude-fable-5":  "anthropic.claude-fable-5",
-		"claude-opus-4-8": "us.anthropic.claude-opus-4-8-v1",
+	got, ok := DefaultBedrockModelMapping["claude-opus-4-8"]
+	if !ok {
+		t.Fatal("expected Bedrock mapping for claude-opus-4-8 to exist")
 	}
-	for from, want := range cases {
-		got, ok := DefaultBedrockModelMapping[from]
-		if !ok {
-			t.Fatalf("expected Bedrock mapping for %q to exist", from)
-		}
-		if got != want {
-			t.Fatalf("unexpected Bedrock mapping for %q: got %q want %q", from, got, want)
-		}
+	if got != "us.anthropic.claude-opus-4-8-v1" {
+		t.Fatalf("unexpected Bedrock claude-opus-4-8 mapping: got %q", got)
+	}
+}
+
+func TestDefaultBedrockModelMapping_ContainsFable5(t *testing.T) {
+	t.Parallel()
+
+	got, ok := DefaultBedrockModelMapping["claude-fable-5"]
+	if !ok {
+		t.Fatal("expected Bedrock mapping for claude-fable-5 to exist")
+	}
+	if got != "anthropic.claude-fable-5" {
+		t.Fatalf("unexpected Bedrock claude-fable-5 mapping: got %q", got)
+	}
+}
+
+func TestDefaultBedrockModelMapping_ContainsSonnet5RequestMapping(t *testing.T) {
+	t.Parallel()
+
+	got, ok := DefaultBedrockModelMapping["claude-sonnet-5"]
+	if !ok {
+		t.Fatal("expected Bedrock mapping for claude-sonnet-5 to exist")
+	}
+	if got != "us.anthropic.claude-sonnet-5-v1" {
+		t.Fatalf("unexpected Bedrock claude-sonnet-5 mapping: got %q", got)
 	}
 }

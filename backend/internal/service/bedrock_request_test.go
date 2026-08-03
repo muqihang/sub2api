@@ -22,6 +22,41 @@ func TestPrepareBedrockRequestBody_BasicFields(t *testing.T) {
 	assert.Equal(t, int64(1024), gjson.GetBytes(result, "max_tokens").Int())
 }
 
+func TestPrepareBedrockRequestBody_RemovesUnsupportedTopLevelFields(t *testing.T) {
+	input := `{
+		"model":"claude-opus-4-6",
+		"stream":true,
+		"provider":"anthropic",
+		"metadata":{"user_id":"u-1"},
+		"messages":[{"role":"user","content":"hi"}],
+		"max_tokens":100
+	}`
+	result, err := PrepareBedrockRequestBody([]byte(input), "us.anthropic.claude-opus-4-6-v1", "")
+	require.NoError(t, err)
+
+	assert.False(t, gjson.GetBytes(result, "provider").Exists())
+	assert.False(t, gjson.GetBytes(result, "metadata").Exists())
+	assert.Equal(t, "hi", gjson.GetBytes(result, "messages.0.content").String())
+}
+
+func TestPrepareBedrockRequestBody_RemovesStaleAnthropicBetaWhenNoTokensRemain(t *testing.T) {
+	input := `{
+		"anthropic_beta":["prompt-caching-2024-07-31"],
+		"messages":[{"role":"user","content":"hi"}],
+		"max_tokens":100
+	}`
+	result, err := PrepareBedrockRequestBodyWithTokens(
+		[]byte(input),
+		"us.anthropic.claude-opus-4-6-v1",
+		nil,
+		false,
+	)
+	require.NoError(t, err)
+
+	assert.False(t, gjson.GetBytes(result, "anthropic_beta").Exists())
+	assert.Equal(t, "bedrock-2023-05-31", gjson.GetBytes(result, "anthropic_version").String())
+}
+
 func TestPrepareBedrockRequestBody_OutputFormatInlineSchema(t *testing.T) {
 	t.Run("schema inlined into last user message array content", func(t *testing.T) {
 		input := `{"model":"claude-sonnet-4-5","output_format":{"type":"json","schema":{"name":"string"}},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`
@@ -175,11 +210,11 @@ func TestIsBedrockClaude45OrNewer(t *testing.T) {
 	}{
 		{"us.anthropic.claude-opus-4-6-v1", true},
 		{"us.anthropic.claude-opus-4-8-v1", true},
-		{"anthropic.claude-fable-5", true},
 		{"us.anthropic.claude-sonnet-4-6", true},
 		{"us.anthropic.claude-sonnet-4-5-20250929-v1:0", true},
 		{"us.anthropic.claude-opus-4-5-20251101-v1:0", true},
 		{"us.anthropic.claude-haiku-4-5-20251001-v1:0", true},
+		{"anthropic.claude-fable-5", true},
 		{"anthropic.claude-3-5-sonnet-20241022-v2:0", false},
 		{"anthropic.claude-3-opus-20240229-v1:0", false},
 		{"anthropic.claude-3-haiku-20240307-v1:0", false},
@@ -198,6 +233,24 @@ func TestIsBedrockClaude45OrNewer(t *testing.T) {
 			assert.Equal(t, tt.expect, isBedrockClaude45OrNewer(tt.modelID))
 		})
 	}
+}
+
+func TestSanitizeBedrockThinking_Fable5UsesAdaptiveThinking(t *testing.T) {
+	input := `{"thinking":{"type":"enabled","budget_tokens":10000},"messages":[{"role":"user","content":"hi"}]}`
+	result := sanitizeBedrockThinking([]byte(input), "anthropic.claude-fable-5")
+
+	assert.Equal(t, "adaptive", gjson.GetBytes(result, "thinking.type").String())
+	assert.False(t, gjson.GetBytes(result, "thinking.budget_tokens").Exists())
+}
+
+func TestPrepareBedrockRequestBody_Fable5UsesAdaptiveThinkingForPlainBedrock(t *testing.T) {
+	input := `{"model":"claude-fable-5","thinking":{"type":"enabled","budget_tokens":10000},"messages":[{"role":"user","content":"hi"}]}`
+	result, err := PrepareBedrockRequestBody([]byte(input), "anthropic.claude-fable-5", "")
+	require.NoError(t, err)
+
+	assert.Equal(t, "adaptive", gjson.GetBytes(result, "thinking.type").String())
+	assert.False(t, gjson.GetBytes(result, "thinking.budget_tokens").Exists())
+	assert.False(t, gjson.GetBytes(result, "model").Exists())
 }
 
 func TestPrepareBedrockRequestBody_FullIntegration(t *testing.T) {
@@ -307,6 +360,12 @@ func TestFilterBedrockBetaTokens(t *testing.T) {
 		assert.Equal(t, tokens, result)
 	})
 
+	t.Run("context management and fine grained streaming tokens pass through", func(t *testing.T) {
+		tokens := []string{"context-management-2025-06-27", "fine-grained-tool-streaming-2025-05-14"}
+		result := filterBedrockBetaTokens(tokens)
+		assert.Equal(t, tokens, result)
+	})
+
 	t.Run("unsupported tokens are filtered out", func(t *testing.T) {
 		tokens := []string{"context-1m-2025-08-07", "output-128k-2025-02-19", "files-api-2025-04-14", "structured-outputs-2025-11-13"}
 		result := filterBedrockBetaTokens(tokens)
@@ -412,7 +471,7 @@ func TestPrepareBedrockRequestBodyWithTokens_ContextManagementRequiresSupportedB
 		assert.Equal(t, int64(100), gjson.GetBytes(result, "max_tokens").Int())
 	})
 
-	t.Run("keeps supported context-management beta and retains field", func(t *testing.T) {
+	t.Run("preserves context_management when final tokens include context-management beta", func(t *testing.T) {
 		input := `{
 			"messages":[{"role":"user","content":"hi"}],
 			"max_tokens":100,
@@ -527,7 +586,7 @@ func TestResolveBedrockModelID(t *testing.T) {
 		assert.Equal(t, "eu.anthropic.claude-opus-4-8-v1", modelID)
 	})
 
-	t.Run("默认 Fable 5 映射使用官方 Bedrock 模型 ID", func(t *testing.T) {
+	t.Run("default fable 5 mapping resolves to native Bedrock model id", func(t *testing.T) {
 		account := &Account{
 			Platform: PlatformAnthropic,
 			Type:     AccountTypeBedrock,
@@ -765,20 +824,6 @@ func TestIsBedrockOpus47OrNewer(t *testing.T) {
 }
 
 func TestSanitizeBedrockThinking(t *testing.T) {
-	t.Run("Fable 5 将 enabled 转换为 adaptive 并移除预算", func(t *testing.T) {
-		input := `{"thinking":{"type":"enabled","budget_tokens":10000},"messages":[]}`
-		result := sanitizeBedrockThinking([]byte(input), "anthropic.claude-fable-5")
-		assert.Equal(t, "adaptive", gjson.GetBytes(result, "thinking.type").String())
-		assert.False(t, gjson.GetBytes(result, "thinking.budget_tokens").Exists())
-	})
-
-	t.Run("Fable 5 adaptive 移除预算", func(t *testing.T) {
-		input := `{"thinking":{"type":"adaptive","budget_tokens":10000},"messages":[]}`
-		result := sanitizeBedrockThinking([]byte(input), "claude-fable-5")
-		assert.Equal(t, "adaptive", gjson.GetBytes(result, "thinking.type").String())
-		assert.False(t, gjson.GetBytes(result, "thinking.budget_tokens").Exists())
-	})
-
 	t.Run("opus 4.7 converts enabled to adaptive", func(t *testing.T) {
 		input := `{"thinking":{"type":"enabled","budget_tokens":10000},"messages":[]}`
 		result := sanitizeBedrockThinking([]byte(input), "us.anthropic.claude-opus-4-7-v1")
@@ -964,6 +1009,14 @@ func TestPrepareBedrockRequestBodyWithTokens_CCCompat(t *testing.T) {
 		result, err := PrepareBedrockRequestBodyWithTokens([]byte(input), "us.anthropic.claude-opus-4-6-v1", nil, false)
 		require.NoError(t, err)
 		assert.Equal(t, "enabled", gjson.GetBytes(result, "thinking.type").String())
+		assert.False(t, gjson.GetBytes(result, "thinking.budget_tokens").Exists())
+		assert.Equal(t, "toolu.01.Ab", gjson.GetBytes(result, "messages.0.content.0.id").String())
+	})
+
+	t.Run("ccCompat=false still applies fable adaptive thinking", func(t *testing.T) {
+		result, err := PrepareBedrockRequestBodyWithTokens([]byte(input), "anthropic.claude-fable-5", nil, false)
+		require.NoError(t, err)
+		assert.Equal(t, "adaptive", gjson.GetBytes(result, "thinking.type").String())
 		assert.False(t, gjson.GetBytes(result, "thinking.budget_tokens").Exists())
 		assert.Equal(t, "toolu.01.Ab", gjson.GetBytes(result, "messages.0.content.0.id").String())
 	})

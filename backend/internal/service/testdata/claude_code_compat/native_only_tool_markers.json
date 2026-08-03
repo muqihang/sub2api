@@ -1,0 +1,11 @@
+{
+  "model": "claude-sonnet-4-6",
+  "messages": [{"role": "user", "content": [{"type": "text", "text": "fixture-content-marker", "tool_reference": {"id": "nested-ref-placeholder"}}]}],
+  "tools": [
+    {"name": "regular", "description": "plain tool", "input_schema": {"type": "object"}},
+    {"name": "native-search", "type": "tool_search_tool_regex_20251119", "tool_reference": {"id": "native-ref-placeholder"}, "custom": {"defer_loading": true}, "input_schema": {"type": "object"}}
+  ],
+  "tool_reference": {"id": "top-level-ref-placeholder"},
+  "defer_loading": true,
+  "eager_input_streaming": true
+}

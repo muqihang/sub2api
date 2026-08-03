@@ -133,6 +133,24 @@ func (c *comboCacheAndStore) RefreshSessionTTL(_ context.Context, _ int64, _ str
 func (c *comboCacheAndStore) DeleteSessionAccountID(_ context.Context, _ int64, _ string) error {
 	return nil
 }
+func (c *comboCacheAndStore) IncrModelCallCount(_ context.Context, _ int64, _ string) (int64, error) {
+	return 0, nil
+}
+func (c *comboCacheAndStore) GetModelLoadBatch(_ context.Context, _ []int64, _ string) (map[int64]*ModelLoadInfo, error) {
+	return nil, nil
+}
+func (c *comboCacheAndStore) RecordOpenAICacheSample(_ context.Context, _ int64, _ string, _, _ int64) error {
+	return nil
+}
+func (c *comboCacheAndStore) GetOpenAICacheHealthBatch(_ context.Context, _ []int64, _ string) (map[int64]*OpenAICacheHealthInfo, error) {
+	return nil, nil
+}
+func (c *comboCacheAndStore) FindGeminiSession(_ context.Context, _ int64, _, _ string) (string, int64, bool) {
+	return "", 0, false
+}
+func (c *comboCacheAndStore) SaveGeminiSession(_ context.Context, _ int64, _, _, _ string, _ int64) error {
+	return nil
+}
 func (c *comboCacheAndStore) SetCyberSessionBlocked(ctx context.Context, key string, ttl time.Duration) error {
 	return c.store.SetCyberSessionBlocked(ctx, key, ttl)
 }

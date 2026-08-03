@@ -27,6 +27,7 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 	openAIOAuthSvc := service.NewOpenAIOAuthService(nil, nil)
 	geminiOAuthSvc := service.NewGeminiOAuthService(nil, nil, nil, nil, cfg)
 	antigravityOAuthSvc := service.NewAntigravityOAuthService(nil)
+	grokOAuthSvc := service.NewGrokOAuthService(nil, nil)
 
 	tokenRefreshSvc := service.NewTokenRefreshService(
 		nil,
@@ -76,16 +77,23 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		openAIOAuthSvc,
 		geminiOAuthSvc,
 		antigravityOAuthSvc,
-		nil, // grokOAuth
+		grokOAuthSvc,
 		nil, // openAIGateway
+		nil, // openAIAgentIdentityAdmission
 		nil, // scheduledTestRunner
 		nil, // backupSvc
 		nil, // paymentOrderExpiry
 		nil, // channelMonitorRunner
+		nil, // openAIResponsesProbeScheduler
 		nil, // quotaFlusher
 	)
 
 	require.NotPanics(t, func() {
 		cleanup()
 	})
+}
+
+func TestApplicationCarriesFormalPoolRuntimeRegistrationStartupReplay(t *testing.T) {
+	app := &Application{FormalPoolRuntimeRegistrationStartupReplay: service.NewFormalPoolRuntimeRegistrationStartupReplay(nil)}
+	require.NotNil(t, app.FormalPoolRuntimeRegistrationStartupReplay)
 }

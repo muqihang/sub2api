@@ -1,0 +1,97 @@
+{
+  "captured_at": "2026-06-16",
+  "purpose": "CP3 official-docs snapshot for resolver fixtures only; provider capabilities remain untrusted until runtime probe/catalog signing.",
+  "sources": {
+    "deepseek_anthropic_api": "https://api-docs.deepseek.com/guides/anthropic_api",
+    "deepseek_kv_cache": "https://api-docs.deepseek.com/guides/kv_cache",
+    "deepseek_thinking_mode": "https://api-docs.deepseek.com/guides/thinking_mode",
+    "deepseek_v4_release": "https://api-docs.deepseek.com/news/news260424",
+    "zai_latest_model": "https://docs.z.ai/devpack/latest-model",
+    "zai_other_tools": "https://docs.z.ai/devpack/tool/others",
+    "kimi_models": "https://platform.kimi.ai/docs/models",
+    "openai_models": "https://platform.openai.com/docs/models",
+    "deepseek_claude_code": "https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code",
+    "deepseek_models_pricing": "https://api-docs.deepseek.com/quick_start/pricing",
+    "kimi_agent_support": "https://platform.kimi.ai/docs/guide/agent-support",
+    "kimi_chat_api": "https://platform.kimi.ai/docs/api/chat"
+  },
+  "observations": {
+    "deepseek": {
+      "models": [
+        "deepseek-v4-pro",
+        "deepseek-v4-pro[1m]",
+        "deepseek-v4-flash"
+      ],
+      "anthropic_base_url": "https://api.deepseek.com/anthropic",
+      "openai_base_url": "https://api.deepseek.com",
+      "thinking_effort_mapping": {
+        "high": "high",
+        "max": "max"
+      },
+      "cache_usage_fields": [
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens"
+      ],
+      "cache_key_strategy": "provider_automatic_prefix_cache_best_effort",
+      "runtime_verified": false,
+      "context_windows": {
+        "deepseek-v4-pro": 1000000,
+        "deepseek-v4-pro[1m]": 1000000,
+        "deepseek-v4-flash": 1000000
+      },
+      "native_reasoning_effort_levels": [
+        "high",
+        "max"
+      ]
+    },
+    "zai_glm": {
+      "claude_code_display_models": [
+        "glm-5.2",
+        "glm-5.2[1m]",
+        "glm-5-turbo",
+        "glm-4.7",
+        "glm-4.5-air"
+      ],
+      "docs_observed_language_models": [
+        "glm-5.1",
+        "glm-5",
+        "glm-5-turbo",
+        "glm-4.7",
+        "glm-4.6",
+        "glm-4.5"
+      ],
+      "anthropic_base_url": "https://api.z.ai/api/anthropic",
+      "coding_openai_compatible_base_url": "https://api.z.ai/api/coding/paas/v4",
+      "cache_key_strategy": "unknown_probe_required",
+      "runtime_verified": false
+    },
+    "kimi": {
+      "models": [
+        "kimi-k2.7-code",
+        "kimi-k2.7-code-highspeed",
+        "kimi-k2.6",
+        "kimi-k2.5"
+      ],
+      "anthropic_base_url": "https://api.moonshot.ai/anthropic",
+      "openai_base_url": "https://api.moonshot.ai/v1",
+      "cache_key_strategy": "prompt_cache_key_required_or_recommended_for_coding_agents",
+      "runtime_verified": false,
+      "prompt_cache_key": true,
+      "cache_usage_field": "usage.cached_tokens"
+    },
+    "openai": {
+      "catalog_strategy": "signed_dynamic_catalog_required_no_static_gpt_defaults",
+      "runtime_verified": false,
+      "preferred_protocol": "responses",
+      "native_reasoning_effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "cache_key_strategy": "responses_prompt_cache_key_exact_prefix",
+      "cache_usage_field": "usage.prompt_tokens_details.cached_tokens",
+      "tool_bridge": "anthropic_tools_to_responses_function_tools"
+    }
+  }
+}

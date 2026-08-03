@@ -50,10 +50,12 @@ export const EASYPAY_PAYMENT_MODES = ['qrcode', 'popup'] as const
 /** Fixed display order for user-facing payment methods */
 export const METHOD_ORDER = ['alipay', 'alipay_direct', 'wxpay', 'wxpay_direct', 'stripe', 'airwallex'] as const
 
+/** Match only built-in Alipay methods; custom EasyPay method names may contain "alipay". */
 export function isBuiltInAlipayMethod(type: string): boolean {
   return type === 'alipay' || type === 'alipay_direct'
 }
 
+/** Match only built-in WeChat Pay methods; custom EasyPay method names may contain "wxpay". */
 export function isBuiltInWxpayMethod(type: string): boolean {
   return type === 'wxpay' || type === 'wxpay_direct'
 }

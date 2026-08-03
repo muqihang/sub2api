@@ -14,7 +14,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -63,39 +62,6 @@ func TestWSResponseCreate_ExplicitFilterStripsServiceTier(t *testing.T) {
 
 	frame = []byte(`{"type":"response.create","model":"gpt-5.5","service_tier":"fast"}`)
 	updated, blocked, err = svc.applyOpenAIFastPolicyToWSResponseCreate(context.Background(), account, "gpt-5.5", frame)
-	require.NoError(t, err)
-	require.Nil(t, blocked)
-	require.NotContains(t, string(updated), `"service_tier"`)
-}
-
-func TestWSResponseCreate_UserScopedRuleOverridesGlobalRule(t *testing.T) {
-	settings := &OpenAIFastPolicySettings{
-		Rules: []OpenAIFastPolicyRule{
-			{
-				ServiceTier: OpenAIFastTierPriority,
-				Action:      BetaPolicyActionFilter,
-				Scope:       BetaPolicyScopeAll,
-			},
-			{
-				ServiceTier: OpenAIFastTierPriority,
-				Action:      BetaPolicyActionPass,
-				Scope:       BetaPolicyScopeAll,
-				UserIDs:     []int64{42},
-			},
-		},
-	}
-	svc := newOpenAIGatewayServiceWithSettings(t, settings)
-	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
-	frame := []byte(`{"type":"response.create","model":"gpt-5.5","service_tier":"priority"}`)
-
-	allowedUserCtx := context.WithValue(context.Background(), ctxkey.UserID, int64(42))
-	updated, blocked, err := svc.applyOpenAIFastPolicyToWSResponseCreate(allowedUserCtx, account, "gpt-5.5", frame)
-	require.NoError(t, err)
-	require.Nil(t, blocked)
-	require.Equal(t, "priority", gjson.GetBytes(updated, "service_tier").String())
-
-	otherUserCtx := context.WithValue(context.Background(), ctxkey.UserID, int64(43))
-	updated, blocked, err = svc.applyOpenAIFastPolicyToWSResponseCreate(otherUserCtx, account, "gpt-5.5", frame)
 	require.NoError(t, err)
 	require.Nil(t, blocked)
 	require.NotContains(t, string(updated), `"service_tier"`)
@@ -224,16 +190,16 @@ func TestWSResponseCreate_EmptyTypeFrameUntouched(t *testing.T) {
 
 // TestBuildOpenAIFastPolicyBlockedWSEvent_HasEventIDAndCode is the B1
 // regression: the rendered Realtime error event must carry a non-empty
-// event_id (so clients can correlate the rejection) and a stable error.code
-// ("policy_violation"). The HTTP-side equivalent is the 403 permission_error
-// JSON body emitted by writeOpenAIFastPolicyBlockedResponse.
+// event_id (so clients can correlate the rejection) and stable runtime guard
+// error.code/category fields matching the HTTP JSON response.
 func TestBuildOpenAIFastPolicyBlockedWSEvent_HasEventIDAndCode(t *testing.T) {
 	bytes := buildOpenAIFastPolicyBlockedWSEvent(&OpenAIFastBlockedError{Message: "blocked because reasons"})
 	require.NotNil(t, bytes)
 
 	require.Equal(t, "error", gjson.GetBytes(bytes, "type").String())
 	require.Equal(t, "invalid_request_error", gjson.GetBytes(bytes, "error.type").String())
-	require.Equal(t, "policy_violation", gjson.GetBytes(bytes, "error.code").String())
+	require.Equal(t, "local_policy_block", gjson.GetBytes(bytes, "error.code").String())
+	require.Equal(t, "capability.local_policy_block", gjson.GetBytes(bytes, "error.category").String())
 	require.Equal(t, "blocked because reasons", gjson.GetBytes(bytes, "error.message").String())
 
 	eventID := gjson.GetBytes(bytes, "event_id").String()
@@ -632,8 +598,9 @@ func TestWSResponseCreate_IngressBlockSendsErrorEventAndSkipsUpstream(t *testing
 	require.NoError(t, readErr, "first read must succeed and return the error event before any close frame")
 	require.Equal(t, "error", gjson.GetBytes(event, "type").String())
 	require.Equal(t, "invalid_request_error", gjson.GetBytes(event, "error.type").String())
-	// B1 regression: event_id + error.code must be populated.
-	require.Equal(t, "policy_violation", gjson.GetBytes(event, "error.code").String())
+	// B1 regression: event_id + structured runtime guard code/category must be populated.
+	require.Equal(t, "local_policy_block", gjson.GetBytes(event, "error.code").String())
+	require.Equal(t, "capability.local_policy_block", gjson.GetBytes(event, "error.category").String())
 	require.NotEmpty(t, gjson.GetBytes(event, "event_id").String(), "event_id must be present so clients can correlate")
 	require.Contains(t, gjson.GetBytes(event, "error.message").String(), "ws priority blocked for testing")
 

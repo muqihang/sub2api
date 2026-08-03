@@ -72,9 +72,6 @@ func TestUserPlatformQuotaRepository_BulkInsertInitial_Empty(t *testing.T) {
 	require.NoError(t, repo.BulkInsertInitial(txCtx, []UserPlatformQuotaRecord{}))
 }
 
-// TestUserPlatformQuotaRepository_BulkInsertInitial_GrokAllowed 回归迁移 157：
-// grok 平台必须能写入 user_platform_quotas（CHECK 约束已含 grok）。
-// 历史 bug：grok 不在约束内 → 注册写默认配额违约 → 注册事务 aborted → 自助注册 500/404。
 func TestUserPlatformQuotaRepository_BulkInsertInitial_GrokAllowed(t *testing.T) {
 	ctx := context.Background()
 	tx := testEntTx(t)
@@ -88,14 +85,13 @@ func TestUserPlatformQuotaRepository_BulkInsertInitial_GrokAllowed(t *testing.T)
 	records := []UserPlatformQuotaRecord{
 		{UserID: userID, Platform: "grok", DailyLimitUSD: &daily},
 	}
-	require.NoError(t, repo.BulkInsertInitial(txCtx, records),
-		"grok 平台应可写入（迁移 157 后 CHECK 约束已含 grok）")
+	require.NoError(t, repo.BulkInsertInitial(txCtx, records))
 
-	rec, err := repo.GetByUserPlatform(txCtx, userID, "grok")
+	record, err := repo.GetByUserPlatform(txCtx, userID, "grok")
 	require.NoError(t, err)
-	require.NotNil(t, rec, "grok 配额行应已写入")
-	require.NotNil(t, rec.DailyLimitUSD)
-	require.InDelta(t, 9.0, *rec.DailyLimitUSD, 1e-9)
+	require.NotNil(t, record)
+	require.NotNil(t, record.DailyLimitUSD)
+	require.InDelta(t, 9.0, *record.DailyLimitUSD, 1e-9)
 }
 
 func TestUserPlatformQuotaRepository_GetByUserPlatform(t *testing.T) {

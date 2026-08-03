@@ -1,0 +1,58 @@
+{
+  "name": "tool_result_followup_request",
+  "mode": "request_replay",
+  "request": {
+    "model": "deepseek-v4-pro",
+    "previous_response_id": "resp_tool_loop",
+    "input": [
+      {
+        "type": "function_call_output",
+        "call_id": "call_weather",
+        "output": "{\"temp_f\":65}"
+      }
+    ]
+  },
+  "seed_state": {
+    "key": {
+      "response_id": "resp_tool_loop",
+      "session_key": "fixture-session",
+      "isolation_key": "fixture-isolation",
+      "provider": "deepseek",
+      "upstream_model": "deepseek-v4-pro"
+    },
+    "reasoning_content": "need weather",
+    "reasoning_content_present": true,
+    "tool_calls": [
+      {
+        "id": "call_weather",
+        "type": "function",
+        "name": "get_weather",
+        "arguments": "{\"city\":\"SF\"}"
+      }
+    ]
+  },
+  "expect": {
+    "messages": [
+      {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "need weather",
+        "tool_calls": [
+          {
+            "id": "call_weather",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"city\":\"SF\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_weather",
+        "content": "{\"temp_f\":65}"
+      }
+    ]
+  }
+}

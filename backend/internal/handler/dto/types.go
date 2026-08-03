@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
 type User struct {
@@ -50,23 +51,24 @@ type AdminUser struct {
 }
 
 type APIKey struct {
-	ID          int64      `json:"id"`
-	UserID      int64      `json:"user_id"`
-	Key         string     `json:"key"`
-	Name        string     `json:"name"`
-	GroupID     *int64     `json:"group_id"`
-	Status      string     `json:"status"`
-	IPWhitelist []string   `json:"ip_whitelist"`
-	IPBlacklist []string   `json:"ip_blacklist"`
-	LastUsedAt  *time.Time `json:"last_used_at"`
-	LastUsedIP  *string    `json:"last_used_ip"`
-	Quota       float64    `json:"quota"`      // Quota limit in USD (0 = unlimited)
-	QuotaUsed   float64    `json:"quota_used"` // Used quota amount in USD
-	ExpiresAt   *time.Time `json:"expires_at"` // Expiration time (nil = never expires)
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
-	// CurrentConcurrency is the real-time active request count for this API key.
-	CurrentConcurrency int `json:"current_concurrency"`
+	ID                 int64      `json:"id"`
+	UserID             int64      `json:"user_id"`
+	Key                string     `json:"key"`
+	Name               string     `json:"name"`
+	GroupID            *int64     `json:"group_id"`
+	AugmentOnly        bool       `json:"augment_only"`
+	CodexOnly          bool       `json:"codex_only"`
+	Status             string     `json:"status"`
+	IPWhitelist        []string   `json:"ip_whitelist"`
+	IPBlacklist        []string   `json:"ip_blacklist"`
+	LastUsedAt         *time.Time `json:"last_used_at"`
+	LastUsedIP         *string    `json:"last_used_ip"`
+	Quota              float64    `json:"quota"`      // Quota limit in USD (0 = unlimited)
+	QuotaUsed          float64    `json:"quota_used"` // Used quota amount in USD
+	ExpiresAt          *time.Time `json:"expires_at"` // Expiration time (nil = never expires)
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	CurrentConcurrency int        `json:"current_concurrency"`
 
 	// Rate limit fields
 	RateLimit5h   float64    `json:"rate_limit_5h"`
@@ -95,10 +97,12 @@ type Group struct {
 	IsExclusive    bool    `json:"is_exclusive"`
 	Status         string  `json:"status"`
 
-	SubscriptionType string   `json:"subscription_type"`
-	DailyLimitUSD    *float64 `json:"daily_limit_usd"`
-	WeeklyLimitUSD   *float64 `json:"weekly_limit_usd"`
-	MonthlyLimitUSD  *float64 `json:"monthly_limit_usd"`
+	SubscriptionType       string   `json:"subscription_type"`
+	DailyLimitUSD          *float64 `json:"daily_limit_usd"`
+	WeeklyLimitUSD         *float64 `json:"weekly_limit_usd"`
+	MonthlyLimitUSD        *float64 `json:"monthly_limit_usd"`
+	AugmentGatewayEntitled bool     `json:"augment_gateway_entitled"`
+	CodexGatewayEntitled   bool     `json:"codex_gateway_entitled"`
 
 	// 图片生成计费配置（仅 antigravity 平台使用）
 	AllowImageGeneration         bool    `json:"allow_image_generation"`
@@ -107,19 +111,19 @@ type Group struct {
 	ImageRateMultiplier          float64 `json:"image_rate_multiplier"`
 	BatchImageDiscountMultiplier float64 `json:"batch_image_discount_multiplier"`
 	BatchImageHoldMultiplier     float64 `json:"batch_image_hold_multiplier"`
-	VideoRateIndependent         bool    `json:"video_rate_independent"`
-	VideoRateMultiplier          float64 `json:"video_rate_multiplier"`
 	// 高峰时段倍率配置
-	PeakRateEnabled    bool     `json:"peak_rate_enabled"`
-	PeakStart          string   `json:"peak_start"`
-	PeakEnd            string   `json:"peak_end"`
-	PeakRateMultiplier float64  `json:"peak_rate_multiplier"`
-	ImagePrice1K       *float64 `json:"image_price_1k"`
-	ImagePrice2K       *float64 `json:"image_price_2k"`
-	ImagePrice4K       *float64 `json:"image_price_4k"`
-	VideoPrice480P     *float64 `json:"video_price_480p"`
-	VideoPrice720P     *float64 `json:"video_price_720p"`
-	VideoPrice1080P    *float64 `json:"video_price_1080p"`
+	PeakRateEnabled      bool     `json:"peak_rate_enabled"`
+	PeakStart            string   `json:"peak_start"`
+	PeakEnd              string   `json:"peak_end"`
+	PeakRateMultiplier   float64  `json:"peak_rate_multiplier"`
+	ImagePrice1K         *float64 `json:"image_price_1k"`
+	ImagePrice2K         *float64 `json:"image_price_2k"`
+	ImagePrice4K         *float64 `json:"image_price_4k"`
+	VideoRateIndependent bool     `json:"video_rate_independent"`
+	VideoRateMultiplier  float64  `json:"video_rate_multiplier"`
+	VideoPrice480P       *float64 `json:"video_price_480p"`
+	VideoPrice720P       *float64 `json:"video_price_720p"`
+	VideoPrice1080P      *float64 `json:"video_price_1080p"`
 
 	// Claude Code 客户端限制
 	ClaudeCodeOnly  bool   `json:"claude_code_only"`
@@ -129,6 +133,9 @@ type Group struct {
 
 	// OpenAI Messages 调度开关（用户侧需要此字段判断是否展示 Claude Code 教程）
 	AllowMessagesDispatch bool `json:"allow_messages_dispatch"`
+	// 公开模型别名列表（用户侧据此展示正确的调用协议教程）。
+	// 这里只暴露 /v1/models 本就可见的别名，不包含内部模型映射或账号路由。
+	ModelsListConfig domain.GroupModelsListConfig `json:"models_list_config"`
 
 	// 账号过滤控制（仅 OpenAI/Antigravity 平台有效）
 	RequireOAuthOnly  bool `json:"require_oauth_only"`
@@ -156,7 +163,6 @@ type AdminGroup struct {
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
 	DefaultMappedModel          string                                   `json:"default_mapped_model"`
 	MessagesDispatchModelConfig domain.OpenAIMessagesDispatchModelConfig `json:"messages_dispatch_model_config"`
-	ModelsListConfig            domain.GroupModelsListConfig             `json:"models_list_config"`
 
 	// 支持的模型系列（仅 antigravity 平台使用）
 	SupportedModelScopes    []string       `json:"supported_model_scopes"`
@@ -195,7 +201,9 @@ type Account struct {
 	CreatedAt               time.Time       `json:"created_at"`
 	UpdatedAt               time.Time       `json:"updated_at"`
 
-	Schedulable bool `json:"schedulable"`
+	Schedulable          bool `json:"schedulable"`
+	EffectiveSchedulable bool `json:"effective_schedulable"`
+	IsFormalPool         bool `json:"is_formal_pool,omitempty"`
 
 	RateLimitedAt    *time.Time `json:"rate_limited_at"`
 	RateLimitResetAt *time.Time `json:"rate_limit_reset_at"`
@@ -203,6 +211,38 @@ type Account struct {
 
 	TempUnschedulableUntil  *time.Time `json:"temp_unschedulable_until"`
 	TempUnschedulableReason string     `json:"temp_unschedulable_reason"`
+
+	OnboardingStage                  string `json:"onboarding_stage,omitempty"`
+	PoolProfileRequested             string `json:"pool_profile_requested,omitempty"`
+	PoolProfileEffective             string `json:"pool_profile_effective,omitempty"`
+	PoolWeightMode                   string `json:"pool_weight_mode,omitempty"`
+	HealthcheckStatus                string `json:"healthcheck_status,omitempty"`
+	HealthcheckLastStatusCodeBucket  string `json:"healthcheck_last_status_code_bucket,omitempty"`
+	FormalPoolLastFailureOrigin      string `json:"formal_pool_last_failure_origin,omitempty"`
+	FormalPoolLastFailureCode        string `json:"formal_pool_last_failure_code,omitempty"`
+	FormalPoolLastFailureSource      string `json:"formal_pool_last_failure_source,omitempty"`
+	FormalPoolLastCCGatewayErrorCode string `json:"formal_pool_last_cc_gateway_error_code,omitempty"`
+	FormalPoolLastHealthcheckAt      string `json:"formal_pool_last_healthcheck_at,omitempty"`
+	FormalPoolLastHealthcheckResult  string `json:"formal_pool_last_healthcheck_result,omitempty"`
+	HealthcheckCCGatewaySeen         bool   `json:"healthcheck_cc_gateway_seen,omitempty"`
+	HealthcheckFallbackDetected      bool   `json:"healthcheck_fallback_detected,omitempty"`
+	HealthcheckProxyMismatch         bool   `json:"healthcheck_proxy_mismatch,omitempty"`
+	HealthcheckRiskTextDetected      bool   `json:"healthcheck_risk_text_detected,omitempty"`
+	HealthcheckSafeErrorCode         string `json:"healthcheck_safe_error_code,omitempty"`
+	HealthcheckSafeErrorBucket       string `json:"healthcheck_safe_error_bucket,omitempty"`
+	FormalPoolRateLimitErrorClass    string `json:"formal_pool_rate_limit_error_class,omitempty"`
+	FormalPoolRateLimitWindow        string `json:"formal_pool_rate_limit_window,omitempty"`
+	FormalPoolRateLimitAction        string `json:"formal_pool_rate_limit_action,omitempty"`
+	FormalPoolRateLimitResetBucket   string `json:"formal_pool_rate_limit_reset_bucket,omitempty"`
+	FormalPoolRateLimitLastAt        string `json:"formal_pool_rate_limit_last_at,omitempty"`
+	FormalPoolCredentialGeneration   int    `json:"formal_pool_credential_generation,omitempty"`
+	FormalPoolRepairedAt             string `json:"formal_pool_repaired_at,omitempty"`
+	FormalPoolRepairedBy             string `json:"formal_pool_repaired_by,omitempty"`
+	CCGatewayRuntimeRegistered       bool   `json:"cc_gateway_runtime_registered,omitempty"`
+	QuarantineReason                 string `json:"quarantine_reason,omitempty"`
+	RiskEventRef                     string `json:"risk_event_ref,omitempty"`
+	WarmingUntil                     string `json:"warming_until,omitempty"`
+	ProductionReady                  bool   `json:"production_ready,omitempty"`
 
 	SessionWindowStart  *time.Time `json:"session_window_start"`
 	SessionWindowEnd    *time.Time `json:"session_window_end"`
@@ -229,6 +269,10 @@ type Account struct {
 	// 从 extra 字段提取，方便前端显示和编辑
 	EnableTLSFingerprint    *bool  `json:"enable_tls_fingerprint,omitempty"`
 	TLSFingerprintProfileID *int64 `json:"tls_fingerprint_profile_id,omitempty"`
+
+	// OpenAI Gateway TLS 策略（仅 OpenAI 账号有效）
+	// 从 extra.openai_gateway_tls 提取，方便前端安全读写。
+	OpenAIGatewayTLS *service.OpenAIGatewayAccountTLSPolicy `json:"openai_gateway_tls,omitempty"`
 
 	// 会话ID伪装（仅 Anthropic OAuth/SetupToken 账号有效）
 	// 启用后将在15分钟内固定 metadata.user_id 中的 session ID
@@ -459,6 +503,10 @@ type UsageLog struct {
 	AccountID int64  `json:"account_id"`
 	RequestID string `json:"request_id"`
 	Model     string `json:"model"`
+	// Entity audit fields are nil for legacy rows and unresolved requests.
+	EntityID        *int64  `json:"entity_id,omitempty"`
+	EntityType      *string `json:"entity_type,omitempty"`
+	ClaimedEntityID *string `json:"claimed_entity_id,omitempty"`
 	// ServiceTier records the OpenAI service tier used for billing, e.g. "priority" / "flex".
 	ServiceTier *string `json:"service_tier,omitempty"`
 	// ReasoningEffort is the request's reasoning effort level.
@@ -508,8 +556,6 @@ type UsageLog struct {
 
 	// User-Agent
 	UserAgent *string `json:"user_agent"`
-	// IPAddress is visible to the owner of the usage record.
-	IPAddress *string `json:"ip_address,omitempty"`
 
 	// Cache TTL Override 标记
 	CacheTTLOverridden bool `json:"cache_ttl_overridden"`
@@ -540,12 +586,16 @@ type AdminUsageLog struct {
 	// BillingTier 计费层级标签（per_request/image 模式）
 	BillingTier *string `json:"billing_tier,omitempty"`
 
+	// ProviderPromptCacheStatus explains provider-side prompt cache availability for admin diagnostics.
+	ProviderPromptCacheStatus *string `json:"provider_prompt_cache_status,omitempty"`
+	ProviderPromptCacheDetail *string `json:"provider_prompt_cache_detail,omitempty"`
+
 	// AccountRateMultiplier 账号计费倍率快照（nil 表示按 1.0 处理）
 	AccountRateMultiplier *float64 `json:"account_rate_multiplier"`
 	// AccountStatsCost 自定义定价规则计算的账号统计费用（nil 表示使用默认公式）
 	AccountStatsCost *float64 `json:"account_stats_cost,omitempty"`
 
-	// IPAddress 用户请求 IP
+	// IPAddress 用户请求 IP（仅管理员可见）
 	IPAddress *string `json:"ip_address,omitempty"`
 
 	// Account 最小账号信息（避免泄露敏感字段）
@@ -665,3 +715,11 @@ type PromoCodeUsage struct {
 
 	User *User `json:"user,omitempty"`
 }
+
+// Formal Pool status dashboard DTOs are aliases of the sanitized service contract.
+type FormalPoolStatusDashboard = service.FormalPoolStatusDashboard
+type FormalPoolStatusSummary = service.FormalPoolStatusSummary
+type FormalPoolStatusDashboardAccount = service.FormalPoolStatusDashboardAccount
+type FormalPoolStatusRuntime = service.FormalPoolStatusRuntime
+type FormalPoolStatusWindow = service.FormalPoolStatusWindow
+type FormalPoolStatusRecommendation = service.FormalPoolStatusRecommendation

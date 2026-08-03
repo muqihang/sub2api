@@ -1,0 +1,7 @@
+{
+  "name": "cache_determinism_safe_summary",
+  "source_provider": "deepseek",
+  "source_turn_range": [10, 12],
+  "text": "Stable summary of child work.",
+  "evidence": {"checks": {"pytest": "passed"}, "files": ["a.py", "b.py"]}
+}

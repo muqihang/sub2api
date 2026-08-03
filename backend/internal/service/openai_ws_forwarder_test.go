@@ -89,14 +89,14 @@ func TestOpenAIWSCyberPolicyMark_ResponseFailed(t *testing.T) {
 	mark := GetOpsCyberPolicy(c)
 	require.NotNil(t, mark, "GetOpsCyberPolicy should return non-nil after MarkOpsCyberPolicy")
 	require.Equal(t, "cyber_policy", mark.Code)
-	require.Equal(t, "Request blocked by content policy.", mark.Message)
+	require.Equal(t, safeCyberPolicyMessage, mark.Message)
 	require.Equal(t, 200, mark.UpstreamStatus)
 	require.Equal(t, 42, mark.UpstreamInTok)
 	require.Equal(t, 7, mark.UpstreamOutTok)
 
 	// 验证幂等性：再次标记不覆盖首个。
 	MarkOpsCyberPolicy(c, CyberPolicyMark{Code: "cyber_policy", Message: "second call"})
-	require.Equal(t, "Request blocked by content policy.", GetOpsCyberPolicy(c).Message, "second MarkOpsCyberPolicy call must not overwrite first")
+	require.Equal(t, safeCyberPolicyMessage, GetOpsCyberPolicy(c).Message, "second MarkOpsCyberPolicy call must not overwrite first")
 }
 
 // TestOpenAIWSCyberPolicyMark_NonCyberPayload 验证非 cyber_policy 的 response.failed 不触发标记。

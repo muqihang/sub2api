@@ -33,6 +33,7 @@ backend/.gocache/
 # ===================
 node_modules/
 frontend/node_modules/
+frontend/.codex-node-modules/
 frontend/dist/
 *.local
 *.tsbuildinfo
@@ -83,6 +84,9 @@ temp/
 *.temp
 *.log
 *.bak
+*.pyc
+__pycache__/
+tools/__pycache__/
 .cache/
 .dev/
 .serena/
@@ -116,6 +120,17 @@ backend/.installed
 # 其他
 # ===================
 tests
+!deploy/tests/
+!deploy/tests/**
+!tools/tests/
+!tools/tests/*.py
+!tools/zhumeng-agent/tests/
+!tools/zhumeng-agent/tests/**
+tools/zhumeng-agent/.venv/
+tools/zhumeng-agent/uv.lock
+tools/zhumeng-agent/src/*.egg-info/
+tools/zhumeng-agent/tests/__pycache__/
+tools/zhumeng-agent/tests/**/*.pyc
 CLAUDE.md
 .claude
 scripts
@@ -125,14 +140,50 @@ scripts
 #openspec/
 code-reviews/
 AGENTS.md
+!AGENTS.md
 backend/cmd/server/server
 deploy/docker-compose.override.yml
 .gocache/
 vite.config.js
 docs/*
+!docs/affiliate/
+docs/affiliate/*
+!docs/affiliate/2026-07-31-referral-growth-implementation-plan.md
+!docs/superpowers/
+docs/superpowers/*
+!docs/superpowers/plans/
+docs/superpowers/plans/*
+!docs/superpowers/plans/2026-07-15-transactional-hot-deploy.md
+!docs/superpowers/specs/
+docs/superpowers/specs/*
+!docs/superpowers/specs/2026-07-15-transactional-hot-deploy.md
 !docs/PAYMENT.md
 !docs/PAYMENT_CN.md
 !docs/ADMIN_PAYMENT_INTEGRATION_API.md
+!docs/codex-gateway/
+docs/codex-gateway/*
+!docs/codex-gateway/codex-desktop-full-capture-v3.md
+!docs/codex-gateway/deepseek-codex-native-parity-plan.md
+!docs/codex-gateway/protocol-capture-design.md
+!docs/codex-gateway/protocol-capture-implementation-plan.md
+!docs/anti-ban/
+docs/anti-ban/*
+!docs/anti-ban/40-formal-pool-new-account-hard-gates.md
+!docs/anti-ban/42-formal-pool-operator-panel-runbook.md
+!docs/anti-ban/43-formal-pool-account-management-ux-v4.md
+!docs/anti-ban/46-zhumeng-agent-claude-code-native-takeover-plan.md
+!docs/anti-ban/51-formal-pool-claude-code-persona-safety-gap-analysis.md
+!docs/anti-ban/52-formal-pool-account-behavior-budget-strategy.md
+!docs/anti-ban/captures/
+docs/anti-ban/captures/*
+!docs/anti-ban/captures/real-baseline/
+docs/anti-ban/captures/real-baseline/*
+!docs/anti-ban/captures/real-baseline/2026-06-14-sub2api-cc-gateway-joint-local-capture/
+docs/anti-ban/captures/real-baseline/2026-06-14-sub2api-cc-gateway-joint-local-capture/*
+!docs/anti-ban/captures/real-baseline/2026-06-14-sub2api-cc-gateway-joint-local-capture/safe-deliverable/
+!docs/anti-ban/captures/real-baseline/2026-06-14-sub2api-cc-gateway-joint-local-capture/safe-deliverable/**
+!docs/brand/
+!docs/brand/zhumeng-intent-brief.md
 !docs/legal/
 !docs/legal/*.md
 .serena/
@@ -140,3 +191,21 @@ docs/*
 frontend/coverage/
 aicodex
 output/
+codex-manager/
+
+# Local runtime data may contain state and pricing caches.
+data/
+
+# Local runtime/canary artifacts may contain secrets, state, keys, and binaries.
+artifacts/
+
+
+#Ignore vscode AI rules
+.github/instructions/codacy.instructions.md
+.worktrees/
+
+# Caddy TLS material (do not commit)
+deploy/caddy_certs/
+
+# CodeGraph local index
+.codegraph/

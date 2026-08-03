@@ -151,7 +151,6 @@ func (r *ModelPricingResolver) applyTokenOverrides(chPricing *ChannelModelPricin
 		if resolved.BasePricing == nil {
 			resolved.BasePricing = &ModelPricing{}
 		} else {
-			// 防止修改 fallbackPrices 中的共享指针
 			cloned := *resolved.BasePricing
 			resolved.BasePricing = &cloned
 		}
@@ -168,7 +167,6 @@ func (r *ModelPricingResolver) applyTokenOverrides(chPricing *ChannelModelPricin
 	if resolved.BasePricing == nil {
 		resolved.BasePricing = &ModelPricing{}
 	} else {
-		// 防止修改 fallbackPrices 中的共享指针
 		cloned := *resolved.BasePricing
 		resolved.BasePricing = &cloned
 	}

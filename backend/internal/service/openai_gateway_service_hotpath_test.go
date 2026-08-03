@@ -276,64 +276,6 @@ func TestOpenAIGatewayService_Forward_TextResponsesWithoutMappingKeepsRequestedB
 	require.Equal(t, "gpt-5.4", result.UpstreamModel)
 }
 
-func TestOpenAIGatewayService_Forward_TextResponsesBillingModelMatchesChatCompletions(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	cfg := &config.Config{}
-	cfg.Security.URLAllowlist.Enabled = false
-	account := &Account{
-		ID:          5,
-		Name:        "openai-apikey",
-		Platform:    PlatformOpenAI,
-		Type:        AccountTypeAPIKey,
-		Concurrency: 1,
-		Credentials: map[string]any{
-			"api_key":       "sk-test",
-			"base_url":      "https://example.com",
-			"model_mapping": map[string]any{"gpt-5.4": "gpt-5.5"},
-		},
-		Extra: map[string]any{"use_responses_api": true},
-	}
-
-	responsesUpstream := &httpUpstreamRecorder{
-		resp: &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid_responses_mapped_billing"}},
-			Body: io.NopCloser(strings.NewReader(
-				`{"id":"resp_native","object":"response","model":"gpt-5.5","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":20,"output_tokens":10,"total_tokens":30}}`,
-			)),
-		},
-	}
-	responsesSvc := &OpenAIGatewayService{cfg: cfg, httpUpstream: responsesUpstream}
-	responsesRecorder := httptest.NewRecorder()
-	responsesCtx, _ := gin.CreateTestContext(responsesRecorder)
-	responsesCtx.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
-	SetOpenAIClientTransport(responsesCtx, OpenAIClientTransportHTTP)
-	responsesResult, err := responsesSvc.Forward(context.Background(), responsesCtx, account, []byte(`{"model":"gpt-5.4","stream":false,"input":"hello"}`))
-	require.NoError(t, err)
-	require.NotNil(t, responsesResult)
-
-	chatUpstream := &httpUpstreamRecorder{
-		resp: &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_chat_mapped_billing"}},
-			Body: io.NopCloser(strings.NewReader(
-				`data: {"type":"response.completed","response":{"id":"resp_chat","object":"response","model":"gpt-5.5","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":20,"output_tokens":10,"total_tokens":30}}}` + "\n\n",
-			)),
-		},
-	}
-	chatSvc := &OpenAIGatewayService{cfg: cfg, httpUpstream: chatUpstream}
-	chatRecorder := httptest.NewRecorder()
-	chatCtx, _ := gin.CreateTestContext(chatRecorder)
-	chatCtx.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/chat/completions", nil)
-	chatResult, err := chatSvc.ForwardAsChatCompletions(context.Background(), chatCtx, account, []byte(`{"model":"gpt-5.4","stream":false,"messages":[{"role":"user","content":"hello"}]}`), "", "")
-	require.NoError(t, err)
-	require.NotNil(t, chatResult)
-
-	require.Equal(t, chatResult.BillingModel, responsesResult.BillingModel)
-	require.Equal(t, "gpt-5.5", responsesResult.BillingModel)
-	require.Equal(t, "gpt-5.5", chatResult.BillingModel)
-}
-
 func TestOpenAIGatewayService_Forward_TextDataImageDoesNotForceMapMarshal(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := &httpUpstreamRecorder{
@@ -615,7 +557,7 @@ func TestOpenAIGatewayService_Forward_HTTPDeletesPreviousResponseIDWhenPresent(t
 	}
 }
 
-func TestOpenAIGatewayService_Forward_StripsImageGenerationToolForSparkAPIKey(t *testing.T) {
+func TestOpenAIGatewayService_Forward_StripsSparkImageGenerationToolBeforeImageGate(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstream := &httpUpstreamRecorder{
 		resp: &http.Response{
@@ -642,15 +584,54 @@ func TestOpenAIGatewayService_Forward_StripsImageGenerationToolForSparkAPIKey(t 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
-	// Allow image generation so the tool is normalized (not gated out), reproducing
-	// the leak the strip must override.
-	c.Set("api_key", &APIKey{Group: &Group{AllowImageGeneration: true}})
+	c.Set("api_key", &APIKey{Group: &Group{AllowImageGeneration: false}})
 	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
 
 	body := []byte(`{"model":"gpt-5.3-codex-spark","stream":false,"input":"hi","tools":[{"type":"function","name":"shell"},{"type":"image_generation","output_format":"png"}]}`)
 	result, err := svc.Forward(context.Background(), c, account, body)
 	require.NoError(t, err)
 	require.NotNil(t, result)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotNil(t, upstream.lastReq)
+	require.False(t, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation")`).Exists())
+	require.True(t, gjson.GetBytes(upstream.lastBody, `tools.#(type=="function")`).Exists())
+}
+
+func TestOpenAIGatewayService_Passthrough_StripsSparkImageGenerationToolBeforeImageGate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstream := &httpUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"usage":{"input_tokens":1,"output_tokens":2}}`)),
+		},
+	}
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
+	account := &Account{
+		ID:          12,
+		Name:        "openai-passthrough-apikey",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://example.com",
+		},
+		Extra: map[string]any{"use_responses_api": true, "openai_passthrough": true},
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+	c.Set("api_key", &APIKey{Group: &Group{AllowImageGeneration: false}})
+	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
+
+	body := []byte(`{"model":"gpt-5.3-codex-spark","stream":false,"input":"hi","tools":[{"type":"function","name":"shell"},{"type":"image_generation","output_format":"png"}]}`)
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, http.StatusOK, rec.Code)
 	require.NotNil(t, upstream.lastReq)
 	require.False(t, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation")`).Exists())
 	require.True(t, gjson.GetBytes(upstream.lastBody, `tools.#(type=="function")`).Exists())
@@ -752,6 +733,36 @@ func TestExtractOpenAIRequestMetaFromBody(t *testing.T) {
 	}
 }
 
+func TestExtractOpenAIReasoningEffort_ChineseThinkingFallback(t *testing.T) {
+	reqBody := map[string]any{
+		"model":    "glm-5.1",
+		"thinking": map[string]any{"type": "enabled"},
+	}
+	got := extractOpenAIReasoningEffort(reqBody, "glm-5.1")
+	require.NotNil(t, got)
+	require.Equal(t, "high", *got)
+
+	reqBody["reasoning_effort"] = "medium"
+	got = extractOpenAIReasoningEffort(reqBody, "glm-5.1")
+	require.NotNil(t, got)
+	require.Equal(t, "medium", *got)
+}
+
+func TestExtractOpenAIReasoningEffortFromBody_ChineseThinkingFallback(t *testing.T) {
+	body := []byte(`{"model":"glm-5.1","thinking":{"type":"enabled"}}`)
+	got := extractOpenAIReasoningEffortFromBody(body, "glm-5.1")
+	require.NotNil(t, got)
+	require.Equal(t, "high", *got)
+
+	explicitBody := []byte(`{"model":"glm-5.1","thinking":{"type":"enabled"},"reasoning_effort":"medium"}`)
+	got = extractOpenAIReasoningEffortFromBody(explicitBody, "glm-5.1")
+	require.NotNil(t, got)
+	require.Equal(t, "medium", *got)
+
+	deepseekBody := []byte(`{"model":"deepseek-v4-pro","thinking":{"type":"enabled"}}`)
+	require.Nil(t, extractOpenAIReasoningEffortFromBody(deepseekBody, "deepseek-v4-pro"))
+}
+
 func TestExtractOpenAIReasoningEffortFromBody(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -775,17 +786,11 @@ func TestExtractOpenAIReasoningEffortFromBody(t *testing.T) {
 			wantValue: "xhigh",
 		},
 		{
-			name:      "DeepSeek max 归一化为 xhigh",
-			body:      []byte(`{"reasoning_effort":"max"}`),
-			model:     "deepseek-v4-pro",
+			name:      "minimal 归一化为 none",
+			body:      []byte(`{"reasoning":{"effort":"minimal"}}`),
+			model:     "gpt-5-high",
 			wantNil:   false,
-			wantValue: "xhigh",
-		},
-		{
-			name:    "minimal 归一化为空",
-			body:    []byte(`{"reasoning":{"effort":"minimal"}}`),
-			model:   "gpt-5-high",
-			wantNil: true,
+			wantValue: "none",
 		},
 		{
 			name:      "缺失字段时从模型后缀推导",

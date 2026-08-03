@@ -12,6 +12,7 @@ import (
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/paymentauditlog"
+	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/stretchr/testify/assert"
@@ -591,6 +592,20 @@ func TestRetryFulfillmentRejectsFreshRechargingLease(t *testing.T) {
 	ctx := context.Background()
 	client := newPaymentConfigServiceTestClient(t)
 	order := createPaymentFulfillmentSubscriptionOrder(t, ctx, client, OrderStatusRecharging, time.Now())
+	persisted, getErr := client.PaymentOrder.Get(ctx, order.ID)
+	require.NoError(t, getErr)
+	require.Equal(t, OrderStatusRecharging, persisted.Status)
+	require.WithinDuration(t, time.Now(), persisted.UpdatedAt, time.Minute)
+	staleBefore := time.Now().UTC().Truncate(time.Microsecond).Add(-paymentFulfillmentLeaseDuration)
+	eligible, queryErr := client.PaymentOrder.Query().Where(
+		paymentorder.IDEQ(order.ID),
+		paymentorder.And(
+			paymentorder.StatusEQ(OrderStatusRecharging),
+			paymentorder.UpdatedAtLTE(staleBefore),
+		),
+	).Exist(ctx)
+	require.NoError(t, queryErr)
+	require.False(t, eligible)
 
 	svc := &PaymentService{entClient: client}
 	err := svc.RetryFulfillment(ctx, order.ID)
@@ -806,7 +821,7 @@ func createPaymentFulfillmentSubscriptionOrder(
 		SetExpiresAt(time.Now().Add(time.Hour)).
 		SetClientIP("127.0.0.1").
 		SetSrcHost("api.example.com").
-		SetUpdatedAt(updatedAt).
+		SetUpdatedAt(updatedAt.UTC().Truncate(time.Microsecond)).
 		Save(ctx)
 	require.NoError(t, err)
 	return order

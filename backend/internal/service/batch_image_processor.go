@@ -100,7 +100,7 @@ func (p *BatchImageProviderProcessor) Process(ctx context.Context, batchID strin
 			zap.String("batch_id", job.BatchID),
 			zap.String("provider", job.Provider),
 			zap.String("provider_job_name", batchImageDerefString(job.ProviderJobName)),
-			zap.Error(err),
+			zap.String("error_class", fmt.Sprintf("%T", err)),
 		)
 		return BatchImageProcessResult{RequeueAfter: batchImageProviderErrorRequeue}, nil
 	}

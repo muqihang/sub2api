@@ -2,12 +2,17 @@ package handler
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -20,21 +25,24 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	pkgerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
+	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 )
 
 const gatewayCompatibilityMetricsLogInterval = 1024
 
 var gatewayCompatibilityMetricsLogCounter atomic.Uint64
+
+const gatewayStickySessionHMACEnv = "SUB2API_GATEWAY_STICKY_SESSION_HMAC_KEY"
 
 // GatewayHandler handles API gateway requests
 type GatewayHandler struct {
@@ -54,6 +62,31 @@ type GatewayHandler struct {
 	maxAccountSwitchesGemini  int
 	cfg                       *config.Config
 	settingService            *service.SettingService
+}
+
+func computeStickySessionHashFromHeaders(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	sessionID := strings.TrimSpace(c.GetHeader("session_id"))
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(c.GetHeader("conversation_id"))
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(c.GetHeader("x-opencode-session"))
+	}
+	if sessionID == "" {
+		return ""
+	}
+	secret := os.Getenv(gatewayStickySessionHMACEnv)
+	if strings.TrimSpace(secret) == "" {
+		secret = "sub2api-gateway-sticky-session-dev-key"
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte("gateway_sticky_session"))
+	mac.Write([]byte{0})
+	mac.Write([]byte(sessionID))
+	return "hmac-sha256:" + hex.EncodeToString(mac.Sum(nil))
 }
 
 // NewGatewayHandler creates a new GatewayHandler
@@ -127,6 +160,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		h.errorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
 		return
 	}
+	c.Request = c.Request.WithContext(service.WithClaudeCodeSessionUserScope(c.Request.Context(), fmt.Sprintf("user:%d|api_key:%d", subject.UserID, apiKey.ID)))
 	reqLog := requestLogger(
 		c,
 		"handler.gateway.messages",
@@ -152,6 +186,53 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 
+	if c.Request.URL != nil && c.Request.URL.Path == service.AnthropicCompatInboundMessages && service.IsClaudeCodeBridgeMarkerPresent(c.Request.Header) {
+		h.handleClaudeCodeBridgeMessagesSkeleton(c, body)
+		return
+	}
+	if h.rejectClaudeCodeCatalogBridgeMessagesWithoutMarker(c, body) {
+		return
+	}
+
+	if c.Request.URL != nil && c.Request.URL.Path == service.AnthropicCompatInboundMessages {
+		if service.IsClaudeCodeNativeMarkerPresent(c.Request.Header) {
+			if !h.applyClaudeCodeNativeMessagesAttestation(c, body) {
+				return
+			}
+		} else {
+			compatOpts := service.AnthropicCompatIngressOptions{
+				AllowBridgeRuntimeModels: apiKey.IsClientProduct("claude_code_runtime"),
+			}
+			decision, err := service.ValidateAnthropicOnlyCompatIngressWithOptions(c.Request.Method, c.Request.URL.RequestURI(), body, compatOpts)
+			if err != nil {
+				if protocolErr, ok := err.(*service.AnthropicCompatProtocolError); ok {
+					h.errorResponse(c, protocolErr.Status, protocolErr.Code, protocolErr.Message)
+					return
+				}
+				h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Invalid Anthropic messages request")
+				return
+			}
+			var shapeAudit service.AnthropicCompatShapeAudit
+			body, shapeAudit, err = service.NormalizeAnthropicCompatMessagesBody(body)
+			if err != nil {
+				h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Invalid Anthropic messages request")
+				return
+			}
+			auditSummary := service.NewAnthropicCompatAuditSummaryWithShape(decision, shapeAudit)
+			c.Set("anthropic_compat_audit_summary", auditSummary)
+			ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), auditSummary)
+			// Compat ingress has already accepted the request as Anthropic /v1/messages.
+			// Preserve the Claude Code client marker for downstream group routing; the
+			// earlier detector can miss newer CLI shapes before normalization fills the
+			// server-selected Claude Code system prompt.
+			ctx = service.SetClaudeCodeClient(ctx, true)
+			if version := service.NewClaudeCodeValidator().ExtractVersion(c.Request.UserAgent()); version != "" {
+				ctx = service.SetClaudeCodeVersion(ctx, version)
+			}
+			c.Request = c.Request.WithContext(ctx)
+		}
+	}
+
 	setOpsRequestContext(c, "", false)
 
 	bodyRef := service.NewRequestBodyRef(body)
@@ -159,6 +240,12 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	if err != nil {
 		logRequestBodyParseFailure(reqLog, body, err)
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
+		return
+	}
+	if probe := service.DetectSuspiciousClaudeCodeProbe(body); probe.Block {
+		clearOpsRequestBodyContext(c)
+		reqLog.Warn("gateway.suspicious_claude_code_probe_blocked", zap.Strings("reasons", probe.Reasons))
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Suspicious Claude Code probe request blocked")
 		return
 	}
 	reqModel := parsedReq.Model
@@ -170,13 +257,15 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 	// 设置 max_tokens=1 + haiku 探测请求标识到 context 中
 	// 必须在 SetClaudeCodeClientContext 之前设置，因为 ClaudeCodeValidator 需要读取此标识进行绕过判断
-	if isMaxTokensOneHaikuRequest(reqModel, parsedReq.MaxTokens) {
+	if isMaxTokensOneHaikuRequest(reqModel, parsedReq.MaxTokens, reqStream) {
 		ctx := service.WithIsMaxTokensOneHaikuRequest(c.Request.Context(), true, h.metadataBridgeEnabled())
 		c.Request = c.Request.WithContext(ctx)
 	}
 
 	// 检查是否为 Claude Code 客户端，设置到 context 中（复用已解析请求，避免二次反序列化）。
 	SetClaudeCodeClientContext(c, body, parsedReq)
+	forceAnthropicCompatNonNative(c)
+	preserveClaudeCodeRuntimeBridgeClient(c, apiKey)
 	isClaudeCodeClient := service.IsClaudeCodeClient(c.Request.Context())
 
 	// 版本检查：仅对 Claude Code 客户端，拒绝低于最低版本的请求
@@ -239,19 +328,17 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	// 设置请求所属分组 ID（用于渠道级功能判断，如 WebSearch 模拟）
 	parsedReq.GroupID = apiKey.GroupID
 
-	// 计算粘性会话hash
+	// 计算粘性会话hash（优先使用显式 session header）
 	parsedReq.SessionContext = &service.SessionContext{
 		ClientIP:  ip.GetClientIP(c),
 		UserAgent: c.GetHeader("User-Agent"),
 		APIKeyID:  apiKey.ID,
 	}
-	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq)
-
-	// [DEBUG-STICKY] 打印会话 hash 生成结果
-	reqLog.Info("sticky.session_hash_generated",
-		zap.String("session_hash", sessionHash),
-		zap.String("metadata_user_id_raw", parsedReq.MetadataUserID),
-	)
+	headerHash := computeStickySessionHashFromHeaders(c)
+	sessionHash := headerHash
+	if sessionHash == "" {
+		sessionHash = h.gatewayService.GenerateSessionHash(parsedReq)
+	}
 
 	// 获取平台：优先使用强制平台（/antigravity 路由，中间件已设置 request.Context），否则使用分组平台
 	platform := ""
@@ -271,7 +358,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		sessionBoundAccountID, _ = h.gatewayService.GetCachedSessionAccountID(c.Request.Context(), apiKey.GroupID, sessionKey)
 		// [DEBUG-STICKY] 打印粘性会话查询结果
 		reqLog.Info("sticky.cache_lookup",
-			zap.String("session_key", sessionKey),
+			zap.Bool("session_key_present", sessionKey != ""),
 			zap.Int64("bound_account_id", sessionBoundAccountID),
 		)
 		if sessionBoundAccountID > 0 {
@@ -283,10 +370,65 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			c.Request = c.Request.WithContext(ctx)
 		}
 	} else {
-		reqLog.Info("sticky.no_session_key", zap.String("session_hash", sessionHash))
+		reqLog.Info("sticky.no_session_key", zap.Bool("session_hash_present", sessionHash != ""))
 	}
 	// 判断是否真的绑定了粘性会话：有 sessionKey 且已经绑定到某个账号
 	hasBoundSession := sessionKey != "" && sessionBoundAccountID > 0
+
+	if c.GetHeader("x-sub2api-explicit-canary") == "1" {
+		if !gatewayHandlerExplicitCanaryLoopbackRequest(c.Request) {
+			h.handleStreamingAwareError(c, http.StatusForbidden, "invalid_request_error", "explicit canary requires loopback caller", streamStarted)
+			return
+		}
+		if c.Request.Method != http.MethodPost || c.Request.URL == nil || c.Request.URL.Path != "/v1/messages" || c.Query("beta") != "true" {
+			h.handleStreamingAwareError(c, http.StatusForbidden, "invalid_request_error", "explicit canary route blocked", streamStarted)
+			return
+		}
+		accountID, parseErr := strconv.ParseInt(strings.TrimSpace(c.GetHeader("x-sub2api-canary-account-id")), 10, 64)
+		if parseErr != nil || accountID <= 0 {
+			h.handleStreamingAwareError(c, http.StatusForbidden, "invalid_request_error", "explicit canary account id is required", streamStarted)
+			return
+		}
+		canaryReq := service.CCGatewayAnthropicCanaryRequest{
+			AccountID:      accountID,
+			AccountHash:    c.GetHeader("x-sub2api-canary-account-hash"),
+			EgressBucket:   c.GetHeader("x-sub2api-canary-egress-bucket"),
+			BillingCCHMode: c.GetHeader("x-sub2api-canary-billing-cch-mode"),
+			Method:         c.Request.Method,
+			Route:          c.Request.URL.Path,
+		}
+		ctx := service.WithCCGatewayExplicitCanaryRequest(c.Request.Context(), canaryReq)
+		if c.GetHeader("x-sub2api-canary-localhost-only") == "1" {
+			ctx = service.WithCCGatewayExplicitCanaryLocalOnly(ctx)
+		}
+		c.Request = c.Request.WithContext(ctx)
+		account, canaryErr := h.gatewayService.GetExplicitCCGatewayCanaryAccount(c.Request.Context(), canaryReq)
+		if canaryErr != nil {
+			reqLog.Warn("gateway.explicit_canary_blocked", zap.Error(canaryErr))
+			h.handleStreamingAwareError(c, http.StatusForbidden, "invalid_request_error", "explicit canary blocked", streamStarted)
+			return
+		}
+		setOpsSelectedAccount(c, account.ID, account.Platform)
+		c.Set("parsed_request", parsedReq)
+		writerSizeBeforeForward := c.Writer.Size()
+		_, forwardErr := h.gatewayService.Forward(c.Request.Context(), c, account, parsedReq)
+		if forwardErr != nil {
+			h.isolateBadThinkingSessionOnForwardError(c.Request.Context(), apiKey.GroupID, sessionKey, account, forwardErr, reqLog)
+			upstreamErrorAlreadyCommunicated := gatewayForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, forwardErr)
+			wroteFallback := false
+			if !upstreamErrorAlreadyCommunicated {
+				wroteFallback = h.ensureForwardErrorResponse(c, streamStarted)
+			}
+			reqLog.Error("gateway.explicit_canary_forward_failed",
+				zap.Int64("account_id", account.ID),
+				zap.Bool("fallback_error_response_written", wroteFallback),
+				zap.Bool("upstream_error_response_already_written", upstreamErrorAlreadyCommunicated),
+				zap.Error(forwardErr),
+			)
+			return
+		}
+		return
+	}
 
 	if platform == service.PlatformGemini {
 		fs := NewFailoverState(h.maxAccountSwitchesGemini, hasBoundSession)
@@ -302,22 +444,19 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			selection, err := h.gatewayService.SelectAccountWithLoadAwareness(c.Request.Context(), apiKey.GroupID, sessionKey, reqModel, fs.FailedAccountIDs, "", int64(0)) // Gemini 不使用会话限制
 			if err != nil {
 				if len(fs.FailedAccountIDs) == 0 {
-					cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, service.PlatformGemini)
-					if !cls.ModelNotFound {
-						markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
+					cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, platform)
+					if cls.ModelNotFound {
+						h.handleStreamingAwareError(c, cls.Status, cls.ErrType, cls.Message, streamStarted)
+						return
 					}
+					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 					reqLog.Warn("gateway.select_account_no_available",
 						zap.String("model", reqModel),
 						zap.Int64p("group_id", apiKey.GroupID),
 						zap.String("platform", platform),
-						zap.Bool("model_not_found", cls.ModelNotFound),
 						zap.Error(err),
 					)
-					message := cls.Message
-					if !cls.ModelNotFound {
-						message = "No available accounts: " + err.Error()
-					}
-					h.handleStreamingAwareError(c, cls.Status, cls.ErrType, message, streamStarted)
+					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
 					return
 				}
 				action := fs.HandleSelectionExhausted(c.Request.Context())
@@ -342,7 +481,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 			// 检查请求拦截（预热请求、SUGGESTION MODE等）
 			if account.IsInterceptWarmupEnabled() {
-				interceptType := detectInterceptType(body, reqModel, parsedReq.MaxTokens, isClaudeCodeClient)
+				interceptType := detectInterceptType(body, reqModel, parsedReq.MaxTokens, reqStream, isClaudeCodeClient)
 				if interceptType != InterceptTypeNone {
 					if selection.Acquired && selection.ReleaseFunc != nil {
 						selection.ReleaseFunc()
@@ -441,6 +580,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				accountReleaseFunc()
 			}
 			if err != nil {
+				h.isolateBadThinkingSessionOnForwardError(c.Request.Context(), apiKey.GroupID, sessionKey, account, err, reqLog)
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
 					// 流式内容已写入客户端，无法撤销，禁止 failover 以防止流拼接腐化
@@ -504,16 +644,13 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 			if result.ReasoningEffort == nil {
 				result.ReasoningEffort = service.NormalizeClaudeOutputEffort(parsedReq.OutputEffort)
-			}
-			// 国产模型 thinking-enabled 默认 effort 填充：Kimi/GLM/MiniMax 这些不支持 effort 档位的
-			// passback-required 上游，仅要 thinking 启用且 OutputEffort 未明确传递时，在 usage_log 写 "high"
-			// 避免该字段长期为 NULL（详见 DefaultEffortForThinkingEnabled 文档）。
-			if result.ReasoningEffort == nil && parsedReq.ThinkingEnabled {
-				protocolModel := result.UpstreamModel
-				if protocolModel == "" {
-					protocolModel = result.Model
+				if result.ReasoningEffort == nil && parsedReq.ThinkingEnabled {
+					protocolModel := result.UpstreamModel
+					if protocolModel == "" {
+						protocolModel = result.Model
+					}
+					result.ReasoningEffort = service.DefaultEffortForChineseThinkingEnabled(protocolModel)
 				}
-				result.ReasoningEffort = service.DefaultEffortForThinkingEnabled(protocolModel)
 			}
 
 			// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
@@ -579,7 +716,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 			// 选择支持该模型的账号
 			reqLog.Info("sticky.selecting_account",
-				zap.String("session_key", sessionKey),
+				zap.Bool("session_key_present", sessionKey != ""),
 				zap.Int64("sticky_bound_account_id", sessionBoundAccountID),
 				zap.Bool("has_bound_session", hasBoundSession),
 				zap.Int("failed_account_count", len(fs.FailedAccountIDs)),
@@ -588,22 +725,19 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			if err != nil {
 				if len(fs.FailedAccountIDs) == 0 {
 					cls := classifyNoAccountErrorFromGin(c, h.gatewayService, currentAPIKey, reqModel, reqModel, platform)
-					if !cls.ModelNotFound {
-						markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
+					if cls.ModelNotFound {
+						h.handleStreamingAwareError(c, cls.Status, cls.ErrType, cls.Message, streamStarted)
+						return
 					}
+					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 					reqLog.Warn("gateway.select_account_no_available",
 						zap.String("model", reqModel),
 						zap.Int64p("group_id", currentAPIKey.GroupID),
 						zap.String("platform", platform),
 						zap.Bool("fallback_used", fallbackUsed),
-						zap.Bool("model_not_found", cls.ModelNotFound),
 						zap.Error(err),
 					)
-					message := cls.Message
-					if !cls.ModelNotFound {
-						message = "No available accounts: " + err.Error()
-					}
-					h.handleStreamingAwareError(c, cls.Status, cls.ErrType, message, streamStarted)
+					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts: "+err.Error(), streamStarted)
 					return
 				}
 				action := fs.HandleSelectionExhausted(c.Request.Context())
@@ -638,7 +772,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 			// 检查请求拦截（预热请求、SUGGESTION MODE等）
 			if account.IsInterceptWarmupEnabled() {
-				interceptType := detectInterceptType(body, reqModel, parsedReq.MaxTokens, isClaudeCodeClient)
+				interceptType := detectInterceptType(body, reqModel, parsedReq.MaxTokens, reqStream, isClaudeCodeClient)
 				if interceptType != InterceptTypeNone {
 					if selection.Acquired && selection.ReleaseFunc != nil {
 						selection.ReleaseFunc()
@@ -704,7 +838,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				// Slot acquired: no longer waiting in queue.
 				releaseWait()
 				reqLog.Info("sticky.bind_after_wait",
-					zap.String("session_key", sessionKey),
+					zap.Bool("session_key_present", sessionKey != ""),
 					zap.Int64("account_id", account.ID),
 				)
 				if err := h.gatewayService.BindStickySession(c.Request.Context(), currentAPIKey.GroupID, sessionKey, account.ID); err != nil {
@@ -774,7 +908,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					return
 				}
 			}
-			// Bedrock CC 兼容：清理 body 专有字段 + 过滤 anthropic-beta header，适用于所有转发路径
+			// Bedrock CC 兼容：渠道模型映射后，清理 body 专有字段并过滤非 Bedrock 转发的 beta header。
 			if err := attemptParsedReq.ReplaceBody(h.gatewayService.ApplyBedrockCCCompat(c, attemptParsedReq.Body.Bytes(), attemptParsedReq.Model, account, apiKey.GroupID)); err != nil {
 				h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to parse request body")
 				return
@@ -807,6 +941,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				accountReleaseFunc()
 			}
 			if err != nil {
+				h.isolateBadThinkingSessionOnForwardError(c.Request.Context(), currentAPIKey.GroupID, sessionKey, account, err, reqLog)
 				// Beta policy block: return 400 immediately, no failover
 				var betaBlockedErr *service.BetaBlockedError
 				if errors.As(err, &betaBlockedErr) {
@@ -936,14 +1071,13 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 
 			if result.ReasoningEffort == nil {
 				result.ReasoningEffort = service.NormalizeClaudeOutputEffort(attemptParsedReq.OutputEffort)
-			}
-			// 同上（重试路径中的对称填充）。详见非重试路径同名注释。
-			if result.ReasoningEffort == nil && attemptParsedReq.ThinkingEnabled {
-				protocolModel := result.UpstreamModel
-				if protocolModel == "" {
-					protocolModel = result.Model
+				if result.ReasoningEffort == nil && attemptParsedReq.ThinkingEnabled {
+					protocolModel := result.UpstreamModel
+					if protocolModel == "" {
+						protocolModel = result.Model
+					}
+					result.ReasoningEffort = service.DefaultEffortForChineseThinkingEnabled(protocolModel)
 				}
-				result.ReasoningEffort = service.DefaultEffortForThinkingEnabled(protocolModel)
 			}
 
 			// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
@@ -985,6 +1119,90 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	}
 }
 
+// ControlPlaneIntent handles the localhost-only safe control-plane intent endpoint.
+func (h *GatewayHandler) ControlPlaneIntent(c *gin.Context) {
+	if c == nil || c.Request == nil {
+		return
+	}
+	if !gatewayHandlerLoopbackRequest(c.Request.RemoteAddr) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": gin.H{
+				"type":    "control_plane_quarantine",
+				"message": "Control-plane intent endpoint requires loopback origin",
+			},
+		})
+		return
+	}
+	if controlPlaneForgedHeaderPresent(c.Request.Header) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{
+				"type":    "invalid_request_error",
+				"message": "Control-plane transport markers must be stripped or rejected",
+			},
+		})
+		return
+	}
+	expectedAuth := strings.TrimSpace(os.Getenv("SUB2API_CONTROL_PLANE_INTENT_TOKEN"))
+	if expectedAuth == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": gin.H{
+				"type":    "control_plane_unavailable",
+				"message": "Control-plane intent auth is not configured",
+			},
+		})
+		return
+	}
+	if c.GetHeader("x-sub2api-intent-auth") != expectedAuth {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": gin.H{
+				"type":    "authentication_error",
+				"message": "Invalid control-plane intent auth",
+			},
+		})
+		return
+	}
+	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
+	if err != nil {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to read request body")
+		return
+	}
+	intentService, err := service.NewControlPlaneIntentServiceFromEnv()
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": gin.H{
+				"type":    "control_plane_quarantine",
+				"message": "Invalid control-plane path matrix",
+			},
+		})
+		return
+	}
+	intent, err := intentService.ParseAndValidateIntent(body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{
+				"type":    "invalid_request_error",
+				"message": "Invalid control-plane intent",
+			},
+		})
+		return
+	}
+	if _, err := service.NewControlPlaneAttestationService().VerifyIntent(intent, c.Request.Header); err != nil {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": gin.H{
+				"type":    "control_plane_quarantine",
+				"message": "Invalid control-plane attestation",
+			},
+		})
+		return
+	}
+	decision := intentService.EvaluateParsedIntent(intent)
+	if decision.Decision == "suppress_204" {
+		c.Status(http.StatusNoContent)
+		return
+	}
+	c.JSON(decision.Status, decision)
+}
+
 // Models handles listing available models
 // GET /v1/models
 // Returns models based on account configurations (model_mapping whitelist)
@@ -1004,8 +1222,15 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	}
 
 	// Get available models from account configurations for the selected group platform.
-	availableModels := h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, platform)
+	var availableModels []string
+	if h.gatewayService != nil {
+		availableModels = h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, platform)
+	}
 	if apiKey != nil && apiKey.Group != nil && apiKey.Group.CustomModelsListEnabled() {
+		if apiKey.Group.ClaudeCodeOnly {
+			writeCustomModelsList(c, platform, apiKey.Group.ModelsListConfig.Models)
+			return
+		}
 		fallbackModels := defaultModelIDsForPlatform(platform)
 		availableModels = filterModelsByCustomList(customModelsListSource(platform, availableModels, fallbackModels), fallbackModels, apiKey.Group.ModelsListConfig.Models)
 		writeCustomModelsList(c, platform, availableModels)
@@ -1013,7 +1238,7 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	}
 
 	if len(availableModels) > 0 {
-		writeModelsList(c, availableModels)
+		writeCustomModelsList(c, platform, availableModels)
 		return
 	}
 
@@ -1038,6 +1263,39 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		"object": "list",
 		"data":   claude.DefaultModels,
 	})
+}
+
+func gatewayHandlerLoopbackRequest(remoteAddr string) bool {
+	host := strings.TrimSpace(remoteAddr)
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		host = parsedHost
+	}
+	ipValue := net.ParseIP(strings.TrimSpace(host))
+	return ipValue != nil && ipValue.IsLoopback()
+}
+
+func gatewayHandlerExplicitCanaryLoopbackRequest(req *http.Request) bool {
+	if req == nil {
+		return false
+	}
+	return gatewayHandlerLoopbackRequest(req.RemoteAddr)
+}
+
+func controlPlaneForgedHeaderPresent(headers http.Header) bool {
+	for name := range headers {
+		normalized := strings.ToLower(strings.TrimSpace(name))
+		switch normalized {
+		case "x-anthropic-billing-header",
+			"x-sub2api-control-plane-intent",
+			"x-sub2api-control-plane-token",
+			"x-sub2api-canary-billing-cch-mode":
+			return true
+		}
+		if strings.Contains(normalized, "cch") {
+			return true
+		}
+	}
+	return false
 }
 
 func writeModelsList(c *gin.Context, modelIDs []string) {
@@ -1175,8 +1433,6 @@ func defaultModelIDsForPlatform(platform string) []string {
 			ids = append(ids, model.ID)
 		}
 		return mergeModelIDs(ids, nil)
-	case service.PlatformGrok:
-		return xai.DefaultModelIDs()
 	default:
 		ids := make([]string, 0, len(claude.DefaultModels))
 		for _, model := range claude.DefaultModels {
@@ -1676,29 +1932,62 @@ func (h *GatewayHandler) ensureForwardErrorResponse(c *gin.Context, streamStarte
 	return true
 }
 
-// gatewayForwardErrorAlreadyCommunicated reports whether a Forward implementation
-// has already written a complete error response to the client before returning
-// an error to the handler.
-//
-// This is intentionally narrower than "writer size changed": a stream may have
-// only emitted keepalive pings or partial data, in which case the handler still
-// needs to append a protocol-level terminal error. Non-SSE output from Forward
-// is different: service-level helpers such as handleErrorResponse/writeClaudeError
-// already wrote the client-visible JSON body, so adding the generic streaming
-// fallback would corrupt the response by appending a second `data: ...` frame.
+// gatewayForwardErrorAlreadyCommunicated reports whether Forward has already
+// written a complete client-visible error response. It intentionally does not
+// treat partial SSE writes (for example keepalive pings) as complete, so Codex
+// Responses streams still receive a terminal response.failed fallback.
 func gatewayForwardErrorAlreadyCommunicated(c *gin.Context, writerSizeBeforeForward int, err error) bool {
 	if err == nil || c == nil || c.Writer == nil {
 		return false
 	}
+	if service.IsResponseCommitted(c) {
+		return true
+	}
 	if c.Writer.Size() == writerSizeBeforeForward {
 		return false
 	}
-
 	contentType := strings.ToLower(strings.TrimSpace(c.Writer.Header().Get("Content-Type")))
 	if contentType == "" {
 		return false
 	}
 	return !strings.Contains(contentType, "text/event-stream")
+}
+
+func (h *GatewayHandler) isolateBadThinkingSessionOnForwardError(ctx context.Context, groupID *int64, sessionKey string, account *service.Account, err error, log *zap.Logger) bool {
+	var thinkingErr *service.SessionCorruptThinkingSignatureError
+	if !errors.As(err, &thinkingErr) && !service.IsClaudeThinkingSignatureSessionError(errString(err)) {
+		return false
+	}
+
+	fields := []zap.Field{
+		zap.Bool("session_key_present", strings.TrimSpace(sessionKey) != ""),
+	}
+	if account != nil {
+		fields = append(fields,
+			zap.Int64("account_id", account.ID),
+			zap.String("account_platform", account.Platform),
+		)
+	}
+	if h.gatewayService != nil && strings.TrimSpace(sessionKey) != "" {
+		if clearErr := h.gatewayService.ClearStickySession(ctx, groupID, sessionKey); clearErr != nil {
+			fields = append(fields, zap.Error(clearErr))
+			if log != nil {
+				log.Warn("gateway.session_thinking_signature_isolation_failed", fields...)
+			}
+			return true
+		}
+	}
+	if log != nil {
+		log.Warn("gateway.session_thinking_signature_isolated", fields...)
+	}
+	return true
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // checkClaudeCodeVersion 检查 Claude Code 客户端版本是否满足版本要求
@@ -1756,6 +2045,192 @@ func (h *GatewayHandler) errorResponse(c *gin.Context, status int, errType, mess
 	})
 }
 
+func (h *GatewayHandler) rejectClaudeCodeCatalogBridgeMessagesWithoutMarker(c *gin.Context, body []byte) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil || c.Request.URL.Path != service.AnthropicCompatInboundMessages {
+		return false
+	}
+	if service.IsClaudeCodeBridgeMarkerPresent(c.Request.Header) {
+		return false
+	}
+	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if model == "" {
+		return false
+	}
+	if service.IsClaudeCodeBridgeDisplayModelID(model) {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Claude Code bridge messages require a signed bridge route")
+		return true
+	}
+	decision, err := service.LoadClaudeCodeProviderRegistryFromEnv().Resolve(c.Request.Context(), model)
+	if err != nil || decision.Route == service.ClaudeCodeNativeRoute {
+		return false
+	}
+	h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Claude Code bridge messages require a signed bridge route")
+	return true
+}
+
+func (h *GatewayHandler) applyClaudeCodeNativeMessagesAttestation(c *gin.Context, body []byte) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	nativeSummary, err := service.NewClaudeCodeNativeAttestationService().VerifyMessagesRequest(c.Request.Method, c.Request.URL.RequestURI(), c.Request.Header, body)
+	if err != nil {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code native attestation")
+		return false
+	}
+	c.Set("claude_code_native_audit_summary", nativeSummary)
+	ctx := service.WithClaudeCodeNativeAuditSummary(c.Request.Context(), nativeSummary)
+	ctx = service.SetClaudeCodeClient(ctx, true)
+	if nativeSummary.ClaudeCodeVersion != "" {
+		ctx = service.SetClaudeCodeVersion(ctx, nativeSummary.ClaudeCodeVersion)
+	}
+	c.Request = c.Request.WithContext(ctx)
+	return true
+}
+
+func (h *GatewayHandler) handleClaudeCodeBridgeMessagesSkeleton(c *gin.Context, body []byte) {
+	if c == nil || c.Request == nil {
+		return
+	}
+	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	decision, err := service.LoadClaudeCodeProviderRegistryFromEnv().Resolve(c.Request.Context(), model)
+	if err != nil {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")
+		return
+	}
+	clientType := strings.TrimSpace(c.GetHeader(service.ClaudeCodeNativeClientTypeHeader))
+	route := strings.TrimSpace(c.GetHeader("x-sub2api-route"))
+	catalogVersion := strings.TrimSpace(c.GetHeader(service.ClaudeCodeNativeCatalogVersionHeader))
+	if clientType != decision.ClientType || route != decision.Route || catalogVersion == "" || catalogVersion != decision.CatalogVersion {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")
+		return
+	}
+	routeHint, err := service.NewClaudeCodeNativeAttestationService().VerifyBridgeRouteHintRequest(c.Request.Method, c.Request.URL.RequestURI(), c.Request.Header, body, decision)
+	if err != nil {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")
+		return
+	}
+	bridgeDecision := decision.BridgeRouteDecision()
+	if routeHint.LiveRequestAllowed && service.ClaudeCodeBridgeAnthropicLiveEligible(bridgeDecision) {
+		result, err := service.StreamClaudeCodeBridgeAnthropicLive(c.Request.Context(), nil, bridgeDecision, body, service.ClaudeCodeBridgeAnthropicAPIKeyFromEnv(bridgeDecision.Provider), c.Writer)
+		if err != nil {
+			if c.Writer.Written() {
+				_, _ = c.Writer.Write([]byte("\nevent: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Claude Code bridge upstream request failed\"}}\n\n"))
+				return
+			}
+			h.errorResponse(c, http.StatusBadGateway, "api_error", "Claude Code bridge upstream request failed")
+			return
+		}
+		setClaudeCodeBridgeAuditSummary(c, result.Audit)
+		if !c.Writer.Written() {
+			c.Status(http.StatusOK)
+		}
+		return
+	}
+	if routeHint.LiveRequestAllowed && service.ClaudeCodeBridgeOpenAILiveEligible(bridgeDecision) {
+		result, err := service.StreamClaudeCodeBridgeOpenAILive(c.Request.Context(), nil, bridgeDecision, body, service.ClaudeCodeBridgeOpenAICompatibleAPIKeyFromEnv(bridgeDecision.Provider), c.Writer)
+		if err != nil {
+			if c.Writer.Written() {
+				_, _ = c.Writer.Write([]byte("\nevent: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Claude Code bridge upstream request failed\"}}\n\n"))
+				return
+			}
+			h.errorResponse(c, http.StatusBadGateway, "api_error", "Claude Code bridge upstream request failed")
+			return
+		}
+		setClaudeCodeBridgeAuditSummary(c, result.Audit)
+		if !c.Writer.Written() {
+			c.Status(http.StatusOK)
+		}
+		return
+	}
+	if routeHint.LiveRequestAllowed && service.ClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLiveEligible(bridgeDecision) {
+		result, err := service.StreamClaudeCodeBridgeDeepSeekOpenAICompatibleFallbackLive(c.Request.Context(), nil, bridgeDecision, body, service.ClaudeCodeBridgeDeepSeekAPIKeyFromEnv(), c.Writer)
+		if err != nil {
+			if c.Writer.Written() {
+				_, _ = c.Writer.Write([]byte("\nevent: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Claude Code bridge upstream request failed\"}}\n\n"))
+				return
+			}
+			h.errorResponse(c, http.StatusBadGateway, "api_error", "Claude Code bridge upstream request failed")
+			return
+		}
+		setClaudeCodeBridgeAuditSummary(c, result.Audit)
+		if !c.Writer.Written() {
+			c.Status(http.StatusOK)
+		}
+		return
+	}
+	result, err := service.BuildClaudeCodeBridgeSkeletonSSE(bridgeDecision, body)
+	if err != nil {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")
+		return
+	}
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("X-Accel-Buffering", "no")
+	c.Status(http.StatusOK)
+	_, _ = c.Writer.Write(result.Body)
+}
+
+func setClaudeCodeBridgeAuditSummary(c *gin.Context, summary service.ClaudeCodeBridgeAuditSummary) {
+	if c == nil {
+		return
+	}
+	c.Set("claude_code_bridge_audit_summary", summary)
+	if c.Request != nil {
+		c.Request = c.Request.WithContext(service.WithClaudeCodeBridgeAuditSummary(c.Request.Context(), summary))
+	}
+	logClaudeCodeBridgeCacheAuditSummary(c, summary)
+}
+
+func logClaudeCodeBridgeCacheAuditSummary(c *gin.Context, summary service.ClaudeCodeBridgeAuditSummary) {
+	row := summary.CacheAuditRow()
+	if row.Provider == "" || row.SelectedProtocol == "" {
+		return
+	}
+	fields := []zap.Field{
+		zap.String("schema_version", row.SchemaVersion),
+		zap.String("provider", row.Provider),
+		zap.String("route", row.Route),
+		zap.String("client_type", row.ClientType),
+		zap.String("model_id", row.ModelID),
+		zap.String("preferred_protocol", row.PreferredProtocol),
+		zap.String("selected_protocol", row.SelectedProtocol),
+		zap.String("fallback_protocol", row.FallbackProtocol),
+		zap.String("fallback_reason", row.FallbackReason),
+		zap.Bool("fallback_used", row.FallbackUsed),
+		zap.String("provider_cache_mechanism", row.ProviderCacheMechanism),
+		zap.String("upstream_path_kind", row.UpstreamPathKind),
+		zap.Bool("upstream_body_has_cache_control", row.CacheControlPresent),
+		zap.Bool("cache_control_present", row.CacheControlPresent),
+		zap.Strings("cache_control_locations", row.CacheControlLocations),
+		zap.Bool("cache_control_provider_ignored", row.CacheControlProviderIgnored),
+		zap.Bool("prompt_cache_key_present", row.PromptCacheKeyPresent),
+		zap.String("prompt_cache_key_strategy", row.PromptCacheKeyStrategy),
+		zap.Strings("cache_usage_fields", row.CacheUsageFields),
+		zap.Strings("response_usage_field_paths", row.ResponseUsageFieldPaths),
+		zap.Strings("response_usage_cache_field_paths", row.ResponseUsageCacheFieldPaths),
+		zap.Bool("response_usage_cache_fields_present", row.ResponseUsageCacheFieldsPresent),
+		zap.Strings("stable_prefix_component_hmacs", row.StablePrefixComponentHMACs),
+		zap.Int("cache_read_tokens", row.CacheReadTokens),
+		zap.Int("cache_write_tokens", row.CacheWriteTokens),
+		zap.Int("cache_miss_tokens", row.CacheMissTokens),
+		zap.Int("cached_tokens", row.CachedTokens),
+		zap.Bool("raw_sensitive_stored", row.RawSensitiveStored),
+	}
+	if row.StablePrefixHMAC != "" {
+		fields = append(fields, zap.String("stable_prefix_hmac", row.StablePrefixHMAC))
+	}
+	if row.StablePrefixTokenBucket != "" {
+		fields = append(fields, zap.String("stable_prefix_token_bucket", row.StablePrefixTokenBucket))
+	}
+	if row.Provider == "deepseek" && row.ProviderCacheMechanism == "deepseek_prefix_kv" && row.SelectedProtocol == "anthropic_messages" {
+		fields = append(fields,
+			zap.Int("prompt_cache_hit_tokens", row.CacheReadTokens),
+			zap.Int("prompt_cache_miss_tokens", row.CacheMissTokens),
+		)
+	}
+	requestLogger(c, "handler.gateway.claude_code_bridge_cache_audit").Info("gateway.claude_code_bridge_cache_audit", fields...)
+}
+
 // CountTokens handles token counting endpoint
 // POST /v1/messages/count_tokens
 // 特点：校验订阅/余额，但不计算并发、不记录使用量
@@ -1767,11 +2242,12 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		return
 	}
 
-	_, ok = middleware2.GetAuthSubjectFromContext(c)
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
 		h.errorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
 		return
 	}
+	c.Request = c.Request.WithContext(service.WithClaudeCodeSessionUserScope(c.Request.Context(), fmt.Sprintf("user:%d|api_key:%d", subject.UserID, apiKey.ID)))
 	reqLog := requestLogger(
 		c,
 		"handler.gateway.count_tokens",
@@ -1796,6 +2272,32 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		return
 	}
 
+	countTokensModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if service.IsClaudeCodeBridgeMarkerPresent(c.Request.Header) {
+		if !h.handleClaudeCodeBridgeCountTokensLocal(c, body, countTokensModel) {
+			return
+		}
+		return
+	}
+	if countTokensModel != "" {
+		if service.IsClaudeCodeBridgeDisplayModelID(countTokensModel) {
+			h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Claude Code bridge count_tokens is not available")
+			return
+		}
+		if decision, err := service.LoadClaudeCodeProviderRegistryFromEnv().Resolve(c.Request.Context(), countTokensModel); err == nil && decision.Route != service.ClaudeCodeNativeRoute {
+			h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Claude Code bridge count_tokens is not available")
+			return
+		}
+	}
+
+	nativeClaudeCodeAttested := false
+	if service.IsClaudeCodeNativeMarkerPresent(c.Request.Header) {
+		if !h.applyClaudeCodeNativeMessagesAttestation(c, body) {
+			return
+		}
+		nativeClaudeCodeAttested = true
+	}
+
 	setOpsRequestContext(c, "", false)
 
 	bodyRef := service.NewRequestBodyRef(body)
@@ -1814,6 +2316,11 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 	// 验证 model 必填
 	if parsedReq.Model == "" {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "model is required")
+		return
+	}
+
+	if nativeClaudeCodeAttested {
+		h.errorResponse(c, http.StatusForbidden, "formal_pool_count_tokens_profile_unapproved", "Claude Code formal-pool count_tokens is not approved")
 		return
 	}
 
@@ -1863,6 +2370,35 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 	}
 }
 
+func (h *GatewayHandler) handleClaudeCodeBridgeCountTokensLocal(c *gin.Context, body []byte, model string) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "model is required")
+		return false
+	}
+	decision, err := service.LoadClaudeCodeProviderRegistryFromEnv().Resolve(c.Request.Context(), model)
+	if err != nil || decision.Route == service.ClaudeCodeNativeRoute {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")
+		return false
+	}
+	clientType := strings.TrimSpace(c.GetHeader(service.ClaudeCodeNativeClientTypeHeader))
+	route := strings.TrimSpace(c.GetHeader("x-sub2api-route"))
+	catalogVersion := strings.TrimSpace(c.GetHeader(service.ClaudeCodeNativeCatalogVersionHeader))
+	if clientType != decision.ClientType || route != decision.Route || catalogVersion == "" || catalogVersion != decision.CatalogVersion {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")
+		return false
+	}
+	if _, err := service.NewClaudeCodeNativeAttestationService().VerifyBridgeRouteHintRequest(c.Request.Method, c.Request.URL.RequestURI(), c.Request.Header, body, decision); err != nil {
+		h.errorResponse(c, http.StatusForbidden, "invalid_request_error", "Invalid Claude Code bridge route")
+		return false
+	}
+	sendNativeCountTokensLocalResponse(c, model, body)
+	return true
+}
+
 // InterceptType 表示请求拦截类型
 type InterceptType int
 
@@ -1879,9 +2415,9 @@ func isHaikuModel(model string) bool {
 }
 
 // isMaxTokensOneHaikuRequest 检查是否为 max_tokens=1 + haiku 模型的探测请求
-// 这类请求用于 Claude Code 验证 API 连通性（流式/非流式均会出现，如 cc-switch v3.9.0 起的健康检查探测为流式）
-// 条件：max_tokens == 1 且 model 包含 "haiku"
-func isMaxTokensOneHaikuRequest(model string, maxTokens int) bool {
+// 这类请求用于 Claude Code 验证 API 连通性；流式/非流式探测都应本地拦截。
+// 条件：max_tokens == 1 且 model 包含 "haiku"。
+func isMaxTokensOneHaikuRequest(model string, maxTokens int, isStream bool) bool {
 	return maxTokens == 1 && isHaikuModel(model)
 }
 
@@ -1890,10 +2426,11 @@ func isMaxTokensOneHaikuRequest(model string, maxTokens int) bool {
 //   - body: 请求体字节
 //   - model: 请求的模型名称
 //   - maxTokens: max_tokens 值
+//   - isStream: 是否为流式请求
 //   - isClaudeCodeClient: 是否已通过 Claude Code 客户端校验
-func detectInterceptType(body []byte, model string, maxTokens int, isClaudeCodeClient bool) InterceptType {
+func detectInterceptType(body []byte, model string, maxTokens int, isStream bool, isClaudeCodeClient bool) InterceptType {
 	// 优先检查 max_tokens=1 + haiku 探测请求（流式/非流式均适用）
-	if isClaudeCodeClient && isMaxTokensOneHaikuRequest(model, maxTokens) {
+	if isClaudeCodeClient && isMaxTokensOneHaikuRequest(model, maxTokens, isStream) {
 		return InterceptTypeMaxTokensOneHaiku
 	}
 
@@ -2073,6 +2610,86 @@ func sendMockInterceptResponse(c *gin.Context, model string, interceptType Inter
 	}
 
 	c.JSON(http.StatusOK, response)
+}
+
+func sendNativeCountTokensProbeResponse(c *gin.Context, model string) {
+	// Claude Code performs a max_tokens=1 Haiku count_tokens probe during startup.
+	// Some managed Anthropic-compatible upstreams do not implement count_tokens, so
+	// answer this attested connectivity probe locally without touching the account.
+	c.JSON(http.StatusOK, gin.H{
+		"input_tokens": 1,
+		"model":        model,
+	})
+}
+
+func sendNativeCountTokensLocalResponse(c *gin.Context, model string, body []byte) {
+	c.JSON(http.StatusOK, buildNativeCountTokensLocalResponse(model, body))
+}
+
+func buildNativeCountTokensLocalResponse(model string, body []byte) gin.H {
+	inputTokens := estimateAnthropicCountTokens(body)
+	if inputTokens < 1 {
+		inputTokens = 1
+	}
+	return gin.H{
+		"input_tokens": inputTokens,
+		"model":        model,
+	}
+}
+
+func estimateAnthropicCountTokens(body []byte) int {
+	var decoded any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return estimateTextTokensForCountTokens(string(body))
+	}
+	return estimateAnthropicValueTokens(decoded, "")
+}
+
+func estimateAnthropicValueTokens(value any, key string) int {
+	switch v := value.(type) {
+	case map[string]any:
+		total := 0
+		for childKey, child := range v {
+			total += estimateAnthropicValueTokens(child, childKey)
+		}
+		return total
+	case []any:
+		total := 0
+		for _, child := range v {
+			total += estimateAnthropicValueTokens(child, key)
+		}
+		return total
+	case string:
+		switch key {
+		case "text", "content", "system":
+			return estimateTextTokensForCountTokens(v)
+		default:
+			return 0
+		}
+	default:
+		return 0
+	}
+}
+
+func estimateTextTokensForCountTokens(text string) int {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0
+	}
+	runes := []rune(text)
+	ascii := 0
+	for _, r := range runes {
+		if r <= 0x7f {
+			ascii++
+		}
+	}
+	if len(runes) == 0 {
+		return 0
+	}
+	if float64(ascii)/float64(len(runes)) >= 0.8 {
+		return (len(runes) + 3) / 4
+	}
+	return len(runes)
 }
 
 // extractQuotaResetSeconds 从 quota 错误的 metadata 中提取 window_resets_at 并计算

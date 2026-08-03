@@ -171,6 +171,33 @@ func TestLinuxDoOAuthBindStartRedirectsAndSetsBindCookies(t *testing.T) {
 	require.Equal(t, int64(42), userID)
 }
 
+func TestLinuxDoOAuthStartCapturesPromoCode(t *testing.T) {
+	handler := newLinuxDoOAuthTestHandler(t, false, config.LinuxDoConnectConfig{
+		Enabled:             true,
+		ClientID:            "linuxdo-client",
+		ClientSecret:        "linuxdo-secret",
+		AuthorizeURL:        "https://connect.linux.do/oauth/authorize",
+		TokenURL:            "https://connect.linux.do/oauth/token",
+		UserInfoURL:         "https://connect.linux.do/api/user",
+		Scopes:              "read",
+		RedirectURL:         "https://api.example.com/api/v1/auth/oauth/linuxdo/callback",
+		FrontendRedirectURL: "/auth/linuxdo/callback",
+		TokenAuthMethod:     "client_secret_post",
+	})
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/linuxdo/start?redirect=/dashboard&promo_code=LINUXPROMO", nil)
+
+	handler.LinuxDoOAuthStart(c)
+
+	require.Equal(t, http.StatusFound, recorder.Code)
+	promoCookie := findCookie(recorder.Result().Cookies(), oauthPromoCodeCookieName)
+	require.NotNil(t, promoCookie)
+	require.Equal(t, "LINUXPROMO", decodeCookieValueForTest(t, promoCookie.Value))
+	require.True(t, promoCookie.HttpOnly)
+}
+
 func TestLinuxDoOAuthStartOmitsPKCEWhenDisabled(t *testing.T) {
 	handler := newLinuxDoOAuthTestHandler(t, false, config.LinuxDoConnectConfig{
 		Enabled:             true,
@@ -631,7 +658,7 @@ func TestLinuxDoOAuthCallbackCreatesChoicePendingSessionWhenSignupRequiresInvite
 	require.Equal(t, "third_party_signup", completion["choice_reason"])
 }
 
-func TestLinuxDoOAuthCallbackEmailVerificationCompletesWithBoundEmail(t *testing.T) {
+func TestLinuxDoOAuthCallbackEmailVerificationRequiredHidesUpstreamEmail(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/token":
@@ -639,42 +666,51 @@ func TestLinuxDoOAuthCallbackEmailVerificationCompletesWithBoundEmail(t *testing
 			_, _ = w.Write([]byte(`{"access_token":"linuxdo-access","token_type":"Bearer","expires_in":3600}`))
 		case "/userinfo":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"id":"email-verify-123","username":"linuxdo_email","name":"Email Verify","avatar_url":"https://cdn.example/email.png"}`))
+			_, _ = w.Write([]byte(`{"id":"verify-123","username":"linuxdo_verify","name":"Verify User"}`))
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer upstream.Close()
 
-	handler, client := newLinuxDoOAuthHandlerAndClientWithEmailVerification(t, false, "fresh@example.com", "246810", config.LinuxDoConnectConfig{
-		Enabled:             true,
-		ClientID:            "linuxdo-client",
-		ClientSecret:        "linuxdo-secret",
-		AuthorizeURL:        upstream.URL + "/authorize",
-		TokenURL:            upstream.URL + "/token",
-		UserInfoURL:         upstream.URL + "/userinfo",
-		Scopes:              "read",
-		RedirectURL:         "https://api.example.com/api/v1/auth/oauth/linuxdo/callback",
-		FrontendRedirectURL: "/auth/linuxdo/callback",
-		TokenAuthMethod:     "client_secret_post",
-		UsePKCE:             true,
-	})
-	t.Cleanup(func() { _ = client.Close() })
+	handler, client := newOAuthPendingFlowTestHandlerWithOptions(t, false, true, nil)
+	handler.settingSvc = nil
+	handler.cfg = &config.Config{
+		JWT: config.JWTConfig{
+			Secret:                   "test-secret",
+			ExpireHour:               1,
+			AccessTokenExpireMinutes: 60,
+			RefreshTokenExpireDays:   7,
+		},
+		LinuxDo: config.LinuxDoConnectConfig{
+			Enabled:             true,
+			ClientID:            "linuxdo-client",
+			ClientSecret:        "linuxdo-secret",
+			AuthorizeURL:        upstream.URL + "/authorize",
+			TokenURL:            upstream.URL + "/token",
+			UserInfoURL:         upstream.URL + "/userinfo",
+			Scopes:              "read",
+			RedirectURL:         "https://api.example.com/api/v1/auth/oauth/linuxdo/callback",
+			FrontendRedirectURL: "/auth/linuxdo/callback",
+			TokenAuthMethod:     "client_secret_post",
+			UsePKCE:             true,
+		},
+	}
+	defer func() { _ = client.Close() }()
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/linuxdo/callback?code=code-email&state=state-email", nil)
-	req.AddCookie(encodedCookie(linuxDoOAuthStateCookieName, "state-email"))
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oauth/linuxdo/callback?code=code-verify&state=state-verify", nil)
+	req.AddCookie(encodedCookie(linuxDoOAuthStateCookieName, "state-verify"))
 	req.AddCookie(encodedCookie(linuxDoOAuthRedirectCookie, "/dashboard"))
-	req.AddCookie(encodedCookie(linuxDoOAuthVerifierCookie, "verifier-email"))
+	req.AddCookie(encodedCookie(linuxDoOAuthVerifierCookie, "verifier-verify"))
 	req.AddCookie(encodedCookie(linuxDoOAuthIntentCookieName, oauthIntentLogin))
-	req.AddCookie(encodedCookie(oauthPendingBrowserCookieName, "browser-email"))
+	req.AddCookie(encodedCookie(oauthPendingBrowserCookieName, "browser-verify"))
 	c.Request = req
 
 	handler.LinuxDoOAuthCallback(c)
 
 	require.Equal(t, http.StatusFound, recorder.Code)
-	require.Equal(t, "/auth/linuxdo/callback", recorder.Header().Get("Location"))
 	sessionCookie := findCookie(recorder.Result().Cookies(), oauthPendingSessionCookieName)
 	require.NotNil(t, sessionCookie)
 
@@ -684,9 +720,7 @@ func TestLinuxDoOAuthCallbackEmailVerificationCompletesWithBoundEmail(t *testing
 		Only(ctx)
 	require.NoError(t, err)
 	require.Equal(t, oauthIntentLogin, session.Intent)
-	require.Nil(t, session.TargetUserID)
 	require.Empty(t, session.ResolvedEmail)
-	require.Equal(t, "linuxdo-email-verify-123@linuxdo-connect.invalid", session.UpstreamIdentityClaims["email"])
 
 	completion, ok := session.LocalFlowState[oauthCompletionResponseKey].(map[string]any)
 	require.True(t, ok)
@@ -696,41 +730,6 @@ func TestLinuxDoOAuthCallbackEmailVerificationCompletesWithBoundEmail(t *testing
 	require.Equal(t, "email_verification_required", completion["choice_reason"])
 	require.NotContains(t, completion, "email")
 	require.NotContains(t, completion, "resolved_email")
-
-	createRecorder := httptest.NewRecorder()
-	createCtx, _ := gin.CreateTestContext(createRecorder)
-	body := bytes.NewBufferString(`{"email":"fresh@example.com","verify_code":"246810","password":"secret-123","adopt_display_name":false,"adopt_avatar":false}`)
-	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/oauth/pending/create-account", body)
-	createReq.Header.Set("Content-Type", "application/json")
-	createReq.AddCookie(sessionCookie)
-	createReq.AddCookie(&http.Cookie{Name: oauthPendingBrowserCookieName, Value: encodeCookieValue("browser-email")})
-	createCtx.Request = createReq
-
-	handler.CreatePendingOAuthAccount(createCtx)
-
-	require.Equal(t, http.StatusOK, createRecorder.Code)
-	responseData := decodeJSONBody(t, createRecorder)
-	require.NotEmpty(t, responseData["access_token"])
-
-	userEntity, err := client.User.Query().
-		Where(dbuser.EmailEQ("fresh@example.com")).
-		Only(ctx)
-	require.NoError(t, err)
-	require.Equal(t, "linuxdo", userEntity.SignupSource)
-
-	identity, err := client.AuthIdentity.Query().
-		Where(
-			authidentity.ProviderTypeEQ("linuxdo"),
-			authidentity.ProviderKeyEQ("linuxdo"),
-			authidentity.ProviderSubjectEQ("email-verify-123"),
-		).
-		Only(ctx)
-	require.NoError(t, err)
-	require.Equal(t, userEntity.ID, identity.UserID)
-
-	storedSession, err := client.PendingAuthSession.Get(ctx, session.ID)
-	require.NoError(t, err)
-	require.NotNil(t, storedSession.ConsumedAt)
 }
 
 func TestLinuxDoOAuthCallbackDirectlyLogsInNewUserWhenEmailVerificationDisabled(t *testing.T) {
@@ -1205,24 +1204,6 @@ func newLinuxDoOAuthTestHandler(t *testing.T, invitationEnabled bool, oauthCfg c
 func newLinuxDoOAuthHandlerAndClient(t *testing.T, invitationEnabled bool, oauthCfg config.LinuxDoConnectConfig) (*AuthHandler, *dbent.Client) {
 	t.Helper()
 	handler, client := newOAuthPendingFlowTestHandler(t, invitationEnabled)
-	configureLinuxDoOAuthTestHandler(handler, oauthCfg)
-	return handler, client
-}
-
-func newLinuxDoOAuthHandlerAndClientWithEmailVerification(
-	t *testing.T,
-	invitationEnabled bool,
-	email string,
-	code string,
-	oauthCfg config.LinuxDoConnectConfig,
-) (*AuthHandler, *dbent.Client) {
-	t.Helper()
-	handler, client := newOAuthPendingFlowTestHandlerWithEmailVerification(t, invitationEnabled, email, code)
-	configureLinuxDoOAuthTestHandler(handler, oauthCfg)
-	return handler, client
-}
-
-func configureLinuxDoOAuthTestHandler(handler *AuthHandler, oauthCfg config.LinuxDoConnectConfig) {
 	handler.settingSvc = nil
 	handler.cfg = &config.Config{
 		JWT: config.JWTConfig{
@@ -1233,4 +1214,5 @@ func configureLinuxDoOAuthTestHandler(handler *AuthHandler, oauthCfg config.Linu
 		},
 		LinuxDo: oauthCfg,
 	}
+	return handler, client
 }

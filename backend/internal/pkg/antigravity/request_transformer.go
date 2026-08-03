@@ -146,11 +146,8 @@ func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, map
 		// 总是生成 sessionId，基于用户消息内容
 		SessionID: generateStableSessionID(contents),
 	}
-
-	// 针对 Gemini Reasoning 模型（如 gemini-3.1-pro-high等）过滤强制空 ToolConfig
-	isReasoning := IsGeminiReasoningModel(targetModel)
-	if !isReasoning || len(tools) > 0 {
-		// 总是设置 toolConfig，与官方客户端一致
+	if !IsGeminiReasoningModel(targetModel) || len(tools) > 0 {
+		// 总是设置 toolConfig，与官方客户端一致；Gemini reasoning 模型无工具时拒绝空 ToolConfig。
 		innerRequest.ToolConfig = &GeminiToolConfig{
 			FunctionCallingConfig: &GeminiFunctionCallingConfig{
 				Mode: "VALIDATED",
@@ -177,7 +174,7 @@ func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, map
 	v1Req := V1InternalRequest{
 		Project:     projectID,
 		RequestID:   "agent-" + uuid.New().String(),
-		UserAgent:   "antigravity", // 固定值，与官方客户端一致
+		UserAgent:   EffectiveV1InternalUserAgent(),
 		RequestType: requestType,
 		Model:       targetModel,
 		Request:     innerRequest,
@@ -616,7 +613,6 @@ func buildGenerationConfig(req *ClaudeRequest) *GeminiGenerationConfig {
 	config := &GeminiGenerationConfig{
 		MaxOutputTokens: defaultMaxOutputTokens, // 默认最大输出
 	}
-
 	isReasoning := IsGeminiReasoningModel(req.Model)
 	if !isReasoning {
 		config.StopSequences = DefaultStopSequences

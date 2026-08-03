@@ -15,6 +15,7 @@ import (
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 type openAIWSClientFrameConn struct {
@@ -122,6 +123,36 @@ func openAIWSPassthroughPolicyModelFromSessionFrame(account *Account, payload []
 		return ""
 	}
 	return normalizeOpenAIModelForUpstream(account, account.GetMappedModel(original))
+}
+
+func openAIWSPassthroughRewriteModelForUpstream(account *Account, payload []byte) ([]byte, string, string, error) {
+	if account == nil || len(payload) == 0 {
+		return payload, "", "", nil
+	}
+	frameType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+	path := ""
+	requestedModel := ""
+	upstreamModel := ""
+	switch frameType {
+	case "response.create":
+		path = "model"
+		requestedModel = strings.TrimSpace(gjson.GetBytes(payload, path).String())
+		upstreamModel = openAIWSPassthroughPolicyModelForFrame(account, payload)
+	case "session.update":
+		path = "session.model"
+		requestedModel = strings.TrimSpace(gjson.GetBytes(payload, path).String())
+		upstreamModel = openAIWSPassthroughPolicyModelFromSessionFrame(account, payload)
+	default:
+		return payload, "", "", nil
+	}
+	if requestedModel == "" || upstreamModel == "" || upstreamModel == requestedModel {
+		return payload, requestedModel, upstreamModel, nil
+	}
+	updated, err := sjson.SetBytes(payload, path, upstreamModel)
+	if err != nil {
+		return payload, requestedModel, upstreamModel, fmt.Errorf("rewrite openai ws passthrough %s model to upstream fallback: %w", frameType, err)
+	}
+	return updated, requestedModel, upstreamModel, nil
 }
 
 type openAIWSPassthroughUsageMeta struct {
@@ -270,11 +301,31 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	// model would miss any admin-configured model whitelist and be silently
 	// passed through, defeating that policy on every frame after the first.
 	capturedSessionModel := openAIWSPassthroughPolicyModelForFrame(account, firstClientMessage)
+	if selectionErr := openAIAccountRuntimeGuardSelectionErrorForUpstream(account, requestModel, capturedSessionModel, ""); selectionErr != nil {
+		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+		writeOpenAIRuntimeGuardSelectionWSEvent(ctx, clientConn, s.openAIWSWriteTimeout(), selectionErr)
+		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, OpenAIRuntimeGuardSelectionWSReason(selectionErr), selectionErr)
+	}
+	if rewrittenFirst, _, _, rewriteErr := openAIWSPassthroughRewriteModelForUpstream(account, firstClientMessage); rewriteErr != nil {
+		return rewriteErr
+	} else {
+		firstClientMessage = rewrittenFirst
+	}
 	initialRequestModel := ""
 	if hooks != nil {
 		initialRequestModel = hooks.InitialRequestModel
 	}
 	usageMeta := newOpenAIWSPassthroughUsageMeta(initialRequestModel, firstClientMessage)
+	guardedFirst, runtimeBlocked, runtimeErr := s.applyOpenAIRuntimeGuardToWSResponseCreatePayloadWithModel(ctx, account, firstClientMessage, capturedSessionModel)
+	if runtimeErr != nil {
+		return fmt.Errorf("apply openai runtime guard on first ws frame: %w", runtimeErr)
+	}
+	if runtimeBlocked != nil {
+		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+		writeOpenAIRuntimeGuardBlockedWSEvent(ctx, clientConn, s.openAIWSWriteTimeout(), runtimeBlocked)
+		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, openAIRuntimeGuardBlockedWSReason(runtimeBlocked), runtimeBlocked)
+	}
+	firstClientMessage = guardedFirst
 	updatedFirst, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, capturedSessionModel, firstClientMessage)
 	if policyErr != nil {
 		return fmt.Errorf("apply openai fast policy on first ws frame: %w", policyErr)
@@ -296,7 +347,15 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		}
 		return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, blocked.Message, blocked)
 	}
-	firstClientMessage = updatedFirst
+	if strings.TrimSpace(gjson.GetBytes(updatedFirst, "type").String()) == "response.create" {
+		scopedFirst, _, scopeErr := scopeOpenAIBodyPromptCacheKey(requestContext(c), updatedFirst)
+		if scopeErr != nil {
+			return fmt.Errorf("scope prompt_cache_key on first ws frame: %w", scopeErr)
+		}
+		firstClientMessage = scopedFirst
+	} else {
+		firstClientMessage = updatedFirst
+	}
 
 	// 在 policy filter 之后再提取 service_tier / reasoning_effort 用于
 	// usage 上报：filter
@@ -324,14 +383,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		wsHost = normalizeOpenAIWSLogValue(parsedURL.Host)
 		wsPath = normalizeOpenAIWSLogValue(parsedURL.Path)
 	}
-	logOpenAIWSV2Passthrough(
-		"relay_dial_start account_id=%d ws_host=%s ws_path=%s proxy_enabled=%v",
-		account.ID,
-		wsHost,
-		wsPath,
-		account.ProxyID != nil && account.Proxy != nil,
-	)
-
 	isCodexCLI := false
 	if c != nil {
 		isCodexCLI = openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator"))
@@ -349,10 +400,22 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if buildHdrErr != nil {
 		return fmt.Errorf("build ws headers: %w", buildHdrErr)
 	}
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
+	egress, egressErr := s.resolveOpenAIEgress(ctx, account)
+	if egressErr != nil {
+		return egressErr
 	}
+	proxyURL := egress.ProxyURL
+	effectiveTLS, tlsErr := s.resolveOpenAIWSEffectiveTLS(ctx, account, egress)
+	if tlsErr != nil {
+		return tlsErr
+	}
+	logOpenAIWSV2Passthrough(
+		"relay_dial_start account_id=%d ws_host=%s ws_path=%s proxy_enabled=%v",
+		account.ID,
+		wsHost,
+		wsPath,
+		egress.ProxySelected,
+	)
 
 	dialer := s.getOpenAIWSPassthroughDialer()
 	if dialer == nil {
@@ -361,7 +424,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 
 	dialCtx, cancelDial := context.WithTimeout(ctx, s.openAIWSDialTimeout())
 	defer cancelDial()
-	upstreamConn, statusCode, handshakeHeaders, err := dialer.Dial(dialCtx, wsURL, headers, proxyURL)
+	upstreamConn, statusCode, handshakeHeaders, err := dialer.Dial(dialCtx, wsURL, headers, proxyURL, effectiveTLS)
 	if err != nil {
 		logOpenAIWSV2Passthrough(
 			"relay_dial_failed account_id=%d status_code=%d err=%s",
@@ -424,11 +487,43 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			// → 不带 model 的 response.create fallback 到 gpt-4o" 的
 			// 绕过路径。这里只看 session.update 事件中的 session.model
 			// 字段，response.create 自己的 model 仍然由其本帧字段决定。
+			sessionRequestModel := openAIWSPassthroughRequestModelFromSessionFrame(payload)
+			if sessionRequestModel != "" {
+				sessionUpstreamModel := openAIWSPassthroughPolicyModelFromSessionFrame(account, payload)
+				if selectionErr := openAIAccountRuntimeGuardSelectionErrorForUpstream(account, sessionRequestModel, sessionUpstreamModel, ""); selectionErr != nil {
+					MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+					writeOpenAIRuntimeGuardSelectionWSEvent(ctx, clientConn, s.openAIWSWriteTimeout(), selectionErr)
+					return payload, nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, OpenAIRuntimeGuardSelectionWSReason(selectionErr), selectionErr)
+				}
+			}
+			requestModelForThisFrame := usageMeta.requestModelForFrame(payload)
+			if strings.TrimSpace(gjson.GetBytes(payload, "type").String()) == "response.create" {
+				if requestModelForThisFrame == "" {
+					requestModelForThisFrame = strings.TrimSpace(capturedSessionModel)
+				}
+				upstreamModelForThisFrame := openAIWSPassthroughPolicyModelForFrame(account, payload)
+				if upstreamModelForThisFrame == "" {
+					upstreamModelForThisFrame = strings.TrimSpace(capturedSessionModel)
+				}
+				imageCapability := OpenAIImagesCapability("")
+				if IsImageGenerationIntent(openAIResponsesEndpoint, requestModelForThisFrame, payload) {
+					imageCapability = OpenAIImagesCapabilityBasic
+				}
+				if selectionErr := openAIAccountRuntimeGuardSelectionErrorForUpstream(account, requestModelForThisFrame, upstreamModelForThisFrame, imageCapability); selectionErr != nil {
+					MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+					writeOpenAIRuntimeGuardSelectionWSEvent(ctx, clientConn, s.openAIWSWriteTimeout(), selectionErr)
+					return payload, nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, OpenAIRuntimeGuardSelectionWSReason(selectionErr), selectionErr)
+				}
+			}
+			rewritten, _, _, rewriteErr := openAIWSPassthroughRewriteModelForUpstream(account, payload)
+			if rewriteErr != nil {
+				return payload, nil, rewriteErr
+			}
+			payload = rewritten
 			if updated := openAIWSPassthroughPolicyModelFromSessionFrame(account, payload); updated != "" {
 				capturedSessionModel = updated
 			}
 			usageMeta.updateSessionRequestModel(payload)
-			requestModelForThisFrame := usageMeta.requestModelForFrame(payload)
 			// Per-frame model first; if the client omits "model" on a
 			// follow-up frame (legal in Realtime), fall back to the
 			// session-level model captured from the first frame so the
@@ -438,7 +533,25 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			if model == "" {
 				model = capturedSessionModel
 			}
+			guarded, runtimeBlocked, runtimeErr := s.applyOpenAIRuntimeGuardToWSResponseCreatePayloadWithModel(ctx, account, payload, model)
+			if runtimeErr != nil {
+				return payload, nil, runtimeErr
+			}
+			if runtimeBlocked != nil {
+				MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+				writeOpenAIRuntimeGuardBlockedWSEvent(ctx, clientConn, s.openAIWSWriteTimeout(), runtimeBlocked)
+				return payload, nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, openAIRuntimeGuardBlockedWSReason(runtimeBlocked), runtimeBlocked)
+			}
+			payload = guarded
 			out, blocked, policyErr := s.applyOpenAIFastPolicyToWSResponseCreate(ctx, account, model, payload)
+			if policyErr == nil && blocked == nil &&
+				strings.TrimSpace(gjson.GetBytes(out, "type").String()) == "response.create" {
+				var scopeErr error
+				out, _, scopeErr = scopeOpenAIBodyPromptCacheKey(requestContext(c), out)
+				if scopeErr != nil {
+					return payload, nil, scopeErr
+				}
+			}
 			// 多轮 passthrough usage：仅在成功（non-block / non-err）
 			// 的 response.create 帧上更新 usageMeta，使用
 			// filter 处理后的 payload，与首帧 policy-after-extract 语义

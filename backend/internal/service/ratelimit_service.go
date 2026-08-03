@@ -29,6 +29,8 @@ type RateLimitService struct {
 	openAI403CounterCache OpenAI403CounterCache
 	settingService        *SettingService
 	tokenCacheInvalidator TokenCacheInvalidator
+	openAIRefreshAPI      *OAuthRefreshAPI
+	openAIRefreshExecutor OAuthRefreshExecutor
 	runtimeBlocker        AccountRuntimeBlocker
 	usageCacheMu          sync.RWMutex
 	usageCache            map[int64]*geminiUsageCacheEntry
@@ -112,16 +114,15 @@ func (s *RateLimitService) SetTokenCacheInvalidator(invalidator TokenCacheInvali
 	s.tokenCacheInvalidator = invalidator
 }
 
-func (s *RateLimitService) SetAccountRuntimeBlocker(blocker AccountRuntimeBlocker) {
-	s.runtimeBlocker = blocker
+// SetOpenAIAuthRecovery injects the unified refresh API and OpenAI executor
+// used for immediate recovery after recoverable upstream 401s.
+func (s *RateLimitService) SetOpenAIAuthRecovery(api *OAuthRefreshAPI, executor OAuthRefreshExecutor) {
+	s.openAIRefreshAPI = api
+	s.openAIRefreshExecutor = executor
 }
 
-func (s *RateLimitService) IsOpenAIAdvancedSchedulerStickyWeightedEnabled(ctx context.Context) bool {
-	if s == nil || s.settingService == nil {
-		return false
-	}
-	gateway := &OpenAIGatewayService{rateLimitService: s}
-	return gateway.isOpenAIAdvancedSchedulerStickyWeightedEnabled(ctx)
+func (s *RateLimitService) SetAccountRuntimeBlocker(blocker AccountRuntimeBlocker) {
+	s.runtimeBlocker = blocker
 }
 
 func (s *RateLimitService) notifyAccountSchedulingBlocked(account *Account, until time.Time, reason string) {
@@ -172,6 +173,14 @@ func (s *RateLimitService) CheckErrorPolicy(ctx context.Context, account *Accoun
 func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, requestedModel ...string) (shouldDisable bool) {
 	customErrorCodesEnabled := account.IsCustomErrorCodesEnabled()
 
+	// Balance exhaustion is account-scoped and persists across requests. Keeping
+	// a depleted pool account active only makes every new request select it again.
+	if account.IsPoolMode() && !customErrorCodesEnabled &&
+		account.Platform == PlatformOpenAI && statusCode == http.StatusForbidden &&
+		isOpenAIInsufficientBalanceError(responseBody, "") {
+		return s.handleOpenAI403(ctx, account, "", responseBody)
+	}
+
 	// 池模式默认不标记本地账号状态；仅当用户显式配置自定义错误码时按本地策略处理。
 	if account.IsPoolMode() && !customErrorCodesEnabled {
 		slog.Info("pool_mode_error_skipped", "account_id", account.ID, "status_code", statusCode)
@@ -189,12 +198,40 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		return true
 	}
 
-	// Anthropic official 5h / 7d window exhaustion is a hard account limit.
-	// It must take precedence over user-configured 429 temp-unsched rules,
-	// otherwise a broad "rate limit" keyword rule can shorten a multi-hour
-	// cooldown to a local temporary pause.
+	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(responseBody))
+	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+	if upstreamMsg != "" {
+		upstreamMsg = truncateForLog([]byte(upstreamMsg), 512)
+	}
+
+	if IsFormalPoolAccount(account) && account.Platform == PlatformAnthropic && (statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden) {
+		reason := upstreamMsg
+		if reason == "" {
+			reason = http.StatusText(statusCode)
+		}
+		authRefreshAttempted := boolFromAny(account.Extra["formal_pool_auth_refresh_attempted"])
+		if statusCode == http.StatusUnauthorized && s.shouldDeferFormalPool401ForRefresh(ctx, account, reason) {
+			return true
+		}
+		if statusCode == http.StatusUnauthorized && isInvalidGrantText(reason) {
+			s.markFormalPoolRefreshTokenInvalid(ctx, account, statusCode)
+			return true
+		}
+		if authRefreshAttempted && account.Extra != nil {
+			delete(account.Extra, "formal_pool_auth_refresh_attempted")
+		}
+		if !FormalPoolShouldQuarantineHTTPStatus(statusCode, responseBody) {
+			slog.Warn("formal_pool_request_level_auth_reject_observed",
+				"status_code", statusCode,
+				"status_bucket", statusBucketFromHTTP(statusCode),
+				"safe_error_bucket", "request_level_verifier")
+			return false
+		}
+		s.quarantineFormalPoolAccount(ctx, account, RiskEventKindIdentityBoundaryFail, "rate_limit_service", statusCode, reason)
+		return true
+	}
+
 	if statusCode == http.StatusTooManyRequests && account.Platform == PlatformAnthropic {
-		// 7d_oi 是 Fable 模型专属的 7d 窗口：只标记模型级限流，账号对其他模型仍可调度。
 		fableLimited := s.persistAnthropicFableWindowLimit(ctx, account, headers)
 		if s.persistAnthropicExhaustedWindowLimit(ctx, account, headers) {
 			return false
@@ -204,18 +241,12 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		}
 	}
 
-	// 先尝试临时不可调度规则（401除外）
-	// 如果匹配成功，直接返回，不执行后续禁用逻辑
+	// Non-formal accounts may still use temporary unschedulable rules. Formal-pool
+	// 401/403 are handled above as hard quarantine to avoid refresh/proxy loops.
 	if statusCode != 401 {
 		if s.tryTempUnschedulable(ctx, account, statusCode, responseBody) {
 			return true
 		}
-	}
-
-	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(responseBody))
-	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
-	if upstreamMsg != "" {
-		upstreamMsg = truncateForLog([]byte(upstreamMsg), 512)
 	}
 
 	switch statusCode {
@@ -238,32 +269,22 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		}
 		// 其他 400 错误（如参数问题）不处理，不禁用账号
 	case 401:
-		// 外审第9轮:Spark 影子无独立凭据,401 是母账号 token 问题——失效缓存 / refresh_token 判断 /
-		// 永久禁用 / 临时不可调度都必须落到凭据 owner(母账号),否则影子(无 refresh_token)必中
-		// "refresh_token missing"永久禁用分支、母账号 token cache 也不会被清,把母账号可恢复的 token
-		// 问题变成影子永久死亡。母账号被标记 temp-unschedulable 后由 parentHealthyForShadow 级联排除影子。
-		// 非影子时 resolveCredentialAccount 返回自身;母账号缺失/损坏(orphan 影子,罕见)时回退到原 account。
+		// Spark shadows do not hold credentials. Treat upstream auth failures as
+		// credential-owner failures so token cache/lifecycle/cooldown state lands
+		// on the parent account, while preserving local OpenAI lifecycle behavior.
 		authAccount := account
-		if resolved, rerr := resolveCredentialAccount(ctx, s.accountRepo, account); rerr == nil && resolved != nil {
-			authAccount = resolved
+		if account != nil && account.IsCredentialShadow() {
+			if resolved, rerr := resolveCredentialAccount(ctx, s.accountRepo, account); rerr == nil && resolved != nil {
+				authAccount = resolved
+			}
 		}
-		// OpenAI: token_invalidated / token_revoked 表示 token 被永久作废（非过期），直接标记 error
-		openai401Code := extractUpstreamErrorCode(responseBody)
-		if authAccount.Platform == PlatformOpenAI && (openai401Code == "token_invalidated" || openai401Code == "token_revoked") {
+		openai401Code := classifyOpenAIUpstreamAuth401ErrorCode(responseBody)
+		if authAccount.Platform == PlatformOpenAI && isTerminalOpenAIAuthErrorCode(openai401Code) {
 			msg := "Token revoked (401): account authentication permanently revoked"
 			if upstreamMsg != "" {
 				msg = "Token revoked (401): " + upstreamMsg
 			}
-			s.handleAuthError(ctx, authAccount, msg)
-			shouldDisable = true
-			break
-		}
-		// OpenAI: {"detail":"Unauthorized"} 表示 token 完全无效（非标准 OpenAI 错误格式），直接标记 error
-		if authAccount.Platform == PlatformOpenAI && gjson.GetBytes(responseBody, "detail").String() == "Unauthorized" {
-			msg := "Unauthorized (401): account authentication failed permanently"
-			if upstreamMsg != "" {
-				msg = "Unauthorized (401): " + upstreamMsg
-			}
+			s.updateOpenAIAuthLifecycle(ctx, authAccount, OpenAIAuthStateTerminal, OpenAIValidationOutcomeRTValidationTerminalFailure, openai401Code, "")
 			s.handleAuthError(ctx, authAccount, msg)
 			shouldDisable = true
 			break
@@ -273,7 +294,7 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			// 1. 失效缓存
 			if s.tokenCacheInvalidator != nil {
 				if err := s.tokenCacheInvalidator.InvalidateToken(ctx, authAccount); err != nil {
-					slog.Warn("oauth_401_invalidate_cache_failed", "account_id", authAccount.ID, "error", err)
+					slog.Warn("oauth_401_invalidate_cache_failed", "error_class", fmt.Sprintf("%T", err))
 				}
 			}
 			// 缺少 refresh_token 的 OAuth 账号无法在冷却期内自愈（后台刷新服务也会跳过），
@@ -287,32 +308,34 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 				shouldDisable = true
 				break
 			}
-			// 2. 临时不可调度，替代 SetError（保持 status=active 让刷新服务能拾取）
-			// 注意：此处不再写回 account.Credentials/expires_at。
-			// 原实现使用请求开始时的 account 快照整列覆盖 credentials JSONB（见
-			// persistAccountCredentials → accountRepository.UpdateCredentials → SetCredentials），
-			// 在另一个 worker 刚刷新完 refresh_token 的窄窗口内会把新 refresh_token 回滚为旧值，
-			// 导致下一周期用旧 refresh_token 调上游拿到 invalid_grant 后，
-			// tryRecoverFromRefreshRace 重读 DB 发现 currentRT == usedRT 也救不回来，账号被错误 disable。
-			// 这里仅依赖 InvalidateToken + SetTempUnschedulable 让账号在冷却期内不被调度，
-			// 冷却结束后由 token_provider 的 NeedsRefresh / token_refresh_service 走带分布式锁的正路刷新。
+			if authAccount.Platform == PlatformOpenAI {
+				recovered, terminalFailure, refreshErrorCode := s.tryRecoverOpenAIAuth401(ctx, authAccount)
+				switch {
+				case recovered:
+					s.updateOpenAIAuthLifecycle(ctx, authAccount, OpenAIAuthStateHealthy, OpenAIValidationOutcomeRTValidated, "", time.Now().UTC().Format(time.RFC3339))
+					shouldDisable = true
+					break
+				case terminalFailure:
+					msg := "Authentication failed (401): refresh token is not recoverable"
+					if upstreamMsg != "" {
+						msg = "Authentication failed (401): " + upstreamMsg
+					}
+					s.updateOpenAIAuthLifecycle(ctx, authAccount, OpenAIAuthStateTerminal, OpenAIValidationOutcomeRTValidationTerminalFailure, refreshErrorCode, "")
+					s.handleAuthError(ctx, authAccount, msg)
+					shouldDisable = true
+					break
+				default:
+					s.updateOpenAIAuthLifecycle(ctx, authAccount, OpenAIAuthStateCooling, OpenAIValidationOutcomeRTValidationRetryableFailure, refreshErrorCode, "")
+				}
+				if shouldDisable {
+					break
+				}
+			}
+			// 临时不可调度，替代 SetError（保持 status=active 让刷新服务能拾取）。
+			// 不写回 expires_at，避免用请求开始时的 credentials 快照覆盖刚刷新的 refresh_token。
 			msg := "Authentication failed (401): invalid or expired credentials"
 			if upstreamMsg != "" {
 				msg = "OAuth 401: " + upstreamMsg
-			}
-			if authAccount.Platform == PlatformAntigravity {
-				extraUpdates := antigravityForceTokenRefreshExtra("401_invalid")
-				if err := s.accountRepo.UpdateExtra(ctx, authAccount.ID, extraUpdates); err != nil {
-					slog.Warn("antigravity_401_force_refresh_mark_failed", "account_id", authAccount.ID, "error", err)
-				} else {
-					if authAccount.Extra == nil {
-						authAccount.Extra = make(map[string]any, len(extraUpdates))
-					}
-					for k, v := range extraUpdates {
-						authAccount.Extra[k] = v
-					}
-					slog.Info("antigravity_401_force_refresh_marked", "account_id", authAccount.ID)
-				}
 			}
 			cooldownMinutes := s.cfg.RateLimit.OAuth401CooldownMinutes
 			if cooldownMinutes <= 0 {
@@ -321,7 +344,7 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			until := time.Now().Add(time.Duration(cooldownMinutes) * time.Minute)
 			s.notifyAccountSchedulingBlocked(authAccount, until, "oauth_401")
 			if err := s.accountRepo.SetTempUnschedulable(ctx, authAccount.ID, until, msg); err != nil {
-				slog.Warn("oauth_401_set_temp_unschedulable_failed", "account_id", authAccount.ID, "error", err)
+				slog.Warn("oauth_401_set_temp_unschedulable_failed", "error_class", fmt.Sprintf("%T", err))
 			}
 			shouldDisable = true
 		} else {
@@ -351,14 +374,14 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 	case 403:
 		logger.LegacyPrintf(
 			"service.ratelimit",
-			"[HandleUpstreamErrorRaw] account_id=%d platform=%s type=%s status=403 request_id=%s cf_ray=%s upstream_msg=%s raw_body=%s",
+			"[HandleUpstreamErrorSafe] account_id=%d platform=%s type=%s status=403 request_id=%s cf_ray=%s upstream_msg=%s body_summary=%s",
 			account.ID,
 			account.Platform,
 			account.Type,
 			strings.TrimSpace(headers.Get("x-request-id")),
 			strings.TrimSpace(headers.Get("cf-ray")),
-			upstreamMsg,
-			truncateForLog(responseBody, 1024),
+			sanitizeUpstreamErrorMessage(upstreamMsg),
+			safeUpstreamErrorLogSummary(statusCode, responseBody),
 		)
 		shouldDisable = s.handle403(ctx, account, upstreamMsg, responseBody)
 	case 429:
@@ -384,6 +407,48 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 	}
 
 	return shouldDisable
+}
+
+func (s *RateLimitService) tryRecoverOpenAIAuth401(ctx context.Context, account *Account) (recovered bool, terminal bool, refreshErrorCode string) {
+	if s == nil || account == nil || !account.IsOpenAIRTManaged() || s.openAIRefreshAPI == nil || s.openAIRefreshExecutor == nil {
+		return false, false, ""
+	}
+
+	result, err := s.openAIRefreshAPI.RefreshIfNeeded(ctx, account, s.openAIRefreshExecutor, time.Hour)
+	if err != nil {
+		code := classifyOpenAIRefreshError(err)
+		return false, isTerminalOpenAIAuthErrorCode(code), code
+	}
+	if result.LockHeld {
+		return false, false, ""
+	}
+	return true, false, ""
+}
+
+func (s *RateLimitService) updateOpenAIAuthLifecycle(ctx context.Context, account *Account, authState, validationOutcome, refreshErrorCode, validatedAt string) {
+	if s == nil || s.accountRepo == nil || account == nil || !account.IsOpenAIOAuth() {
+		return
+	}
+	updates := map[string]any{
+		"openai_pool_role":               account.GetOpenAIPoolRole(),
+		"openai_auth_state":              authState,
+		"openai_token_source":            account.GetOpenAITokenSource(),
+		"openai_validation_outcome":      validationOutcome,
+		"openai_last_refresh_error_code": refreshErrorCode,
+	}
+	updates = mergeMap(updates, buildOpenAITokenCapabilityExtra(extractOpenAITokenCapabilityFromCredentials(account.Credentials)))
+	if updates["openai_pool_role"] == "" {
+		updates["openai_pool_role"] = OpenAIPoolRoleMain
+	}
+	if updates["openai_token_source"] == "" {
+		updates["openai_token_source"] = OpenAITokenSourceRTManaged
+	}
+	if validatedAt != "" {
+		updates["openai_last_validated_at"] = validatedAt
+	}
+	if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+		slog.Warn("openai_auth_lifecycle_update_failed", "account_id", account.ID, "error", err)
+	}
 }
 
 // PreCheckUsage proactively checks local quota before dispatching a request.
@@ -756,7 +821,87 @@ func (s *RateLimitService) GeminiCooldown(ctx context.Context, account *Account)
 	return s.geminiQuotaService.CooldownForAccount(ctx, account)
 }
 
+func (s *RateLimitService) shouldDeferFormalPool401ForRefresh(ctx context.Context, account *Account, reason string) bool {
+	if s == nil || s.accountRepo == nil || account == nil {
+		return false
+	}
+	if !account.IsOAuth() || strings.TrimSpace(account.GetCredential("refresh_token")) == "" {
+		return false
+	}
+	if isInvalidGrantText(reason) || boolFromAny(account.Extra["formal_pool_auth_refresh_attempted"]) {
+		return false
+	}
+	msg := "refresh_required: upstream 401 before terminal quarantine"
+	until := time.Now().Add(2 * time.Minute)
+	if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, msg); err != nil {
+		slog.Warn("formal_pool_401_refresh_required_set_failed", "account_id", account.ID, "error", err)
+	}
+	if s.tempUnschedCache != nil {
+		state := &TempUnschedState{
+			UntilUnix:       until.Unix(),
+			TriggeredAtUnix: time.Now().Unix(),
+			StatusCode:      http.StatusUnauthorized,
+			MatchedKeyword:  "refresh_required",
+			RuleIndex:       -1,
+			ErrorMessage:    msg,
+		}
+		if err := s.tempUnschedCache.SetTempUnsched(ctx, account.ID, state); err != nil {
+			slog.Warn("formal_pool_401_refresh_required_cache_set_failed", "account_id", account.ID, "error", err)
+		}
+	}
+	if account.Extra == nil {
+		account.Extra = map[string]any{}
+	}
+	account.Extra[FormalPoolExtraLastFailureOrigin] = string(FormalPoolFailureOriginTokenExchange)
+	account.Extra[FormalPoolExtraLastFailureCode] = "refresh_required"
+	account.Extra[FormalPoolExtraLastFailureSource] = "rate_limit_service"
+	account.Extra["formal_pool_auth_refresh_required"] = true
+	account.Extra[FormalPoolExtraOnboardingLastErrorCode] = "refresh_required"
+	account.Extra[FormalPoolExtraOnboardingLastErrorBucket] = statusBucketFromHTTP(http.StatusUnauthorized)
+	extraUpdates := map[string]any{
+		FormalPoolExtraLastFailureOrigin:         account.Extra[FormalPoolExtraLastFailureOrigin],
+		FormalPoolExtraLastFailureCode:           account.Extra[FormalPoolExtraLastFailureCode],
+		FormalPoolExtraLastFailureSource:         account.Extra[FormalPoolExtraLastFailureSource],
+		"formal_pool_auth_refresh_required":      account.Extra["formal_pool_auth_refresh_required"],
+		FormalPoolExtraOnboardingLastErrorCode:   account.Extra[FormalPoolExtraOnboardingLastErrorCode],
+		FormalPoolExtraOnboardingLastErrorBucket: account.Extra[FormalPoolExtraOnboardingLastErrorBucket],
+	}
+	if err := s.accountRepo.UpdateExtra(ctx, account.ID, extraUpdates); err != nil {
+		slog.Warn("formal_pool_401_refresh_required_update_extra_failed", "account_id", account.ID, "error", err)
+	}
+	return true
+}
+
+func (s *RateLimitService) markFormalPoolRefreshTokenInvalid(ctx context.Context, account *Account, statusCode int) {
+	if s == nil || account == nil {
+		return
+	}
+	if account.Extra == nil {
+		account.Extra = map[string]any{}
+	}
+	account.Extra[FormalPoolExtraLastFailureOrigin] = string(FormalPoolFailureOriginTokenExchange)
+	account.Extra[FormalPoolExtraLastFailureCode] = "refresh_token_invalid"
+	account.Extra[FormalPoolExtraLastFailureSource] = "rate_limit_service"
+	s.quarantineFormalPoolAccount(ctx, account, RiskEventKindIdentityBoundaryFail, "rate_limit_service", statusCode, "refresh_token_invalid")
+}
+
+func isInvalidGrantText(text string) bool {
+	return strings.Contains(strings.ToLower(text), "invalid_grant")
+}
+
 // handleAuthError 处理认证类错误(401/403)，停止账号调度
+func (s *RateLimitService) quarantineFormalPoolAccount(ctx context.Context, account *Account, kind, source string, statusCode int, reason string) {
+	if s == nil || s.accountRepo == nil || account == nil || !IsFormalPoolAccount(account) {
+		return
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = source
+	}
+	if _, err := NewAccountQuarantineService(s.accountRepo, nil).Quarantine(ctx, AccountQuarantineInput{AccountID: account.ID, Kind: kind, Reason: reason, Source: source, StatusCode: statusCode}); err != nil {
+		slog.Warn("formal_pool_quarantine_failed", "account_id", account.ID, "source", source, "status_code", statusCode, "error", err)
+	}
+}
+
 func (s *RateLimitService) handleAuthError(ctx context.Context, account *Account, errorMsg string) {
 	s.notifyAccountSchedulingBlocked(account, time.Time{}, "auth_error")
 	if err := s.accountRepo.SetError(ctx, account.ID, errorMsg); err != nil {
@@ -773,18 +918,14 @@ func buildForbiddenErrorMessage(prefix string, upstreamMsg string, responseBody 
 	}
 
 	if msg := strings.TrimSpace(upstreamMsg); msg != "" {
-		return prefix + msg
+		return prefix + sanitizeUpstreamErrorMessage(msg)
 	}
 
 	rawBody := bytes.TrimSpace(responseBody)
 	if len(rawBody) > 0 {
-		if json.Valid(rawBody) {
-			var compact bytes.Buffer
-			if err := json.Compact(&compact, rawBody); err == nil {
-				return prefix + truncateForLog(compact.Bytes(), 512)
-			}
+		if safe := strings.TrimSpace(safeUpstreamErrorDetailForOps(rawBody, 512)); safe != "" {
+			return prefix + safe
 		}
-		return prefix + truncateForLog(rawBody, 512)
 	}
 
 	return prefix + fallback
@@ -812,6 +953,17 @@ func (s *RateLimitService) handle403(ctx context.Context, account *Account, upst
 }
 
 func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account, upstreamMsg string, responseBody []byte) (shouldDisable bool) {
+	if isOpenAIInsufficientBalanceError(responseBody, upstreamMsg) {
+		msg := buildForbiddenErrorMessage(
+			"Payment required (403):",
+			upstreamMsg,
+			responseBody,
+			"insufficient balance or billing issue",
+		)
+		s.handleAuthError(ctx, account, msg)
+		return true
+	}
+
 	msg := buildForbiddenErrorMessage(
 		"Access forbidden (403):",
 		upstreamMsg,
@@ -941,6 +1093,7 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 
 	// 2. Anthropic 平台：尝试解析 per-window 头（5h / 7d），选择实际触发的窗口
 	if result := calculateAnthropic429ResetTime(headers); result != nil {
+		s.persistFormalPoolAnthropic429Extra(ctx, account, "rate_limited", result.window, "rate_limited", result.resetBucket)
 		s.notifyAccountSchedulingBlocked(account, result.resetAt, "429")
 		if err := s.accountRepo.SetRateLimited(ctx, account.ID, result.resetAt); err != nil {
 			slog.Warn("rate_limit_set_failed", "account_id", account.ID, "error", err)
@@ -998,10 +1151,15 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 		// 调度器让每个请求反复撞同一批持续 429 的账号（failover 预算被白白烧掉，
 		// 客户端稳定收到 429）。因此同样走可配置的秒级兜底回避，管理端可调大或关闭。
 		if account.Platform == PlatformAnthropic {
-			slog.Warn("rate_limit_429_no_reset_time",
+			class := classifyFormalPoolAnthropic429NoReset(responseBody)
+			s.persistFormalPoolAnthropic429Extra(ctx, account, class, "no_reset", "pass_through", "missing")
+			slog.Warn("rate_limit_429_no_reset_time_skipped",
 				"account_id", account.ID,
 				"platform", account.Platform,
 				"reason", "no rate limit reset time in headers, likely not a real rate limit")
+			if IsFormalPoolAccount(account) {
+				return
+			}
 			s.apply429FallbackRateLimit(ctx, account, "anthropic_no_reset_time")
 			return
 		}
@@ -1011,16 +1169,15 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 		return
 	}
 
-	// 解析Unix时间戳
-	ts, err := strconv.ParseInt(resetTimestamp, 10, 64)
-	if err != nil {
-		slog.Warn("rate_limit_reset_parse_failed", "reset_timestamp", resetTimestamp, "error", err)
+	resetAt, ok := parseAnthropicUnifiedReset(resetTimestamp)
+	if !ok {
+		s.persistFormalPoolAnthropic429Extra(ctx, account, "unknown", "unknown", "fallback_rate_limited", resetBucket(resetTimestamp))
+		slog.Warn("rate_limit_reset_parse_failed", "reset_bucket", resetBucket(resetTimestamp))
 		s.apply429FallbackRateLimit(ctx, account, "reset_parse_failed")
 		return
 	}
 
-	resetAt := time.Unix(ts, 0)
-
+	s.persistFormalPoolAnthropic429Extra(ctx, account, "rate_limited", "unknown", "rate_limited", resetBucket(resetTimestamp))
 	// 标记限流状态
 	s.notifyAccountSchedulingBlocked(account, resetAt, "429")
 	if err := s.accountRepo.SetRateLimited(ctx, account.ID, resetAt); err != nil {
@@ -1137,34 +1294,34 @@ func (s *RateLimitService) calculateOpenAI429ResetTime(headers http.Header) *tim
 type anthropic429Result struct {
 	resetAt       time.Time  // The correct reset time to use for SetRateLimited
 	fiveHourReset *time.Time // 5h window reset timestamp (for session window calculation), nil if not available
+	window        string
+	resetBucket   string
 }
 
 type anthropicWindowLimit struct {
-	window  string
-	resetAt time.Time
-	reason  string
+	window        string
+	resetAt       time.Time
+	fiveHourReset *time.Time
+	resetBucket   string
 }
 
 func selectAnthropicExhaustedWindow(headers http.Header, now time.Time) *anthropicWindowLimit {
-	reset5h, ok5hReset := parseAnthropicWindowReset(headers, "5h", now)
-	reset7d, ok7dReset := parseAnthropicWindowReset(headers, "7d", now)
+	reset5hRaw := headers.Get("anthropic-ratelimit-unified-5h-reset")
+	reset7dRaw := headers.Get("anthropic-ratelimit-unified-7d-reset")
+	reset5h, ok5h := parseAnthropicWindowReset(reset5hRaw, "5h", now)
+	reset7d, ok7d := parseAnthropicWindowReset(reset7dRaw, "7d", now)
 
 	exceeded5h := isAnthropic5hRejected(headers) || isAnthropicWindowExceeded(headers, "5h")
 	exceeded7d := isAnthropicWindowExceeded(headers, "7d")
-
-	if exceeded7d && ok7dReset {
-		return &anthropicWindowLimit{
-			window:  "7d",
-			resetAt: reset7d,
-			reason:  "anthropic_7d_window_exhausted",
+	if exceeded7d && ok7d {
+		limit := &anthropicWindowLimit{window: "7d", resetAt: reset7d, resetBucket: resetBucket(reset7dRaw)}
+		if ok5h {
+			limit.fiveHourReset = &reset5h
 		}
+		return limit
 	}
-	if exceeded5h && ok5hReset {
-		return &anthropicWindowLimit{
-			window:  "5h",
-			resetAt: reset5h,
-			reason:  "anthropic_5h_window_exhausted",
-		}
+	if exceeded5h && ok5h {
+		return &anthropicWindowLimit{window: "5h", resetAt: reset5h, fiveHourReset: &reset5h, resetBucket: resetBucket(reset5hRaw)}
 	}
 	return nil
 }
@@ -1177,30 +1334,16 @@ func isAnthropicWindowRejected(headers http.Header, window string) bool {
 	return strings.EqualFold(strings.TrimSpace(headers.Get("anthropic-ratelimit-unified-"+window+"-status")), "rejected")
 }
 
-func parseAnthropicWindowReset(headers http.Header, window string, now time.Time) (time.Time, bool) {
+func parseAnthropicWindowReset(raw, window string, now time.Time) (time.Time, bool) {
+	resetAt, ok := parseAnthropicUnifiedReset(raw)
+	if !ok || !resetAt.After(now) {
+		return time.Time{}, false
+	}
 	maxAge := 8 * 24 * time.Hour
 	if window == "5h" {
 		maxAge = 6 * time.Hour
 	}
-	return parseAnthropicResetTimestamp(headers.Get("anthropic-ratelimit-unified-"+window+"-reset"), now, maxAge)
-}
-
-// parseAnthropicResetTimestamp 解析 Anthropic reset 头的 Unix 时间戳（自动识别毫秒），
-// 并校验落在 (now, now+maxAge] 的合理区间内。
-func parseAnthropicResetTimestamp(raw string, now time.Time, maxAge time.Duration) (time.Time, bool) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return time.Time{}, false
-	}
-	ts, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		return time.Time{}, false
-	}
-	if ts > 1e11 {
-		ts = ts / 1000
-	}
-	resetAt := time.Unix(ts, 0)
-	if !resetAt.After(now) || resetAt.After(now.Add(maxAge)) {
+	if resetAt.After(now.Add(maxAge)) {
 		return time.Time{}, false
 	}
 	return resetAt, true
@@ -1210,10 +1353,7 @@ func shouldPersistAnthropicWindowLimit(account *Account, limit *anthropicWindowL
 	if account == nil || limit == nil || !limit.resetAt.After(now) {
 		return false
 	}
-	if account.RateLimitResetAt == nil {
-		return true
-	}
-	if !account.RateLimitResetAt.After(now) {
+	if account.RateLimitResetAt == nil || !account.RateLimitResetAt.After(now) {
 		return true
 	}
 	return limit.resetAt.After(*account.RateLimitResetAt)
@@ -1229,48 +1369,34 @@ func (s *RateLimitService) persistAnthropicExhaustedWindowLimit(ctx context.Cont
 		return false
 	}
 	if !shouldPersistAnthropicWindowLimit(account, limit, now) {
-		slog.Info("anthropic_window_rate_limit_kept",
-			"account_id", account.ID,
-			"window", limit.window,
-			"reset_at", limit.resetAt,
-			"existing_reset_at", account.RateLimitResetAt)
 		return true
 	}
 
-	s.notifyAccountSchedulingBlocked(account, limit.resetAt, limit.reason)
+	s.persistFormalPoolAnthropic429Extra(ctx, account, "rate_limited", limit.window, "rate_limited", limit.resetBucket)
+	s.notifyAccountSchedulingBlocked(account, limit.resetAt, "429")
 	if err := s.accountRepo.SetRateLimited(ctx, account.ID, limit.resetAt); err != nil {
-		slog.Warn("anthropic_window_rate_limit_set_failed",
-			"account_id", account.ID,
-			"window", limit.window,
-			"reset_at", limit.resetAt,
-			"error", err)
+		slog.Warn("anthropic_window_rate_limit_set_failed", "window", limit.window, "error", err)
 		return true
 	}
-	slog.Info("anthropic_window_rate_limited",
-		"account_id", account.ID,
-		"window", limit.window,
-		"reset_at", limit.resetAt,
-		"reset_in", time.Until(limit.resetAt).Truncate(time.Second))
+
+	windowEnd := limit.resetAt
+	if limit.fiveHourReset != nil {
+		windowEnd = *limit.fiveHourReset
+	}
+	windowStart := windowEnd.Add(-5 * time.Hour)
+	if err := s.accountRepo.UpdateSessionWindow(ctx, account.ID, &windowStart, &windowEnd, "rejected"); err != nil {
+		slog.Warn("anthropic_window_session_update_failed", "window", limit.window, "error", err)
+	}
 	return true
 }
 
 const anthropicFableWindowReason = "anthropic_7d_oi_window_exhausted"
 
-// selectAnthropicFableWindowLimit parses the Anthropic 7d_oi per-model window
-// headers (the Fable-only 7d window, e.g. anthropic-ratelimit-unified-7d_oi-*).
-// Unlike 5h/7d, exhaustion of this window only limits the Fable model family —
-// the account must stay schedulable for other models.
-//
-// The 7d_oi surpassed-threshold header carries a float ("1.0") rather than
-// "true", so exhaustion is detected via status=rejected or utilization >= 1.0.
-// When the 7d_oi reset header is missing, the aggregated
-// anthropic-ratelimit-unified-reset is used (it mirrors the binding claim's
-// reset when 7d_oi is the representative claim).
 func selectAnthropicFableWindowLimit(headers http.Header, now time.Time) *anthropicWindowLimit {
 	if !isAnthropicWindowRejected(headers, "7d_oi") && !isAnthropicWindowExceeded(headers, "7d_oi") {
 		return nil
 	}
-	resetAt, ok := parseAnthropicWindowReset(headers, "7d_oi", now)
+	resetAt, ok := parseAnthropicWindowReset(headers.Get("anthropic-ratelimit-unified-7d_oi-reset"), "7d_oi", now)
 	if !ok {
 		resetAt, ok = parseAnthropicAggregateReset(headers, now)
 	}
@@ -1278,48 +1404,33 @@ func selectAnthropicFableWindowLimit(headers http.Header, now time.Time) *anthro
 		return nil
 	}
 	return &anthropicWindowLimit{
-		window:  "7d_oi",
-		resetAt: resetAt,
-		reason:  anthropicFableWindowReason,
+		window:      "7d_oi",
+		resetAt:     resetAt,
+		resetBucket: resetBucket(headers.Get("anthropic-ratelimit-unified-7d_oi-reset")),
 	}
 }
 
-// parseAnthropicAggregateReset parses the aggregated
-// anthropic-ratelimit-unified-reset header with the same sanity checks as the
-// per-window variant (7d scale).
 func parseAnthropicAggregateReset(headers http.Header, now time.Time) (time.Time, bool) {
-	return parseAnthropicResetTimestamp(headers.Get("anthropic-ratelimit-unified-reset"), now, 8*24*time.Hour)
+	return parseAnthropicWindowReset(headers.Get("anthropic-ratelimit-unified-reset"), "7d_oi", now)
 }
 
-// persistAnthropicFableWindowLimit marks the Fable model family as rate limited
-// when the 7d_oi window is exhausted. Returns true when the 7d_oi window was the
-// (or a) trigger of this 429, so the caller must not fall through to logic that
-// would mark the whole account as rate limited.
 func (s *RateLimitService) persistAnthropicFableWindowLimit(ctx context.Context, account *Account, headers http.Header) bool {
 	if s == nil || s.accountRepo == nil || account == nil {
 		return false
 	}
-	now := time.Now()
-	limit := selectAnthropicFableWindowLimit(headers, now)
+	limit := selectAnthropicFableWindowLimit(headers, time.Now())
 	if limit == nil {
 		return false
 	}
-	// 429 响应头本身携带最新的窗口用量（7d_oi utilization=1.0）。限流期内
-	// Fable 请求不再调度到该账号，若不在此处采样，7d F 进度条会冻结在
-	// 限流前的旧值直到窗口重置。
 	s.samplePassiveUsageFromHeaders(ctx, account, headers)
-	if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, anthropicFableRateLimitKey, limit.resetAt, limit.reason); err != nil {
+	if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, anthropicFableRateLimitKey, limit.resetAt, anthropicFableWindowReason); err != nil {
 		slog.Warn("anthropic_fable_window_rate_limit_set_failed",
-			"account_id", account.ID,
 			"scope", anthropicFableRateLimitKey,
-			"reset_at", limit.resetAt,
 			"error", err)
 		return true
 	}
 	slog.Info("anthropic_fable_window_model_rate_limited",
-		"account_id", account.ID,
 		"scope", anthropicFableRateLimitKey,
-		"reset_at", limit.resetAt,
 		"reset_in", time.Until(limit.resetAt).Truncate(time.Second))
 	return true
 }
@@ -1344,12 +1455,10 @@ func calculateAnthropic429ResetTime(headers http.Header) *anthropic429Result {
 	}
 
 	var reset5h, reset7d *time.Time
-	if ts, err := strconv.ParseInt(reset5hStr, 10, 64); err == nil {
-		t := time.Unix(ts, 0)
+	if t, ok := parseAnthropicUnifiedReset(reset5hStr); ok {
 		reset5h = &t
 	}
-	if ts, err := strconv.ParseInt(reset7dStr, 10, 64); err == nil {
-		t := time.Unix(ts, 0)
+	if t, ok := parseAnthropicUnifiedReset(reset7dStr); ok {
 		reset7d = &t
 	}
 
@@ -1359,32 +1468,55 @@ func calculateAnthropic429ResetTime(headers http.Header) *anthropic429Result {
 	slog.Info("anthropic_429_window_analysis",
 		"is_5h_exceeded", is5hExceeded,
 		"is_7d_exceeded", is7dExceeded,
-		"reset_5h", reset5hStr,
-		"reset_7d", reset7dStr,
+		"reset_5h_bucket", resetBucket(reset5hStr),
+		"reset_7d_bucket", resetBucket(reset7dStr),
 	)
 
 	// Select the correct reset time based on which window(s) are exceeded.
 	var chosen *time.Time
+	window := "unknown"
+	chosenRaw := ""
 	switch {
 	case is5hExceeded && is7dExceeded:
 		// Both exceeded → prefer 7d (longer cooldown), fall back to 5h
+		window = "both"
 		chosen = reset7d
+		chosenRaw = reset7dStr
 		if chosen == nil {
 			chosen = reset5h
+			chosenRaw = reset5hStr
 		}
 	case is5hExceeded:
+		window = "5h"
 		chosen = reset5h
+		chosenRaw = reset5hStr
 	case is7dExceeded:
+		window = "7d"
 		chosen = reset7d
+		chosenRaw = reset7dStr
 	default:
 		// Neither flag clearly exceeded — pick the sooner reset as best guess
 		chosen = pickSooner(reset5h, reset7d)
+		chosenRaw = anthropic429ChosenResetRaw(chosen, reset5h, reset7d, reset5hStr, reset7dStr)
 	}
 
 	if chosen == nil {
 		return nil
 	}
-	return &anthropic429Result{resetAt: *chosen, fiveHourReset: reset5h}
+	return &anthropic429Result{resetAt: *chosen, fiveHourReset: reset5h, window: window, resetBucket: resetBucket(chosenRaw)}
+}
+
+func anthropic429ChosenResetRaw(chosen, reset5h, reset7d *time.Time, reset5hRaw, reset7dRaw string) string {
+	if chosen == nil {
+		return ""
+	}
+	if reset5h != nil && chosen.Equal(*reset5h) {
+		return reset5hRaw
+	}
+	if reset7d != nil && chosen.Equal(*reset7d) {
+		return reset7dRaw
+	}
+	return ""
 }
 
 // isAnthropicWindowExceeded checks whether a given Anthropic rate-limit window
@@ -1399,7 +1531,7 @@ func isAnthropicWindowExceeded(headers http.Header, window string) bool {
 
 	// Fall back to utilization >= 1.0
 	if utilStr := headers.Get(prefix + "utilization"); utilStr != "" {
-		if util, err := strconv.ParseFloat(utilStr, 64); err == nil && util >= 1.0-1e-9 {
+		if util, ok := parseUtilization(utilStr); ok && util >= 1.0-1e-9 {
 			// Use a small epsilon to handle floating point: treat 0.9999999... as >= 1.0
 			return true
 		}
@@ -1444,6 +1576,57 @@ func (s *RateLimitService) persistOpenAICodexSnapshot(ctx context.Context, accou
 	if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
 		slog.Warn("openai_codex_snapshot_persist_failed", "account_id", account.ID, "error", err)
 	}
+}
+
+func (s *RateLimitService) persistFormalPoolAnthropic429Extra(ctx context.Context, account *Account, errorClass, window, action, resetBucketValue string) {
+	if s == nil || s.accountRepo == nil || account == nil || account.Platform != PlatformAnthropic || !IsFormalPoolAccount(account) {
+		return
+	}
+	now := time.Now()
+	class := sanitizeFormalPoolRateLimitSignal(errorClass, "unknown")
+	actionSignal := sanitizeFormalPoolRateLimitSignal(action, "unknown")
+	updates := map[string]any{
+		FormalPoolExtraRateLimitErrorClass:  class,
+		FormalPoolExtraRateLimitWindow:      sanitizeFormalPoolRateLimitSignal(window, "unknown"),
+		FormalPoolExtraRateLimitAction:      actionSignal,
+		FormalPoolExtraRateLimitResetBucket: sanitizeFormalPoolRateLimitSignal(resetBucketValue, "unknown"),
+		FormalPoolExtraRateLimitLastAt:      formalPoolTimestamp(now),
+	}
+	if !formalPoolDashboardRateLimitActionIsPassThrough(actionSignal) {
+		updates[FormalPoolExtraOnboardingLastCheck] = "rate_limit_service"
+		updates[FormalPoolExtraOnboardingLastCheckAt] = formalPoolTimestamp(now)
+		updates[FormalPoolExtraOnboardingLastErrorCode] = class
+		updates[FormalPoolExtraOnboardingLastErrorBucket] = statusBucketFromHTTP(http.StatusTooManyRequests)
+	}
+	if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+		slog.Warn("formal_pool_anthropic_429_extra_update_failed", "account_id", account.ID, "error", err)
+		return
+	}
+	if account.Extra == nil {
+		account.Extra = map[string]any{}
+	}
+	for k, v := range updates {
+		account.Extra[k] = v
+	}
+}
+
+func sanitizeFormalPoolRateLimitSignal(value, fallback string) string {
+	value = sanitizeReasonCode(value)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func classifyFormalPoolAnthropic429NoReset(body []byte) string {
+	msg := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(body) + " " + string(body)))
+	if formalPoolLongContextUsageCreditsText(msg) {
+		return "long_context_usage_credits"
+	}
+	if strings.Contains(msg, "usage credit") || strings.Contains(msg, "usage_credits") || strings.Contains(msg, "credits required") {
+		return "usage_credits_required"
+	}
+	return "unknown"
 }
 
 // parseOpenAIRateLimitResetTime 解析 OpenAI 格式的 429 响应，返回重置时间的 Unix 时间戳
@@ -1610,18 +1793,12 @@ func (s *RateLimitService) UpdateSessionWindow(ctx context.Context, account *Acc
 
 	// 优先使用响应头中的真实重置时间（比预测更准确）
 	if resetStr := headers.Get("anthropic-ratelimit-unified-5h-reset"); resetStr != "" {
-		if ts, err := strconv.ParseInt(resetStr, 10, 64); err == nil {
-			// 检测可能的毫秒时间戳（秒级约为 1e9，毫秒约为 1e12）
-			if ts > 1e11 {
-				slog.Warn("account_session_window_header_millis_detected", "account_id", account.ID, "raw_reset", resetStr)
-				ts = ts / 1000
-			}
-			end := time.Unix(ts, 0)
+		if end, ok := parseAnthropicUnifiedReset(resetStr); ok {
 			// 校验时间戳是否在合理范围内（不早于 5h 前，不晚于 7 天后）
 			minAllowed := time.Now().Add(-5 * time.Hour)
 			maxAllowed := time.Now().Add(7 * 24 * time.Hour)
 			if end.Before(minAllowed) || end.After(maxAllowed) {
-				slog.Warn("account_session_window_header_out_of_range", "account_id", account.ID, "raw_reset", resetStr, "parsed_end", end)
+				slog.Warn("account_session_window_header_out_of_range", "account_id", account.ID, "reset_bucket", resetBucket(resetStr), "parsed_end_bucket", resetBucket(end.Format(time.RFC3339)))
 			} else if needInitWindow || account.SessionWindowEnd == nil || !end.Equal(*account.SessionWindowEnd) {
 				// 窗口需要初始化，或者真实重置时间与已存储的不同，则更新
 				start := end.Add(-5 * time.Hour)
@@ -1630,7 +1807,7 @@ func (s *RateLimitService) UpdateSessionWindow(ctx context.Context, account *Acc
 				slog.Info("account_session_window_from_header", "account_id", account.ID, "window_start", start, "window_end", end, "status", status)
 			}
 		} else {
-			slog.Warn("account_session_window_header_parse_failed", "account_id", account.ID, "raw_reset", resetStr, "error", err)
+			slog.Warn("account_session_window_header_parse_failed", "account_id", account.ID)
 		}
 	}
 
@@ -1666,49 +1843,41 @@ func (s *RateLimitService) UpdateSessionWindow(ctx context.Context, account *Acc
 	// 如果状态为allowed且之前有限流，说明窗口已重置，清除限流状态
 	if status == "allowed" && account.IsRateLimited() {
 		if err := s.ClearRateLimit(ctx, account.ID); err != nil {
-			slog.Warn("rate_limit_clear_failed", "account_id", account.ID, "error", err)
+			slog.Warn("rate_limit_clear_failed", "error", err)
 		}
 	}
 }
 
-// samplePassiveUsageFromHeaders 从 Anthropic 响应头收集 5h/7d/7d_oi 的
-// utilization 与 reset 被动采样数据，合并为一次 Extra 写入。无数据时不写。
 func (s *RateLimitService) samplePassiveUsageFromHeaders(ctx context.Context, account *Account, headers http.Header) {
 	extraUpdates := make(map[string]any, 6)
 	// 5h utilization（0-1 小数），供 estimateSetupTokenUsage 使用
 	if utilStr := headers.Get("anthropic-ratelimit-unified-5h-utilization"); utilStr != "" {
-		if util, err := strconv.ParseFloat(utilStr, 64); err == nil {
+		if util, ok := parseUtilization(utilStr); ok {
 			extraUpdates["session_window_utilization"] = util
 		}
 	}
 	// 7d utilization（0-1 小数）
 	if utilStr := headers.Get("anthropic-ratelimit-unified-7d-utilization"); utilStr != "" {
-		if util, err := strconv.ParseFloat(utilStr, 64); err == nil {
+		if util, ok := parseUtilization(utilStr); ok {
 			extraUpdates["passive_usage_7d_utilization"] = util
 		}
 	}
 	// 7d reset timestamp
 	if resetStr := headers.Get("anthropic-ratelimit-unified-7d-reset"); resetStr != "" {
-		if ts, err := strconv.ParseInt(resetStr, 10, 64); err == nil {
-			if ts > 1e11 {
-				ts = ts / 1000
-			}
-			extraUpdates["passive_usage_7d_reset"] = ts
+		if ts, ok := parseAnthropicUnifiedReset(resetStr); ok {
+			extraUpdates["passive_usage_7d_reset"] = ts.Unix()
 		}
 	}
 	// 7d_oi (Fable 专属 7d 窗口) utilization（0-1 小数）
 	if utilStr := headers.Get("anthropic-ratelimit-unified-7d_oi-utilization"); utilStr != "" {
-		if util, err := strconv.ParseFloat(utilStr, 64); err == nil {
+		if util, ok := parseUtilization(utilStr); ok {
 			extraUpdates["passive_usage_7d_oi_utilization"] = util
 		}
 	}
 	// 7d_oi reset timestamp
 	if resetStr := headers.Get("anthropic-ratelimit-unified-7d_oi-reset"); resetStr != "" {
-		if ts, err := strconv.ParseInt(resetStr, 10, 64); err == nil {
-			if ts > 1e11 {
-				ts = ts / 1000
-			}
-			extraUpdates["passive_usage_7d_oi_reset"] = ts
+		if ts, ok := parseAnthropicUnifiedReset(resetStr); ok {
+			extraUpdates["passive_usage_7d_oi_reset"] = ts.Unix()
 		}
 	}
 	if len(extraUpdates) > 0 {
@@ -1728,6 +1897,18 @@ func (s *RateLimitService) ClearRateLimit(ctx context.Context, accountID int64) 
 		return err
 	}
 	if err := s.accountRepo.ClearModelRateLimits(ctx, accountID); err != nil {
+		return err
+	}
+	// 清除限流时一并清理 Formal Pool 429 诊断残留，避免窗口恢复后看板继续显示限流。
+	if err := s.accountRepo.UpdateExtra(ctx, accountID, map[string]any{
+		FormalPoolExtraRateLimitErrorClass:       "",
+		FormalPoolExtraRateLimitWindow:           "",
+		FormalPoolExtraRateLimitAction:           "",
+		FormalPoolExtraRateLimitResetBucket:      "",
+		FormalPoolExtraRateLimitLastAt:           "",
+		FormalPoolExtraOnboardingLastErrorCode:   "",
+		FormalPoolExtraOnboardingLastErrorBucket: "",
+	}); err != nil {
 		return err
 	}
 	// 清除限流时一并清理临时不可调度状态，避免周限/窗口重置后仍被本地临时状态阻断。
@@ -2169,6 +2350,20 @@ func (s *RateLimitService) triggerTempUnschedulable(ctx context.Context, account
 		slog.Warn("temp_unsched_set_failed", "account_id", account.ID, "error", err)
 		return false
 	}
+	if account.Platform == PlatformAntigravity && account.Type == AccountTypeOAuth && statusCode == http.StatusUnauthorized {
+		updates := antigravityForceTokenRefreshExtra("401_invalid")
+		if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+			slog.Warn("antigravity_401_force_refresh_mark_failed", "error", err)
+		} else {
+			if account.Extra == nil {
+				account.Extra = make(map[string]any, len(updates))
+			}
+			for k, v := range updates {
+				account.Extra[k] = v
+			}
+			slog.Info("antigravity_401_force_refresh_marked")
+		}
+	}
 
 	if s.tempUnschedCache != nil {
 		if err := s.tempUnschedCache.SetTempUnsched(ctx, account.ID, state); err != nil {
@@ -2184,10 +2379,7 @@ func truncateTempUnschedMessage(body []byte, maxBytes int) string {
 	if maxBytes <= 0 || len(body) == 0 {
 		return ""
 	}
-	if len(body) > maxBytes {
-		body = body[:maxBytes]
-	}
-	return strings.TrimSpace(string(body))
+	return strings.TrimSpace(safeUpstreamErrorDetailForOps(body, maxBytes))
 }
 
 // HandleStreamTimeout 处理流数据超时

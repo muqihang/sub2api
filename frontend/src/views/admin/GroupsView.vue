@@ -138,9 +138,7 @@
                     ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
                     : value === 'antigravity'
                       ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
-                      : value === 'grok'
-                        ? 'bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-100'
-                        : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
+                      : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
               ]"
             >
               <PlatformIcon :platform="value" size="xs" />
@@ -182,25 +180,21 @@
                     <span
                       v-if="usageLoading"
                       class="font-medium text-gray-400 dark:text-gray-500"
-                      >—</span
+                      >-</span
                     >
                     <span
                       v-else
                       :class="
                         getQuotaUsageClass(
                           usageMap.get(row.id)?.today_cost ?? 0,
-                          row.daily_limit_usd
+                          row.daily_limit_usd,
                         )
                       "
-                      >{{
-                        formatUsd(usageMap.get(row.id)?.today_cost ?? 0)
-                      }}</span
+                      >{{ formatUsd(usageMap.get(row.id)?.today_cost ?? 0) }}</span
                     >
                     <span class="text-gray-400 dark:text-gray-500">
-                      / {{ formatUsd(row.daily_limit_usd) }}/{{
-                        t("admin.groups.limitDay")
-                      }}</span
-                    >
+                      / {{ formatUsd(row.daily_limit_usd) }}/{{ t("admin.groups.limitDay") }}
+                    </span>
                   </span>
                   <span
                     v-if="
@@ -231,13 +225,9 @@
                 }}</span>
                 <div class="text-gray-400 dark:text-gray-500">
                   {{ t("admin.groups.usageTotal") }}
-                  <span class="ml-1 font-medium text-gray-600 dark:text-gray-300"
-                    >{{
-                      usageLoading
-                        ? "—"
-                        : formatUsd(usageMap.get(row.id)?.total_cost ?? 0)
-                    }}</span
-                  >
+                  <span class="ml-1 font-medium text-gray-600 dark:text-gray-300">
+                    {{ usageLoading ? "-" : formatUsd(usageMap.get(row.id)?.total_cost ?? 0) }}
+                  </span>
                 </div>
               </div>
             </div>
@@ -707,6 +697,43 @@
                 :placeholder="t('admin.groups.subscription.noLimit')"
               />
             </div>
+            <div>
+              <div class="mb-2 flex items-center justify-between gap-3">
+                <div>
+                  <label class="input-label">{{ t("admin.groups.peakRate.enabled") }}</label>
+                  <p class="input-hint">{{ t("admin.groups.peakRate.hint") }}</p>
+                </div>
+                <button
+                  type="button"
+                  @click="createForm.peak_rate_enabled = !createForm.peak_rate_enabled"
+                  :class="[
+                    'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
+                    createForm.peak_rate_enabled ? 'bg-primary-600' : 'bg-gray-300 dark:bg-dark-600',
+                  ]"
+                >
+                  <span
+                    :class="[
+                      'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
+                      createForm.peak_rate_enabled ? 'translate-x-6' : 'translate-x-1',
+                    ]"
+                  />
+                </button>
+              </div>
+              <div v-if="createForm.peak_rate_enabled" class="grid grid-cols-1 gap-3 md:grid-cols-3">
+                <div>
+                  <label class="input-label">{{ t("admin.groups.peakRate.start") }}</label>
+                  <input v-model="createForm.peak_start" type="time" class="input" />
+                </div>
+                <div>
+                  <label class="input-label">{{ t("admin.groups.peakRate.end") }}</label>
+                  <input v-model="createForm.peak_end" type="time" class="input" />
+                </div>
+                <div>
+                  <label class="input-label">{{ t("admin.groups.peakRate.multiplier") }}</label>
+                  <input v-model.number="createForm.peak_rate_multiplier" type="number" step="0.01" min="0" class="input" />
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -825,10 +852,10 @@
           <label
             class="block mb-2 font-medium text-gray-700 dark:text-gray-300"
           >
-            {{ t(imagePricingI18nKey(createForm.platform, "title")) }}
+            {{ t("admin.groups.imagePricing.title") }}
           </label>
           <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
-            {{ t(imagePricingI18nKey(createForm.platform, "description")) }}
+            {{ t("admin.groups.imagePricing.description") }}
           </p>
           <div class="mb-4 grid grid-cols-1 gap-3 md:grid-cols-2">
             <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
@@ -837,7 +864,7 @@
                 type="checkbox"
                 class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
               />
-              {{ t(imagePricingI18nKey(createForm.platform, "allowImageGeneration")) }}
+              {{ t("admin.groups.imagePricing.allowImageGeneration") }}
             </label>
             <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
               <input
@@ -845,7 +872,7 @@
                 type="checkbox"
                 class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
               />
-              {{ t(imagePricingI18nKey(createForm.platform, "independentMultiplier")) }}
+              {{ t("admin.groups.imagePricing.independentMultiplier") }}
             </label>
           </div>
           <div
@@ -853,7 +880,7 @@
             class="mb-4"
           >
             <label class="input-label">{{
-              t(imagePricingI18nKey(createForm.platform, "imageMultiplier"))
+              t("admin.groups.imagePricing.imageMultiplier")
             }}</label>
             <input
               v-model.number="createForm.image_rate_multiplier"
@@ -873,7 +900,7 @@
                 step="0.001"
                 min="0"
                 class="input"
-                :placeholder="getImagePricePlaceholder(createForm.platform, 'image_price_1k')"
+                placeholder="0.134"
               />
             </div>
             <div>
@@ -884,7 +911,7 @@
                 step="0.001"
                 min="0"
                 class="input"
-                :placeholder="getImagePricePlaceholder(createForm.platform, 'image_price_2k')"
+                placeholder="0.201"
               />
             </div>
             <div>
@@ -895,16 +922,16 @@
                 step="0.001"
                 min="0"
                 class="input"
-                :placeholder="getImagePricePlaceholder(createForm.platform, 'image_price_4k')"
+                placeholder="0.268"
               />
             </div>
           </div>
           <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
-            {{ t(imagePricingI18nKey(createForm.platform, "modeHint")) }}
+            {{ t("admin.groups.imagePricing.modeHint") }}
           </p>
           <div class="mt-2 rounded-lg bg-gray-50 p-3 text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-300">
             <div class="mb-1 font-medium">
-              {{ t(imagePricingI18nKey(createForm.platform, "finalPricePreview")) }}
+              {{ t("admin.groups.imagePricing.finalPricePreview") }}
             </div>
             <div class="grid grid-cols-3 gap-2">
               <div
@@ -969,18 +996,15 @@
           </p>
         </div>
 
-        <!-- 视频生成计费配置（仅 Grok 平台） -->
         <div
           v-if="supportsVideoPricingPlatform(createForm.platform)"
           class="border-t pt-4"
         >
-          <label
-            class="block mb-2 font-medium text-gray-700 dark:text-gray-300"
-          >
-            {{ t(videoPricingI18nKey("title")) }}
+          <label class="block mb-2 font-medium text-gray-700 dark:text-gray-300">
+            {{ t("admin.groups.videoPricing.title") }}
           </label>
           <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
-            {{ t(videoPricingI18nKey("description")) }}
+            {{ t("admin.groups.videoPricing.description") }}
           </p>
           <div class="mb-4">
             <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
@@ -989,16 +1013,11 @@
                 type="checkbox"
                 class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
               />
-              {{ t(videoPricingI18nKey("independentMultiplier")) }}
+              {{ t("admin.groups.videoPricing.independentMultiplier") }}
             </label>
           </div>
-          <div
-            v-if="createForm.video_rate_independent"
-            class="mb-4"
-          >
-            <label class="input-label">{{
-              t(videoPricingI18nKey("videoMultiplier"))
-            }}</label>
+          <div v-if="createForm.video_rate_independent" class="mb-4">
+            <label class="input-label">{{ t("admin.groups.videoPricing.videoMultiplier") }}</label>
             <input
               v-model.number="createForm.video_rate_multiplier"
               type="number"
@@ -1044,11 +1063,11 @@
             </div>
           </div>
           <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
-            {{ t(videoPricingI18nKey("modeHint")) }}
+            {{ t("admin.groups.videoPricing.modeHint") }}
           </p>
           <div class="mt-2 rounded-lg bg-gray-50 p-3 text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-300">
             <div class="mb-1 font-medium">
-              {{ t(videoPricingI18nKey("finalPricePreview")) }}
+              {{ t("admin.groups.videoPricing.finalPricePreview") }}
             </div>
             <div class="grid grid-cols-3 gap-2">
               <div
@@ -1057,53 +1076,6 @@
               >
                 {{ item.label }}: {{ item.value }}
               </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 高峰时段倍率配置（仅订阅类型分组） -->
-        <div v-if="createForm.subscription_type === 'subscription'" class="border-t pt-4">
-          <div class="mb-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-            <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-              <input
-                v-model="createForm.peak_rate_enabled"
-                type="checkbox"
-                class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-              />
-              <span>{{ t("admin.groups.peakRate.enable") }}</span>
-            </label>
-          </div>
-          <div
-            v-if="createForm.peak_rate_enabled"
-            class="mb-4 grid grid-cols-3 gap-3"
-          >
-            <div>
-              <label class="input-label">{{ t("admin.groups.peakRate.peakStart") }}</label>
-              <input
-                v-model="createForm.peak_start"
-                type="time"
-                class="input"
-              />
-            </div>
-            <div>
-              <label class="input-label">{{ t("admin.groups.peakRate.peakEnd") }}</label>
-              <input
-                v-model="createForm.peak_end"
-                type="time"
-                class="input"
-              />
-            </div>
-            <div>
-              <label class="input-label">{{ t("admin.groups.peakRate.peakMultiplier") }}</label>
-              <input
-                v-model.number="createForm.peak_rate_multiplier"
-                type="number"
-                step="0.001"
-                min="0"
-                class="input"
-                placeholder="1"
-                :title="t('admin.groups.peakRate.multiplierHint')"
-              />
             </div>
           </div>
         </div>
@@ -2186,6 +2158,43 @@
                 :placeholder="t('admin.groups.subscription.noLimit')"
               />
             </div>
+            <div>
+              <div class="mb-2 flex items-center justify-between gap-3">
+                <div>
+                  <label class="input-label">{{ t("admin.groups.peakRate.enabled") }}</label>
+                  <p class="input-hint">{{ t("admin.groups.peakRate.hint") }}</p>
+                </div>
+                <button
+                  type="button"
+                  @click="editForm.peak_rate_enabled = !editForm.peak_rate_enabled"
+                  :class="[
+                    'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
+                    editForm.peak_rate_enabled ? 'bg-primary-600' : 'bg-gray-300 dark:bg-dark-600',
+                  ]"
+                >
+                  <span
+                    :class="[
+                      'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
+                      editForm.peak_rate_enabled ? 'translate-x-6' : 'translate-x-1',
+                    ]"
+                  />
+                </button>
+              </div>
+              <div v-if="editForm.peak_rate_enabled" class="grid grid-cols-1 gap-3 md:grid-cols-3">
+                <div>
+                  <label class="input-label">{{ t("admin.groups.peakRate.start") }}</label>
+                  <input v-model="editForm.peak_start" type="time" class="input" />
+                </div>
+                <div>
+                  <label class="input-label">{{ t("admin.groups.peakRate.end") }}</label>
+                  <input v-model="editForm.peak_end" type="time" class="input" />
+                </div>
+                <div>
+                  <label class="input-label">{{ t("admin.groups.peakRate.multiplier") }}</label>
+                  <input v-model.number="editForm.peak_rate_multiplier" type="number" step="0.01" min="0" class="input" />
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -2304,10 +2313,10 @@
           <label
             class="block mb-2 font-medium text-gray-700 dark:text-gray-300"
           >
-            {{ t(imagePricingI18nKey(editForm.platform, "title")) }}
+            {{ t("admin.groups.imagePricing.title") }}
           </label>
           <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
-            {{ t(imagePricingI18nKey(editForm.platform, "description")) }}
+            {{ t("admin.groups.imagePricing.description") }}
           </p>
           <div class="mb-4 grid grid-cols-1 gap-3 md:grid-cols-2">
             <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
@@ -2316,7 +2325,7 @@
                 type="checkbox"
                 class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
               />
-              {{ t(imagePricingI18nKey(editForm.platform, "allowImageGeneration")) }}
+              {{ t("admin.groups.imagePricing.allowImageGeneration") }}
             </label>
             <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
               <input
@@ -2324,7 +2333,7 @@
                 type="checkbox"
                 class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
               />
-              {{ t(imagePricingI18nKey(editForm.platform, "independentMultiplier")) }}
+              {{ t("admin.groups.imagePricing.independentMultiplier") }}
             </label>
           </div>
           <div
@@ -2332,7 +2341,7 @@
             class="mb-4"
           >
             <label class="input-label">{{
-              t(imagePricingI18nKey(editForm.platform, "imageMultiplier"))
+              t("admin.groups.imagePricing.imageMultiplier")
             }}</label>
             <input
               v-model.number="editForm.image_rate_multiplier"
@@ -2352,7 +2361,7 @@
                 step="0.001"
                 min="0"
                 class="input"
-                :placeholder="getImagePricePlaceholder(editForm.platform, 'image_price_1k')"
+                placeholder="0.134"
               />
             </div>
             <div>
@@ -2363,7 +2372,7 @@
                 step="0.001"
                 min="0"
                 class="input"
-                :placeholder="getImagePricePlaceholder(editForm.platform, 'image_price_2k')"
+                placeholder="0.201"
               />
             </div>
             <div>
@@ -2374,16 +2383,16 @@
                 step="0.001"
                 min="0"
                 class="input"
-                :placeholder="getImagePricePlaceholder(editForm.platform, 'image_price_4k')"
+                placeholder="0.268"
               />
             </div>
           </div>
           <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
-            {{ t(imagePricingI18nKey(editForm.platform, "modeHint")) }}
+            {{ t("admin.groups.imagePricing.modeHint") }}
           </p>
           <div class="mt-2 rounded-lg bg-gray-50 p-3 text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-300">
             <div class="mb-1 font-medium">
-              {{ t(imagePricingI18nKey(editForm.platform, "finalPricePreview")) }}
+              {{ t("admin.groups.imagePricing.finalPricePreview") }}
             </div>
             <div class="grid grid-cols-3 gap-2">
               <div
@@ -2448,18 +2457,15 @@
           </p>
         </div>
 
-        <!-- 视频生成计费配置（仅 Grok 平台） -->
         <div
           v-if="supportsVideoPricingPlatform(editForm.platform)"
           class="border-t pt-4"
         >
-          <label
-            class="block mb-2 font-medium text-gray-700 dark:text-gray-300"
-          >
-            {{ t(videoPricingI18nKey("title")) }}
+          <label class="block mb-2 font-medium text-gray-700 dark:text-gray-300">
+            {{ t("admin.groups.videoPricing.title") }}
           </label>
           <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
-            {{ t(videoPricingI18nKey("description")) }}
+            {{ t("admin.groups.videoPricing.description") }}
           </p>
           <div class="mb-4">
             <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
@@ -2468,16 +2474,11 @@
                 type="checkbox"
                 class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
               />
-              {{ t(videoPricingI18nKey("independentMultiplier")) }}
+              {{ t("admin.groups.videoPricing.independentMultiplier") }}
             </label>
           </div>
-          <div
-            v-if="editForm.video_rate_independent"
-            class="mb-4"
-          >
-            <label class="input-label">{{
-              t(videoPricingI18nKey("videoMultiplier"))
-            }}</label>
+          <div v-if="editForm.video_rate_independent" class="mb-4">
+            <label class="input-label">{{ t("admin.groups.videoPricing.videoMultiplier") }}</label>
             <input
               v-model.number="editForm.video_rate_multiplier"
               type="number"
@@ -2523,11 +2524,11 @@
             </div>
           </div>
           <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
-            {{ t(videoPricingI18nKey("modeHint")) }}
+            {{ t("admin.groups.videoPricing.modeHint") }}
           </p>
           <div class="mt-2 rounded-lg bg-gray-50 p-3 text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-300">
             <div class="mb-1 font-medium">
-              {{ t(videoPricingI18nKey("finalPricePreview")) }}
+              {{ t("admin.groups.videoPricing.finalPricePreview") }}
             </div>
             <div class="grid grid-cols-3 gap-2">
               <div
@@ -2536,53 +2537,6 @@
               >
                 {{ item.label }}: {{ item.value }}
               </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 高峰时段倍率配置（仅订阅类型分组） -->
-        <div v-if="editForm.subscription_type === 'subscription'" class="border-t pt-4">
-          <div class="mb-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-            <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-              <input
-                v-model="editForm.peak_rate_enabled"
-                type="checkbox"
-                class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-              />
-              <span>{{ t("admin.groups.peakRate.enable") }}</span>
-            </label>
-          </div>
-          <div
-            v-if="editForm.peak_rate_enabled"
-            class="mb-4 grid grid-cols-3 gap-3"
-          >
-            <div>
-              <label class="input-label">{{ t("admin.groups.peakRate.peakStart") }}</label>
-              <input
-                v-model="editForm.peak_start"
-                type="time"
-                class="input"
-              />
-            </div>
-            <div>
-              <label class="input-label">{{ t("admin.groups.peakRate.peakEnd") }}</label>
-              <input
-                v-model="editForm.peak_end"
-                type="time"
-                class="input"
-              />
-            </div>
-            <div>
-              <label class="input-label">{{ t("admin.groups.peakRate.peakMultiplier") }}</label>
-              <input
-                v-model.number="editForm.peak_rate_multiplier"
-                type="number"
-                step="0.001"
-                min="0"
-                class="input"
-                placeholder="1"
-                :title="t('admin.groups.peakRate.multiplierHint')"
-              />
             </div>
           </div>
         </div>
@@ -3412,9 +3366,7 @@
                         ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
                         : group.platform === 'antigravity'
                           ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
-                          : group.platform === 'grok'
-                            ? 'bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-100'
-                            : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
+                          : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
                   ]"
                 >
                   {{ t("admin.groups.platforms." + group.platform) }}
@@ -3527,14 +3479,10 @@ import {
 import { createModelsListCandidatesTracker } from "./groupsModelsListCandidates";
 import { normalizeSupportedModelScopesForPlatform } from "./groupsSupportedModelScopes";
 import {
-  getDefaultImagePreviewPrice,
   getDefaultVideoPreviewPrice,
-  getImagePricePlaceholder,
   getVideoPricePlaceholder,
-  imagePricingI18nKey,
   supportsImagePricingPlatform,
   supportsVideoPricingPlatform,
-  videoPricingI18nKey,
 } from "./groupsImagePricing";
 
 const { t } = useI18n();
@@ -3588,7 +3536,7 @@ const hiddenColumns = reactive<Set<string>>(new Set());
 const showColumnDropdown = ref(false);
 const columnDropdownRef = ref<HTMLElement | null>(null);
 
-const getValidHiddenColumnKeys = () =>
+const getToggleableColumnKeys = () =>
   new Set(toggleableColumns.value.map((col) => col.key));
 
 const loadSavedColumns = () => {
@@ -3599,22 +3547,24 @@ const loadSavedColumns = () => {
     const parsed = JSON.parse(saved);
     if (!Array.isArray(parsed)) return;
 
-    const validKeys = getValidHiddenColumnKeys();
+    const validKeys = getToggleableColumnKeys();
     parsed
       .filter((key): key is string => typeof key === "string" && validKeys.has(key))
       .forEach((key) => hiddenColumns.add(key));
-  } catch (error) {
-    console.error("Failed to load group column settings:", error);
+  } catch {
+    hiddenColumns.clear();
   }
 };
 
 const saveColumnsToStorage = () => {
   try {
-    const validKeys = getValidHiddenColumnKeys();
-    const keys = [...hiddenColumns].filter((key) => validKeys.has(key));
-    localStorage.setItem(HIDDEN_COLUMNS_KEY, JSON.stringify(keys));
-  } catch (error) {
-    console.error("Failed to save group column settings:", error);
+    const validKeys = getToggleableColumnKeys();
+    localStorage.setItem(
+      HIDDEN_COLUMNS_KEY,
+      JSON.stringify([...hiddenColumns].filter((key) => validKeys.has(key))),
+    );
+  } catch {
+    // Ignore localStorage failures; column visibility is a UI preference.
   }
 };
 
@@ -3625,8 +3575,7 @@ const hasVisibleUsageSummaryConsumer = computed(
 const hasVisibleCapacityColumn = computed(() => isColumnVisible("capacity"));
 
 const toggleColumn = (key: string) => {
-  const validKeys = getValidHiddenColumnKeys();
-  if (!validKeys.has(key)) return;
+  if (!getToggleableColumnKeys().has(key)) return;
 
   const wasHidden = hiddenColumns.has(key);
   if (wasHidden) {
@@ -3672,7 +3621,6 @@ const platformOptions = computed(() => [
   { value: "openai", label: "OpenAI" },
   { value: "gemini", label: "Gemini" },
   { value: "antigravity", label: "Antigravity" },
-  { value: "grok", label: "Grok" },
 ]);
 
 const platformFilterOptions = computed(() => [
@@ -3681,7 +3629,6 @@ const platformFilterOptions = computed(() => [
   { value: "openai", label: "OpenAI" },
   { value: "gemini", label: "Gemini" },
   { value: "antigravity", label: "Antigravity" },
-  { value: "grok", label: "Grok" },
 ]);
 
 const editStatusOptions = computed(() => [
@@ -3872,6 +3819,10 @@ const createForm = reactive({
   daily_limit_usd: null as number | null,
   weekly_limit_usd: null as number | null,
   monthly_limit_usd: null as number | null,
+  peak_rate_enabled: false,
+  peak_start: "09:00",
+  peak_end: "18:00",
+  peak_rate_multiplier: 1,
   // 图片生成计费配置
   allow_image_generation: false,
   allow_batch_image_generation: false,
@@ -3882,17 +3833,11 @@ const createForm = reactive({
   image_price_1k: null as number | null,
   image_price_2k: null as number | null,
   image_price_4k: null as number | null,
-  // 视频生成计费配置（仅 Grok 平台）
   video_rate_independent: false,
   video_rate_multiplier: 1,
   video_price_480p: null as number | null,
   video_price_720p: null as number | null,
   video_price_1080p: null as number | null,
-  // 高峰时段倍率配置
-  peak_rate_enabled: false,
-  peak_start: "",
-  peak_end: "",
-  peak_rate_multiplier: 1.0,
   // Claude Code 客户端限制（仅 anthropic 平台使用）
   claude_code_only: false,
   fallback_group_id: null as number | null,
@@ -4217,6 +4162,10 @@ const editForm = reactive({
   daily_limit_usd: null as number | null,
   weekly_limit_usd: null as number | null,
   monthly_limit_usd: null as number | null,
+  peak_rate_enabled: false,
+  peak_start: "09:00",
+  peak_end: "18:00",
+  peak_rate_multiplier: 1,
   // 图片生成计费配置
   allow_image_generation: false,
   allow_batch_image_generation: false,
@@ -4227,17 +4176,11 @@ const editForm = reactive({
   image_price_1k: null as number | null,
   image_price_2k: null as number | null,
   image_price_4k: null as number | null,
-  // 视频生成计费配置（仅 Grok 平台）
   video_rate_independent: false,
   video_rate_multiplier: 1,
   video_price_480p: null as number | null,
   video_price_720p: null as number | null,
   video_price_1080p: null as number | null,
-  // 高峰时段倍率配置
-  peak_rate_enabled: false,
-  peak_start: "",
-  peak_end: "",
-  peak_rate_multiplier: 1.0,
   // Claude Code 客户端限制（仅 anthropic 平台使用）
   claude_code_only: false,
   fallback_group_id: null as number | null,
@@ -4276,10 +4219,6 @@ type ImagePricingFormState = {
   image_price_1k: number | string | null;
   image_price_2k: number | string | null;
   image_price_4k: number | string | null;
-  peak_rate_enabled: boolean;
-  peak_start: string;
-  peak_end: string;
-  peak_rate_multiplier: number;
 };
 
 type VideoPricingFormState = {
@@ -4312,14 +4251,6 @@ const normalizePreviewNumber = (value: number | string | null | undefined, fallb
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
-const parsePreviewPrice = (value: number | string | null | undefined) => {
-  if (value === null || value === undefined || value === "") {
-    return null;
-  }
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
-};
-
 const formatImagePricePreview = (value: number | string | null | undefined) => {
   if (value === null || value === undefined || value === "") {
     return t("admin.groups.imagePricing.notConfigured");
@@ -4348,12 +4279,10 @@ const buildImageFinalPricePreview = (form: ImagePricingFormState) => {
     : normalizePreviewNumber(form.rate_multiplier, 1);
   const multiplier = imageMultiplier;
   return imagePricingTiers.map((tier) => {
-    const basePrice =
-      parsePreviewPrice(form[tier.key]) ??
-      getDefaultImagePreviewPrice(form.platform, tier.key);
+    const basePrice = normalizePreviewNumber(form[tier.key]);
     return {
       label: tier.label,
-      value: basePrice !== null
+      value: basePrice > 0
         ? formatImagePricePreview(basePrice * multiplier)
         : t("admin.groups.imagePricing.notConfigured"),
     };
@@ -4365,14 +4294,16 @@ const buildVideoFinalPricePreview = (form: VideoPricingFormState) => {
     ? normalizePreviewNumber(form.video_rate_multiplier, 1)
     : normalizePreviewNumber(form.rate_multiplier, 1);
   return videoPricingTiers.map((tier) => {
-    const basePrice =
-      parsePreviewPrice(form[tier.key]) ??
-      getDefaultVideoPreviewPrice(form.platform, tier.key);
+    const configured = form[tier.key];
+    const parsed = configured === null || configured === "" ? null : Number(configured);
+    const basePrice = Number.isFinite(parsed) && parsed !== null && parsed >= 0
+      ? parsed
+      : getDefaultVideoPreviewPrice(form.platform, tier.key);
     return {
       label: tier.label,
-      value: basePrice !== null
-        ? formatVideoPricePreview(basePrice * multiplier)
-        : t("admin.groups.videoPricing.notConfigured"),
+      value: basePrice === null
+        ? t("admin.groups.videoPricing.notConfigured")
+        : formatVideoPricePreview(basePrice * multiplier),
     };
   });
 };
@@ -4601,6 +4532,10 @@ const closeCreateModal = () => {
   createForm.daily_limit_usd = null;
   createForm.weekly_limit_usd = null;
   createForm.monthly_limit_usd = null;
+  createForm.peak_rate_enabled = false;
+  createForm.peak_start = "09:00";
+  createForm.peak_end = "18:00";
+  createForm.peak_rate_multiplier = 1;
   createForm.allow_image_generation = false;
   createForm.allow_batch_image_generation = false;
   createForm.image_rate_independent = false;
@@ -4615,10 +4550,6 @@ const closeCreateModal = () => {
   createForm.video_price_480p = null;
   createForm.video_price_720p = null;
   createForm.video_price_1080p = null;
-  createForm.peak_rate_enabled = false;
-  createForm.peak_start = "";
-  createForm.peak_end = "";
-  createForm.peak_rate_multiplier = 1.0;
   createForm.claude_code_only = false;
   createForm.fallback_group_id = null;
   createForm.fallback_group_id_on_invalid_request = null;
@@ -4652,7 +4583,7 @@ const normalizeOptionalLimit = (
   return Number.isFinite(value) && value > 0 ? value : null;
 };
 
-const normalizeRateMultiplier = (
+const normalizeImageRateMultiplier = (
   value: number | string | null | undefined,
 ): number => {
   if (value === null || value === undefined || value === "") {
@@ -4661,6 +4592,8 @@ const normalizeRateMultiplier = (
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 1;
 };
+
+const normalizeRateMultiplier = normalizeImageRateMultiplier;
 
 const handleCreateGroup = async () => {
   if (!createForm.name.trim()) {
@@ -4705,7 +4638,7 @@ const handleCreateGroup = async () => {
     requestData.daily_limit_usd = emptyToNull(requestData.daily_limit_usd);
     requestData.weekly_limit_usd = emptyToNull(requestData.weekly_limit_usd);
     requestData.monthly_limit_usd = emptyToNull(requestData.monthly_limit_usd);
-    requestData.image_rate_multiplier = normalizeRateMultiplier(
+    requestData.image_rate_multiplier = normalizeImageRateMultiplier(
       requestData.image_rate_multiplier,
     );
     resetDisabledBatchImagePricing(requestData);
@@ -4715,23 +4648,18 @@ const handleCreateGroup = async () => {
     requestData.batch_image_hold_multiplier = normalizeRateMultiplier(
       requestData.batch_image_hold_multiplier,
     );
-    requestData.video_rate_multiplier = normalizeRateMultiplier(
-      requestData.video_rate_multiplier,
-    );
-    // 媒体价格输入清空时 v-model.number 产生 ""，直接提交会被后端 *float64 反序列化拒绝（400），
-    // 创建时按"未配置"（null）处理。
-    requestData.image_price_1k = emptyToNull(requestData.image_price_1k);
-    requestData.image_price_2k = emptyToNull(requestData.image_price_2k);
-    requestData.image_price_4k = emptyToNull(requestData.image_price_4k);
-    requestData.video_price_480p = emptyToNull(requestData.video_price_480p);
-    requestData.video_price_720p = emptyToNull(requestData.video_price_720p);
-    requestData.video_price_1080p = emptyToNull(requestData.video_price_1080p);
     requestData.peak_rate_enabled = createForm.peak_rate_enabled;
     requestData.peak_start = createForm.peak_start;
     requestData.peak_end = createForm.peak_end;
     requestData.peak_rate_multiplier = normalizeRateMultiplier(
       createForm.peak_rate_multiplier,
     );
+    requestData.video_rate_multiplier = normalizeImageRateMultiplier(
+      requestData.video_rate_multiplier,
+    );
+    requestData.video_price_480p = emptyToNull(requestData.video_price_480p);
+    requestData.video_price_720p = emptyToNull(requestData.video_price_720p);
+    requestData.video_price_1080p = emptyToNull(requestData.video_price_1080p);
     await adminAPI.groups.create(requestData);
     appStore.showSuccess(t("admin.groups.groupCreated"));
     closeCreateModal();
@@ -4763,6 +4691,10 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.daily_limit_usd = group.daily_limit_usd;
   editForm.weekly_limit_usd = group.weekly_limit_usd;
   editForm.monthly_limit_usd = group.monthly_limit_usd;
+  editForm.peak_rate_enabled = group.peak_rate_enabled ?? false;
+  editForm.peak_start = group.peak_start || "09:00";
+  editForm.peak_end = group.peak_end || "18:00";
+  editForm.peak_rate_multiplier = group.peak_rate_multiplier ?? 1;
   editForm.allow_image_generation = group.allow_image_generation ?? false;
   editForm.allow_batch_image_generation =
     group.allow_batch_image_generation ?? false;
@@ -4779,10 +4711,6 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.video_price_480p = group.video_price_480p;
   editForm.video_price_720p = group.video_price_720p;
   editForm.video_price_1080p = group.video_price_1080p;
-  editForm.peak_rate_enabled = group.peak_rate_enabled ?? false;
-  editForm.peak_start = group.peak_start ?? "";
-  editForm.peak_end = group.peak_end ?? "";
-  editForm.peak_rate_multiplier = group.peak_rate_multiplier ?? 1.0;
   editForm.claude_code_only = group.claude_code_only || false;
   editForm.fallback_group_id = group.fallback_group_id;
   editForm.fallback_group_id_on_invalid_request =
@@ -4827,10 +4755,6 @@ const closeEditModal = () => {
   editingGroup.value = null;
   editModelRoutingRules.value = [];
   editForm.copy_accounts_from_group_ids = [];
-  editForm.peak_rate_enabled = false;
-  editForm.peak_start = "";
-  editForm.peak_end = "";
-  editForm.peak_rate_multiplier = 1.0;
   editForm.video_rate_independent = false;
   editForm.video_rate_multiplier = 1;
   editForm.video_price_480p = null;
@@ -4891,7 +4815,7 @@ const handleUpdateGroup = async () => {
     payload.daily_limit_usd = emptyToNull(payload.daily_limit_usd);
     payload.weekly_limit_usd = emptyToNull(payload.weekly_limit_usd);
     payload.monthly_limit_usd = emptyToNull(payload.monthly_limit_usd);
-    payload.image_rate_multiplier = normalizeRateMultiplier(
+    payload.image_rate_multiplier = normalizeImageRateMultiplier(
       payload.image_rate_multiplier,
     );
     resetDisabledBatchImagePricing(payload);
@@ -4901,25 +4825,20 @@ const handleUpdateGroup = async () => {
     payload.batch_image_hold_multiplier = normalizeRateMultiplier(
       payload.batch_image_hold_multiplier,
     );
-    payload.video_rate_multiplier = normalizeRateMultiplier(
-      payload.video_rate_multiplier,
-    );
-    // 媒体价格输入清空时 v-model.number 产生 ""，直接提交会被后端 *float64 反序列化拒绝（400）。
-    // 更新语义中 null 表示"不修改"，因此清空后的字段发送 -1：后端 normalizePrice 将负价归一为
-    // NULL，从而真正清除已配置的价格。
-    const emptyPriceToClear = (v: any) => (v === "" || v === null ? -1 : v);
-    payload.image_price_1k = emptyPriceToClear(payload.image_price_1k);
-    payload.image_price_2k = emptyPriceToClear(payload.image_price_2k);
-    payload.image_price_4k = emptyPriceToClear(payload.image_price_4k);
-    payload.video_price_480p = emptyPriceToClear(payload.video_price_480p);
-    payload.video_price_720p = emptyPriceToClear(payload.video_price_720p);
-    payload.video_price_1080p = emptyPriceToClear(payload.video_price_1080p);
     payload.peak_rate_enabled = editForm.peak_rate_enabled;
     payload.peak_start = editForm.peak_start;
     payload.peak_end = editForm.peak_end;
     payload.peak_rate_multiplier = normalizeRateMultiplier(
       editForm.peak_rate_multiplier,
     );
+    payload.video_rate_multiplier = normalizeImageRateMultiplier(
+      payload.video_rate_multiplier,
+    );
+    const emptyPriceToClear = (value: any) =>
+      value === "" || value === null ? -1 : value;
+    payload.video_price_480p = emptyPriceToClear(payload.video_price_480p);
+    payload.video_price_720p = emptyPriceToClear(payload.video_price_720p);
+    payload.video_price_1080p = emptyPriceToClear(payload.video_price_1080p);
     await adminAPI.groups.update(editingGroup.value.id, payload);
     appStore.showSuccess(t("admin.groups.groupUpdated"));
     closeEditModal();
@@ -4990,31 +4909,37 @@ const confirmDelete = async () => {
   }
 };
 
-// 监听 subscription_type 变化，订阅模式时 is_exclusive 默认为 true；标准模式清空高峰配置
+// 监听 subscription_type 变化，订阅模式时 is_exclusive 默认为 true
 watch(
   () => createForm.subscription_type,
   (newVal) => {
     if (newVal === "subscription") {
       createForm.is_exclusive = true;
       createForm.fallback_group_id_on_invalid_request = null;
+      createForm.peak_start ||= "09:00";
+      createForm.peak_end ||= "18:00";
+      createForm.peak_rate_multiplier ||= 1;
     } else {
       createForm.peak_rate_enabled = false;
       createForm.peak_start = "";
       createForm.peak_end = "";
-      createForm.peak_rate_multiplier = 1.0;
+      createForm.peak_rate_multiplier = 1;
     }
   },
 );
 
-// 编辑表单：切回标准模式时清空高峰配置，避免残留随更新请求提交被后端拒绝
 watch(
   () => editForm.subscription_type,
   (newVal) => {
-    if (newVal !== "subscription") {
+    if (newVal === "subscription") {
+      editForm.peak_start ||= "09:00";
+      editForm.peak_end ||= "18:00";
+      editForm.peak_rate_multiplier ||= 1;
+    } else {
       editForm.peak_rate_enabled = false;
       editForm.peak_start = "";
       editForm.peak_end = "";
-      editForm.peak_rate_multiplier = 1.0;
+      editForm.peak_rate_multiplier = 1;
     }
   },
 );

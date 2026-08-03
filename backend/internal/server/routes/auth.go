@@ -227,4 +227,28 @@ func RegisterAuthRoutes(
 		authenticated.POST("/auth/revoke-all-sessions", h.Auth.RevokeAllSessions)
 		authenticated.POST("/auth/oauth/bind-token", h.Auth.PrepareOAuthBindAccessTokenCookie)
 	}
+
+	plugin := v1.Group("/plugin/augment")
+	{
+		plugin.POST("/callback/exchange", h.Auth.AugmentCallbackExchange)
+		plugin.POST("/session/refresh", rateLimiter.LimitWithOptions("refresh-token", 30, time.Minute, middleware.RateLimitOptions{
+			FailureMode: middleware.RateLimitFailClose,
+		}), h.Auth.AugmentSessionRefresh)
+		plugin.POST("/api-key/verify", h.Auth.AugmentAPIKeyVerify)
+		plugin.GET("/summary", h.Auth.AugmentSummary)
+		plugin.GET("/compat/metadata", h.Auth.AugmentCompatMetadata)
+	}
+
+	pluginAuthenticated := v1.Group("/plugin/augment")
+	pluginAuthenticated.Use(gin.HandlerFunc(jwtAuth))
+	{
+		pluginAuthenticated.POST("/quick-login/grant", h.Auth.AugmentQuickLoginGrant)
+		pluginAuthenticated.POST("/official-session/bind-intents", h.Auth.AugmentOfficialSessionBindIntent)
+		pluginAuthenticated.POST("/official-session/bind", h.Auth.AugmentOfficialSessionBind)
+		pluginAuthenticated.GET("/official-session", h.Auth.AugmentOfficialSessionStatus)
+		pluginAuthenticated.POST("/official-session/revoke", h.Auth.AugmentOfficialSessionRevoke)
+		pluginAuthenticated.GET("/billing/summary", h.Auth.AugmentBillingSummary)
+		pluginAuthenticated.GET("/billing/usage", h.Auth.AugmentBillingUsage)
+		pluginAuthenticated.GET("/billing/recent-errors", h.Auth.AugmentBillingRecentErrors)
+	}
 }

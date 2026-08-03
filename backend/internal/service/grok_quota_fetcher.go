@@ -1,14 +1,9 @@
 package service
 
 import (
-	"encoding/json"
-	"fmt"
+	"net/http"
 	"time"
-
-	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
-
-const grokQuotaSnapshotExtraKey = "grok_usage_snapshot"
 
 type GrokQuotaFetcher struct{}
 
@@ -56,54 +51,18 @@ func (f *GrokQuotaFetcher) BuildUsageInfo(account *Account) *UsageInfo {
 	}
 
 	switch snapshot.StatusCode {
-	case 401:
+	case http.StatusUnauthorized:
 		usage.NeedsReauth = true
 		usage.ErrorCode = "unauthenticated"
-	case 403:
+	case http.StatusForbidden:
 		usage.IsForbidden = true
 		usage.ForbiddenType = "forbidden"
 		usage.ErrorCode = "forbidden"
 		if usage.GrokEntitlementStatus == "" {
 			usage.GrokEntitlementStatus = "forbidden"
 		}
-	case 429:
+	case http.StatusTooManyRequests:
 		usage.ErrorCode = "rate_limited"
 	}
 	return usage
-}
-
-func grokQuotaSnapshotFromExtra(extra map[string]any) (*xai.QuotaSnapshot, error) {
-	if extra == nil {
-		return nil, nil
-	}
-	raw, ok := extra[grokQuotaSnapshotExtraKey]
-	if !ok || raw == nil {
-		return nil, nil
-	}
-	switch snapshot := raw.(type) {
-	case *xai.QuotaSnapshot:
-		return snapshot, nil
-	case xai.QuotaSnapshot:
-		return &snapshot, nil
-	case map[string]any:
-		data, err := json.Marshal(snapshot)
-		if err != nil {
-			return nil, err
-		}
-		var out xai.QuotaSnapshot
-		if err := json.Unmarshal(data, &out); err != nil {
-			return nil, err
-		}
-		return &out, nil
-	default:
-		data, err := json.Marshal(raw)
-		if err != nil {
-			return nil, fmt.Errorf("marshal grok quota snapshot: %w", err)
-		}
-		var out xai.QuotaSnapshot
-		if err := json.Unmarshal(data, &out); err != nil {
-			return nil, err
-		}
-		return &out, nil
-	}
 }

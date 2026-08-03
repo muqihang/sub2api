@@ -647,8 +647,12 @@ func (s *PaymentService) applyAffiliateRebateForOrder(ctx context.Context, o *db
 		return nil
 	}
 
-	sourceOrderID := o.ID
-	rebateAmount, err := s.affiliateService.AccrueInviteRebateForOrder(txCtx, o.UserID, baseAmount, &sourceOrderID)
+	rewardResult, err := s.affiliateService.ApplyOrderRewards(txCtx, AffiliateOrderRewardInput{
+		InviteeUserID:    o.UserID,
+		BaseAmount:       baseAmount,
+		NetPaymentAmount: o.PayAmount,
+		SourceOrderID:    o.ID,
+	})
 	if err != nil {
 		s.writeAuditLog(ctx, o.ID, "AFFILIATE_REBATE_FAILED", "system", map[string]any{
 			"error": err.Error(),
@@ -656,7 +660,7 @@ func (s *PaymentService) applyAffiliateRebateForOrder(ctx context.Context, o *db
 		return fmt.Errorf("accrue affiliate rebate: %w", err)
 	}
 
-	if rebateAmount <= 0 {
+	if rewardResult.InviterRebateAmount <= 0 && rewardResult.InviteeBonusAmount <= 0 {
 		if err := s.updateClaimedAffiliateRebateAudit(txCtx, tx.Client(), o.ID, "AFFILIATE_REBATE_SKIPPED", map[string]any{
 			"baseAmount": baseAmount,
 			"reason":     "no inviter bound or rebate amount <= 0",
@@ -676,8 +680,11 @@ func (s *PaymentService) applyAffiliateRebateForOrder(ctx context.Context, o *db
 	}
 
 	if err := s.updateClaimedAffiliateRebateAudit(txCtx, tx.Client(), o.ID, "AFFILIATE_REBATE_APPLIED", map[string]any{
-		"baseAmount":   baseAmount,
-		"rebateAmount": rebateAmount,
+		"baseAmount":         baseAmount,
+		"rebateAmount":       rewardResult.InviterRebateAmount,
+		"inviteeBonusAmount": rewardResult.InviteeBonusAmount,
+		"ratePercent":        rewardResult.RatePercent,
+		"effectiveInvitees":  rewardResult.EffectiveInvitees,
 	}); err != nil {
 		s.writeAuditLog(ctx, o.ID, "AFFILIATE_REBATE_FAILED", "system", map[string]any{
 			"error": err.Error(),
@@ -690,6 +697,9 @@ func (s *PaymentService) applyAffiliateRebateForOrder(ctx context.Context, o *db
 			"error": fmt.Sprintf("commit affiliate rebate tx: %v", err),
 		})
 		return fmt.Errorf("commit affiliate rebate tx: %w", err)
+	}
+	if rewardResult.InviteeBonusAmount > 0 {
+		s.affiliateService.invalidateAffiliateCaches(ctx, o.UserID)
 	}
 	return nil
 }

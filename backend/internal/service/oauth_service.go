@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"time"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
 
@@ -91,12 +94,12 @@ func (s *OAuthService) generateAuthURLWithScope(ctx context.Context, scope strin
 		return nil, fmt.Errorf("failed to generate session ID: %w", err)
 	}
 
-	// Get proxy URL if specified
 	var proxyURL string
 	if proxyID != nil {
-		proxy, err := s.proxyRepo.GetByID(ctx, *proxyID)
-		if err == nil && proxy != nil {
-			proxyURL = proxy.URL()
+		var err error
+		proxyURL, err = s.resolveOAuthProxyURL(ctx, *proxyID)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -144,15 +147,16 @@ func (s *OAuthService) ExchangeCode(ctx context.Context, input *ExchangeCodeInpu
 	// Get session
 	session, ok := s.sessionStore.Get(input.SessionID)
 	if !ok {
-		return nil, fmt.Errorf("session not found or expired")
+		return nil, infraerrors.New(http.StatusBadRequest, "CLAUDE_OAUTH_SESSION_NOT_FOUND", "Claude OAuth session not found or expired; generate a fresh authorization link and try again")
 	}
 
 	// Get proxy URL
 	proxyURL := session.ProxyURL
 	if input.ProxyID != nil {
-		proxy, err := s.proxyRepo.GetByID(ctx, *input.ProxyID)
-		if err == nil && proxy != nil {
-			proxyURL = proxy.URL()
+		var err error
+		proxyURL, err = s.resolveOAuthProxyURL(ctx, *input.ProxyID)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -162,7 +166,7 @@ func (s *OAuthService) ExchangeCode(ctx context.Context, input *ExchangeCodeInpu
 	// Exchange code for token
 	tokenInfo, err := s.exchangeCodeForToken(ctx, input.Code, session.CodeVerifier, session.State, proxyURL, isSetupToken)
 	if err != nil {
-		return nil, err
+		return nil, infraerrors.New(http.StatusBadRequest, "CLAUDE_OAUTH_CODE_EXCHANGE_FAILED", "Claude OAuth authorization code exchange failed; generate a fresh authorization link and try again").WithCause(err)
 	}
 
 	// Delete session after successful exchange
@@ -183,14 +187,15 @@ func (s *OAuthService) CookieAuth(ctx context.Context, input *CookieAuthInput) (
 	// Get proxy URL if specified
 	var proxyURL string
 	if input.ProxyID != nil {
-		proxy, err := s.proxyRepo.GetByID(ctx, *input.ProxyID)
-		if err == nil && proxy != nil {
-			proxyURL = proxy.URL()
+		var err error
+		proxyURL, err = s.resolveOAuthProxyURL(ctx, *input.ProxyID)
+		if err != nil {
+			return nil, err
 		}
 	}
 
-	// Determine scope and if this is a setup token
-	// Internal API call uses ScopeAPI (org:create_api_key not supported)
+	// Determine scope and if this is a setup token.
+	// ScopeAPI mirrors Claude Code inference scopes and excludes API-key creation.
 	scope := oauth.ScopeAPI
 	isSetupToken := false
 	if input.Scope == "inference" {
@@ -306,14 +311,40 @@ func (s *OAuthService) RefreshAccountToken(ctx context.Context, account *Account
 	}
 
 	var proxyURL string
-	if account.ProxyID != nil {
-		proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID)
-		if err == nil && proxy != nil {
-			proxyURL = proxy.URL()
-		}
+	if account.ProxyID == nil {
+		return nil, fmt.Errorf("oauth account %d proxy_id is required for token refresh", account.ID)
+	}
+	var err error
+	proxyURL, err = s.resolveOAuthProxyURL(ctx, *account.ProxyID)
+	if err != nil {
+		return nil, err
 	}
 
 	return s.RefreshToken(ctx, refreshToken, proxyURL)
+}
+
+func (s *OAuthService) resolveOAuthProxyURL(ctx context.Context, proxyID int64) (string, error) {
+	if s.proxyRepo == nil {
+		return "", fmt.Errorf("oauth proxy %d is required but proxy repository is unavailable", proxyID)
+	}
+	proxy, err := s.proxyRepo.GetByID(ctx, proxyID)
+	if err != nil {
+		return "", fmt.Errorf("oauth proxy %d unavailable: %w", proxyID, err)
+	}
+	if proxy == nil {
+		return "", fmt.Errorf("oauth proxy %d unavailable", proxyID)
+	}
+	if proxy.Status != "" && !proxy.IsActive() {
+		return "", fmt.Errorf("oauth proxy %d is not active", proxyID)
+	}
+	trimmed, _, err := proxyurl.Parse(proxy.URL())
+	if err != nil {
+		return "", fmt.Errorf("oauth proxy %d invalid: %w", proxyID, err)
+	}
+	if trimmed == "" {
+		return "", fmt.Errorf("oauth proxy %d resolved to empty proxy URL", proxyID)
+	}
+	return trimmed, nil
 }
 
 // Stop stops the session store cleanup goroutine

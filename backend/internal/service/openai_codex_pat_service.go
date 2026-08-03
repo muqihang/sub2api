@@ -3,8 +3,8 @@ package service
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -24,6 +24,13 @@ var openAIPersonalAccessTokenOAuthCredentialKeys = [...]string{
 	"client_id",
 }
 
+func openAICodexPATWhoamiEndpoint() string {
+	if override := strings.TrimSpace(os.Getenv("SUB2API_OPENAI_CODEX_PAT_WHOAMI_URL")); override != "" {
+		return override
+	}
+	return openAICodexPATWhoamiURL
+}
+
 type openAICodexPATWhoamiResponse struct {
 	Email                   string `json:"email"`
 	ChatGPTUserID           string `json:"chatgpt_user_id"`
@@ -32,8 +39,9 @@ type openAICodexPATWhoamiResponse struct {
 	ChatGPTAccountIsFedRAMP *bool  `json:"chatgpt_account_is_fedramp"`
 }
 
-// ValidateCodexPersonalAccessToken validates a Codex at-* token using the same
-// first-class PAT endpoint used by the Codex client.
+// ValidateCodexPersonalAccessToken validates a Codex at-* token against the
+// Codex whoami endpoint. Error messages intentionally exclude raw response
+// bodies so failed validation cannot leak token/account material into logs.
 func (s *OpenAIOAuthService) ValidateCodexPersonalAccessToken(ctx context.Context, accessToken, proxyURL string) (*OpenAITokenInfo, error) {
 	accessToken = strings.TrimSpace(accessToken)
 	if accessToken == "" {
@@ -52,7 +60,7 @@ func (s *OpenAIOAuthService) ValidateCodexPersonalAccessToken(ctx context.Contex
 		return nil, infraerrors.Newf(http.StatusBadRequest, "OPENAI_CODEX_PAT_PROXY_INVALID", "invalid proxy configuration: %v", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, openAICodexPATWhoamiURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, openAICodexPATWhoamiEndpoint(), nil)
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusInternalServerError, "OPENAI_CODEX_PAT_REQUEST_FAILED", "failed to build validation request: %v", err)
 	}
@@ -71,16 +79,11 @@ func (s *OpenAIOAuthService) ValidateCodexPersonalAccessToken(ctx context.Contex
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_CODEX_PAT_INVALID", "Codex personal access token is invalid or expired")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		message := strings.TrimSpace(string(body))
-		if message == "" {
-			message = resp.Status
-		}
-		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_CODEX_PAT_VALIDATE_FAILED", "Codex personal access token validation failed: %s", message)
+		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_CODEX_PAT_VALIDATE_FAILED", "Codex personal access token validation failed with upstream status %d", resp.StatusCode)
 	}
 
 	var whoami openAICodexPATWhoamiResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 64*1024)).Decode(&whoami); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(nil, resp.Body, 64*1024)).Decode(&whoami); err != nil {
 		return nil, infraerrors.Newf(http.StatusBadGateway, "OPENAI_CODEX_PAT_RESPONSE_INVALID", "invalid Codex personal access token validation response: %v", err)
 	}
 	if err := validateOpenAICodexPATWhoami(whoami); err != nil {
@@ -116,14 +119,10 @@ func validateOpenAICodexPATWhoami(whoami openAICodexPATWhoamiResponse) error {
 	return nil
 }
 
-// NormalizeOpenAIPersonalAccessTokenCredentials removes OAuth-only credential
-// fields from Codex personal access token accounts while preserving local
-// routing, mapping, quota, and metadata fields.
 func NormalizeOpenAIPersonalAccessTokenCredentials(account *Account, tokenInfo *OpenAITokenInfo, credentials map[string]any) map[string]any {
 	if credentials == nil || !isOpenAIPersonalAccessTokenCredentialSet(account, tokenInfo, credentials) {
 		return credentials
 	}
-
 	for _, key := range openAIPersonalAccessTokenOAuthCredentialKeys {
 		delete(credentials, key)
 	}
@@ -145,10 +144,8 @@ func isOpenAIPersonalAccessTokenCredentialSet(account *Account, tokenInfo *OpenA
 }
 
 func openAICredentialString(value any) string {
-	switch v := value.(type) {
-	case string:
+	if v, ok := value.(string); ok {
 		return strings.TrimSpace(v)
-	default:
-		return ""
 	}
+	return ""
 }

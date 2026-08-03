@@ -34,5 +34,9 @@ export function resolveRouteDocumentTitle(
     : undefined
   const menuTitle = menuItem?.label.trim()
 
-  return resolveDocumentTitle(menuTitle || route.meta.title, siteName, menuTitle ? undefined : route.meta.titleKey as string)
+  return resolveDocumentTitle(
+    menuTitle || route.meta.title,
+    siteName,
+    menuTitle ? undefined : route.meta.titleKey as string,
+  )
 }

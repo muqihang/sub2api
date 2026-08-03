@@ -165,6 +165,20 @@ describe('PaymentProviderDialog payment guide', () => {
     expect(payload.config.accountId).toBe('')
   })
 
+  it('normalizes null supported_types when loading an existing provider', async () => {
+    const wrapper = mountDialog()
+
+    ;(wrapper.vm as unknown as { loadProvider: (provider: ProviderInstance) => void }).loadProvider(
+      providerFactory({
+        provider_key: 'alipay',
+        supported_types: null as unknown as string[],
+      }),
+    )
+    await nextTick()
+
+    expect(wrapper.text()).toContain(messages['admin.settings.payment.alipayGuideSummary'])
+  })
+
   it('serializes EasyPay custom methods and adds them to supported_types', async () => {
     const provider = providerFactory({
       provider_key: 'easypay',

@@ -9,10 +9,7 @@
     </button>
   </div>
 
-  <div
-    v-else-if="entry.status === 'loading'"
-    class="mt-0.5 flex items-center gap-1 text-xs text-gray-400 dark:text-gray-500"
-  >
+  <div v-else-if="entry.status === 'loading'" class="mt-0.5 flex items-center gap-1 text-xs text-gray-400 dark:text-gray-500">
     <svg class="h-3 w-3 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path
         stroke-linecap="round"
@@ -72,15 +69,14 @@ const entry = computed(() => getEntry(props.ip))
 const tooltipText = computed(() => {
   const detail = entry.value.detail
   if (!detail) return ''
-  const lines = [
+  return [
     detail.organization ? `${t('usage.ipGeo.detailOrg')}: ${detail.organization}` : '',
     detail.timezone ? `${t('usage.ipGeo.detailTimezone')}: ${detail.timezone}` : '',
     detail.accuracy != null ? `${t('usage.ipGeo.detailAccuracy')}: ${detail.accuracy}km` : '',
     detail.latitude && detail.longitude
       ? `${t('usage.ipGeo.detailCoordinates')}: ${detail.latitude}, ${detail.longitude}`
       : '',
-  ].filter(Boolean)
-  return lines.join('\n')
+  ].filter(Boolean).join('\n')
 })
 
 const handleFetch = () => {

@@ -1,0 +1,1213 @@
+## Codex Gateway Smoke
+
+### Basic HTTP checks
+
+```bash
+curl -sS http://127.0.0.1:3000/codex/v1/models \
+  -H "Authorization: Bearer $SUB2API_CODEX_API_KEY" | jq
+```
+
+```bash
+curl -sS http://127.0.0.1:3000/codex/v1/responses \
+  -H "Authorization: Bearer $SUB2API_CODEX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-5.5","input":"reply with ok","stream":false}' | jq
+```
+
+```bash
+curl -N http://127.0.0.1:3000/codex/v1/responses \
+  -H "Authorization: Bearer $SUB2API_CODEX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"deepseek-v4-pro","input":"explain the current directory","stream":true}'
+```
+
+```bash
+curl -N http://127.0.0.1:3000/codex/v1/responses \
+  -H "Authorization: Bearer $SUB2API_CODEX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"agnes-2.0-flash","input":[{"role":"user","content":[{"type":"input_text","text":"describe this tiny image in one sentence"},{"type":"input_image","image_url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="}]}],"reasoning":{"effort":"high"},"stream":true}'
+```
+
+```bash
+curl -N http://127.0.0.1:3000/codex/v1/responses \
+  -H "Authorization: Bearer $SUB2API_CODEX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-sonnet-4-6","input":"reply with ok","stream":true}'
+```
+
+```bash
+curl -N http://127.0.0.1:3000/codex/v1/responses \
+  -H "Authorization: Bearer $SUB2API_CODEX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-opus-4-6-thinking","input":"reply with ok after brief reasoning","reasoning":{"effort":"high"},"stream":true}'
+```
+
+### Admin checks
+
+```bash
+curl -sS http://127.0.0.1:3000/api/v1/admin/codex-gateway/summary \
+  -H "Authorization: Bearer $SUB2API_ADMIN_KEY" | jq
+```
+
+```bash
+curl -sS http://127.0.0.1:3000/api/v1/admin/codex-gateway/state-store/summary \
+  -H "Authorization: Bearer $SUB2API_ADMIN_KEY" | jq
+```
+
+### Codex client smoke
+
+1. Start Codex Desktop/CLI with `wire_api = "responses"` and `base_url = ".../codex/v1"`.
+2. Confirm `/codex/v1/models` shows GPT entries and, once provider-group gates are satisfied, DeepSeek V4 Pro/Flash, Claude, and AGNES entries.
+3. Run a plain chat turn on `gpt-5.5`.
+4. Switch to `deepseek-v4-pro` and verify a streamed text reply.
+5. Run a shell tool turn.
+6. Run a file edit / apply-patch style tool turn.
+7. If MCP is configured, run one resource read and one tool call.
+8. If Desktop exposes app tools, run one plugin/app tool.
+9. If Computer Use / Chrome plugin tools are exposed locally, verify the tool list is forwarded and a simple tool call completes.
+10. Switch to `claude-sonnet-4-6` and verify a streamed text reply.
+11. Switch to `claude-opus-4-6-thinking`, select a non-none reasoning effort, and run a small tool-read turn.
+12. Continue the same Claude Thinking conversation with a follow-up tool-result turn and verify the stream completes.
+13. Switch to `agnes-2.0-flash`, select high reasoning, and verify a streamed text reply plus one image-input turn.
+14. Use `gpt-5.4` as controller and dispatch DeepSeek, Claude, and AGNES subagents; verify the controller can summarize their results.
+
+### Checkpoint 4 WS gate and live capture matrix readiness
+
+This section is a readiness checklist, not a claimed live pass. Mark a row as
+`skipped` with an explicit reason when Codex Desktop/app-server is not running,
+the current backend is not wired into Desktop, capture is disabled, or the
+provider key/account is unavailable. Do not mark such rows as passed.
+
+Preconditions:
+
+1. Codex Desktop or Codex app-server is running against this backend.
+2. `/codex/v1/models` and `/codex/v1/responses` use the current worktree build.
+3. Gateway capture is enabled in summary/shape-only mode.
+4. Provider credentials exist for every provider being tested.
+5. `zhumeng-agent codex capture report` can read both Desktop and Gateway traces.
+
+#### WS readiness gate
+
+Codex Gateway is HTTP Responses only until full Responses WebSocket v2 support is
+implemented and explicitly enabled. OpenAI server-store continuation semantics
+must not leak into `/codex/v1/responses`.
+
+```bash
+curl -sS 'http://127.0.0.1:3000/codex/v1/models?catalog_format=codex_cli' \
+  -H "Authorization: Bearer $SUB2API_CODEX_API_KEY" \
+  | jq '[.. | objects | select(has("supports_websockets"))]'
+```
+
+Expected: an empty list, or only explicit `supports_websockets:false` entries
+after a future fully gated WS implementation.
+
+```bash
+curl -i --http1.1 http://127.0.0.1:3000/codex/v1/responses \
+  -H 'Connection: Upgrade' \
+  -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Version: 13' \
+  -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=='
+```
+
+Expected: a normal HTTP error envelope such as `405 method_not_allowed`, never
+`101 Switching Protocols`.
+
+```bash
+curl -sS http://127.0.0.1:3000/codex/v1/responses \
+  -H "Authorization: Bearer $SUB2API_CODEX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-5.5","input":"reply ok","stream":false}' | jq
+```
+
+Expected: HTTP works without `previous_response_id`.
+
+```bash
+curl -sS -i http://127.0.0.1:3000/codex/v1/responses \
+  -H "Authorization: Bearer $SUB2API_CODEX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-5.5","previous_response_id":"resp_openai_prev","input":"continue"}'
+```
+
+Expected: OpenAI HTTP path rejects `previous_response_id` with a WS v2 message.
+DeepSeek/Claude/AGNES may accept `previous_response_id` only as
+Gateway-managed replay against local state; they must not depend on OpenAI
+server-store semantics.
+
+#### Live prompt matrix
+
+Run only safe prompts for available providers:
+
+| Row | Provider/model | Prompt focus | Pass evidence |
+| --- | --- | --- | --- |
+| C4-1 | any visible GPT/OpenAI model | Basic repo understanding with file read/search. | Terminal events and final `response.completed`. |
+| C4-2 | `deepseek-v4-pro` | Deferred tool search and subagent spawn model list. | Native `tool_search_call` plus matching `tool_search_output`; no hosted web-search rewrite. |
+| C4-3 | `deepseek-v4-pro` | Computer Use simple controllable app flow. | Visible text/operable lines retained; no raw screenshot/base64 in model text. |
+| C4-4 | `deepseek-v4-pro` | Computer Use Electron/canvas visible_text flow. | `visible_text`, app/bundle id, latest error/truncation status, and `computer_use_compression_version`. |
+| C4-5 | OpenAI/GPT or configured bridge | Web Search bridge. | Hosted search fields only on providers that support them; local/deferred tools otherwise. |
+| C4-6 | image-capable provider | Image input / structured tool output. | Structured content preserved where supported; text-only providers summarize safely. |
+| C4-7 | OpenAI WS-enabled environment only, or explicit manual Stop test | Stop/interruption, user-driven continuation, `/goal` pause/resume when applicable, or WS/native continuation. | Do not assume ordinary-chat Continue/Resume buttons. If WS unavailable, record HTTP/manual-stop behavior; if WS enabled, require terminal events and WS v2 continuation diagnostics. |
+| C4-8 | `deepseek-v4-pro` | DeepSeek tool-call reasoning replay multi-turn. | Tool-call reasoning replay succeeds; no Reasonix blanket stripping. |
+| C4-9 | `deepseek-v4-pro` | DeepSeek cache prefix stability repeated prompt. | Stable prefix hashes and provider hit/miss usage when upstream returns it. |
+| C4-10 | Claude direct | Anthropic thinking/tool loop. | Thinking/tool replay and terminal events complete. |
+| C4-11 | `agnes-2.0-flash` | AGNES tool loop and interruption recovery. | AGNES-specific cache/key semantics, no DeepSeek official cache-control leak. |
+
+#### 2026-06-09 current-worktree evidence status
+
+This run used the current worktree image and an isolated stub upstream, not the
+user's Codex Desktop global configuration:
+
+- Git HEAD: `6948c5629019ba011282bdffcfa99a64c1ac8bc5`
+- Docker image: `sub2api:codex-gateway-gap-audit-6948c5629`
+- Local backend: `http://127.0.0.1:3014/codex/v1`
+- Evidence directory:
+  `/tmp/sub2api-codex-gap-audit-isolated-20260608190747/evidence`
+- Gateway capture directory:
+  `/tmp/sub2api-codex-gap-audit-isolated-20260608190747/data/codex-gateway-captures`
+- Capture mode: `summary`, `raw_payloads=false`
+
+Readiness gates recorded in that evidence directory:
+
+| Gate | Status | Evidence |
+| --- | --- | --- |
+| Codex CLI catalog shape | Passed | `models_summary.json` shows 12 visible models; `models_codex_cli.json` has no `supports_websockets` fields. |
+| WS upgrade gate | Passed | `ws_upgrade_gate.txt` returns HTTP `405 method_not_allowed`, never `101 Switching Protocols`. |
+| OpenAI HTTP `previous_response_id` gate | Passed | `previous_response_id_gate.txt` returns HTTP `400` with the WS-v2-only message. |
+| Basic HTTP non-stream | Passed | `basic_nonstream_response.txt` returns `resp_stub_json` with completed output and usage. |
+| Basic HTTP stream | Passed | `basic_stream_response.sse` includes `response.completed` and `[DONE]`. |
+| Codex CLI non-interactive transport | Passed | `codex_cli_exec_smoke.jsonl` ends with `turn.completed`. The first temporary-stub run logged `OutputTextDelta without active item` because that stub emitted a minimal SSE stream without item/content open events before `response.output_text.delta`; a later lifecycle-shaped stub rerun, recorded as `codex_cli_exec_smoke_lifecycle_*.jsonl`, emits `item.completed` and `turn.completed` without that warning. This is still not a Desktop live-matrix pass and does not replace the lifecycle regression tests. |
+| `zhumeng-agent codex capture report` | Report generated, Desktop trace absent | `zhumeng_capture_report_empty_desktop.json` reports zero app-server/tool/model events because Desktop was not wired to this backend for this run. |
+
+Live prompt matrix status for this run:
+
+| Row | Status | Reason |
+| --- | --- | --- |
+| C4-1 | Skipped for Desktop live matrix | Codex CLI transport smoke passed, but Desktop/app-server was not wired to this exact backend build and the prompt was not a repo file-read/search live prompt. |
+| C4-2 | Skipped | Requires live DeepSeek provider plus Desktop/subagent tool exposure; isolated run used a stub upstream. |
+| C4-3 | Skipped | Requires live Desktop Computer Use flow; global Desktop config was not changed. |
+| C4-4 | Skipped | Requires live Desktop Electron/canvas Computer Use capture; global Desktop config was not changed. |
+| C4-5 | Skipped | Requires live Web Search/provider bridge verification; isolated run used a stub upstream. |
+| C4-6 | Skipped | Requires live image-capable provider or structured tool-output flow; isolated run used a stub upstream. |
+| C4-7 | Skipped by design | HTTP gateway currently advertises no WS support; the WS readiness gate above passed. |
+| C4-8 | Skipped | Requires live DeepSeek tool-call reasoning replay; isolated run used a stub upstream. |
+| C4-9 | Skipped | Requires live DeepSeek repeated prompt/cache usage evidence; isolated run used a stub upstream. |
+| C4-10 | Skipped | Requires live Claude direct thinking/tool loop; isolated run used a stub upstream. |
+| C4-11 | Skipped | Requires live AGNES tool loop/interruption recovery; isolated run used a stub upstream. |
+
+Do not mark any skipped row as passed without a later Desktop/app-server trace
+captured against the exact backend build under test.
+
+#### 2026-06-10 note on ordinary-chat Continue/Resume wording
+
+A later GPT-5.5 CP0 baseline in the `clawdbot` workspace confirmed that asking
+the model to stop after a stage produces a normal `task_complete` final answer;
+it does not create a guaranteed ordinary-chat Continue/Resume button. Future
+smoke rows should test real manual Stop/interruption, explicit user-driven
+continuation, `/goal` pause/resume, or protocol-level `previous_response_id`
+diagnostics instead of relying on a button label.
+
+#### 2026-06-10 GPT-5.5 user-driven continuation baseline
+
+- Codex Desktop session id: `019eb129-f13d-7870-928a-150f12e8424d`
+- Workspace: `/Users/muqihang/chelingxi_workspace/clawdbot`
+- Model: `gpt-5.5` via `zhumeng-codex`
+- Result: passed for ordinary-chat user-driven continuation. The session has two
+  turns. Turn 1 completed stage 1 and ended normally. The user then typed
+  `继续`; turn 2 read `README.md`, executed only stage 2, did not repeat stage
+  1, and ended with `task_complete`.
+- Interpretation: this is evidence for context-preserving explicit user
+  continuation, not evidence for an ordinary-chat Continue/Resume button or WS
+  `previous_response_id` continuation.
+
+#### 2026-06-10 GPT-5.4 baseline and user-driven continuation
+
+- Basic repo/tool_search baseline session id: `019eb132-e13a-7e82-af21-bb500416ee2d`
+  - Workspace: `/Users/muqihang/chelingxi_workspace/clawdbot`
+  - Model: `gpt-5.4` via `zhumeng-codex`
+  - Result: passed. The turn performed read-only cwd/top-level listing, read
+    `README.md` and `package.json`, issued native `tool_search_call`, received
+    `tool_search_output`, and ended with `task_complete`.
+- User-driven continuation session id: `019eb132-bb8a-7ff2-9118-a049993ccfa6`
+  - Workspace: `/Users/muqihang/chelingxi_workspace/clawdbot`
+  - Model: `gpt-5.4` via `zhumeng-codex`
+  - Result: passed. Turn 1 completed stage 1 and ended normally. The user then
+    typed `继续`; turn 2 read `README.md`, executed only stage 2, did not repeat
+    stage 1, and ended with `task_complete`.
+- Interpretation: GPT-5.4 matches GPT-5.5 for the CP0 basic repo/tool_search
+  baseline and ordinary-chat explicit user continuation. This is not evidence
+  for an ordinary-chat Continue/Resume button or WS `previous_response_id`
+  continuation.
+
+#### 2026-06-10 DeepSeek V4 Pro/Flash CP0 baseline and cache evidence
+
+These live sessions ran in the `clawdbot` workspace against the 3018 deployment
+(`zhumeng-codex` provider) and validate basic repo/tool_search behavior plus
+ordinary-chat explicit user continuation. Cache ratios below are computed from
+`usage_logs.cache_read_tokens / (input_tokens + cache_read_tokens)` for the
+matching DeepSeek `/codex/v1/responses -> /v1/chat/completions` usage rows.
+
+- DeepSeek V4 Pro session id: `019eb138-760a-7512-9f90-42e8ddf0eb12`
+  - Model verified by session context and backend usage: `deepseek-v4-pro`.
+  - Result: passed for repo read/search, native `tool_search_call` +
+    `tool_search_output`, and explicit user continuation after `继续`.
+  - Caveat: the model self-reported `GPT-5` in one answer even though routing
+    and backend usage were DeepSeek; treat this as model self-identification
+    drift, not a routing failure.
+  - Cache ratios: whole session `60.27%`; Prompt C `35.77%`; stage-1 continue
+    prompt `54.47%`; final `继续` turn `93.88%`; after the first two cold misses
+    `78.38%`.
+- DeepSeek V4 Flash session id: `019eb144-7dda-7700-81f4-9a0320171949`
+  - Model verified by session context and backend usage: `deepseek-v4-flash`.
+  - Result: passed for repo read/search, native `tool_search_call` +
+    `tool_search_output`, and explicit user continuation after `继续`.
+  - Caveat: the prompt text still said "DeepSeek V4 Pro", so the model report
+    title repeated Pro even though session/backend routing were Flash.
+  - Cache ratios: whole session `43.58%`; Prompt C `9.90%`; stage-1 continue
+    prompt `33.20%`; final `继续` turn `96.89%`; after the first two cold misses
+    `53.56%`; final three high-cache calls `97.46%`.
+
+Interpretation: both DeepSeek variants pass the CP0 non-Computer-Use baseline.
+Cold-start/cache-warmup behavior differs, but explicit continuation turns reach
+GPT-like high cache reuse once the prompt/tool prefix is warm.
+
+#### 2026-06-10 Claude Sonnet/Opus CP0 baseline and upstream 502 evidence
+
+These live sessions ran in the `clawdbot` workspace against the 3018 deployment
+(`zhumeng-codex` provider) and validate Anthropic-format Claude routing,
+repo/tool_search behavior, and ordinary-chat explicit user continuation. Cache
+ratios below use `usage_logs.cache_read_tokens / (input_tokens +
+cache_read_tokens)` for the matching Claude `/codex/v1/responses ->
+/v1/messages` usage rows.
+
+- Claude Sonnet 4.6 session id: `019eb14e-a414-79f1-ac72-1bef6616d419`
+  - Model verified by session context and backend usage: `claude-sonnet-4-6`.
+  - Result: passed for repo read/search, native `tool_search_call` +
+    `tool_search_output`, and explicit user continuation after `继续`.
+  - Caveat: the model self-reported `GPT-5` in one answer even though routing
+    and backend usage were Claude; treat this as model self-identification
+    drift, not a routing failure.
+  - Cache ratios: whole session `92.13%`; Prompt E `81.10%`; stage-1
+    continue prompt `99.54%`; final `继续` turn `98.41%`; after the first
+    request `97.05%`; final four high-cache calls `99.25%`.
+  - One failed Gateway capture during the test window returned upstream HTTP
+    `502` with `Content-Type: text/html`, `Server: cloudflare`, and
+    `Retry-After: 60`; trace classification was
+    `upstream_failed_before_visible_output` with zero upstream/client SSE
+    events.
+- Claude Opus 4.8 session id: `019eb158-c9f5-76c3-a738-f081432f4e30`
+  - Model verified by session context and backend usage: `claude-opus-4-8`.
+  - Result: passed for repo read/search, native `tool_search_call` +
+    `tool_search_output`, and explicit user continuation after `继续`. The
+    final session JSONL has three turns and no persisted `stream disconnected`
+    error; the user-visible errors correspond to failed Gateway capture traces
+    that were retried before the successful turns completed.
+  - Caveat: the model self-reported Codex/GPT-5 in one answer even though
+    routing and backend usage were Claude.
+  - Cache ratio: whole successful-session usage `94.89%` (`8` successful
+    Claude usage rows; `21,589` input tokens and `401,300` cache-read tokens).
+  - During the same window, seven failed Gateway capture traces returned
+    upstream HTTP `502` HTML pages from Cloudflare with `Retry-After: 60`,
+    lasted about `40-43s`, produced no upstream/client SSE events, and were
+    classified as `provider_5xx` / `upstream_failed_before_visible_output`.
+    Provider attempts show the requested Claude models being scheduled through
+    their high-reasoning `*-thinking` upstream variants because Codex requested
+    `reasoning_effort=xhigh`.
+- Claude Opus 4.7 session id: `019eb450-87f5-7320-a17a-c7f9be399419`
+  - Model verified by session context and backend usage: `claude-opus-4-7`.
+  - Result: passed for repo read/search and native `tool_search_call` +
+    `tool_search_output`. The session read `README.md` and `package.json`,
+    discovered the `multi_agent_v1` tool family, and stopped at
+    "阶段 1 完成，等待继续".
+  - Continuation caveat: the follow-up user turn was only `继续`, but the
+    original prompt did not define a concrete stage-2 task. The model preserved
+    context and correctly asked for the missing stage-2 objective instead of
+    repeating stage 1. Treat this as partial continuation evidence, not a clean
+    stage-2 execution pass.
+  - Cache ratio: whole successful-session usage `92.91%` (`6` successful
+    Claude usage rows; `20,598` input tokens and `269,856` cache-read tokens).
+  - No matching Claude Opus 4.7 Gateway capture in this test window returned
+    Anthropic HTTP `502`; unrelated OpenAI account errors in the same time range
+    must not be attributed to this Claude session.
+- Claude Haiku baseline: user chose to skip this row during CP0 because Sonnet
+  and Opus already covered the Claude Anthropic-format tool_search/continuation
+  path. Keep this as `skipped-by-operator`, not as pass evidence.
+
+Interpretation: the Claude CP0 functional baseline passed. The intermittent
+`stream disconnected before completion: Anthropic upstream returned HTTP 502
+HTML error page` failures are upstream/provider-edge failures before any model
+stream output, not evidence of malformed Responses-to-Anthropic translation.
+Because the live Anthropic group had only one eligible account, these transient
+Cloudflare/`Retry-After` failures could not be hidden by account failover.
+Future hardening should add Anthropic account failover/backoff and, if product
+policy allows, a controlled fallback from `*-thinking` to the non-thinking
+variant after repeated pre-output 5xx failures.
+
+#### 2026-06-11 AGNES 2.0 Flash CP0 baseline attempt
+
+- Codex Desktop session id: `019eb61d-51a2-7462-9663-1b593a7cb4c1`
+- Workspace: `/Users/muqihang/chelingxi_workspace/clawdbot`
+- Model verified by session context, Gateway captures, and usage rows:
+  `agnes-2.0-flash`.
+- Result: failed/inconclusive for the full CP0 baseline. The model completed
+  only partial stage-1 work:
+  - confirmed `pwd`;
+  - after interruption/continuation, listed the top-level directory;
+  - did not read `README.md`/`package.json`;
+  - did not emit `tool_search_call` or receive `tool_search_output`;
+  - did not reach the requested "阶段 1 完成，等待继续" marker or stage-2
+    continuation semantics.
+- Transport/protocol evidence: five matching AGNES `/codex/v1/responses ->
+  /v1/chat/completions` usage rows all returned HTTP `200` and corresponding
+  capture summaries were `status: ok`; there was no `stream disconnected`,
+  provider 5xx, or Gateway panic in this session window.
+- Cache evidence: whole attempt cache-read ratio was `0.00%` (`5` successful
+  AGNES usage rows; `121,329` input tokens, `236` output tokens,
+  `0` cache-read tokens). Capture diagnostics still recorded stable request
+  prefix/tool hashes and `prompt_cache_key_present:true`; treat the zero cache
+  as AGNES-provider cache unsupported/no upstream cache attribution, not as
+  proof of unstable serialization.
+- Interpretation: AGNES routing and basic function-call transport worked, but
+  this live prompt did not prove GPT-like multi-step tool/search behavior. Keep
+  this row open and retest with a smaller forced-tool prompt before marking
+  AGNES baseline as passed.
+
+Follow-up forced-tool retest:
+
+- Codex Desktop session id: `019eb632-3c54-7660-9ba3-2baeff1ad062`
+- Model verified by session context, Gateway captures, and usage rows:
+  `agnes-2.0-flash`.
+- Result: passed for focused native `tool_search` behavior. The model emitted a
+  real `tool_search_call` with query `subagent computer use browser`, received
+  `tool_search_output`, did not call `exec_command`, and reported that
+  `multi_agent_v1` was present while Browser/Computer Use namespaces were not in
+  that result set.
+- Transport/protocol evidence: two matching AGNES usage rows returned HTTP
+  `200`; capture summaries were `status: ok`; no provider 5xx or stream
+  disconnect was observed.
+- Cache evidence: cache-read ratio remained `0.00%` (`51,902` input tokens,
+  `164` output tokens, `0` cache-read tokens). Capture diagnostics recorded
+  stable request/tool hashes and `prompt_cache_key_present:true`; continue to
+  classify AGNES cache as provider-unsupported/no upstream attribution until the
+  upstream returns explicit cache usage.
+- Interpretation: AGNES can use Codex native `tool_search_call` /
+  `tool_search_output` when the task is narrowly scoped. The open gap is
+  multi-step autonomy/continuation smoothness, not basic `tool_search` protocol
+  routing.
+
+Follow-up forced file-read and continuation retest:
+
+- Codex Desktop session id: `019eb636-b254-7920-b3b4-5964a5cf9ceb`
+- Model verified by session context, Gateway captures, and usage rows:
+  `agnes-2.0-flash`.
+- Result: passed for focused file-tool and explicit continuation behavior.
+  Stage 1 called exactly `exec_command` with
+  `sed -n '1,20p' README.md`, summarized only those lines, reported
+  `exec_command`, and stopped with "阶段 1 完成，等待继续". After the user sent
+  `继续`, stage 2 called exactly `exec_command` with
+  `sed -n '21,40p' README.md`, summarized only the delta, and ended with
+  "阶段 2 完成".
+- Tool discipline: no `tool_search` calls and no extra shell commands appeared
+  in the session JSONL.
+- Transport/protocol evidence: four matching AGNES usage rows returned HTTP
+  `200`; capture summaries were `status: ok`; no provider 5xx, stream
+  disconnect, or Gateway error was observed.
+- Cache evidence: cache-read ratio remained `0.00%` (`85,283` input tokens,
+  `220` output tokens, `0` cache-read tokens). Capture diagnostics recorded
+  stable request/tool hashes and `prompt_cache_key_present:true`; classify the
+  zero cache as AGNES-provider cache unsupported/no upstream attribution, not a
+  Gateway serialization failure.
+- Interpretation: AGNES handles narrow, explicit file-tool and user-driven
+  continuation workflows correctly. The remaining AGNES gap is broad multi-step
+  autonomy under long instructions, not the core Responses-to-chat-completions
+  tool transport.
+
+Follow-up live Desktop smoke on 2026-06-08:
+
+- Backend under test:
+  `http://127.0.0.1:3017/codex/v1`
+- Docker image: `sub2api:codex-gateway-gap-audit-6948c5629`
+- Configuration source: cloned p1_6 provider configuration in an isolated
+  temporary Postgres/Redis environment; the original `3010` p1_6 database was
+  not migrated or modified.
+- Provider direct smoke evidence:
+  `/tmp/sub2api-codex-gap-audit-p1clone-20260608201419/evidence/direct_provider_smoke_3017_20260608202515.json`
+- Codex Desktop session mapping:
+  `/tmp/sub2api-codex-gap-audit-p1clone-20260608201419/evidence/desktop_live_smoke_session_mapping_final_20260608213648.md`
+- Gateway capture report:
+  `/tmp/sub2api-codex-gap-audit-p1clone-20260608201419/evidence/capture_report_desktop_live_20260608213804.json`
+- Gateway capture directory:
+  `/tmp/sub2api-codex-gap-audit-p1clone-20260608201419/data-configured2/codex-gateway-captures`
+
+The live Desktop run used the `clawdbot` workspace:
+`/Users/muqihang/chelingxi_workspace/clawdbot`. Codex Desktop was restarted
+after its temporary provider configuration was changed to `3017`, and the
+running app-server opened established connections to that port. The local
+provider catalog exposed `gpt-5.5`, `deepseek-v4-pro`,
+`claude-sonnet-4-6`, and `agnes-2.0-flash`; direct `/responses` requests to all
+three non-OpenAI upstream families returned HTTP 200 before the Desktop run.
+
+Live prompt matrix status for the 2026-06-08 Desktop run:
+
+| Row | Status | Model | Codex Desktop session id | Evidence notes |
+| --- | --- | --- | --- | --- |
+| C4-1 | Passed | `gpt-5.5` | `019eaaa7-6315-73f3-a7a0-e5f6fccf62d8` | Rerun used file search/read tools and produced a final answer listing inspected files. Supersedes weak null-output attempt `019eaa84-e33e-71c0-8b83-fe3d9165cdc4`. |
+| C4-2 | Passed | `deepseek-v4-pro` | `019eaa85-2a9f-72d2-ba26-0c95bf20483f` | Session contains native `tool_search_call` followed by `tool_search_output`; discovered `multi_agent_v1.spawn_agent` and model choices without hosted web-search rewrite. |
+| C4-3 | Passed | `deepseek-v4-pro` | `019eaa92-be6e-72a1-8d54-4ae7037a1add` | Computer Use inspected the frontmost app and reported visible text plus a safe action. Earlier attempt `019eaa85-d3f5-7c40-9945-51173a1f11fe` is not used as primary evidence because it exposed sensitive page text. |
+| C4-4 | Passed | `deepseek-v4-pro` | `019eaa94-2063-7440-8cbb-bbe96e36afc8` | Computer Use Electron/canvas-style app report completed with app identity and visible text. |
+| C4-5 | Passed | `gpt-5.5` | `019eaa95-550c-7ea1-a0d7-ac773a7a99c3` | Session contains `web_search_call` on the supporting provider. |
+| C4-6 | Passed | `gpt-5.5` | `019eaaa7-a853-73c2-a9db-8b2670101ee3` | Rerun created a tiny JSON object and preserved key/value structure in a one-sentence Chinese description. Supersedes weak ask-for-input attempt `019eaa95-8457-7093-a2b4-ad402f6185e5`. |
+| C4-7 | Skipped by design | `gpt-5.5` | `019eaa95-d897-7222-8884-04aac5d9906d` | Session confirmed HTTP mode with `supports_websockets=false` and skipped WS continuation. Ordinary-chat Continue/Resume buttons were not assumed. |
+| C4-8 | Passed | `deepseek-v4-pro` | `019eaa97-1f8d-7f50-b844-43adbc0617d7` | Tool-read and follow-up completed on DeepSeek. |
+| C4-9 | Passed | `deepseek-v4-pro` | `019eaa97-cae5-7721-bdc1-0f0a5fe82b04` | Repeated same-shape prompt cache diagnostics completed. |
+| C4-10 | Passed | `claude-sonnet-4-6` | `019eaa98-8adf-7f51-9dc2-8a27099b0a84` | Claude file-inspection loop completed without DeepSeek prompt pollution. |
+| C4-11 | Passed | `agnes-2.0-flash` | `019eaa9a-b74e-7920-b441-689090c0461e` | AGNES tool/retry flow completed. The accidental `/goal` interruption attempt `019eaa99-641d-71a2-ab06-e3b1e0eefade` is explicitly discarded and not used as evidence. |
+
+The generated capture report found no content policy violations in the capture
+inputs it processed and summarized Gateway-side diagnostics, including
+DeepSeek replay/cache shape hashes and Computer Use normalized-output evidence.
+It did not include renderer hook app-server events because the manual Desktop
+run was validated from Codex session JSONL plus Gateway captures rather than a
+separate `codex capture attach` trace.
+
+#### 2026-06-09 goal-mode Desktop live smoke on 3018
+
+This follow-up run checked Codex Desktop `/goal` semantics against the persistent
+3018 deployment after the live image was rebuilt with embedded frontend assets
+and OpenAI stream-drain hardening. It is additive evidence for goal-mode tool
+closure and terminal completion; it does not replace the full C4 matrix above.
+
+- Backend under test: `http://127.0.0.1:3018/codex/v1`
+- Docker image:
+  `sub2api:codex-gateway-gap-audit-openai-drain-embed-20260609023113`
+- App container: `sub2api-codex-gateway-live-app`
+- Workspace: `/Users/muqihang/chelingxi_workspace/clawdbot`
+- Gateway capture directory:
+  `/Users/muqihang/chelingxi_workspace/sub2api-codex-gateway-live/data/codex-gateway-captures`
+
+| Provider/model | Codex Desktop session id | Goal result | Evidence notes |
+| --- | --- | --- | --- |
+| DeepSeek `deepseek-v4-flash` | `019eabd6-2923-7a32-bdd9-c1a566b254c4` | Passed | Goal marked `complete` in 26s with 47,950 tokens. Session ran `pwd`, `git status --short`, and an `AGENTS.md` existence check, then called `update_goal`. Session JSONL contained no `stream disconnected`, `missing terminal`, `no available`, or `response.failed` hits. Gateway traces around the run were `ok`; DeepSeek tool closure linked emitted `exec_command`/`update_goal` calls with received results and no missing tool results. |
+| Claude `claude-sonnet-4-6` | `019eabd7-3ffb-7cb3-a94f-40a377b7e203` | Passed | Goal marked `complete` in 73s with 14,861 tokens. Session ran `pwd`, `ls -la | head`, avoided Computer Use as requested, and called `update_goal`. Session JSONL contained no `stream disconnected`, `missing terminal`, `no available`, or `response.failed` hits. Gateway traces around the run were `ok`; Anthropic cache diagnostics reported high prefix reuse on follow-up turns and tool closure linked the emitted tool calls with received results. |
+
+Observed caveats:
+
+- The Claude session attempted `create_goal` even though Desktop had already
+  opened the goal; the local tool returned the expected diagnostic and the model
+  continued by using the existing goal. This is acceptable and did not mutate the
+  canonical transcript beyond normal tool output.
+- The DeepSeek run used `deepseek-v4-flash`, not `deepseek-v4-pro`; it still
+  verifies the DeepSeek provider family goal-mode loop and terminal completion.
+- This run intentionally did not exercise Computer Use, because the goal prompt
+  asked Claude not to use it and the DeepSeek goal was a read-only shell/tool
+  loop.
+
+#### Desktop live smoke handoff
+
+Use this handoff when a human is ready to wire Codex Desktop/app-server to the
+current backend build. Do not change the user's global Codex configuration
+silently; either use temporary CLI `-c` overrides or have the human make and
+later restore the Desktop config change.
+
+Current isolated backend, if still running:
+
+```bash
+. /tmp/sub2api-codex-gap-audit-isolated.env
+set -a
+. /tmp/sub2api-codex-gap-audit-isolated-key.env
+set +a
+curl -fsS "http://127.0.0.1:${PORT}/health"
+docker inspect "$APP" --format 'image={{.Config.Image}} status={{.State.Status}}'
+```
+
+Expected:
+
+- `PORT=3014`
+- `image=sub2api:codex-gateway-gap-audit-6948c5629`
+- app status is `running`
+- `/health` returns `{"status":"ok"}`
+
+Temporary Codex CLI transport smoke, without touching global config:
+
+```bash
+set -a
+. /tmp/sub2api-codex-gap-audit-isolated-key.env
+set +a
+/Applications/Codex.app/Contents/Resources/codex exec \
+  --ignore-user-config --ephemeral --json \
+  -C /Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/codex-gateway-responses-gap-audit \
+  -s read-only \
+  -m gpt-5.5 \
+  -c 'model_provider="gap-audit-local"' \
+  -c 'model_providers.gap-audit-local.name="Gap Audit Local"' \
+  -c "model_providers.gap-audit-local.base_url=\"http://127.0.0.1:${PORT}/codex/v1\"" \
+  -c 'model_providers.gap-audit-local.wire_api="responses"' \
+  -c 'model_providers.gap-audit-local.requires_openai_auth=true' \
+  -c 'model_providers.gap-audit-local.env_key="SUB2API_CODEX_API_KEY"' \
+  -c 'model_providers.gap-audit-local.supports_websockets=false' \
+  -c 'features.responses_websockets_v2=false' \
+  'Reply exactly: codex smoke ok'
+```
+
+For true Desktop live smoke, the human should temporarily configure the Desktop
+provider to:
+
+```toml
+[model_providers.zhumeng-codex]
+base_url = "http://127.0.0.1:3014/codex/v1"
+wire_api = "responses"
+supports_websockets = false
+```
+
+and ensure the Codex process can read the temporary API key from
+`/tmp/sub2api-codex-gap-audit-isolated-key.env`. Restore the original remote
+`base_url` after the live smoke.
+
+Safe prompt set for Desktop live smoke:
+
+| Row | Prompt | Required evidence |
+| --- | --- | --- |
+| C4-1 | "In this repository, list the top-level directories relevant to Codex Gateway and briefly explain which files you inspected." | File read/search tool events, terminal `response.completed`, no tool-pairing diagnostics. |
+| C4-2 | "Use tool search/deferred tools to discover subagent-related tools, then summarize the available subagent model choices." | Native `tool_search_call` followed by `tool_search_output`; no hosted web-search rewrite. |
+| C4-3 | "Use Computer Use to inspect the frontmost controllable app and report visible text plus one safe action you could take; do not click destructive controls." | Retained `visible_text`/operable lines, bounded output, no raw screenshot/base64 in model text. |
+| C4-4 | "Use Computer Use on a visible Electron or canvas-style app window and report visible_text, app identity, and any latest error/truncation status." | `computer_use_compression_version`, app/bundle id, visible text, truncation/error status. |
+| C4-5 | "If web search is available for the selected provider, search for the current OpenAI Responses docs page title and cite only the title; otherwise explain why search is unavailable." | Hosted search only for supporting providers; local/deferred tools otherwise. |
+| C4-6 | "Describe a tiny inline image or structured tool output in one sentence, preserving structured content where the provider supports it." | Image/structured output preserved or safely summarized by text-only providers. |
+| C4-7 | "If WS v2 is enabled, perform stop/continue/resume; otherwise confirm HTTP mode and skip." | Skip when catalog has no WS support; if enabled, terminal events and WS continuation diagnostics. |
+| C4-8 | "On DeepSeek, perform a small tool-read turn, then a follow-up that uses the tool result and preserves thinking/tool-call replay." | DeepSeek reasoning replay succeeds; no blanket `reasoning_content` stripping. |
+| C4-9 | "On DeepSeek, repeat the same-shape short prompt twice in the same thread and compare cache diagnostics." | Stable prefix hashes and official hit/miss usage when upstream returns it, otherwise explicit absence reason. |
+| C4-10 | "On Claude thinking, inspect one repository file and answer a follow-up using the tool result." | Anthropic thinking/tool loop completes without DeepSeek prompt pollution. |
+| C4-11 | "On AGNES, run a simple tool loop and then a safe interruption/retry follow-up." | AGNES-specific cache/key semantics; no DeepSeek official cache-control leakage. |
+
+After the run, generate a capture report:
+
+```bash
+cd /Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/codex-gateway-responses-gap-audit/tools/zhumeng-agent
+uv run zhumeng-agent codex capture report \
+  --trace-dir <desktop-trace-dir> \
+  --gateway-trace-dir /tmp/sub2api-codex-gap-audit-isolated-20260608190747/data/codex-gateway-captures
+```
+
+Record each row as `passed`, `failed`, or `skipped` with the exact reason. A
+provider/key/account absence is a valid skip reason; a protocol regression,
+missing terminal event, broken tool pairing, or cache/usage misreporting is a
+blocking failure.
+
+Validation checklist for every non-skipped row:
+
+- capture contains terminal events and a clear terminal status;
+- tool calls and tool outputs pair with no missing/orphan/duplicate results;
+- deferred tools are discovered and callable through native `tool_search` shape;
+- unsupported cache controls are absent from provider requests;
+- DeepSeek usage records `prompt_cache_hit_tokens` /
+  `prompt_cache_miss_tokens` when upstream returns them;
+- Computer Use output remains token-bounded and keeps `visible_text`,
+  actionable `operable_lines`, app/bundle id, latest error/truncation status,
+  and `computer_use_compression_version`;
+- no DeepSeek, Claude, or AGNES regression is introduced by provider-specific
+  prompt or compression changes.
+
+### AGNES cache diagnostics smoke
+
+AGNES cache evidence must be reported as provider-unsupported unless the
+upstream starts returning explicit cache-hit fields. Do not treat `0` cache
+tokens as a confirmed cold miss for AGNES.
+
+1. Send two same-shape AGNES requests in the same Codex thread.
+2. Verify the upstream request shape includes a scoped `prompt_cache_key`.
+3. Verify the admin usage row shows AGNES as cache unsupported instead of only a
+   silent zero cache token count.
+4. Verify gateway capture marks the trace with
+   `provider_prompt_cache_status:"unsupported"` and the diagnostic
+   `provider_prompt_cache_unsupported`.
+
+Expected:
+
+- billing keeps `cache_read_tokens=0` unless the AGNES upstream returns a real
+  provider cache metric;
+- capture/reporting explains the unsupported metric, so 0 cache tokens are not
+  misdiagnosed as a gateway cache-regression;
+- repeated same-shape requests should preserve deterministic request shape,
+  tool schema order, session key, and scoped `prompt_cache_key`.
+
+### Protocol capture smoke
+
+Enable capture in local config:
+
+```yaml
+gateway:
+  codex:
+    capture:
+      enabled: true
+      level: summary
+      raw_payloads: false
+      base_dir: data/codex-gateway-captures
+      capture_success_sample_rate: 1.0
+      capture_errors_always: true
+```
+
+After one GPT, one DeepSeek, and one Claude request, verify:
+
+```bash
+find data/codex-gateway-captures -maxdepth 3 -type f | sort
+```
+
+Expected capture files include:
+
+- `summary.json`
+- `client_request.shape.json`
+- `client_request.headers.json`
+- `upstream_request.shape.json`
+- `upstream_response.shape.json`
+- `client_stream.events.jsonl` for stream requests
+- `tool_closure.json` when a turn emits or returns tool calls/results
+- `cache_usage.json`
+- `errors.jsonl` for failed requests
+
+Content checks:
+
+```bash
+rg -n "private prompt|sk-|Bearer " data/codex-gateway-captures || true
+rg -n "hmac-sha256|cache_read_input_tokens|response.output" data/codex-gateway-captures
+```
+
+The first command should not find raw user prompt text or credentials in summary-mode captures. The second command should show hashed content metadata, cache usage fields, and stream event names.
+
+### DeepSeek native parity capture smoke
+
+Run these with capture enabled in `summary` mode and `raw_payloads: false`.
+
+#### Deferred tool search and subagent discovery
+
+1. Select `deepseek-v4-pro` in Codex Desktop.
+2. Ask the model to dispatch a subagent or discover the subagent tool.
+3. Inspect the session JSONL and gateway stream capture.
+
+Expected:
+
+- the Codex session records `tool_search_call` followed by `tool_search_output`;
+- `tool_search_output.tools` contains `multi_agent_v1.spawn_agent`;
+- there is no user-visible ordinary `function_call` named `tool_search` for the deferred tool search;
+- gateway request replay accepts the later `tool_search_output` as a `role:"tool"` Chat Completions message.
+
+Use this explicit prompt when checking the deferred tool path:
+
+```text
+Using deepseek-v4-pro, search for the deferred subagent tool and spawn one no-op explorer.
+```
+
+Expected capture evidence:
+
+- `tool_search_call`;
+- `tool_search_output`;
+- `multi_agent_v1.spawn_agent`;
+- no ordinary `function_call name=tool_search` visible in the session.
+
+Live smoke evidence from 2026-06-05:
+
+- parent session:
+  `/Users/muqihang/.codex/sessions/2026/06/05/rollout-2026-06-05T05-12-40-019e97b3-24bf-7f93-b3fc-9247bbf66daf.jsonl`;
+- child session:
+  `/Users/muqihang/.codex/sessions/2026/06/05/rollout-2026-06-05T05-12-53-019e97b3-565e-7ea2-accc-f828ed0e2c70.jsonl`;
+- parent `turn_context.model` was `deepseek-v4-pro`;
+- parent emitted `tool_search_call` for `spawn subagent multi agent`;
+- `tool_search_output.tools` contained namespace `multi_agent_v1` and `spawn_agent`;
+- parent emitted native namespace calls `multi_agent_v1.spawn_agent`, `multi_agent_v1.wait_agent`,
+  and `multi_agent_v1.close_agent`;
+- `spawn_agent` arguments omitted `model`, so the child inherited the parent model;
+- child `turn_context.model` was `deepseek-v4-pro`;
+- `wait_agent` returned `{"completed":"Explorer ready"}` and `close_agent` returned the same previous
+  completed status.
+
+Known app-server boundary from the same run: the deferred `spawn_agent` description still listed only
+Claude model overrides and did not list DeepSeek overrides, but actual inherited-model spawn validation
+accepted DeepSeek and the child ran on `deepseek-v4-pro`. Treat the missing override-list entry as a
+picker/description freshness issue, not a native spawn-routing blocker. The exact app-server refresh
+boundary for that override description remains unproven as of this live run; do not claim it is fixed by
+catalog writes alone. A future follow-up must prove whether the boundary is a full Desktop restart, an
+app-server process refresh, a model-list cache refresh, or another native Codex path by capturing the same
+`spawn_agent` description before and after the refresh action.
+
+If `tool_search_output.tools` does not list DeepSeek-capable `spawn_agent` model overrides while the local
+`model_catalog_json` contains DeepSeek models, run:
+
+```bash
+zhumeng-agent codex capture report --trace-dir <desktop-trace-dir>
+```
+
+Expected diagnostic:
+
+- `spawn_agent_model_override.spawn_agent_model_override_mismatch:true`;
+- `spawn_agent_model_override.catalog_has_deepseek:true`;
+- `spawn_agent_model_override.spawn_agent_has_deepseek:false`;
+- `catalog_hash`, `catalog_mtime`, and capture timestamp are present.
+
+#### Model catalog refresh boundary
+
+Current boundary assumption for DeepSeek/Claude catalog changes: Codex app-server may keep model catalog
+state in-process or behind an app-server cache. Treat catalog/config writes as requiring a Codex restart
+unless a same-session `model/list` capture proves the refreshed catalog and `spawn_agent` description are
+visible.
+
+After changing `model_catalog_json` or `config.toml`:
+
+1. Run `zhumeng-agent desktop diagnose --redacted --json`.
+2. Inspect `doctor.model_catalog_freshness`.
+3. Restart Codex Desktop when `restart_required:true` or `restart_required_reasons` is non-empty.
+4. Re-run the deferred tool prompt above and confirm the next `tool_search_output.tools` includes DeepSeek,
+   or record the exact `spawn_agent_model_override` mismatch from the capture report.
+
+Expected doctor fields:
+
+- `model_catalog_json`;
+- `catalog_hash`;
+- `catalog_mtime`;
+- `catalog_has_deepseek`;
+- `deepseek_models_present`;
+- `active_default_model`;
+- `restart_required`;
+- `restart_required_reasons`;
+- `app_server_refresh_boundary`.
+
+#### Skills runtime parity
+
+Doctor evidence should remain factual only. It may report configured marketplaces, enabled plugins, skills
+directories, plugin cache skill paths, and whether DeepSeek catalog base instructions contain local routing
+guidance. It must not claim a model can or cannot use a Skill from file presence alone.
+
+Explicit skill-file prompt:
+
+```text
+Using deepseek-v4-pro, read the superpowers:systematic-debugging SKILL.md and summarize only the four phase names.
+Do not use tool_search.
+```
+
+Expected:
+
+- the model reads the local `SKILL.md` via shell/file access;
+- no `tool_search` is needed for ordinary file-backed Skills;
+- the response does not say Skills are unavailable.
+
+Implicit Skill trigger prompt:
+
+```text
+Using deepseek-v4-pro, diagnose a reproducible failing test in this repository.
+Follow the applicable local skill instructions before proposing a fix.
+Do not implement code.
+```
+
+Expected:
+
+- the model identifies that `superpowers:systematic-debugging` applies from injected skill instructions;
+- the model opens the local `SKILL.md` before proposing diagnosis steps;
+- smoke notes record the exact `SKILL.md` path opened;
+- the model follows the skill's evidence-first phases;
+- no claim is made that Skills are unavailable;
+- no `tool_search` is needed for ordinary file-backed Skills.
+
+Live smoke evidence from 2026-06-05:
+
+- session:
+  `/Users/muqihang/.codex/sessions/2026/06/05/rollout-2026-06-05T18-56-41-019e9aa5-8db3-79c3-b35b-d54b21e97481.jsonl`;
+- `turn_context.model` was `deepseek-v4-flash`;
+- the prompt asked DeepSeek to diagnose a reproducible test failure and follow the applicable local Skill
+  before proposing a fix;
+- DeepSeek opened `/Users/muqihang/.codex/superpowers/skills/systematic-debugging/SKILL.md`;
+- it identified `superpowers:systematic-debugging` and summarized the four evidence-first phases;
+- no `tool_search` was used for the ordinary file-backed Skill load.
+
+#### Computer Use visibility
+
+1. Select `deepseek-v4-pro`.
+2. Run a Computer Use `get_app_state` turn against a local app window that includes visible lower-screen controls or a reply/input area.
+3. If hosted vision is configured, ensure the tool output includes a large screenshot or `image_base64`.
+4. Inspect `client_request.diagnostics.json` and the upstream request shape.
+
+Expected:
+
+- DeepSeek-visible tool content does not contain raw screenshot/base64;
+- the normalized tool content retains `computer_screenshot` when hosted vision succeeds;
+- the normalized tool content retains `accessibility_tree` or `visual_tree`;
+- `operable_lines` includes at least one lower-screen input/reply/action line;
+- summaries include `sha256` and `original_chars`;
+- `deepseek_tool_output_summary.fallback_preview_only` is `false`;
+- `deepseek_tool_output_summary.classes` includes `computer_screenshot` and/or `accessibility_tree`;
+- `deepseek_tool_output_summary.operable_line_count` is non-zero.
+
+Live smoke evidence from 2026-06-05:
+
+- session:
+  `/Users/muqihang/.codex/sessions/2026/06/05/rollout-2026-06-05T18-56-41-019e9aa5-8db3-79c3-b35b-d54b21e97481.jsonl`;
+- `list_apps` and `get_app_state` completed against local macOS apps, including `com.apple.freeform`;
+- the Computer Use MCP server was not in the previous 120s-timeout failure mode;
+- gateway capture summary showed `deepseek_tool_output_summary.fallback_preview_only:false`;
+- normalized output classes included `accessibility_tree` and binary/image metadata, with non-zero
+  `operable_line_count`;
+- Freeform canvas manipulation still required more model-side strategy than GPT-like use, but the gateway
+  and tool-output preservation path did not drop the app-state content.
+
+#### Abort/resume cache evidence
+
+1. Keep capture in shape-only summary mode.
+2. Start a DeepSeek thread and execute one tool turn.
+3. Interrupt or abort the next turn.
+4. Resume the same thread.
+5. Record the Codex session id, gateway trace id, token usage, and `prompt_cache_*` fields from the session/capture.
+
+Expected:
+
+- a gateway capture exists for the resumed DeepSeek request;
+- `client_request.diagnostics.json` contains `deepseek_cache.previous_response_id_present:true`;
+- `deepseek_cache.previous_response_replay_mode` is `full_replay_messages` when gateway state is available;
+- `deepseek_cache.state_lookup_status` identifies `hit`, `miss`, or the exact invalid-state reason;
+- `messages_full_hash`, `message_prefix_hash`, `message_suffix_hash`, `tool_schema_hash`, and `request_shape_hash` are present;
+- `cache_usage.json` can be correlated to session token usage through hashed trace/session fields;
+- any post-warmup `0 cached` turn has a cache attribution reason such as `request_not_warmed`, `message_prefix_changed`, `tool_schema_changed`, `request_shape_changed`, or `upstream_best_effort_or_unknown`.
+
+Live interruption/continue evidence from 2026-06-05:
+
+- session:
+  `/Users/muqihang/.codex/sessions/2026/06/05/rollout-2026-06-05T19-30-00-019e9ac4-0e3d-7bc3-9044-863990c2a2cf.jsonl`;
+- `turn_context.model` was `deepseek-v4-flash`;
+- a long read-only tool task started at line 59 and emitted tool calls at lines 65, 69, and 70;
+- Codex recorded `turn_aborted` at line 75 with `reason:"interrupted"` and `duration_ms:12122`;
+- the same thread resumed from the user's `继续` message at line 79, read additional package files, and
+  completed at line 119 with a final architecture summary;
+- before the interrupt, session token counts were:
+  - line 67: `input_tokens:20375`, `cached_input_tokens:19200`, cache ratio about 94.23%;
+  - line 73: `input_tokens:20664`, `cached_input_tokens:20352`, cache ratio about 98.49%;
+- after the user-driven continue, session token counts were:
+  - line 90: `input_tokens:23578`, `cached_input_tokens:19328`, cache ratio about 81.97%;
+  - line 106: `input_tokens:25945`, `cached_input_tokens:23424`, cache ratio about 90.28%;
+  - line 110: `input_tokens:29095`, `cached_input_tokens:25856`, cache ratio about 88.87%;
+  - line 114: `input_tokens:29295`, `cached_input_tokens:29056`, cache ratio about 99.18%;
+  - line 118: `input_tokens:30009`, `cached_input_tokens:29184`, cache ratio about 97.25%;
+- matching gateway traces included:
+  - `trace_1780713241539984345` and `trace_1780713246557384458` before the interrupt;
+  - `trace_1780713258913134964`, `trace_1780713263374228841`,
+    `trace_1780713266791420676`, `trace_1780713269448016594`, and
+    `trace_1780713273212555930` after the user-driven continue;
+- all checked post-continue `tool_closure.json` files had empty `missing_results`, `orphan_results`, and
+  `duplicate_results`;
+- every checked post-continue cache miss below 99% had capture attribution including
+  `context_compaction_changed_prefix`, `request_not_warmed`, and `request_shape_changed`.
+
+Boundary note: this live run proves an interrupted DeepSeek turn followed by a user `继续` continuation did
+not lose tool results and recovered high cache hit rates with capture-backed attribution. It does not prove
+gateway-managed state replay through a native `previous_response_id`: the checked DeepSeek traces recorded
+`previous_response_id_present:false`, `previous_response_replay_mode:"none"`, and
+`state_lookup_status:"not_requested"`. If a future Codex Desktop "native Continue/Resume" control emits
+`previous_response_id`, run the stricter repro above and require `previous_response_id_present:true` plus
+`full_replay_messages`.
+
+Native Stop/Continue control boundary from 2026-06-05:
+
+- session:
+  `/Users/muqihang/.codex/sessions/2026/06/05/rollout-2026-06-05T20-00-34-019e9ae0-0ad8-7e52-b28f-be83b74ecb7c.jsonl`;
+- the warmup turn completed on `deepseek-v4-flash`;
+- the long read-only task emitted tool calls and tool results through line 49, then the user clicked the
+  Codex Desktop Stop control;
+- Codex recorded `turn_aborted` at line 52 with `reason:"interrupted"`;
+- the UI did not show a native Continue/Resume button, and the user did not type `继续`, so no native
+  resumed request was produced;
+- matching DeepSeek gateway traces all recorded `previous_response_id_present:false`,
+  `previous_response_replay_mode:"none"`, and `state_lookup_status:"not_requested"`;
+- the final stopped trace `trace_1780714863392059971` ended as `response.incomplete`, had no visible output,
+  had zero provider usage because the upstream stream did not provide final usage, and had empty
+  `missing_results`, `orphan_results`, and `duplicate_results`.
+
+Treat this as a Desktop UI boundary, not a DeepSeek gateway replay failure: this run did not provide a
+native `previous_response_id` input for the gateway to replay. A stricter native-resume proof remains
+conditional on finding a Codex Desktop path that actually emits `previous_response_id`.
+
+#### Subagent registration ordering
+
+Manual prompt:
+
+```text
+Using deepseek-v4-pro as controller, spawn one DeepSeek subagent that only says "ready" and then wait for it.
+```
+
+Expected:
+
+- no `unknown conversation` before registration;
+- if `unknown conversation` appears, it is followed by deterministic resume recovery and no lost tool/result events;
+- `subagent_registration.jsonl` contains only event names, timestamps, hashed conversation/thread ids, and safe status classes;
+- capture report includes ordered evidence:
+  - `subagent_registration_events`;
+  - `subagent_registration_race_suspected`;
+  - `first_item_before_conversation_registered`;
+  - `unknown_conversation_count`;
+  - `thread_read_empty_count`;
+  - `maybe_resume_success_after_unknown_conversation`.
+
+If the report confirms a race outside zhumeng-agent controlled code, do not patch minified Codex bundles as
+the primary fix. Record the app-server boundary and use the exact report condition to decide restart/retry
+fallback. If a race is confirmed in zhumeng-agent controlled code, fix ordering or add bounded
+retry/rehydration around the failing read/resume boundary and add a regression test from the captured event
+order.
+
+#### Capture report matrix
+
+Link desktop and gateway captures after a full DeepSeek run:
+
+```bash
+zhumeng-agent codex capture report --trace-dir <desktop-trace-dir> --gateway-trace-dir <gateway-capture-dir>
+```
+
+Expected report includes:
+
+- `tool_search_call` followed by `tool_search_output` in session/capture evidence;
+- spawn-agent model override freshness status;
+- Computer Use normalized-output class summary;
+- cache replay diagnostics for resumed DeepSeek requests;
+- subagent registration ordering summary.
+
+### Regression prompts
+
+Use these prompts when validating Codex Desktop end-to-end.
+
+#### Claude Thinking tool replay
+
+```text
+Please inspect the Codex Gateway Anthropic adapter without editing files.
+
+1. Read codex_gateway_anthropic_request.go and codex_gateway_anthropic_stream.go.
+2. Identify where thinking is preserved, where forced tool choice disables thinking, and where upstream HTML errors are sanitized.
+3. Return no more than five bullet points.
+```
+
+Then continue in the same thread:
+
+```text
+Continue from the files you already inspected.
+
+1. Read codex_gateway_anthropic_stream_test.go only.
+2. List the tests that protect thinking signature replay and Cloudflare 524 handling.
+3. Explain what each test protects in one sentence.
+```
+
+#### Mixed controller and subagents
+
+```text
+Dispatch two background subagents without editing files:
+
+1. Use deepseek-v4-pro to inspect the project structure and summarize the Codex Gateway modules.
+2. Use claude-sonnet-4-6 to inspect the Anthropic adapter tests and summarize the risk controls.
+
+As controller, return only whether either subagent found a blocking issue and three observations I should check in the UI.
+```
+
+### Expected failure checks
+
+- Generic or Augment-only API keys must be rejected on `/codex/v1/*`.
+- OpenAI HTTP `/codex/v1/responses` with `previous_response_id` must return a 400 WS v2 error.
+- DeepSeek/Claude/AGNES HTTP `previous_response_id` is allowed only as Gateway-managed replay through local state; missing or invalid local state must fail closed with replay diagnostics, not fall back to OpenAI server-store semantics.
+- DeepSeek models should disappear from `/codex/v1/models` when their provider group is unset or unhealthy.
+- Anthropic forced `tool_choice` should disable thinking only for that request.
+- Anthropic-compatible upstream `520`, `522`, or `524` HTML errors should be returned as clean `upstream_timeout` errors, not raw HTML.
+- Anthropic stream errors before visible output should be eligible for account failover; errors after visible output must not be transparently replayed.
+
+#### Deferred tools family matrix smoke
+
+Purpose: prove DeepSeek handles Codex deferred tools as a generic `tool_search_call` / `tool_search_output` protocol family, not as a one-off `multi_agent_v1.spawn_agent` special case. This smoke must classify each tool family as one of:
+
+- `deferred`: discovered through `tool_search_output.tools` and callable on the next turn;
+- `direct`: already exposed as a normal tool, so `tool_search` is not required;
+- `skill_only`: loaded from local `SKILL.md` or injected skill routing instructions, not via `tool_search`;
+- `unavailable`: not exposed in this Desktop/plugin environment.
+
+Do not treat `direct`, `skill_only`, or `unavailable` as failures unless Codex returns the tool in `tool_search_output.tools` and DeepSeek cannot call it on the next turn.
+
+##### Prompt A: discover-only matrix
+
+Run with `deepseek-v4-pro` selected:
+
+```text
+请做一次 deferred tools matrix 发现测试。
+请分别搜索这些关键词：spawn_agent、computer use、browser、chrome、document、spreadsheet、presentation。
+只报告 tool_search 返回的 namespace 和 tool name；不要执行会修改文件、打开外部网站、操作真实 App、发送消息或派遣子代理的动作。
+如果某一类工具不是通过 tool_search 暴露，而是直接可见或 Skill-only，请明确分类为 direct 或 skill_only。
+```
+
+Expected session/capture evidence:
+
+- one or more native `tool_search_call` items;
+- matching `tool_search_output` items after the calls;
+- no visible ordinary `function_call` item named `tool_search`;
+- `tool_search_output.tools` includes any deferred namespaces actually available in this Desktop environment;
+- the final answer classifies each requested family without inventing unsupported call names.
+
+After the run, generate a capture report:
+
+```bash
+zhumeng-agent codex capture report --trace-dir <desktop-trace-dir> --gateway-trace-dir <gateway-capture-dir>
+```
+
+Expected `deferred_tool_search` fields when deferred tools are present:
+
+```json
+{
+  "tool_search_call_count": 1,
+  "tool_search_output_count": 1,
+  "tool_search_call_followed_by_output": true,
+  "discovered_namespaces": ["..."],
+  "discovered_tools": ["namespace.tool"],
+  "tool_family_matrix": {
+    "namespace": {"tool_count": 1, "tools": ["tool"]}
+  }
+}
+```
+
+The exact namespaces depend on enabled Codex plugins. The important invariant is that safe namespace/tool names are preserved in the shape-only report while descriptions, prompts, call IDs, and sensitive values are not serialized.
+
+##### Prompt B: deferred SubAgent execution
+
+Run with `deepseek-v4-pro` selected:
+
+```text
+请搜索 deferred subagent 工具，然后派遣一个 no-op 子代理。
+子代理只需要回复一句：DeepSeek deferred subagent matrix smoke passed。
+优先选择 DeepSeek 模型；如果 spawn_agent 的模型 override 列表没有 DeepSeek，请不要失败，请报告模型列表，并在没有显式 model 参数时继承当前 DeepSeek 模型。
+```
+
+Expected:
+
+- `tool_search_call` discovers `multi_agent_v1.spawn_agent`;
+- parent emits native namespace calls such as `multi_agent_v1.spawn_agent`, `multi_agent_v1.wait_agent`, and `multi_agent_v1.close_agent`;
+- child session uses DeepSeek if inherited or explicitly selected;
+- if model overrides omit DeepSeek, `spawn_agent_model_override` report records the freshness mismatch instead of masking it.
+
+##### Prompt C: Computer Use classification
+
+Run with `deepseek-v4-pro` selected:
+
+```text
+请判断 Computer Use 工具在当前 Codex Desktop 里是 direct 还是 deferred。
+如果它是 direct，请只调用 list_apps；如果必须通过 tool_search，请先搜索再只调用 list_apps。
+不要打开、点击或操作任何 App。最后报告你实际使用的是 direct、deferred，还是 unavailable。
+```
+
+Expected:
+
+- if direct: a normal `list_apps` tool call succeeds or times out with a factual tool availability error;
+- if deferred: `tool_search_output.tools` lists the Computer Use namespace/tool and the next turn calls it through the mapped alias;
+- no blind clicking, scrolling, text input, or app mutation occurs.
+
+##### Prompt D: Browser/Chrome classification
+
+Run with `deepseek-v4-pro` selected:
+
+```text
+请判断 Browser 和 Chrome 工具在当前 Codex Desktop 里是 direct、deferred、还是 unavailable。
+不要打开外部网站；如果需要做最小验证，只能使用 about:blank 或 localhost。
+最后报告每类工具的来源和是否真实调用。
+```
+
+Expected:
+
+- direct/deferred/unavailable classification is explicit;
+- no remote URL or authenticated page is opened;
+- if deferred, the report shows Browser/Chrome namespace/tool entries in `tool_family_matrix`.
+
+##### Prompt E: Skill negative control
+
+Run with `deepseek-v4-pro` selected:
+
+```text
+请加载 Computer Use Skill 的说明，摘要说明其中关于 Electron/画布类 App 的操作策略。
+不要使用 tool_search 搜索 Skill，不要操作任何 App。
+```
+
+Expected:
+
+- the model reads or follows local Skill instructions;
+- no `tool_search` is needed for ordinary file-backed Skills;
+- the model does not claim Skills are unavailable just because they are not in `tool_search_output.tools`.
+
+##### Cache interpretation for the matrix
+
+For any family classified as `deferred`, run a two-turn warmup:
+
+1. discover the tool with `tool_search`;
+2. repeat a same-shape safe action using the discovered tool.
+
+Expected cache behavior:
+
+- the discovery turn may have lower cache because `tool_search_output.tools` changes the next-turn prompt shape;
+- after warmup, repeated same-shape turns should keep stable tool schema ordering and should not produce unexplained `0 cached` runs;
+- if `0 cached` appears, the capture report must show whether the request had `previous_response_id_present`, stable replay diagnostics, and cache attribution fields.
+
+## Codex Desktop Full-Capture Coverage Smoke
+
+These smoke entries are keyed by matrix row id from `docs/codex-gateway/codex-desktop-full-capture-v3.md`. Do not mark a row `shipped` just because a file exists. A shipped row needs: action-specific dynamic evidence, static denominator comparison where applicable, redaction-negative checks, and high-confidence trace joins where the row crosses Desktop and Gateway.
+
+Pre-launch:
+
+```bash
+# install renderer addBinding bridge
+zhumeng-agent codex capture install --app /Applications/Codex.app
+# launch Desktop with CDP open
+open -a /Applications/Codex.app --args --remote-debugging-port=9222
+# attach the bridge in the background
+zhumeng-agent codex capture attach --cdp-port 9222 --trace-dir /tmp/codex-desktop-capture-smoke
+```
+
+### Required exercises
+
+One full text turn is not enough. Run only exercises that are safe for the local account and environment. Record skipped exercises as `gap` with a reason.
+
+1. Fresh login / refresh / logout where safe (C3, C18, C21, C23).
+2. New thread, resume existing thread, cancel/abort turn, permission denied path, malformed/error path if available (C1, C14, C17).
+3. Menu/context-menu/worktree command/open frontmost window/browser sidebar path (C10, C24).
+4. MCP OAuth or MCP startup, plugin marketplace/cache, skill trigger, subagent spawn/wait/close (C20).
+5. Computer Use, browser-use, node_repl each in a tiny safe workflow (C7-C9).
+6. External-agent detect/import in a disposable fixture if available (C22).
+7. Realtime session with mic permission accepted and denied paths if available (C16).
+8. Binary/static baseline pass against the current app (C6, C11, C12, C19).
+
+### Per-row evidence checks
+
+- C1 / C14 / C17: `app_server_v2.jsonl` must include method/notification shape, request ids where present, error schema, cancel/abort, reconnect or explicit not-observed marker, and event ordering. Required events are action-specific; `model/rerouted` is optional unless the smoke action forces reroute.
+- C2 / C23: `network.events.jsonl` must include path-level shape entries for `https://chatgpt.com/backend-api`, Codex Desktop auth/profile/MFA paths under `api.openai.com` / `auth.openai.com`, connector/entitlement/model/device/feature endpoints when exercised, and telemetry/updater hosts when exercised. Body shape/hash must exist in shape-only mode; raw bodies require `ZHUMENG_CODEX_DESKTOP_CAPTURE_RAW_UNLOCK_NETWORK`.
+- C3 / C21: `oauth.state.jsonl` must include redacted OAuth/PKCE/MFA or explicit skipped marker; JWT bodies show claim key sets only. Remote-control pairing/revoke must be captured when exercised.
+- C4 / C5 / C25: `telemetry.shape.jsonl` must record DSN/endpoint, transport mode, event/span/log/crash metadata shape. Raw messages and crash dumps must be absent unless `ZHUMENG_CODEX_DESKTOP_CAPTURE_RAW_UNLOCK_TELEMETRY` is set.
+- C6 / C11 / C12 / C19: baseline output must validate schema, hashes, version pin, codesign parse, entitlements parse, asar listing completeness, static denominator extraction, updater appcast metadata, and signature validation status. Raw deobfuscated source must not be committed.
+- C7 / C13: `pipe.cua.jsonl` must include process spawn argv/cwd/env shape, binary hash, frame methods, trust decisions, stderr/stdout class, crash/restart or explicit not-observed marker, and permission denial when exercised. Raw screenshot bytes must be absent unless `ZHUMENG_CODEX_DESKTOP_CAPTURE_RAW_UNLOCK_CUA` is set.
+- C8: `pipe.browser.jsonl` must include peer auth, CDP relay, navigation/download lifecycle, crash/restart or explicit not-observed marker. Raw page bodies require `ZHUMENG_CODEX_DESKTOP_CAPTURE_RAW_UNLOCK_BROWSER`.
+- C9: `pipe.node_repl.jsonl` must include invocation lifecycle, allowlist evaluation, request meta shape, stdout/stderr class, crash/restart or explicit not-observed marker. Raw code must be absent unless `ZHUMENG_CODEX_DESKTOP_CAPTURE_RAW_UNLOCK_NODE_REPL` is set.
+- C10 / C24: `ipc.events.jsonl` must include static denominator comparison, runtime samples for `codex_desktop:*` channels exercised by the UI, explicit method ids exercised by the smoke, and UI-to-app-server chain links. Preload-patch-only evidence can make the row `partial`, not `shipped`.
+- C15: dev URL evidence only passes when the smoke explicitly launches a dev build or feature override. Otherwise mark C15 skipped/gap; do not pass on “no dev surface hit”.
+- C16: `realtime.events.jsonl` must record PeerConnection lifecycle, SDP, transcript ordering, codec/chunk class, mic permission outcome, interrupt/barge-in/VAD where exercised. Raw audio requires `ZHUMENG_CODEX_DESKTOP_CAPTURE_RAW_UNLOCK_REALTIME`.
+- C18: `local_state.schema.json` must include filesystem schema and credential item names only. Secret values, token values, local absolute paths, repo URLs, branch names, and raw session content must be absent.
+- C20: plugin/MCP/skills/subagent evidence must include plugin manifest/cache/marketplace shape, MCP transport/OAuth/startup shape, skill trigger/loader/cache, `multi_agent_v1.*` discovery/spawn/wait/close lifecycle, and deferred tool output families when exercised.
+- C22: external-agent import evidence must include detect/import schema, source discovery, completion notification, generated-file staging, failure/retry or explicit not-observed marker.
+
+### Redaction-negative checks
+
+Run these after the report is generated. They must return no matches unless the exact row raw unlock is set and the session TTL/retention policy explicitly permits it.
+
+```bash
+TRACE=/tmp/codex-desktop-capture-smoke
+rg -n --hidden --no-ignore -S 'Authorization:|Bearer |refresh_token|access_token|device_token|Cookie:|Set-Cookie:' "$TRACE"
+rg -n --hidden --no-ignore -S '/Users/|git@github.com|https://github.com/.+/.+|branch:|commit [0-9a-f]{7,40}' "$TRACE"
+rg -n --hidden --no-ignore -S 'data:image/|iVBORw0KGgo|RIFF|WEBM|BEGIN PRIVATE KEY|BEGIN OPENSSH PRIVATE KEY' "$TRACE"
+```
+
+Expected: no output. If output appears, keep the affected matrix row at `gap` and fix redaction before proceeding.
+
+### Report and join checks
+
+```bash
+zhumeng-agent codex capture report \
+  --trace-dir /tmp/codex-desktop-capture-smoke \
+  --gateway-trace-dir data/codex-gateway-captures/$(date +%Y-%m-%d)
+# planned subcommand; implement before relying on it for shipped status
+zhumeng-agent codex capture matrix --trace-dir /tmp/codex-desktop-capture-smoke
+```
+
+Expected:
+
+- every shipped row appears in the report with `coverage_denominator_count`, `seen_count`, `unseen_required[]`, and `sampled_optional[]`;
+- every gap row appears in the doctor and matrix output with a documented next action;
+- rows that cross Desktop and Gateway have at least one high-confidence shared-HMAC join in `trace_link.jsonl`; timestamp-only `low_confidence` links do not satisfy shipped status;
+- `unmatched_expected` rows are emitted for expected gateway peers that were not found;
+- replay/golden fixtures exist for rows where replay is meaningful, or an explicit not-replayable rationale exists.

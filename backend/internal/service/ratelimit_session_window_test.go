@@ -87,16 +87,10 @@ func (m *sessionWindowMockRepo) List(context.Context, pagination.PaginationParam
 func (m *sessionWindowMockRepo) ListWithFilters(context.Context, pagination.PaginationParams, string, string, string, string, int64, string) ([]Account, *pagination.PaginationResult, error) {
 	panic("unexpected")
 }
-func (m *sessionWindowMockRepo) ListAllWithFilters(context.Context, string, string, string, string, int64, string) ([]Account, error) {
-	panic("unexpected")
-}
 func (m *sessionWindowMockRepo) ListByGroup(context.Context, int64) ([]Account, error) {
 	panic("unexpected")
 }
 func (m *sessionWindowMockRepo) ListActive(context.Context) ([]Account, error) {
-	panic("unexpected")
-}
-func (m *sessionWindowMockRepo) ListOAuthRefreshCandidates(context.Context) ([]Account, error) {
 	panic("unexpected")
 }
 func (m *sessionWindowMockRepo) ListByPlatform(context.Context, string) ([]Account, error) {
@@ -370,19 +364,40 @@ func TestUpdateSessionWindow_NoClearUtilizationOnCorrection(t *testing.T) {
 	}
 }
 
-func TestUpdateSessionWindow_SamplesFable7dOiHeaders(t *testing.T) {
-	// 被动采样应收集 7d_oi（Fable 专属 7d 窗口）的 utilization 和 reset。
-	existingEnd := time.Now().Add(3 * time.Hour)
-	resetOIUnix := time.Now().Add(80 * time.Hour).Unix()
-
+func TestUpdateSessionWindow_StoresPercentUtilizationHeaders(t *testing.T) {
+	end := time.Now().Add(2 * time.Hour)
 	repo := &sessionWindowMockRepo{}
 	svc := newRateLimitServiceForTest(repo)
-
-	account := &Account{ID: 90, SessionWindowEnd: &existingEnd} // needInitWindow=false
+	account := &Account{ID: 67, SessionWindowEnd: &end}
 	headers := http.Header{}
 	headers.Set("anthropic-ratelimit-unified-5h-status", "allowed")
-	headers.Set("anthropic-ratelimit-unified-7d_oi-utilization", "0.87")
-	headers.Set("anthropic-ratelimit-unified-7d_oi-reset", fmt.Sprintf("%d", resetOIUnix))
+	headers.Set("anthropic-ratelimit-unified-5h-utilization", "42%")
+	headers.Set("anthropic-ratelimit-unified-7d-utilization", "91%")
+	headers.Set("anthropic-ratelimit-unified-7d-reset", fmt.Sprintf("%d", time.Now().Add(48*time.Hour).Unix()))
+
+	svc.UpdateSessionWindow(context.Background(), account, headers)
+
+	if len(repo.updateExtraCalls) != 1 {
+		t.Fatalf("expected 1 UpdateExtra call, got %d", len(repo.updateExtraCalls))
+	}
+	if val, ok := repo.updateExtraCalls[0].Updates["session_window_utilization"].(float64); !ok || val != 0.42 {
+		t.Errorf("expected 5h utilization 0.42, got %v", repo.updateExtraCalls[0].Updates["session_window_utilization"])
+	}
+	if val, ok := repo.updateExtraCalls[0].Updates["passive_usage_7d_utilization"].(float64); !ok || val != 0.91 {
+		t.Errorf("expected 7d utilization 0.91, got %v", repo.updateExtraCalls[0].Updates["passive_usage_7d_utilization"])
+	}
+}
+
+func TestUpdateSessionWindow_SamplesFablePassiveUsage(t *testing.T) {
+	end := time.Now().Add(2 * time.Hour)
+	repo := &sessionWindowMockRepo{}
+	svc := newRateLimitServiceForTest(repo)
+	account := &Account{ID: 74, SessionWindowEnd: &end}
+	resetAt := time.Now().Add(6 * 24 * time.Hour).UTC().Truncate(time.Second)
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-status", "allowed")
+	headers.Set("anthropic-ratelimit-unified-7d_oi-utilization", "0.73")
+	headers.Set("anthropic-ratelimit-unified-7d_oi-reset", fmt.Sprintf("%d", resetAt.Unix()))
 
 	svc.UpdateSessionWindow(context.Background(), account, headers)
 
@@ -390,36 +405,40 @@ func TestUpdateSessionWindow_SamplesFable7dOiHeaders(t *testing.T) {
 		t.Fatalf("expected 1 UpdateExtra call, got %d", len(repo.updateExtraCalls))
 	}
 	updates := repo.updateExtraCalls[0].Updates
-	if val, ok := updates["passive_usage_7d_oi_utilization"].(float64); !ok || val != 0.87 {
-		t.Errorf("expected passive_usage_7d_oi_utilization=0.87, got %v", updates["passive_usage_7d_oi_utilization"])
+	if val, ok := updates["passive_usage_7d_oi_utilization"].(float64); !ok || val != 0.73 {
+		t.Fatalf("expected fable utilization 0.73, got %#v", updates["passive_usage_7d_oi_utilization"])
 	}
-	if val, ok := updates["passive_usage_7d_oi_reset"].(int64); !ok || val != resetOIUnix {
-		t.Errorf("expected passive_usage_7d_oi_reset=%d, got %v", resetOIUnix, updates["passive_usage_7d_oi_reset"])
+	if got := updates["passive_usage_7d_oi_reset"]; got != resetAt.Unix() {
+		t.Fatalf("expected fable reset %d, got %#v", resetAt.Unix(), got)
 	}
 }
 
-func TestUpdateSessionWindow_ClearsFable7dOiOnWindowReset(t *testing.T) {
-	// 5h 窗口重置时应连同清除 7d_oi 被动采样数据，与 7d 行为一致。
-	resetUnix := time.Now().Add(3 * time.Hour).Unix()
-
-	repo := &sessionWindowMockRepo{}
-	svc := newRateLimitServiceForTest(repo)
-
-	account := &Account{ID: 91} // no existing window → needInitWindow=true
-	headers := http.Header{}
-	headers.Set("anthropic-ratelimit-unified-5h-status", "allowed")
-	headers.Set("anthropic-ratelimit-unified-5h-reset", fmt.Sprintf("%d", resetUnix))
-
-	svc.UpdateSessionWindow(context.Background(), account, headers)
-
-	if len(repo.updateExtraCalls) != 1 {
-		t.Fatalf("expected 1 UpdateExtra (clear) call, got %d", len(repo.updateExtraCalls))
+func TestUpdateSessionWindow_ParsesRFC3339AndMillisResetHeaders(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{name: "rfc3339", raw: time.Now().Add(3 * time.Hour).UTC().Truncate(time.Second).Format(time.RFC3339)},
+		{name: "millis", raw: fmt.Sprintf("%d", time.Now().Add(4*time.Hour).UTC().UnixMilli())},
 	}
-	clearUpdates := repo.updateExtraCalls[0].Updates
-	for _, key := range []string{"passive_usage_7d_oi_utilization", "passive_usage_7d_oi_reset"} {
-		if val, present := clearUpdates[key]; !present || val != nil {
-			t.Errorf("expected %s cleared to nil on window reset, got present=%v val=%v", key, present, val)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &sessionWindowMockRepo{}
+			svc := newRateLimitServiceForTest(repo)
+			account := &Account{ID: 68}
+			headers := http.Header{}
+			headers.Set("anthropic-ratelimit-unified-5h-status", "allowed")
+			headers.Set("anthropic-ratelimit-unified-5h-reset", tc.raw)
+
+			svc.UpdateSessionWindow(context.Background(), account, headers)
+
+			if len(repo.sessionWindowCalls) != 1 {
+				t.Fatalf("expected 1 session window call, got %d", len(repo.sessionWindowCalls))
+			}
+			if repo.sessionWindowCalls[0].End == nil || time.Until(*repo.sessionWindowCalls[0].End) <= 0 {
+				t.Fatalf("expected future parsed window end, got %+v", repo.sessionWindowCalls[0])
+			}
+		})
 	}
 }
 

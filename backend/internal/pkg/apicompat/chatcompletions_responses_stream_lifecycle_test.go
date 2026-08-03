@@ -179,12 +179,8 @@ func TestStream_ToolCallLifecycleComplete(t *testing.T) {
 	require.True(t, sawItemDone, "function_call output_item.done missing")
 }
 
-// TestStream_ToolCallArgumentsInFirstChunkNotDoubled guards the GLM/Zhipu shape
-// where a single tool_call delta chunk carries id+name+arguments together.
-// Earlier code copied the whole tool_call (including arguments) into state and
-// then accumulated the same chunk's arguments again, producing a doubled,
-// invalid JSON like {"cmd":"ls"}{"cmd":"ls"} that breaks Codex tool parsing
-// ("trailing characters").
+// TestStream_ToolCallArgumentsInFirstChunkNotDoubled guards the shape where a
+// single tool_call delta chunk carries id, name, and arguments together.
 func TestStream_ToolCallArgumentsInFirstChunkNotDoubled(t *testing.T) {
 	events := collectStreamEvents(t, []string{
 		`{"choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
@@ -193,7 +189,7 @@ func TestStream_ToolCallArgumentsInFirstChunkNotDoubled(t *testing.T) {
 	})
 
 	var argsDelta strings.Builder
-	var sawArgsDone, sawItemDone bool
+	var sawArgsDone, sawItemDone, sawCompleted bool
 	for _, e := range events {
 		switch e.Type {
 		case "response.function_call_arguments.delta":
@@ -206,11 +202,16 @@ func TestStream_ToolCallArgumentsInFirstChunkNotDoubled(t *testing.T) {
 				sawItemDone = true
 				require.Equal(t, `{"cmd":"ls"}`, e.Item.Arguments)
 			}
+		case "response.completed":
+			sawCompleted = true
+			require.NotNil(t, e.Response)
+			require.Len(t, e.Response.Output, 1)
+			require.Equal(t, `{"cmd":"ls"}`, e.Response.Output[0].Arguments)
 		}
 	}
 	require.True(t, sawArgsDone, "function_call_arguments.done missing")
 	require.True(t, sawItemDone, "function_call output_item.done missing")
-	// Accumulated deltas must equal the final arguments exactly (no duplication).
+	require.True(t, sawCompleted, "response.completed missing")
 	require.Equal(t, `{"cmd":"ls"}`, argsDelta.String())
 }
 

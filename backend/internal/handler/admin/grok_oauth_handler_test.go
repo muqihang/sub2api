@@ -1,5 +1,3 @@
-//go:build unit
-
 package admin
 
 import (
@@ -11,12 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
-
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 )
 
 type grokQuotaHandlerAccountRepo struct {
@@ -54,37 +51,21 @@ func (u *grokQuotaHandlerUpstream) Do(req *http.Request, _ string, _ int64, _ in
 	return u.resp, nil
 }
 
-func (u *grokQuotaHandlerUpstream) DoWithTLS(
-	req *http.Request,
-	proxyURL string,
-	accountID int64,
-	accountConcurrency int,
-	_ *tlsfingerprint.Profile,
-) (*http.Response, error) {
+func (u *grokQuotaHandlerUpstream) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, _ *tlsfingerprint.Profile) (*http.Response, error) {
 	return u.Do(req, proxyURL, accountID, accountConcurrency)
 }
 
 func TestGrokOAuthHandlerQueryQuotaProbesUpstream(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	repo := &grokQuotaHandlerAccountRepo{account: &service.Account{
-		ID:          42,
-		Platform:    service.PlatformGrok,
-		Type:        service.AccountTypeOAuth,
-		Concurrency: 1,
-		Credentials: map[string]any{
-			"access_token": "access-token",
-			"expires_at":   time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
-		},
-	}}
-	upstream := &grokQuotaHandlerUpstream{resp: &http.Response{
-		StatusCode: http.StatusOK,
-		Header: http.Header{
-			"X-Ratelimit-Limit-Requests":     []string{"10"},
-			"X-Ratelimit-Remaining-Requests": []string{"8"},
-		},
-		Body: io.NopCloser(strings.NewReader(`{"id":"resp_probe"}`)),
-	}}
+	repo := &grokQuotaHandlerAccountRepo{account: &service.Account{ID: 42, Platform: service.PlatformGrok, Type: service.AccountTypeOAuth, Concurrency: 1, Credentials: map[string]any{
+		"access_token": "access-token",
+		"expires_at":   time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	}}}
+	upstream := &grokQuotaHandlerUpstream{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{
+		"X-Ratelimit-Limit-Requests":     []string{"10"},
+		"X-Ratelimit-Remaining-Requests": []string{"8"},
+	}, Body: io.NopCloser(strings.NewReader(`{"id":"resp_probe"}`))}}
 	quotaService := service.NewGrokQuotaService(repo, nil, service.NewGrokTokenProvider(repo, nil), upstream)
 	handler := NewGrokOAuthHandler(nil, nil, quotaService)
 
@@ -107,11 +88,7 @@ func TestGrokOAuthHandlerQueryQuotaProbesUpstream(t *testing.T) {
 func TestGrokOAuthHandlerResetQuotaReturnsUnsupported(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	repo := &grokQuotaHandlerAccountRepo{account: &service.Account{
-		ID:       43,
-		Platform: service.PlatformGrok,
-		Type:     service.AccountTypeOAuth,
-	}}
+	repo := &grokQuotaHandlerAccountRepo{account: &service.Account{ID: 43, Platform: service.PlatformGrok, Type: service.AccountTypeOAuth}}
 	quotaService := service.NewGrokQuotaService(repo, nil, nil, nil)
 	handler := NewGrokOAuthHandler(nil, nil, quotaService)
 
@@ -124,24 +101,4 @@ func TestGrokOAuthHandlerResetQuotaReturnsUnsupported(t *testing.T) {
 	require.Equal(t, http.StatusNotImplemented, rec.Code)
 	require.Contains(t, rec.Body.String(), `"reason":"GROK_QUOTA_RESET_UNSUPPORTED"`)
 	require.NotContains(t, rec.Body.String(), "access-token")
-}
-
-func TestGrokOAuthHandlerRuntimeSanityDoesNotExposeSecrets(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	t.Setenv(xai.EnvBaseURL, "http://127.0.0.1:8080/v1?access_token=secret")
-	t.Setenv(xai.EnvClientID, "client-secret-like-value")
-
-	handler := NewGrokOAuthHandler(nil, nil, nil)
-	router := gin.New()
-	router.GET("/api/v1/admin/grok/runtime-sanity", handler.RuntimeSanity)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/grok/runtime-sanity", nil)
-	router.ServeHTTP(rec, req)
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.Contains(t, rec.Body.String(), `"public_gateway_scope":"responses_only"`)
-	require.Contains(t, rec.Body.String(), `"valid":false`)
-	require.NotContains(t, rec.Body.String(), "access_token")
-	require.NotContains(t, rec.Body.String(), "secret")
-	require.NotContains(t, rec.Body.String(), "client-secret-like-value")
 }

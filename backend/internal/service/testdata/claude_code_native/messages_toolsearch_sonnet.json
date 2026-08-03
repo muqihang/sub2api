@@ -1,0 +1,19 @@
+{
+  "model": "claude-sonnet-4-6",
+  "max_tokens": 32000,
+  "stream": true,
+  "thinking": {"type": "enabled", "budget_tokens": 1024},
+  "tools": [
+    {
+      "name": "Read",
+      "description": "Synthetic healthcheck tool",
+      "input_schema": {"type": "object", "properties": {"file_path": {"type": "string"}}},
+      "tool_reference": {"id": "fixture_tool_ref"},
+      "defer_loading": true
+    }
+  ],
+  "messages": [
+    {"role": "user", "content": [{"type": "text", "text": "synthetic native healthcheck content"}]}
+  ],
+  "eager_input_streaming": true
+}

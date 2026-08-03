@@ -19,7 +19,7 @@
           font-weight="bold"
           fill="white"
           text-anchor="middle"
-        >D</text>
+        >{{ t('auth.dingtalk.iconText') }}</text>
       </svg>
       {{ t('auth.dingtalk.signIn') }}
     </button>

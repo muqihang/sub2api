@@ -20,6 +20,8 @@ const (
 	ContextKeyUserRole ContextKey = "user_role"
 	// ContextKeyAPIKey API密钥上下文键
 	ContextKeyAPIKey ContextKey = "api_key"
+	// ContextKeyManagedDeviceAccess 受管设备访问上下文键
+	ContextKeyManagedDeviceAccess ContextKey = "managed_device_access"
 	// ContextKeySubscription 订阅上下文键
 	ContextKeySubscription ContextKey = "subscription"
 	// ContextKeyForcePlatform 强制平台（用于 /antigravity 路由）
@@ -42,6 +44,19 @@ func ForcePlatform(platform string) gin.HandlerFunc {
 		c.Set(string(ContextKeyForcePlatform), platform)
 		c.Next()
 	}
+}
+
+// IsManagedDeviceAccess 检查当前请求是否来自受管设备鉴权链路。
+func IsManagedDeviceAccess(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	value, exists := c.Get(string(ContextKeyManagedDeviceAccess))
+	if !exists {
+		return false
+	}
+	managed, ok := value.(bool)
+	return ok && managed
 }
 
 // HasForcePlatform 检查是否有强制平台（用于 Handler 跳过分组检查）
@@ -104,6 +119,21 @@ func GoogleErrorWriter(c *gin.Context, status int, message string) {
 			"status":  googleapi.HTTPStatusToGoogleStatus(status),
 		},
 	})
+}
+
+// OpenAIErrorWriter 按 OpenAI API 规范输出错误
+func OpenAIErrorWriter(c *gin.Context, status int, message string) {
+	c.JSON(status, gin.H{
+		"error": gin.H{
+			"type":    "invalid_request_error",
+			"message": message,
+		},
+	})
+}
+
+// CodexGatewayErrorWriter writes a Responses-compatible authentication envelope.
+func CodexGatewayErrorWriter(c *gin.Context, status int, message string) {
+	service.WriteCodexGatewayErrorJSON(c.Writer, status, service.CodexGatewayErrorTypeAuthentication, "invalid_api_key", message)
 }
 
 // RequireGroupAssignment 检查 API Key 是否已分配到分组，

@@ -1,0 +1,68 @@
+name: nexus-agent-bridge
+
+services:
+  guard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nexus-agent-guard:${GUARD_IMAGE_TAG:-local}
+    container_name: nexus-agent-guard
+    restart: unless-stopped
+    environment:
+      LISTEN_ADDR: ":8080"
+      UPSTREAM_URL: ${UPSTREAM_URL:?UPSTREAM_URL is required}
+      UPSTREAM_API_KEY: ${SUB2API_ADMIN_KEY:?SUB2API_ADMIN_KEY is required}
+      GUARD_API_KEY: ${GUARD_API_KEY:?GUARD_API_KEY is required}
+      MAX_REQUEST_BYTES: ${MAX_REQUEST_BYTES:-8388608}
+      MAX_RESPONSE_BYTES: ${MAX_RESPONSE_BYTES:-33554432}
+      UPSTREAM_TIMEOUT_SECONDS: ${UPSTREAM_TIMEOUT_SECONDS:-60}
+    networks:
+      sub2api:
+        aliases:
+          - nexus-agent-guard
+    read_only: true
+    user: "65532:65532"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=8m
+    pids_limit: 64
+    mem_limit: 64m
+    cpus: 0.25
+
+  agent:
+    image: yxj1028530975/nexus-agent@sha256:1956e0184f7732967ab73e317dbeafaa90be59405a4ad481d1eb7d57bb02f4bd
+    container_name: nexus-agent
+    restart: unless-stopped
+    depends_on:
+      - guard
+    environment:
+      NEXUS_BASE_URL: ${NEXUS_BASE_URL:-https://nvtokens.com}
+      NEXUS_TOKEN: ${NEXUS_TOKEN:?NEXUS_TOKEN is required}
+      RELAY_PLATFORM: sub2api
+      SUB2API_URL: http://nexus-agent-guard:8080
+      SUB2API_KEY: ${GUARD_API_KEY:?GUARD_API_KEY is required}
+      POLL_INTERVAL_MS: ${POLL_INTERVAL_MS:-3000}
+      POLL_WAIT_MS: ${POLL_WAIT_MS:-25000}
+      HEARTBEAT_INTERVAL_MS: ${HEARTBEAT_INTERVAL_MS:-30000}
+      SUB2API_REQUEST_TIMEOUT_MS: ${SUB2API_REQUEST_TIMEOUT_MS:-60000}
+    networks:
+      - sub2api
+    read_only: true
+    user: "65534:65534"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=8m
+    pids_limit: 96
+    mem_limit: 128m
+    cpus: 0.50
+
+networks:
+  sub2api:
+    name: deploy_sub2api-network
+    external: true

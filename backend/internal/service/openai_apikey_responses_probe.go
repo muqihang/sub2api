@@ -7,31 +7,30 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
-	"github.com/tidwall/gjson"
+	"github.com/google/uuid"
 )
 
+type openAIResponsesProbeResultRepository interface {
+	UpdateOpenAIResponsesProbeResult(ctx context.Context, id int64, updates map[string]any) error
+}
+
 // openaiResponsesProbeTimeout 是探测请求的超时时长。
-// 探测在后台 goroutine 中异步执行,不阻塞账号创建/更新;留出余量给推理型模型
-// 先思考再产出 function_call 的往返。超时则保持 unknown,不下结论。
+// 探测在后台异步执行；留出余量给推理型模型先推理再产出工具调用。
 const openaiResponsesProbeTimeout = 15 * time.Second
 
-// responsesProbeMaxBodyBytes 限制读取探测响应体的字节数,够判定 output 项类型即可。
 const responsesProbeMaxBodyBytes = 256 * 1024
 
-// openaiResponsesProbePayload 构造探测用的 Responses 请求体。
-//
-// 关键设计:请求携带一个工具并以 tool_choice=required 强制模型调用它。这样
-// 一个真正支持 Responses 工具调用的上游必须在响应里产出 function_call 输出项;
-// 而"端点存在、基础补全可用、但工具调用坏掉"的上游(如火山方舟 coding/v3 ×
-// kimi-k2.6,只回 reasoning、不产出 function_call)会被这一步暴露出来。
-//
-// Stream=false 便于一次性读取 output 数组判定;不带 instructions 以免干扰。
+const responsesCustomToolProbeRuns = 3
+
+// openaiResponsesProbePayload 是探测使用的最小 Responses 请求体。
+// 探测强制一次函数调用，只有真正产出 function_call 的 2xx 响应才判定支持。
 func openaiResponsesProbePayload(modelID string) []byte {
 	if strings.TrimSpace(modelID) == "" {
 		modelID = openai.DefaultTestModel
@@ -42,7 +41,7 @@ func openaiResponsesProbePayload(modelID string) []byte {
 			{
 				"role": "user",
 				"content": []map[string]any{
-					{"type": "input_text", "text": "Call the probe_ping function with ok=true to acknowledge readiness. You must use the tool."},
+					{"type": "input_text", "text": "Call the probe_ping function with ok=true."},
 				},
 			},
 		},
@@ -67,14 +66,59 @@ func openaiResponsesProbePayload(modelID string) []byte {
 	return body
 }
 
-// selectResponsesProbeModel 选出用于探测的上游模型。
-//
-// 工具能力探测必须用上游真实存在的模型——用占位模型(DefaultTestModel)打第三方
-// 上游只会拿到 400 model-not-found,无从判定工具能力。优先取账号 model_mapping
-// 的上游模型(值),按字典序取首个具体(非通配符)模型以保证可复现;无映射时回退
-// DefaultTestModel(适配 OpenAI 官方 APIKey 账号)。
-func selectResponsesProbeModel(account *Account) string {
+func openaiResponsesCustomToolsProbePayload(modelID string, nonce string) []byte {
+	if strings.TrimSpace(modelID) == "" {
+		modelID = openai.DefaultTestModel
+	}
+	prompt := "Run pwd now and report its result."
+	if nonce = strings.TrimSpace(nonce); nonce != "" {
+		prompt = "Run pwd now for capability probe " + nonce + " and report its result."
+	}
+	body, _ := json.Marshal(map[string]any{
+		"model":        modelID,
+		"instructions": "You are a coding agent. Use the exec tool for shell commands.",
+		"input": []map[string]any{
+			{
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "input_text", "text": prompt},
+				},
+			},
+		},
+		"tools": []map[string]any{
+			{
+				"type":        "custom",
+				"name":        "exec",
+				"description": "Run a shell command.",
+				"format":      map[string]any{"type": "text"},
+			},
+		},
+		"tool_choice":       "auto",
+		"max_output_tokens": 128,
+		"stream":            false,
+		"store":             false,
+	})
+	return body
+}
+
+func selectResponsesProbeModel(account *Account, requestedModels ...string) string {
+	if account == nil {
+		return openai.DefaultTestModel
+	}
+	if len(requestedModels) > 0 {
+		requestedModel := strings.TrimSpace(requestedModels[0])
+		if requestedModel != "" && account.IsModelSupported(requestedModel) {
+			if mapped := strings.TrimSpace(account.GetMappedModel(requestedModel)); mapped != "" && !strings.Contains(mapped, "*") {
+				return mapped
+			}
+		}
+	}
 	mapping := account.GetModelMapping()
+	for _, preferred := range []string{"gpt-5.6-sol", "gpt-5.6", "gpt-5.4", "gpt-5.2"} {
+		if upstream := strings.TrimSpace(mapping[preferred]); upstream != "" && !strings.Contains(upstream, "*") {
+			return upstream
+		}
+	}
 	candidates := make([]string, 0, len(mapping))
 	for _, upstream := range mapping {
 		upstream = strings.TrimSpace(upstream)
@@ -96,10 +140,8 @@ func selectResponsesProbeModel(account *Account) string {
 // 调用时机：账号创建/更新后，且仅当 platform=openai && type=apikey 时。
 //
 // 探测策略（参见包文档 internal/pkg/openai_compat）：
-//   - 上游 404 / 405 → 端点不存在,写 false
-//   - 上游 2xx → 端点存在,进一步看工具能力:响应含 function_call 输出项才写 true;
-//     仅 reasoning / 无 function_call(如火山方舟 coding/v3 × kimi-k2.6)写 false
-//   - 其他非 2xx（401/422/400/5xx 等）→ 端点存在但无法判定工具能力,保守写 true
+//   - 上游 404 / 405 → 不支持，写 false
+//   - 上游 2xx / 其他 4xx（401/422/400 等）/ 5xx → 支持，写 true
 //   - 网络层失败（连接错误、超时）→ 不写标记，保持 unknown
 //     （后续请求仍按"现状即证据"默认走 Responses）
 //
@@ -108,6 +150,14 @@ func selectResponsesProbeModel(account *Account) string {
 // 关于失败处理：探测本身的失败不应阻塞账号创建——账号能创建/更新成功就够了，
 // 探测结果只影响后续路由优化。所有错误都仅记录日志，不向调用方传播。
 func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Context, accountID int64) {
+	s.probeOpenAIAPIKeyResponsesSupport(ctx, accountID, "")
+}
+
+func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupportForModel(ctx context.Context, accountID int64, requestedModel string) {
+	s.probeOpenAIAPIKeyResponsesSupport(ctx, accountID, requestedModel)
+}
+
+func (s *AccountTestService) probeOpenAIAPIKeyResponsesSupport(ctx context.Context, accountID int64, requestedModel string) {
 	account, err := s.accountRepo.GetByID(ctx, accountID)
 	if err != nil {
 		logger.LegacyPrintf("service.openai_probe", "probe_load_account_failed: account_id=%d err=%v", accountID, err)
@@ -118,9 +168,9 @@ func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 		return
 	}
 
-	apiKey := account.GetOpenAIApiKey()
-	if apiKey == "" {
-		logger.LegacyPrintf("service.openai_probe", "probe_skip_no_apikey: account_id=%d", accountID)
+	apiKey, err := NewOpenAIGatewayCredentials(s.cfg, nil).OpenAIAPIKey(account)
+	if err != nil {
+		logger.LegacyPrintf("service.openai_probe", "probe_skip_no_apikey: account_id=%d err=%v", accountID, err)
 		return
 	}
 	baseURL := account.GetOpenAIBaseURL()
@@ -134,59 +184,122 @@ func (s *AccountTestService) ProbeOpenAIAPIKeyResponsesSupport(ctx context.Conte
 	}
 
 	probeURL := buildOpenAIResponsesURL(normalizedBaseURL)
-	probeModel := selectResponsesProbeModel(account)
+	probeModel := selectResponsesProbeModel(account, requestedModel)
+	probeTarget := account.OpenAIResponsesCustomToolsTargetFingerprint(probeModel)
 
-	probeCtx, cancel := context.WithTimeout(ctx, openaiResponsesProbeTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(probeCtx, http.MethodPost, probeURL, bytes.NewReader(openaiResponsesProbePayload(probeModel)))
-	if err != nil {
-		logger.LegacyPrintf("service.openai_probe", "probe_build_request_failed: account_id=%d err=%v", accountID, err)
-		return
-	}
-	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Accept", "application/json")
-
-	// 账号级请求头覆写：能力探测与真实转发保持一致的最终头
-	account.ApplyHeaderOverrides(req.Header)
-
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
-	}
-
-	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	status, bodyBytes, err := s.executeOpenAIResponsesProbe(ctx, account, probeURL, apiKey, openaiResponsesProbePayload(probeModel))
 	if err != nil {
 		// 网络层失败：不写标记，保持 unknown，下次重试或由网关 fallback 处理
 		logger.LegacyPrintf("service.openai_probe", "probe_request_failed: account_id=%d url=%s err=%v", accountID, probeURL, err)
 		return
 	}
-	defer func() { _ = resp.Body.Close() }()
-	bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, responsesProbeMaxBodyBytes))
-	// 有界排空剩余响应体:既帮助连接复用,又避免行为异常的上游用超大响应体拖住探测。
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, responsesProbeMaxBodyBytes))
-	if readErr != nil {
-		// 响应体读取失败(部分读取/传输错误):按网络层失败处理,保持 unknown,
-		// 不写标记——否则可能给一个 2xx 响应误写 supported=false。
-		logger.LegacyPrintf("service.openai_probe", "probe_read_body_failed: account_id=%d url=%s err=%v", accountID, probeURL, readErr)
-		return
+
+	supported := decideResponsesProbeSupport(status, bodyBytes)
+	updates := map[string]any{
+		openai_compat.ExtraKeyResponsesSupported:   supported,
+		openai_compat.ExtraKeyResponsesProbeModel:  probeModel,
+		openai_compat.ExtraKeyResponsesProbeTarget: probeTarget,
+	}
+	customToolsSupported := false
+	customToolsKnown := !supported
+	customStatus := 0
+	if supported {
+		customToolsSupported, customToolsKnown, customStatus = s.probeOpenAIResponsesCustomToolsConsistency(
+			ctx,
+			account,
+			probeURL,
+			apiKey,
+			probeModel,
+		)
+	}
+	if customToolsKnown {
+		updates[openai_compat.ExtraKeyResponsesCustomToolsSupported] = customToolsSupported
+		updates[openai_compat.ExtraKeyResponsesCustomToolsProbeModel] = probeModel
+		updates[openai_compat.ExtraKeyResponsesCustomToolsProbeTarget] = probeTarget
 	}
 
-	supported := decideResponsesProbeSupport(resp.StatusCode, bodyBytes)
+	latest, err := s.accountRepo.GetByID(ctx, accountID)
+	if err != nil || latest.OpenAIResponsesCustomToolsTargetFingerprint(selectResponsesProbeModel(latest, requestedModel)) != probeTarget {
+		logger.LegacyPrintf("service.openai_probe", "probe_stale_result_skipped: account_id=%d", accountID)
+		return
+	}
+	if customToolsKnown && customToolsSupported && hasOpenAIResponsesCustomToolsNegativeEvidence(latest, probeModel, probeTarget) {
+		customToolsSupported = false
+		updates[openai_compat.ExtraKeyResponsesCustomToolsSupported] = false
+		logger.LegacyPrintf("service.openai_probe", "custom_tools_probe_recovery_suppressed: account_id=%d model=%s reason=prior_negative_same_target", accountID, probeModel)
+	}
 
-	if err := s.accountRepo.UpdateExtra(ctx, accountID, map[string]any{
-		openai_compat.ExtraKeyResponsesSupported: supported,
-	}); err != nil {
-		logger.LegacyPrintf("service.openai_probe", "probe_persist_failed: account_id=%d supported=%v err=%v", accountID, supported, err)
+	var persistErr error
+	if repo, ok := s.accountRepo.(openAIResponsesProbeResultRepository); ok {
+		persistErr = repo.UpdateOpenAIResponsesProbeResult(ctx, accountID, updates)
+	} else {
+		persistErr = s.accountRepo.UpdateExtra(ctx, accountID, updates)
+	}
+	if persistErr != nil {
+		logger.LegacyPrintf("service.openai_probe", "probe_persist_failed: account_id=%d supported=%v err=%v", accountID, supported, persistErr)
 		return
 	}
 
 	logger.LegacyPrintf("service.openai_probe",
-		"probe_done: account_id=%d base_url=%s probe_model=%s status=%d supported=%v",
-		accountID, normalizedBaseURL, probeModel, resp.StatusCode, supported,
+		"probe_done: account_id=%d base_url=%s status=%d supported=%v custom_tools_status=%d custom_tools_known=%v custom_tools_supported=%v",
+		accountID, normalizedBaseURL, status, supported, customStatus, customToolsKnown, customToolsSupported,
 	)
+}
+
+func (s *AccountTestService) probeOpenAIResponsesCustomToolsConsistency(
+	ctx context.Context,
+	account *Account,
+	probeURL string,
+	apiKey string,
+	probeModel string,
+) (supported bool, known bool, lastStatus int) {
+	probeRunID := uuid.NewString()
+	for attempt := 1; attempt <= responsesCustomToolProbeRuns; attempt++ {
+		payload := openaiResponsesCustomToolsProbePayload(probeModel, probeRunID+"-"+strconv.Itoa(attempt))
+		status, body, err := s.executeOpenAIResponsesProbe(ctx, account, probeURL, apiKey, payload)
+		lastStatus = status
+		if err != nil {
+			logger.LegacyPrintf("service.openai_probe", "custom_tools_probe_request_failed: account_id=%d url=%s attempt=%d/%d err=%v", account.ID, probeURL, attempt, responsesCustomToolProbeRuns, err)
+			return false, false, lastStatus
+		}
+		attemptSupported, attemptKnown := decideResponsesCustomToolsProbeSupport(status, body)
+		if !attemptKnown {
+			return false, false, lastStatus
+		}
+		if !attemptSupported {
+			return false, true, lastStatus
+		}
+	}
+	return true, true, lastStatus
+}
+
+func (s *AccountTestService) executeOpenAIResponsesProbe(ctx context.Context, account *Account, probeURL, apiKey string, payload []byte) (int, []byte, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, openaiResponsesProbeTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodPost, probeURL, bytes.NewReader(payload))
+	if err != nil {
+		return 0, nil, err
+	}
+	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Originator", "codex_cli_rs")
+	req.Header.Set("User-Agent", codexCLIUserAgent)
+	account.ApplyHeaderOverrides(req.Header)
+
+	resp, err := s.sendOpenAIProbeHTTPRequest(probeCtx, req, account)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, responsesProbeMaxBodyBytes))
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, responsesProbeMaxBodyBytes))
+	if err != nil {
+		return resp.StatusCode, nil, err
+	}
+	return resp.StatusCode, body, nil
 }
 
 // isResponsesEndpointSupportedByStatus 根据探测响应的 HTTP 状态码判定上游
@@ -207,15 +320,19 @@ func isResponsesEndpointSupportedByStatus(status int) bool {
 	return true
 }
 
-// decideResponsesProbeSupport 依据探测响应判定上游 /v1/responses 是否真正可用于
-// 携带工具的请求。
-//
-//   - 404 / 405：端点不存在 → false
-//   - 其他非 2xx（401/403/422/5xx 等）：端点存在,但本次无法判定工具能力
-//     （鉴权/校验/瞬时故障）→ 保守按 true,保持既有"端点存在即支持"行为
-//   - 2xx：探测以 tool_choice=required 强制工具调用,响应必须含 function_call
-//     输出项才算真正可用;否则(如火山方舟 coding/v3 × kimi-k2.6 仅回 reasoning)
-//     判为 false,使网关改走 /v1/chat/completions 直转路径。
+func (s *AccountTestService) sendOpenAIProbeHTTPRequest(ctx context.Context, req *http.Request, account *Account) (*http.Response, error) {
+	resp, err := s.sendOpenAIAccountTestHTTPRequest(ctx, nil, req, account)
+	if err != nil {
+		accountID := int64(0)
+		if account != nil {
+			accountID = account.ID
+		}
+		logger.LegacyPrintf("service.openai_probe", "probe_egress_or_tls_policy_rejected: account_id=%d err=%v", accountID, err)
+		return nil, err
+	}
+	return resp, nil
+}
+
 func decideResponsesProbeSupport(status int, body []byte) bool {
 	if status == http.StatusNotFound || status == http.StatusMethodNotAllowed {
 		return false
@@ -226,15 +343,61 @@ func decideResponsesProbeSupport(status int, body []byte) bool {
 	return responsesProbeBodyHasFunctionCall(body)
 }
 
-// responsesProbeBodyHasFunctionCall 判断非流式 Responses 响应体的 output 数组里
-// 是否存在 function_call 输出项。
 func responsesProbeBodyHasFunctionCall(body []byte) bool {
-	output := gjson.GetBytes(body, "output")
-	if !output.IsArray() {
+	return responsesProbeBodyHasOutputType(body, "function_call")
+}
+
+func responsesProbeBodyHasCustomToolCall(body []byte) bool {
+	return responsesProbeBodyHasOutputType(body, "custom_tool_call")
+}
+
+func decideResponsesCustomToolsProbeSupport(status int, body []byte) (supported bool, known bool) {
+	if status < 200 || status >= 300 {
+		return false, false
+	}
+	var parsed struct {
+		Output []struct {
+			Type string `json:"type"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil || len(parsed.Output) == 0 {
+		return false, false
+	}
+	explicitFailure := false
+	for _, item := range parsed.Output {
+		switch strings.ToLower(strings.TrimSpace(item.Type)) {
+		case "custom_tool_call":
+			return true, true
+		case "message", "function_call":
+			explicitFailure = true
+		}
+	}
+	return false, explicitFailure
+}
+
+func hasOpenAIResponsesCustomToolsNegativeEvidence(account *Account, probeModel, probeTarget string) bool {
+	if account == nil || account.Extra == nil {
 		return false
 	}
-	for _, item := range output.Array() {
-		if strings.TrimSpace(item.Get("type").String()) == "function_call" {
+	priorSupported, ok := account.Extra[openai_compat.ExtraKeyResponsesCustomToolsSupported].(bool)
+	if !ok || priorSupported {
+		return false
+	}
+	return strings.TrimSpace(account.OpenAIResponsesCustomToolsProbeModel()) == strings.TrimSpace(probeModel) &&
+		strings.TrimSpace(account.OpenAIResponsesCustomToolsProbeTarget()) == strings.TrimSpace(probeTarget)
+}
+
+func responsesProbeBodyHasOutputType(body []byte, outputType string) bool {
+	var parsed struct {
+		Output []struct {
+			Type string `json:"type"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return false
+	}
+	for _, item := range parsed.Output {
+		if strings.EqualFold(strings.TrimSpace(item.Type), outputType) {
 			return true
 		}
 	}

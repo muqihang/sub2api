@@ -253,9 +253,7 @@ func (h *AccountHandler) importCodexSessions(ctx context.Context, req CodexSessi
 					Message: "已有账号未记录 chatgpt_user_id，已按共享的 chatgpt_account_id 匹配并回填，请确认两者属于同一用户",
 				})
 			}
-			preserveExistingRefresh := item.RefreshToken == "" &&
-				codexCredentialString(existing.Credentials, "refresh_token") != ""
-			if preserveExistingRefresh {
+			if codexImportShouldPreserveExistingRefresh(existing, item) {
 				result.Warnings = append(result.Warnings, CodexSessionImportMessage{
 					Index:   entry.Index,
 					Name:    accountName,
@@ -794,20 +792,16 @@ func sanitizeCodexImportCredentialExtras(input map[string]any) map[string]any {
 		return nil
 	}
 	protected := map[string]struct{}{
-		"access_token":               {},
-		"refresh_token":              {},
-		"id_token":                   {},
-		"expires_at":                 {},
-		"email":                      {},
-		"chatgpt_account_id":         {},
-		"chatgpt_user_id":            {},
-		"organization_id":            {},
-		"plan_type":                  {},
-		"client_id":                  {},
-		"auth_mode":                  {},
-		"openai_auth_mode":           {},
-		"token_type":                 {},
-		"chatgpt_account_is_fedramp": {},
+		"access_token":       {},
+		"refresh_token":      {},
+		"id_token":           {},
+		"expires_at":         {},
+		"email":              {},
+		"chatgpt_account_id": {},
+		"chatgpt_user_id":    {},
+		"organization_id":    {},
+		"plan_type":          {},
+		"client_id":          {},
 	}
 	out := make(map[string]any, len(input))
 	for key, value := range input {
@@ -826,25 +820,10 @@ func sanitizeCodexImportCredentialExtras(input map[string]any) map[string]any {
 	return out
 }
 
-// buildCodexImportIdentityKeys 生成导入条目的匹配键。refresh_token 缺失时
-// Codex session 只能作为 accessToken-only 凭据使用，此时以 access token
-// 指纹作为唯一稳定身份，避免同 workspace 下共享的 account/user 标识误合并。
-func buildCodexImportIdentityKeys(accountID, userID, email, accessToken, refreshToken string) []string {
-	accessToken = strings.TrimSpace(accessToken)
-	refreshToken = strings.TrimSpace(refreshToken)
-	if refreshToken == "" && accessToken != "" {
-		return []string{"access:" + codexTokenFingerprint(accessToken)}
-	}
-	return buildCodexStoredIdentityKeys(accountID, userID, email, accessToken)
-}
-
-// buildCodexStoredIdentityKeys 生成存量账号索引键，保留 user/account 维度，
-// 让 accessToken-only 账号后续升级为完整 OAuth 时仍能命中并更新原账号。
-func buildCodexStoredIdentityKeys(accountID, userID, email, accessToken string) []string {
-	keys := make([]string, 0, 3)
+func buildCodexIdentityKeys(accountID, userID, email, accessToken string) []string {
+	keys := make([]string, 0, 4)
 	accountID = strings.TrimSpace(accountID)
 	userID = strings.TrimSpace(userID)
-	accessToken = strings.TrimSpace(accessToken)
 	if userID != "" {
 		keys = append(keys, "user:"+userID)
 	}
@@ -853,13 +832,29 @@ func buildCodexStoredIdentityKeys(accountID, userID, email, accessToken string) 
 			keys = append(keys, "email:"+email)
 		}
 	}
-	if accessToken != "" {
+	if accessToken = strings.TrimSpace(accessToken); accessToken != "" {
 		keys = append(keys, "access:"+codexTokenFingerprint(accessToken))
 	}
 	if accountID != "" {
 		keys = append(keys, "account:"+accountID)
 	}
 	return keys
+}
+
+func buildCodexImportIdentityKeys(accountID, userID, email, accessToken, refreshToken string) []string {
+	accessToken = strings.TrimSpace(accessToken)
+	if strings.TrimSpace(refreshToken) == "" && accessToken != "" {
+		return []string{"access:" + codexTokenFingerprint(accessToken)}
+	}
+	return buildCodexIdentityKeys(accountID, userID, email, accessToken)
+}
+
+func codexImportShouldPreserveExistingRefresh(existing *service.Account, item *codexImportAccount) bool {
+	if existing == nil || item == nil {
+		return false
+	}
+	return strings.TrimSpace(item.RefreshToken) == "" &&
+		codexCredentialString(existing.Credentials, "refresh_token") != ""
 }
 
 func buildCodexAccountIndex(accounts []service.Account) *codexAccountIndex {
@@ -878,7 +873,7 @@ func (i *codexAccountIndex) Add(account service.Account) {
 		i.accountsByKey = map[string][]service.Account{}
 	}
 	i.remove(account.ID)
-	keys := buildCodexStoredIdentityKeys(
+	keys := buildCodexIdentityKeys(
 		codexCredentialString(account.Credentials, "chatgpt_account_id"),
 		codexCredentialString(account.Credentials, "chatgpt_user_id"),
 		codexCredentialString(account.Credentials, "email"),
@@ -890,6 +885,9 @@ func (i *codexAccountIndex) Add(account service.Account) {
 }
 
 func (i *codexAccountIndex) remove(accountID int64) {
+	if i == nil || i.accountsByKey == nil || accountID <= 0 {
+		return
+	}
 	for key, accounts := range i.accountsByKey {
 		kept := accounts[:0]
 		for _, account := range accounts {
@@ -905,8 +903,6 @@ func (i *codexAccountIndex) remove(accountID int64) {
 	}
 }
 
-// upsertCodexAccount 保留同一键下的全部候选账号（共享的 account: 键可对应
-// 团队内多个账号），同一账号重复 Add 时原位替换为最新状态。
 func upsertCodexAccount(accounts []service.Account, account service.Account) []service.Account {
 	for idx := range accounts {
 		if accounts[idx].ID == account.ID {
@@ -917,7 +913,6 @@ func upsertCodexAccount(accounts []service.Account, account service.Account) []s
 	return append(accounts, account)
 }
 
-// Find 返回第一个通过跨用户校验的候选账号及其命中的匹配键。
 func (i *codexAccountIndex) Find(keys []string, userID string) (*service.Account, string) {
 	if i == nil {
 		return nil, ""
@@ -933,10 +928,6 @@ func (i *codexAccountIndex) Find(keys []string, userID string) (*service.Account
 	return nil, ""
 }
 
-// codexIdentityConflicts 判断 account: 键的命中是否把同一 ChatGPT 团队的两个
-// 不同成员误连到一起：双方都携带 user id 且不相等时视为冲突。存量索引侧
-// 仍保留 account 键，任一侧缺少 user id 时允许匹配，使含 refresh_token
-// 的常规导入和 accessToken-only 账号升级为完整 OAuth 时仍能更新原账号。
 func codexIdentityConflicts(key, userID, storedUserID string) bool {
 	if !strings.HasPrefix(key, "account:") {
 		return false

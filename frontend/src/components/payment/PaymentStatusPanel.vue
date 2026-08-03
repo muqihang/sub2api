@@ -79,7 +79,7 @@
             <!-- Brand logo overlay -->
             <div class="pointer-events-none absolute inset-0 flex items-center justify-center">
               <span :class="['rounded-full p-2 shadow ring-2 ring-white', qrLogoBgClass]">
-                <img :src="qrLogoIcon" alt="" class="h-5 w-5 brightness-0 invert" />
+                <img :src="isAlipay ? alipayIcon : wxpayIcon" alt="" class="h-5 w-5 brightness-0 invert" />
               </span>
             </div>
           </div>
@@ -135,7 +135,6 @@ import Icon from '@/components/icons/Icon.vue'
 import QRCode from 'qrcode'
 import alipayIcon from '@/assets/icons/alipay.svg'
 import wxpayIcon from '@/assets/icons/wxpay.svg'
-import paymentIcon from '@/assets/icons/payment.svg'
 
 const props = defineProps<{
   orderId: number
@@ -196,12 +195,6 @@ const qrLogoBgClass = computed(() => {
   if (isAlipay.value) return 'bg-[#00AEEF]'
   if (isWxpay.value) return 'bg-[#2BB741]'
   return 'bg-gray-400'
-})
-
-const qrLogoIcon = computed(() => {
-  if (isAlipay.value) return alipayIcon
-  if (isWxpay.value) return wxpayIcon
-  return paymentIcon
 })
 
 const scanTitle = computed(() => {
@@ -275,33 +268,22 @@ async function tryRecoverPendingOrder(order: PaymentOrder): Promise<PaymentOrder
   }
 }
 
-let pollInFlight = false
 async function pollStatus() {
   if (!props.orderId || outcome.value) return
-  // 防重入：接口（含 verifyOrder 二次确认）响应慢于 3 秒轮询间隔时避免并发重叠请求。
-  if (pollInFlight) return
-  pollInFlight = true
-  try {
-    let order = await paymentStore.pollOrderStatus(props.orderId)
-    if (!order) return
-    // 已进入终态则不再处理迟到的响应。
-    if (outcome.value) return
-    order = await tryRecoverPendingOrder(order)
-    if (outcome.value) return
-    if (isSuccessStatus(order.status)) {
-      cleanup()
-      paidOrder.value = order
-      setOutcome('success')
-      emit('success')
-    } else if (order.status === 'CANCELLED') {
-      cleanup()
-      setOutcome('cancelled')
-    } else if (order.status === 'EXPIRED' || order.status === 'FAILED') {
-      cleanup()
-      setOutcome('expired')
-    }
-  } finally {
-    pollInFlight = false
+  let order = await paymentStore.pollOrderStatus(props.orderId)
+  if (!order) return
+  order = await tryRecoverPendingOrder(order)
+  if (isSuccessStatus(order.status)) {
+    cleanup()
+    paidOrder.value = order
+    setOutcome('success')
+    emit('success')
+  } else if (order.status === 'CANCELLED') {
+    cleanup()
+    setOutcome('cancelled')
+  } else if (order.status === 'EXPIRED' || order.status === 'FAILED') {
+    cleanup()
+    setOutcome('expired')
   }
 }
 

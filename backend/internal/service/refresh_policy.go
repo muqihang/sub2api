@@ -39,9 +39,9 @@ func ClaudeProviderRefreshPolicy() ProviderRefreshPolicy {
 
 func OpenAIProviderRefreshPolicy() ProviderRefreshPolicy {
 	return ProviderRefreshPolicy{
-		OnRefreshError: ProviderRefreshErrorUseExistingToken,
+		OnRefreshError: ProviderRefreshErrorReturn,
 		OnLockHeld:     ProviderLockHeldWaitForCache,
-		FailureTTL:     time.Minute,
+		FailureTTL:     0,
 	}
 }
 

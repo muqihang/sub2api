@@ -110,18 +110,30 @@ func TestClaudeTokenRefresher_NeedsRefresh_WithinWindow(t *testing.T) {
 
 	tests := []struct {
 		name        string
+		accountType string
 		credentials map[string]any
 	}{
 		{
-			name: "string type - within refresh window",
+			name:        "oauth string type - within refresh window",
+			accountType: AccountTypeOAuth,
 			credentials: map[string]any{
 				"expires_at": strconv.FormatInt(expiresAt, 10),
 			},
 		},
 		{
-			name: "float64 type - within refresh window",
+			name:        "oauth float64 type - within refresh window",
+			accountType: AccountTypeOAuth,
 			credentials: map[string]any{
 				"expires_at": float64(expiresAt),
+			},
+		},
+		{
+			name:        "setup-token string type - within refresh window",
+			accountType: AccountTypeSetupToken,
+			credentials: map[string]any{
+				"expires_at":      strconv.FormatInt(expiresAt, 10),
+				"refresh_token":   "refresh-token",
+				"anthropic_scope": "user:inference",
 			},
 		},
 	}
@@ -130,7 +142,7 @@ func TestClaudeTokenRefresher_NeedsRefresh_WithinWindow(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			account := &Account{
 				Platform:    PlatformAnthropic,
-				Type:        AccountTypeOAuth,
+				Type:        tt.accountType,
 				Credentials: tt.credentials,
 			}
 
@@ -195,7 +207,7 @@ func TestClaudeTokenRefresher_CanRefresh(t *testing.T) {
 			want:     true,
 		},
 		{
-			name:     "anthropic setup-token - can refresh",
+			name:     "anthropic setup-token with refresh token - can refresh",
 			platform: PlatformAnthropic,
 			accType:  AccountTypeSetupToken,
 			want:     true,
@@ -225,6 +237,9 @@ func TestClaudeTokenRefresher_CanRefresh(t *testing.T) {
 			account := &Account{
 				Platform: tt.platform,
 				Type:     tt.accType,
+				Credentials: map[string]any{
+					"refresh_token": "refresh-token",
+				},
 			}
 
 			got := refresher.CanRefresh(account)
@@ -240,13 +255,33 @@ func TestOpenAITokenRefresher_CanRefresh(t *testing.T) {
 		name     string
 		platform string
 		accType  string
+		extra    map[string]any
+		creds    map[string]any
 		want     bool
 	}{
 		{
 			name:     "openai oauth - can refresh",
 			platform: PlatformOpenAI,
 			accType:  AccountTypeOAuth,
-			want:     true,
+			extra: map[string]any{
+				"openai_pool_role":    OpenAIPoolRoleMain,
+				"openai_auth_state":   OpenAIAuthStateHealthy,
+				"openai_token_source": OpenAITokenSourceRTManaged,
+			},
+			creds: map[string]any{"refresh_token": "rt"},
+			want:  true,
+		},
+		{
+			name:     "openai at-only oauth - cannot refresh",
+			platform: PlatformOpenAI,
+			accType:  AccountTypeOAuth,
+			extra: map[string]any{
+				"openai_pool_role":    OpenAIPoolRoleQuarantine,
+				"openai_auth_state":   OpenAIAuthStateATOnly,
+				"openai_token_source": OpenAITokenSourceATOnly,
+			},
+			creds: map[string]any{"access_token": "at"},
+			want:  false,
 		},
 		{
 			name:     "openai apikey - cannot refresh",
@@ -259,8 +294,14 @@ func TestOpenAITokenRefresher_CanRefresh(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			account := &Account{
-				Platform: tt.platform,
-				Type:     tt.accType,
+				Platform:    tt.platform,
+				Type:        tt.accType,
+				Status:      StatusActive,
+				Extra:       tt.extra,
+				Credentials: tt.creds,
+			}
+			if tt.want == false && tt.accType == AccountTypeOAuth && tt.extra != nil && tt.extra["openai_pool_role"] == OpenAIPoolRoleQuarantine {
+				account.Status = StatusDisabled
 			}
 			require.Equal(t, tt.want, refresher.CanRefresh(account))
 		})

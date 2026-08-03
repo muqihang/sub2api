@@ -1,0 +1,1874 @@
+{
+  "executed_at": "2026-06-14T03:25:17-07:00",
+  "artifact_dir": "/Users/muqihang/chelingxi_workspace/sub2api-zhumeng-main/.worktrees/synthesis-gap-hunt/docs/anti-ban/captures/real-baseline/2026-06-14-sub2api-cc-gateway-joint-local-capture/safe-deliverable",
+  "gateway_mode": "sub2api",
+  "no_real_upstream": true,
+  "no_raw_secrets": true,
+  "no_native_fallback": true,
+  "sub2api_not_final_mutating": true,
+  "cc_gateway_final_owner": true,
+  "negative_cases_fail_closed": true,
+  "scenarios": [
+    {
+      "name": "oauth_native_messages_strip",
+      "category": "sub2api_joint",
+      "route": "/v1/messages?beta=true",
+      "policy_decision": "forward_strip",
+      "selected_account_id_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+      "egress_bucket_id": "bucket-a",
+      "policy_version": "2.1.175",
+      "response_status": 200,
+      "client_header_order": [
+        "User-Agent",
+        "Anthropic-Beta",
+        "Accept-Encoding",
+        "X-Claude-Code-Session-Id"
+      ],
+      "client_body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+      "sub2api_to_gateway": {
+        "url_host": "127.0.0.1:64435",
+        "route": "/v1/messages?beta=true",
+        "header_key_order": [
+          "Host",
+          "User-Agent",
+          "Content-Length",
+          "X-Claude-Code-Session-Id",
+          "anthropic-beta",
+          "anthropic-version",
+          "authorization",
+          "content-type",
+          "x-cc-account-id",
+          "x-cc-egress-bucket",
+          "x-cc-gateway-token",
+          "x-cc-policy-version",
+          "x-cc-provider",
+          "x-cc-token-type"
+        ],
+        "header_values_summary": {
+          "Content-Length": "363",
+          "Host": "loopback",
+          "User-Agent": "",
+          "X-Claude-Code-Session-Id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,oauth-2025-04-20",
+          "anthropic-version": "2023-06-01",
+          "authorization": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "content-type": "application/json",
+          "x-cc-account-id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-cc-egress-bucket": "bucket-a",
+          "x-cc-gateway-token": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-cc-policy-version": "2.1.175",
+          "x-cc-provider": "anthropic",
+          "x-cc-token-type": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+        },
+        "body": {
+          "body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+          "size_bytes": 363,
+          "top_level_keys": [
+            "messages",
+            "metadata",
+            "model",
+            "stream",
+            "system"
+          ],
+          "message_count": 1,
+          "system_count": 1,
+          "billing_header_present": true,
+          "cch_present": true,
+          "metadata": {
+            "field_names": [
+              "account_uuid",
+              "device_id",
+              "session_id"
+            ],
+            "field_refs": {
+              "account_uuid": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "device_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "session_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+            },
+            "user_id_value_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+            "session_header_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+          }
+        },
+        "request_count": 1,
+        "tls_profile_used": false
+      },
+      "gateway_to_upstream": {
+        "url_host": "127.0.0.1:64433",
+        "route": "/v1/messages?beta=true",
+        "header_key_order": [
+          "authorization",
+          "Accept",
+          "User-Agent",
+          "X-Stainless-Arch",
+          "X-Stainless-Lang",
+          "X-Stainless-OS",
+          "X-Stainless-Package-Version",
+          "X-Stainless-Retry-Count",
+          "X-Stainless-Runtime",
+          "X-Stainless-Runtime-Version",
+          "X-Stainless-Timeout",
+          "anthropic-dangerous-direct-browser-access",
+          "anthropic-version",
+          "x-app",
+          "Accept-Encoding",
+          "anthropic-beta",
+          "X-Claude-Code-Session-Id",
+          "content-type",
+          "host",
+          "content-length",
+          "Connection"
+        ],
+        "header_values_summary": {
+          "Accept": "application/json",
+          "Accept-Encoding": "gzip, deflate, br, zstd",
+          "Connection": "close",
+          "User-Agent": "claude-cli/2.1.175 (external, sdk-cli)",
+          "X-Claude-Code-Session-Id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "X-Stainless-Arch": "arm64",
+          "X-Stainless-Lang": "js",
+          "X-Stainless-OS": "MacOS",
+          "X-Stainless-Package-Version": "0.94.0",
+          "X-Stainless-Retry-Count": "0",
+          "X-Stainless-Runtime": "node",
+          "X-Stainless-Runtime-Version": "v24.3.0",
+          "X-Stainless-Timeout": "600",
+          "anthropic-beta": "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "authorization": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "content-length": "388",
+          "content-type": "application/json",
+          "host": "loopback",
+          "x-app": "cli"
+        },
+        "body": {
+          "body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+          "size_bytes": 388,
+          "top_level_keys": [
+            "messages",
+            "metadata",
+            "model",
+            "stream",
+            "system"
+          ],
+          "message_count": 1,
+          "billing_header_present": false,
+          "cch_present": false,
+          "metadata": {
+            "field_names": [
+              "account_uuid",
+              "device_id",
+              "session_id"
+            ],
+            "field_refs": {
+              "account_uuid": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "device_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "session_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+            },
+            "user_id_value_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+            "session_header_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+          }
+        },
+        "request_count": 1,
+        "tls_profile_used": false
+      },
+      "request_count": 1,
+      "fail_closed": false,
+      "no_real_upstream": true,
+      "no_native_fallback": true,
+      "sub2api_final_mutation": true,
+      "cc_gateway_owns_final_output": true,
+      "passed": true,
+      "notes": [
+        "sub2api-\u003egateway rewrites metadata.user_id session to a server-issued UUID-like value before CC Gateway final-output handling",
+        "gateway final persona is canonical Claude Code 2.1.175 subscription profile"
+      ]
+    },
+    {
+      "name": "oauth_native_count_tokens_deferred",
+      "category": "sub2api_joint",
+      "route": "/v1/messages/count_tokens?beta=true",
+      "policy_decision": "defer_block",
+      "selected_account_id_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+      "egress_bucket_id": "bucket-a",
+      "policy_version": "2.1.175",
+      "response_status": 403,
+      "response_error_kind": "cc_gateway_control_plane",
+      "response_error_code": "count_tokens_deferred",
+      "client_header_order": [
+        "User-Agent",
+        "Anthropic-Beta",
+        "Accept-Encoding",
+        "X-Claude-Code-Session-Id"
+      ],
+      "client_body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+      "sub2api_to_gateway": {
+        "url_host": "127.0.0.1:64435",
+        "route": "/v1/messages/count_tokens?beta=true",
+        "header_key_order": [
+          "Host",
+          "User-Agent",
+          "Content-Length",
+          "anthropic-beta",
+          "anthropic-version",
+          "authorization",
+          "content-type",
+          "x-cc-account-id",
+          "x-cc-egress-bucket",
+          "x-cc-gateway-token",
+          "x-cc-policy-version",
+          "x-cc-provider",
+          "x-cc-token-type"
+        ],
+        "header_values_summary": {
+          "Content-Length": "101",
+          "Host": "loopback",
+          "User-Agent": "",
+          "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,oauth-2025-04-20,token-counting-2024-11-01",
+          "anthropic-version": "2023-06-01",
+          "authorization": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "content-type": "application/json",
+          "x-cc-account-id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-cc-egress-bucket": "bucket-a",
+          "x-cc-gateway-token": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-cc-policy-version": "2.1.175",
+          "x-cc-provider": "anthropic",
+          "x-cc-token-type": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+        },
+        "body": {
+          "body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+          "size_bytes": 101,
+          "top_level_keys": [
+            "messages",
+            "model"
+          ],
+          "message_count": 1,
+          "billing_header_present": false,
+          "cch_present": false
+        },
+        "request_count": 1,
+        "tls_profile_used": false,
+        "body_unchanged_from_client": true
+      },
+      "request_count": 1,
+      "fail_closed": true,
+      "no_real_upstream": true,
+      "no_native_fallback": true,
+      "sub2api_final_mutation": true,
+      "cc_gateway_owns_final_output": true,
+      "passed": true,
+      "notes": [
+        "route is explicitly deferred in first wave; no upstream request observed"
+      ]
+    },
+    {
+      "name": "oauth_native_messages_sign_primary",
+      "category": "sub2api_joint",
+      "route": "/v1/messages?beta=true",
+      "policy_decision": "forward_sign_primary",
+      "selected_account_id_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+      "egress_bucket_id": "bucket-a",
+      "policy_version": "2.1.175",
+      "response_status": 200,
+      "client_header_order": [
+        "User-Agent",
+        "Anthropic-Beta",
+        "Accept-Encoding",
+        "X-Claude-Code-Session-Id"
+      ],
+      "client_body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+      "sub2api_to_gateway": {
+        "url_host": "127.0.0.1:64442",
+        "route": "/v1/messages?beta=true",
+        "header_key_order": [
+          "Host",
+          "User-Agent",
+          "Content-Length",
+          "X-Claude-Code-Session-Id",
+          "anthropic-beta",
+          "anthropic-version",
+          "authorization",
+          "content-type",
+          "x-cc-account-id",
+          "x-cc-egress-bucket",
+          "x-cc-gateway-token",
+          "x-cc-policy-version",
+          "x-cc-provider",
+          "x-cc-token-type"
+        ],
+        "header_values_summary": {
+          "Content-Length": "274",
+          "Host": "loopback",
+          "User-Agent": "",
+          "X-Claude-Code-Session-Id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,oauth-2025-04-20",
+          "anthropic-version": "2023-06-01",
+          "authorization": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "content-type": "application/json",
+          "x-cc-account-id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-cc-egress-bucket": "bucket-a",
+          "x-cc-gateway-token": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-cc-policy-version": "2.1.175",
+          "x-cc-provider": "anthropic",
+          "x-cc-token-type": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+        },
+        "body": {
+          "body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+          "size_bytes": 274,
+          "top_level_keys": [
+            "messages",
+            "metadata",
+            "model",
+            "stream"
+          ],
+          "message_count": 1,
+          "billing_header_present": false,
+          "cch_present": false,
+          "metadata": {
+            "field_names": [
+              "account_uuid",
+              "device_id",
+              "session_id"
+            ],
+            "field_refs": {
+              "account_uuid": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "device_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "session_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+            },
+            "user_id_value_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+            "session_header_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+          }
+        },
+        "request_count": 1,
+        "tls_profile_used": false
+      },
+      "gateway_to_upstream": {
+        "url_host": "127.0.0.1:64433",
+        "route": "/v1/messages?beta=true",
+        "header_key_order": [
+          "authorization",
+          "Accept",
+          "User-Agent",
+          "X-Stainless-Arch",
+          "X-Stainless-Lang",
+          "X-Stainless-OS",
+          "X-Stainless-Package-Version",
+          "X-Stainless-Retry-Count",
+          "X-Stainless-Runtime",
+          "X-Stainless-Runtime-Version",
+          "X-Stainless-Timeout",
+          "anthropic-dangerous-direct-browser-access",
+          "anthropic-version",
+          "x-app",
+          "Accept-Encoding",
+          "anthropic-beta",
+          "X-Claude-Code-Session-Id",
+          "content-type",
+          "host",
+          "content-length",
+          "Connection"
+        ],
+        "header_values_summary": {
+          "Accept": "application/json",
+          "Accept-Encoding": "gzip, deflate, br, zstd",
+          "Connection": "close",
+          "User-Agent": "claude-cli/2.1.175 (external, sdk-cli)",
+          "X-Claude-Code-Session-Id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "X-Stainless-Arch": "arm64",
+          "X-Stainless-Lang": "js",
+          "X-Stainless-OS": "MacOS",
+          "X-Stainless-Package-Version": "0.94.0",
+          "X-Stainless-Retry-Count": "0",
+          "X-Stainless-Runtime": "node",
+          "X-Stainless-Runtime-Version": "v24.3.0",
+          "X-Stainless-Timeout": "600",
+          "anthropic-beta": "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "authorization": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "content-length": "508",
+          "content-type": "application/json",
+          "host": "loopback",
+          "x-app": "cli"
+        },
+        "body": {
+          "body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+          "size_bytes": 508,
+          "top_level_keys": [
+            "messages",
+            "metadata",
+            "model",
+            "stream",
+            "system"
+          ],
+          "message_count": 1,
+          "system_count": 1,
+          "billing_header_present": true,
+          "cch_present": true,
+          "metadata": {
+            "field_names": [
+              "account_uuid",
+              "device_id",
+              "session_id"
+            ],
+            "field_refs": {
+              "account_uuid": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "device_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "session_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+            },
+            "user_id_value_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+            "session_header_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+          }
+        },
+        "request_count": 1,
+        "tls_profile_used": false
+      },
+      "request_count": 1,
+      "fail_closed": false,
+      "no_real_upstream": true,
+      "no_native_fallback": true,
+      "sub2api_final_mutation": true,
+      "cc_gateway_owns_final_output": true,
+      "passed": true,
+      "notes": [
+        "sub2api-\u003egateway body is pre-final with no billing/CCH material",
+        "cc gateway generated billing block, cc_version suffix, CCH, canonical persona, and post-sign verifier passed before localhost upstream capture"
+      ]
+    },
+    {
+      "name": "oauth_native_messages_sign_primary_rich_shape",
+      "category": "sub2api_joint",
+      "route": "/v1/messages?beta=true",
+      "policy_decision": "forward_sign_primary_native_rich",
+      "selected_account_id_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+      "egress_bucket_id": "bucket-a",
+      "policy_version": "2.1.175",
+      "response_status": 200,
+      "client_header_order": [
+        "User-Agent",
+        "Anthropic-Beta",
+        "Accept-Encoding",
+        "X-Claude-Code-Session-Id"
+      ],
+      "client_body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+      "sub2api_to_gateway": {
+        "url_host": "127.0.0.1:64442",
+        "route": "/v1/messages?beta=true",
+        "header_key_order": [
+          "Host",
+          "User-Agent",
+          "Content-Length",
+          "anthropic-beta",
+          "anthropic-version",
+          "authorization",
+          "content-type",
+          "x-cc-account-id",
+          "x-cc-egress-bucket",
+          "x-cc-gateway-token",
+          "x-cc-policy-version",
+          "x-cc-provider",
+          "x-cc-token-type",
+          "x-sub2api-claude-code-version",
+          "x-sub2api-client-type",
+          "x-sub2api-guard-attested",
+          "x-sub2api-guard-version",
+          "x-sub2api-local-session-ref",
+          "x-sub2api-native-cc-gateway-route",
+          "x-sub2api-native-defer-loading-present",
+          "x-sub2api-native-eager-input-streaming-present",
+          "x-sub2api-native-inbound-route",
+          "x-sub2api-native-server-filled-shape",
+          "x-sub2api-native-shape-healthcheck-profile",
+          "x-sub2api-native-tool-reference-present",
+          "x-sub2api-native-tool-search-mode",
+          "x-sub2api-netwatch-required"
+        ],
+        "header_values_summary": {
+          "Content-Length": "1249",
+          "Host": "loopback",
+          "User-Agent": "",
+          "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,oauth-2025-04-20",
+          "anthropic-version": "2023-06-01",
+          "authorization": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "content-type": "application/json",
+          "x-cc-account-id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-cc-egress-bucket": "bucket-a",
+          "x-cc-gateway-token": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-cc-policy-version": "2.1.175",
+          "x-cc-provider": "anthropic",
+          "x-cc-token-type": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-sub2api-claude-code-version": "2.1.175",
+          "x-sub2api-client-type": "claude_code_native",
+          "x-sub2api-guard-attested": "true",
+          "x-sub2api-guard-version": "guard_v1",
+          "x-sub2api-local-session-ref": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "x-sub2api-native-cc-gateway-route": "/v1/messages?beta=true",
+          "x-sub2api-native-defer-loading-present": "false",
+          "x-sub2api-native-eager-input-streaming-present": "false",
+          "x-sub2api-native-inbound-route": "/v1/messages",
+          "x-sub2api-native-server-filled-shape": "false",
+          "x-sub2api-native-shape-healthcheck-profile": "real_claude_code_native_takeover_v1",
+          "x-sub2api-native-tool-reference-present": "true",
+          "x-sub2api-native-tool-search-mode": "truthful_pass_through",
+          "x-sub2api-netwatch-required": "true"
+        },
+        "body": {
+          "body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+          "size_bytes": 1249,
+          "top_level_keys": [
+            "context_management",
+            "eager_input_streaming",
+            "max_tokens",
+            "messages",
+            "model",
+            "output_config",
+            "stream",
+            "system",
+            "thinking",
+            "tools"
+          ],
+          "message_count": 1,
+          "system_count": 2,
+          "tools_count": 3,
+          "tool_names": [
+            "Bash",
+            "Edit",
+            "Read"
+          ],
+          "thinking_present": true,
+          "thinking_type": "adaptive",
+          "context_management_present": true,
+          "output_config_keys": [
+            "effort"
+          ],
+          "eager_input_streaming": true,
+          "billing_header_present": false,
+          "cch_present": false
+        },
+        "request_count": 1,
+        "tls_profile_used": false,
+        "body_unchanged_from_client": true
+      },
+      "gateway_to_upstream": {
+        "url_host": "127.0.0.1:64433",
+        "route": "/v1/messages?beta=true",
+        "header_key_order": [
+          "authorization",
+          "Accept",
+          "User-Agent",
+          "X-Stainless-Arch",
+          "X-Stainless-Lang",
+          "X-Stainless-OS",
+          "X-Stainless-Package-Version",
+          "X-Stainless-Retry-Count",
+          "X-Stainless-Runtime",
+          "X-Stainless-Runtime-Version",
+          "X-Stainless-Timeout",
+          "anthropic-dangerous-direct-browser-access",
+          "anthropic-version",
+          "x-app",
+          "Accept-Encoding",
+          "anthropic-beta",
+          "X-Claude-Code-Session-Id",
+          "content-type",
+          "host",
+          "content-length",
+          "Connection"
+        ],
+        "header_values_summary": {
+          "Accept": "application/json",
+          "Accept-Encoding": "gzip, deflate, br, zstd",
+          "Connection": "close",
+          "User-Agent": "claude-cli/2.1.175 (external, sdk-cli)",
+          "X-Claude-Code-Session-Id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "X-Stainless-Arch": "arm64",
+          "X-Stainless-Lang": "js",
+          "X-Stainless-OS": "MacOS",
+          "X-Stainless-Package-Version": "0.94.0",
+          "X-Stainless-Retry-Count": "0",
+          "X-Stainless-Runtime": "node",
+          "X-Stainless-Runtime-Version": "v24.3.0",
+          "X-Stainless-Timeout": "600",
+          "anthropic-beta": "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "authorization": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "content-length": "1358",
+          "content-type": "application/json",
+          "host": "loopback",
+          "x-app": "cli"
+        },
+        "body": {
+          "body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+          "size_bytes": 1358,
+          "top_level_keys": [
+            "context_management",
+            "eager_input_streaming",
+            "max_tokens",
+            "messages",
+            "metadata",
+            "model",
+            "output_config",
+            "stream",
+            "system",
+            "thinking",
+            "tools"
+          ],
+          "message_count": 1,
+          "system_count": 3,
+          "tools_count": 3,
+          "tool_names": [
+            "Bash",
+            "Edit",
+            "Read"
+          ],
+          "thinking_present": true,
+          "thinking_type": "adaptive",
+          "context_management_present": true,
+          "output_config_keys": [
+            "effort"
+          ],
+          "eager_input_streaming": true,
+          "billing_header_present": true,
+          "cch_present": true,
+          "metadata": {
+            "field_names": [
+              "account_uuid",
+              "device_id",
+              "session_id"
+            ],
+            "field_refs": {
+              "account_uuid": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "device_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "session_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+            },
+            "user_id_value_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+            "session_header_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+          }
+        },
+        "request_count": 1,
+        "tls_profile_used": false
+      },
+      "request_count": 1,
+      "fail_closed": false,
+      "no_real_upstream": true,
+      "no_native_fallback": true,
+      "sub2api_final_mutation": false,
+      "sub2api_shape_invariant": "native_body_preserved",
+      "cc_gateway_owns_final_output": true,
+      "passed": true,
+      "notes": [
+        "native-attested rich body reaches CC Gateway without Sub2API field downgrade",
+        "gateway sign-primary final output preserves rich native fields while owning billing/CCH"
+      ]
+    },
+    {
+      "name": "oauth_native_messages_sign_primary_opus48",
+      "category": "sub2api_joint",
+      "route": "/v1/messages?beta=true",
+      "policy_decision": "forward_sign_primary",
+      "selected_account_id_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+      "egress_bucket_id": "bucket-a",
+      "policy_version": "2.1.175",
+      "response_status": 200,
+      "client_header_order": [
+        "User-Agent",
+        "Anthropic-Beta",
+        "Accept-Encoding",
+        "X-Claude-Code-Session-Id"
+      ],
+      "client_body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+      "sub2api_to_gateway": {
+        "url_host": "127.0.0.1:64442",
+        "route": "/v1/messages?beta=true",
+        "header_key_order": [
+          "Host",
+          "User-Agent",
+          "Content-Length",
+          "X-Claude-Code-Session-Id",
+          "anthropic-beta",
+          "anthropic-version",
+          "authorization",
+          "content-type",
+          "x-cc-account-id",
+          "x-cc-egress-bucket",
+          "x-cc-gateway-token",
+          "x-cc-policy-version",
+          "x-cc-provider",
+          "x-cc-token-type"
+        ],
+        "header_values_summary": {
+          "Content-Length": "274",
+          "Host": "loopback",
+          "User-Agent": "",
+          "X-Claude-Code-Session-Id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,oauth-2025-04-20",
+          "anthropic-version": "2023-06-01",
+          "authorization": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "content-type": "application/json",
+          "x-cc-account-id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-cc-egress-bucket": "bucket-a",
+          "x-cc-gateway-token": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-cc-policy-version": "2.1.175",
+          "x-cc-provider": "anthropic",
+          "x-cc-token-type": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+        },
+        "body": {
+          "body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+          "size_bytes": 274,
+          "top_level_keys": [
+            "messages",
+            "metadata",
+            "model",
+            "stream"
+          ],
+          "message_count": 1,
+          "billing_header_present": false,
+          "cch_present": false,
+          "metadata": {
+            "field_names": [
+              "account_uuid",
+              "device_id",
+              "session_id"
+            ],
+            "field_refs": {
+              "account_uuid": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "device_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "session_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+            },
+            "user_id_value_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+            "session_header_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+          }
+        },
+        "request_count": 1,
+        "tls_profile_used": false
+      },
+      "gateway_to_upstream": {
+        "url_host": "127.0.0.1:64433",
+        "route": "/v1/messages?beta=true",
+        "header_key_order": [
+          "authorization",
+          "Accept",
+          "User-Agent",
+          "X-Stainless-Arch",
+          "X-Stainless-Lang",
+          "X-Stainless-OS",
+          "X-Stainless-Package-Version",
+          "X-Stainless-Retry-Count",
+          "X-Stainless-Runtime",
+          "X-Stainless-Runtime-Version",
+          "X-Stainless-Timeout",
+          "anthropic-dangerous-direct-browser-access",
+          "anthropic-version",
+          "x-app",
+          "Accept-Encoding",
+          "anthropic-beta",
+          "X-Claude-Code-Session-Id",
+          "content-type",
+          "host",
+          "content-length",
+          "Connection"
+        ],
+        "header_values_summary": {
+          "Accept": "application/json",
+          "Accept-Encoding": "gzip, deflate, br, zstd",
+          "Connection": "close",
+          "User-Agent": "claude-cli/2.1.175 (external, sdk-cli)",
+          "X-Claude-Code-Session-Id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "X-Stainless-Arch": "arm64",
+          "X-Stainless-Lang": "js",
+          "X-Stainless-OS": "MacOS",
+          "X-Stainless-Package-Version": "0.94.0",
+          "X-Stainless-Retry-Count": "0",
+          "X-Stainless-Runtime": "node",
+          "X-Stainless-Runtime-Version": "v24.3.0",
+          "X-Stainless-Timeout": "600",
+          "anthropic-beta": "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "authorization": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "content-length": "508",
+          "content-type": "application/json",
+          "host": "loopback",
+          "x-app": "cli"
+        },
+        "body": {
+          "body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+          "size_bytes": 508,
+          "top_level_keys": [
+            "messages",
+            "metadata",
+            "model",
+            "stream",
+            "system"
+          ],
+          "message_count": 1,
+          "system_count": 1,
+          "billing_header_present": true,
+          "cch_present": true,
+          "metadata": {
+            "field_names": [
+              "account_uuid",
+              "device_id",
+              "session_id"
+            ],
+            "field_refs": {
+              "account_uuid": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "device_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "session_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+            },
+            "user_id_value_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+            "session_header_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+          }
+        },
+        "request_count": 1,
+        "tls_profile_used": false
+      },
+      "request_count": 1,
+      "fail_closed": false,
+      "no_real_upstream": true,
+      "no_native_fallback": true,
+      "sub2api_final_mutation": true,
+      "cc_gateway_owns_final_output": true,
+      "passed": true,
+      "notes": [
+        "2.1.175 sign-primary model shape reached localhost upstream with CC Gateway-owned billing/CCH",
+        "mock upstream shape pass does not prove real upstream entitlement"
+      ]
+    },
+    {
+      "name": "oauth_native_messages_sign_primary_fable5",
+      "category": "sub2api_joint",
+      "route": "/v1/messages?beta=true",
+      "policy_decision": "forward_sign_primary",
+      "selected_account_id_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+      "egress_bucket_id": "bucket-a",
+      "policy_version": "2.1.175",
+      "response_status": 200,
+      "client_header_order": [
+        "User-Agent",
+        "Anthropic-Beta",
+        "Accept-Encoding",
+        "X-Claude-Code-Session-Id"
+      ],
+      "client_body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+      "sub2api_to_gateway": {
+        "url_host": "127.0.0.1:64442",
+        "route": "/v1/messages?beta=true",
+        "header_key_order": [
+          "Host",
+          "User-Agent",
+          "Content-Length",
+          "X-Claude-Code-Session-Id",
+          "anthropic-beta",
+          "anthropic-version",
+          "authorization",
+          "content-type",
+          "x-cc-account-id",
+          "x-cc-egress-bucket",
+          "x-cc-gateway-token",
+          "x-cc-policy-version",
+          "x-cc-provider",
+          "x-cc-token-type"
+        ],
+        "header_values_summary": {
+          "Content-Length": "273",
+          "Host": "loopback",
+          "User-Agent": "",
+          "X-Claude-Code-Session-Id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,oauth-2025-04-20",
+          "anthropic-version": "2023-06-01",
+          "authorization": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "content-type": "application/json",
+          "x-cc-account-id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-cc-egress-bucket": "bucket-a",
+          "x-cc-gateway-token": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-cc-policy-version": "2.1.175",
+          "x-cc-provider": "anthropic",
+          "x-cc-token-type": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+        },
+        "body": {
+          "body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+          "size_bytes": 273,
+          "top_level_keys": [
+            "messages",
+            "metadata",
+            "model",
+            "stream"
+          ],
+          "message_count": 1,
+          "billing_header_present": false,
+          "cch_present": false,
+          "metadata": {
+            "field_names": [
+              "account_uuid",
+              "device_id",
+              "session_id"
+            ],
+            "field_refs": {
+              "account_uuid": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "device_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "session_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+            },
+            "user_id_value_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+            "session_header_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+          }
+        },
+        "request_count": 1,
+        "tls_profile_used": false
+      },
+      "gateway_to_upstream": {
+        "url_host": "127.0.0.1:64433",
+        "route": "/v1/messages?beta=true",
+        "header_key_order": [
+          "authorization",
+          "Accept",
+          "User-Agent",
+          "X-Stainless-Arch",
+          "X-Stainless-Lang",
+          "X-Stainless-OS",
+          "X-Stainless-Package-Version",
+          "X-Stainless-Retry-Count",
+          "X-Stainless-Runtime",
+          "X-Stainless-Runtime-Version",
+          "X-Stainless-Timeout",
+          "anthropic-dangerous-direct-browser-access",
+          "anthropic-version",
+          "x-app",
+          "Accept-Encoding",
+          "anthropic-beta",
+          "X-Claude-Code-Session-Id",
+          "content-type",
+          "host",
+          "content-length",
+          "Connection"
+        ],
+        "header_values_summary": {
+          "Accept": "application/json",
+          "Accept-Encoding": "gzip, deflate, br, zstd",
+          "Connection": "close",
+          "User-Agent": "claude-cli/2.1.175 (external, sdk-cli)",
+          "X-Claude-Code-Session-Id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "X-Stainless-Arch": "arm64",
+          "X-Stainless-Lang": "js",
+          "X-Stainless-OS": "MacOS",
+          "X-Stainless-Package-Version": "0.94.0",
+          "X-Stainless-Retry-Count": "0",
+          "X-Stainless-Runtime": "node",
+          "X-Stainless-Runtime-Version": "v24.3.0",
+          "X-Stainless-Timeout": "600",
+          "anthropic-beta": "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "authorization": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "content-length": "507",
+          "content-type": "application/json",
+          "host": "loopback",
+          "x-app": "cli"
+        },
+        "body": {
+          "body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+          "size_bytes": 507,
+          "top_level_keys": [
+            "messages",
+            "metadata",
+            "model",
+            "stream",
+            "system"
+          ],
+          "message_count": 1,
+          "system_count": 1,
+          "billing_header_present": true,
+          "cch_present": true,
+          "metadata": {
+            "field_names": [
+              "account_uuid",
+              "device_id",
+              "session_id"
+            ],
+            "field_refs": {
+              "account_uuid": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "device_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "session_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+            },
+            "user_id_value_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+            "session_header_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+          }
+        },
+        "request_count": 1,
+        "tls_profile_used": false
+      },
+      "request_count": 1,
+      "fail_closed": false,
+      "no_real_upstream": true,
+      "no_native_fallback": true,
+      "sub2api_final_mutation": true,
+      "cc_gateway_owns_final_output": true,
+      "passed": true,
+      "notes": [
+        "2.1.175 sign-primary model shape reached localhost upstream with CC Gateway-owned billing/CCH",
+        "mock upstream shape pass does not prove real upstream entitlement"
+      ]
+    },
+    {
+      "name": "apikey_native_messages_strip",
+      "category": "sub2api_joint",
+      "route": "/v1/messages?beta=true",
+      "policy_decision": "forward_strip",
+      "selected_account_id_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+      "egress_bucket_id": "bucket-a",
+      "policy_version": "2.1.175",
+      "response_status": 200,
+      "client_header_order": [
+        "User-Agent",
+        "Anthropic-Beta",
+        "Accept-Encoding",
+        "X-Claude-Code-Session-Id"
+      ],
+      "client_body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+      "sub2api_to_gateway": {
+        "url_host": "127.0.0.1:64435",
+        "route": "/v1/messages?beta=true",
+        "header_key_order": [
+          "Host",
+          "User-Agent",
+          "Content-Length",
+          "X-Claude-Code-Session-Id",
+          "anthropic-version",
+          "content-type",
+          "x-api-key",
+          "x-cc-account-id",
+          "x-cc-egress-bucket",
+          "x-cc-gateway-token",
+          "x-cc-policy-version",
+          "x-cc-provider",
+          "x-cc-token-type"
+        ],
+        "header_values_summary": {
+          "Content-Length": "363",
+          "Host": "loopback",
+          "User-Agent": "",
+          "X-Claude-Code-Session-Id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+          "x-api-key": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-cc-account-id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-cc-egress-bucket": "bucket-a",
+          "x-cc-gateway-token": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-cc-policy-version": "2.1.175",
+          "x-cc-provider": "anthropic",
+          "x-cc-token-type": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+        },
+        "body": {
+          "body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+          "size_bytes": 363,
+          "top_level_keys": [
+            "messages",
+            "metadata",
+            "model",
+            "stream",
+            "system"
+          ],
+          "message_count": 1,
+          "system_count": 1,
+          "billing_header_present": true,
+          "cch_present": true,
+          "metadata": {
+            "field_names": [
+              "account_uuid",
+              "device_id",
+              "session_id"
+            ],
+            "field_refs": {
+              "account_uuid": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "device_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "session_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+            },
+            "user_id_value_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+            "session_header_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+          }
+        },
+        "request_count": 1,
+        "tls_profile_used": false
+      },
+      "gateway_to_upstream": {
+        "url_host": "127.0.0.1:64433",
+        "route": "/v1/messages?beta=true",
+        "header_key_order": [
+          "x-api-key",
+          "Accept",
+          "User-Agent",
+          "X-Stainless-Arch",
+          "X-Stainless-Lang",
+          "X-Stainless-OS",
+          "X-Stainless-Package-Version",
+          "X-Stainless-Retry-Count",
+          "X-Stainless-Runtime",
+          "X-Stainless-Runtime-Version",
+          "X-Stainless-Timeout",
+          "anthropic-dangerous-direct-browser-access",
+          "anthropic-version",
+          "x-app",
+          "Accept-Encoding",
+          "anthropic-beta",
+          "X-Claude-Code-Session-Id",
+          "content-type",
+          "host",
+          "content-length",
+          "Connection"
+        ],
+        "header_values_summary": {
+          "Accept": "application/json",
+          "Accept-Encoding": "gzip, deflate, br, zstd",
+          "Connection": "close",
+          "User-Agent": "claude-cli/2.1.175 (external, sdk-cli)",
+          "X-Claude-Code-Session-Id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "X-Stainless-Arch": "arm64",
+          "X-Stainless-Lang": "js",
+          "X-Stainless-OS": "MacOS",
+          "X-Stainless-Package-Version": "0.94.0",
+          "X-Stainless-Retry-Count": "0",
+          "X-Stainless-Runtime": "node",
+          "X-Stainless-Runtime-Version": "v24.3.0",
+          "X-Stainless-Timeout": "600",
+          "anthropic-beta": "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "content-length": "388",
+          "content-type": "application/json",
+          "host": "loopback",
+          "x-api-key": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-app": "cli"
+        },
+        "body": {
+          "body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+          "size_bytes": 388,
+          "top_level_keys": [
+            "messages",
+            "metadata",
+            "model",
+            "stream",
+            "system"
+          ],
+          "message_count": 1,
+          "billing_header_present": false,
+          "cch_present": false,
+          "metadata": {
+            "field_names": [
+              "account_uuid",
+              "device_id",
+              "session_id"
+            ],
+            "field_refs": {
+              "account_uuid": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "device_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "session_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+            },
+            "user_id_value_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+            "session_header_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+          }
+        },
+        "request_count": 1,
+        "tls_profile_used": false
+      },
+      "request_count": 1,
+      "fail_closed": false,
+      "no_real_upstream": true,
+      "no_native_fallback": true,
+      "sub2api_final_mutation": true,
+      "cc_gateway_owns_final_output": true,
+      "passed": true,
+      "notes": [
+        "anthropic api-key passthrough is included for /v1/messages in first wave",
+        "server-issued session mapping happens before gateway strips billing markers"
+      ]
+    },
+    {
+      "name": "apikey_native_count_tokens_deferred",
+      "category": "sub2api_joint",
+      "route": "/v1/messages/count_tokens?beta=true",
+      "policy_decision": "defer_block",
+      "selected_account_id_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+      "egress_bucket_id": "bucket-a",
+      "policy_version": "2.1.175",
+      "response_status": 403,
+      "response_error_kind": "cc_gateway_control_plane",
+      "response_error_code": "count_tokens_deferred",
+      "client_header_order": [
+        "User-Agent",
+        "Anthropic-Beta",
+        "Accept-Encoding",
+        "X-Claude-Code-Session-Id"
+      ],
+      "client_body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+      "sub2api_to_gateway": {
+        "url_host": "127.0.0.1:64435",
+        "route": "/v1/messages/count_tokens?beta=true",
+        "header_key_order": [
+          "Host",
+          "User-Agent",
+          "Content-Length",
+          "Anthropic-Version",
+          "Content-Type",
+          "X-Api-Key",
+          "x-cc-account-id",
+          "x-cc-egress-bucket",
+          "x-cc-gateway-token",
+          "x-cc-policy-version",
+          "x-cc-provider",
+          "x-cc-token-type"
+        ],
+        "header_values_summary": {
+          "Anthropic-Version": "2023-06-01",
+          "Content-Length": "101",
+          "Content-Type": "application/json",
+          "Host": "loopback",
+          "User-Agent": "",
+          "X-Api-Key": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-cc-account-id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-cc-egress-bucket": "bucket-a",
+          "x-cc-gateway-token": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-cc-policy-version": "2.1.175",
+          "x-cc-provider": "anthropic",
+          "x-cc-token-type": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+        },
+        "body": {
+          "body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+          "size_bytes": 101,
+          "top_level_keys": [
+            "messages",
+            "model"
+          ],
+          "message_count": 1,
+          "billing_header_present": false,
+          "cch_present": false
+        },
+        "request_count": 1,
+        "tls_profile_used": false,
+        "body_unchanged_from_client": true
+      },
+      "request_count": 1,
+      "fail_closed": true,
+      "no_real_upstream": true,
+      "no_native_fallback": true,
+      "sub2api_final_mutation": true,
+      "cc_gateway_owns_final_output": true,
+      "passed": true,
+      "notes": [
+        "anthropic api-key count_tokens remains deferred; no native fallback observed"
+      ]
+    },
+    {
+      "name": "openai_chat_completions_to_anthropic",
+      "category": "sub2api_joint",
+      "route": "/v1/chat/completions -\u003e /v1/messages?beta=true",
+      "policy_decision": "forward_strip",
+      "selected_account_id_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+      "egress_bucket_id": "bucket-a",
+      "policy_version": "2.1.175",
+      "response_status": 200,
+      "client_header_order": [
+        "User-Agent",
+        "Anthropic-Beta",
+        "Accept-Encoding",
+        "X-Claude-Code-Session-Id"
+      ],
+      "client_body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+      "sub2api_to_gateway": {
+        "url_host": "127.0.0.1:64435",
+        "route": "/v1/messages?beta=true",
+        "header_key_order": [
+          "Host",
+          "User-Agent",
+          "Content-Length",
+          "anthropic-beta",
+          "anthropic-version",
+          "authorization",
+          "content-type",
+          "x-cc-account-id",
+          "x-cc-egress-bucket",
+          "x-cc-gateway-token",
+          "x-cc-policy-version",
+          "x-cc-provider",
+          "x-cc-token-type"
+        ],
+        "header_values_summary": {
+          "Content-Length": "108",
+          "Host": "loopback",
+          "User-Agent": "",
+          "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,oauth-2025-04-20",
+          "anthropic-version": "2023-06-01",
+          "authorization": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "content-type": "application/json",
+          "x-cc-account-id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-cc-egress-bucket": "bucket-a",
+          "x-cc-gateway-token": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-cc-policy-version": "2.1.175",
+          "x-cc-provider": "anthropic",
+          "x-cc-token-type": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+        },
+        "body": {
+          "body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+          "size_bytes": 108,
+          "top_level_keys": [
+            "max_tokens",
+            "messages",
+            "model",
+            "stream"
+          ],
+          "message_count": 1,
+          "billing_header_present": false,
+          "cch_present": false
+        },
+        "request_count": 1,
+        "tls_profile_used": false
+      },
+      "gateway_to_upstream": {
+        "url_host": "127.0.0.1:64433",
+        "route": "/v1/messages?beta=true",
+        "header_key_order": [
+          "authorization",
+          "Accept",
+          "User-Agent",
+          "X-Stainless-Arch",
+          "X-Stainless-Lang",
+          "X-Stainless-OS",
+          "X-Stainless-Package-Version",
+          "X-Stainless-Retry-Count",
+          "X-Stainless-Runtime",
+          "X-Stainless-Runtime-Version",
+          "X-Stainless-Timeout",
+          "anthropic-dangerous-direct-browser-access",
+          "anthropic-version",
+          "x-app",
+          "Accept-Encoding",
+          "anthropic-beta",
+          "X-Claude-Code-Session-Id",
+          "content-type",
+          "host",
+          "content-length",
+          "Connection"
+        ],
+        "header_values_summary": {
+          "Accept": "application/json",
+          "Accept-Encoding": "gzip, deflate, br, zstd",
+          "Connection": "close",
+          "User-Agent": "claude-cli/2.1.175 (external, sdk-cli)",
+          "X-Claude-Code-Session-Id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "X-Stainless-Arch": "arm64",
+          "X-Stainless-Lang": "js",
+          "X-Stainless-OS": "MacOS",
+          "X-Stainless-Package-Version": "0.94.0",
+          "X-Stainless-Retry-Count": "0",
+          "X-Stainless-Runtime": "node",
+          "X-Stainless-Runtime-Version": "v24.3.0",
+          "X-Stainless-Timeout": "600",
+          "anthropic-beta": "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "authorization": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "content-length": "368",
+          "content-type": "application/json",
+          "host": "loopback",
+          "x-app": "cli"
+        },
+        "body": {
+          "body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+          "size_bytes": 368,
+          "top_level_keys": [
+            "max_tokens",
+            "messages",
+            "metadata",
+            "model",
+            "stream"
+          ],
+          "message_count": 1,
+          "billing_header_present": false,
+          "cch_present": false,
+          "metadata": {
+            "field_names": [
+              "account_uuid",
+              "device_id",
+              "session_id"
+            ],
+            "field_refs": {
+              "account_uuid": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "device_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "session_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+            },
+            "user_id_value_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+            "session_header_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+          }
+        },
+        "request_count": 1,
+        "tls_profile_used": false
+      },
+      "request_count": 1,
+      "fail_closed": false,
+      "no_real_upstream": true,
+      "no_native_fallback": true,
+      "sub2api_final_mutation": true,
+      "cc_gateway_owns_final_output": true,
+      "passed": true,
+      "notes": [
+        "Sub2API performs protocol conversion only; CC Gateway injects final metadata/session binding"
+      ]
+    },
+    {
+      "name": "openai_responses_to_anthropic",
+      "category": "sub2api_joint",
+      "route": "/v1/responses -\u003e /v1/messages?beta=true",
+      "policy_decision": "forward_strip",
+      "selected_account_id_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+      "egress_bucket_id": "bucket-a",
+      "policy_version": "2.1.175",
+      "response_status": 200,
+      "client_header_order": [
+        "User-Agent",
+        "Anthropic-Beta",
+        "Accept-Encoding",
+        "X-Claude-Code-Session-Id"
+      ],
+      "client_body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+      "sub2api_to_gateway": {
+        "url_host": "127.0.0.1:64435",
+        "route": "/v1/messages?beta=true",
+        "header_key_order": [
+          "Host",
+          "User-Agent",
+          "Content-Length",
+          "anthropic-beta",
+          "anthropic-version",
+          "authorization",
+          "content-type",
+          "x-cc-account-id",
+          "x-cc-egress-bucket",
+          "x-cc-gateway-token",
+          "x-cc-policy-version",
+          "x-cc-provider",
+          "x-cc-token-type"
+        ],
+        "header_values_summary": {
+          "Content-Length": "108",
+          "Host": "loopback",
+          "User-Agent": "",
+          "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,oauth-2025-04-20",
+          "anthropic-version": "2023-06-01",
+          "authorization": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "content-type": "application/json",
+          "x-cc-account-id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-cc-egress-bucket": "bucket-a",
+          "x-cc-gateway-token": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "x-cc-policy-version": "2.1.175",
+          "x-cc-provider": "anthropic",
+          "x-cc-token-type": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+        },
+        "body": {
+          "body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+          "size_bytes": 108,
+          "top_level_keys": [
+            "max_tokens",
+            "messages",
+            "model",
+            "stream"
+          ],
+          "message_count": 1,
+          "billing_header_present": false,
+          "cch_present": false
+        },
+        "request_count": 1,
+        "tls_profile_used": false
+      },
+      "gateway_to_upstream": {
+        "url_host": "127.0.0.1:64433",
+        "route": "/v1/messages?beta=true",
+        "header_key_order": [
+          "authorization",
+          "Accept",
+          "User-Agent",
+          "X-Stainless-Arch",
+          "X-Stainless-Lang",
+          "X-Stainless-OS",
+          "X-Stainless-Package-Version",
+          "X-Stainless-Retry-Count",
+          "X-Stainless-Runtime",
+          "X-Stainless-Runtime-Version",
+          "X-Stainless-Timeout",
+          "anthropic-dangerous-direct-browser-access",
+          "anthropic-version",
+          "x-app",
+          "Accept-Encoding",
+          "anthropic-beta",
+          "X-Claude-Code-Session-Id",
+          "content-type",
+          "host",
+          "content-length",
+          "Connection"
+        ],
+        "header_values_summary": {
+          "Accept": "application/json",
+          "Accept-Encoding": "gzip, deflate, br, zstd",
+          "Connection": "close",
+          "User-Agent": "claude-cli/2.1.175 (external, sdk-cli)",
+          "X-Claude-Code-Session-Id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "X-Stainless-Arch": "arm64",
+          "X-Stainless-Lang": "js",
+          "X-Stainless-OS": "MacOS",
+          "X-Stainless-Package-Version": "0.94.0",
+          "X-Stainless-Retry-Count": "0",
+          "X-Stainless-Runtime": "node",
+          "X-Stainless-Runtime-Version": "v24.3.0",
+          "X-Stainless-Timeout": "600",
+          "anthropic-beta": "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,effort-2025-11-24",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "anthropic-version": "2023-06-01",
+          "authorization": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+          "content-length": "368",
+          "content-type": "application/json",
+          "host": "loopback",
+          "x-app": "cli"
+        },
+        "body": {
+          "body_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_body_ref;version=1;value=redacted",
+          "size_bytes": 368,
+          "top_level_keys": [
+            "max_tokens",
+            "messages",
+            "metadata",
+            "model",
+            "stream"
+          ],
+          "message_count": 1,
+          "billing_header_present": false,
+          "cch_present": false,
+          "metadata": {
+            "field_names": [
+              "account_uuid",
+              "device_id",
+              "session_id"
+            ],
+            "field_refs": {
+              "account_uuid": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "device_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+              "session_id": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+            },
+            "user_id_value_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+            "session_header_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted"
+          }
+        },
+        "request_count": 1,
+        "tls_profile_used": false
+      },
+      "request_count": 1,
+      "fail_closed": false,
+      "no_real_upstream": true,
+      "no_native_fallback": true,
+      "sub2api_final_mutation": true,
+      "cc_gateway_owns_final_output": true,
+      "passed": true,
+      "notes": [
+        "Sub2API responses conversion path leaves final metadata/session ownership to CC Gateway"
+      ]
+    },
+    {
+      "name": "event_logging_v2_suppressed_local",
+      "category": "sub2api_local_policy",
+      "route": "/api/event_logging/v2/batch",
+      "policy_decision": "suppress_local",
+      "response_status": 200,
+      "request_count": 0,
+      "fail_closed": false,
+      "no_real_upstream": true,
+      "no_native_fallback": true,
+      "sub2api_final_mutation": true,
+      "cc_gateway_owns_final_output": false,
+      "passed": true,
+      "notes": [
+        "legacy telemetry is suppressed before any CC Gateway routing"
+      ]
+    },
+    {
+      "name": "event_logging_legacy_suppressed_local",
+      "category": "sub2api_local_policy",
+      "route": "/api/event_logging/batch",
+      "policy_decision": "suppress_local",
+      "response_status": 200,
+      "request_count": 0,
+      "fail_closed": false,
+      "no_real_upstream": true,
+      "no_native_fallback": true,
+      "sub2api_final_mutation": true,
+      "cc_gateway_owns_final_output": false,
+      "passed": true,
+      "notes": [
+        "legacy telemetry is suppressed before any CC Gateway routing"
+      ]
+    },
+    {
+      "name": "unknown_event_endpoint_blocked",
+      "category": "sub2api_local_policy",
+      "route": "/api/event_logging/v3/batch",
+      "policy_decision": "block",
+      "response_status": 404,
+      "request_count": 0,
+      "fail_closed": true,
+      "no_real_upstream": true,
+      "no_native_fallback": true,
+      "sub2api_final_mutation": true,
+      "cc_gateway_owns_final_output": false,
+      "passed": true,
+      "notes": [
+        "unknown event route is blocked and never reaches CC Gateway"
+      ]
+    },
+    {
+      "name": "gateway_control_plane_invalid_token_401",
+      "category": "gateway_direct",
+      "route": "/v1/messages?beta=true",
+      "policy_decision": "control_plane_401",
+      "selected_account_id_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+      "egress_bucket_id": "bucket-a",
+      "policy_version": "2.1.175",
+      "response_status": 401,
+      "response_error_kind": "control-plane",
+      "response_error_code": "missing_gateway_token",
+      "client_header_order": [
+        "Content-Type",
+        "X-CC-Gateway-Token",
+        "X-CC-Provider",
+        "X-CC-Account-Id",
+        "X-CC-Egress-Bucket",
+        "X-CC-Policy-Version",
+        "X-Claude-Code-Session-Id",
+        "X-CC-Token-Type",
+        "Authorization"
+      ],
+      "request_count": 0,
+      "fail_closed": true,
+      "no_real_upstream": true,
+      "no_native_fallback": true,
+      "sub2api_final_mutation": true,
+      "cc_gateway_owns_final_output": false,
+      "passed": true,
+      "notes": [
+        "direct gateway control-plane probe; no upstream request observed"
+      ]
+    },
+    {
+      "name": "gateway_control_plane_missing_identity_403",
+      "category": "gateway_direct",
+      "route": "/v1/messages?beta=true",
+      "policy_decision": "control_plane_403",
+      "selected_account_id_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+      "egress_bucket_id": "bucket-a",
+      "policy_version": "2.1.175",
+      "response_status": 403,
+      "response_error_kind": "control-plane",
+      "response_error_code": "missing_account_identity",
+      "client_header_order": [
+        "Content-Type",
+        "X-CC-Gateway-Token",
+        "X-CC-Provider",
+        "X-CC-Account-Id",
+        "X-CC-Egress-Bucket",
+        "X-CC-Policy-Version",
+        "X-Claude-Code-Session-Id",
+        "X-CC-Token-Type",
+        "Authorization"
+      ],
+      "request_count": 0,
+      "fail_closed": true,
+      "no_real_upstream": true,
+      "no_native_fallback": true,
+      "sub2api_final_mutation": true,
+      "cc_gateway_owns_final_output": false,
+      "passed": true,
+      "notes": [
+        "direct gateway control-plane probe; no upstream request observed"
+      ]
+    },
+    {
+      "name": "gateway_control_plane_missing_egress_bucket_400",
+      "category": "gateway_direct",
+      "route": "/v1/messages?beta=true",
+      "policy_decision": "control_plane_400",
+      "selected_account_id_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+      "policy_version": "2.1.175",
+      "response_status": 400,
+      "response_error_kind": "control-plane",
+      "response_error_code": "missing_egress_bucket",
+      "client_header_order": [
+        "Content-Type",
+        "X-CC-Gateway-Token",
+        "X-CC-Provider",
+        "X-CC-Account-Id",
+        "X-CC-Policy-Version",
+        "X-Claude-Code-Session-Id",
+        "X-CC-Token-Type",
+        "Authorization"
+      ],
+      "request_count": 0,
+      "fail_closed": true,
+      "no_real_upstream": true,
+      "no_native_fallback": true,
+      "sub2api_final_mutation": true,
+      "cc_gateway_owns_final_output": false,
+      "passed": true,
+      "notes": [
+        "direct gateway control-plane probe; no upstream request observed"
+      ]
+    },
+    {
+      "name": "gateway_unknown_endpoint_404",
+      "category": "gateway_direct",
+      "route": "/v1/unknown?beta=true",
+      "policy_decision": "block_404",
+      "selected_account_id_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+      "egress_bucket_id": "bucket-a",
+      "policy_version": "2.1.175",
+      "response_status": 404,
+      "response_error_kind": "control-plane",
+      "response_error_code": "unsupported_route",
+      "client_header_order": [
+        "Content-Type",
+        "X-CC-Gateway-Token",
+        "X-CC-Provider",
+        "X-CC-Account-Id",
+        "X-CC-Egress-Bucket",
+        "X-CC-Policy-Version",
+        "X-Claude-Code-Session-Id",
+        "X-CC-Token-Type",
+        "Authorization"
+      ],
+      "request_count": 0,
+      "fail_closed": true,
+      "no_real_upstream": true,
+      "no_native_fallback": true,
+      "sub2api_final_mutation": true,
+      "cc_gateway_owns_final_output": false,
+      "passed": true,
+      "notes": [
+        "direct gateway control-plane probe; no upstream request observed"
+      ]
+    },
+    {
+      "name": "gateway_strip_verifier_failure_400",
+      "category": "gateway_direct",
+      "route": "/v1/messages?beta=true",
+      "policy_decision": "control_plane_400",
+      "selected_account_id_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+      "egress_bucket_id": "bucket-a",
+      "policy_version": "2.1.175",
+      "response_status": 400,
+      "response_error_kind": "control-plane",
+      "response_error_code": "strip_verifier_failed",
+      "client_header_order": [
+        "Content-Type",
+        "X-CC-Gateway-Token",
+        "X-CC-Provider",
+        "X-CC-Account-Id",
+        "X-CC-Egress-Bucket",
+        "X-CC-Policy-Version",
+        "X-Claude-Code-Session-Id",
+        "X-CC-Token-Type",
+        "Authorization"
+      ],
+      "request_count": 0,
+      "fail_closed": true,
+      "no_real_upstream": true,
+      "no_native_fallback": true,
+      "sub2api_final_mutation": true,
+      "cc_gateway_owns_final_output": false,
+      "passed": true,
+      "notes": [
+        "direct gateway control-plane probe; no upstream request observed"
+      ]
+    },
+    {
+      "name": "gateway_signing_untrusted_cch_fail_closed_403",
+      "category": "gateway_direct",
+      "route": "/v1/messages?beta=true",
+      "policy_decision": "control_plane_403",
+      "selected_account_id_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+      "egress_bucket_id": "bucket-a",
+      "policy_version": "2.1.175",
+      "response_status": 403,
+      "response_error_kind": "control-plane",
+      "response_error_code": "signing_untrusted_billing_input",
+      "client_header_order": [
+        "Content-Type",
+        "X-CC-Gateway-Token",
+        "X-CC-Provider",
+        "X-CC-Account-Id",
+        "X-CC-Egress-Bucket",
+        "X-CC-Policy-Version",
+        "X-Claude-Code-Session-Id",
+        "X-CC-Token-Type",
+        "Authorization"
+      ],
+      "request_count": 0,
+      "fail_closed": true,
+      "no_real_upstream": true,
+      "no_native_fallback": true,
+      "sub2api_final_mutation": true,
+      "cc_gateway_owns_final_output": false,
+      "passed": true,
+      "notes": [
+        "direct gateway control-plane probe; no upstream request observed"
+      ]
+    },
+    {
+      "name": "gateway_billing_mode_disabled_403",
+      "category": "gateway_direct",
+      "route": "/v1/messages?beta=true",
+      "policy_decision": "control_plane_403",
+      "selected_account_id_ref": "scoped_hmac_ref:key_id=joint_artifact_test;scope=joint_text_ref;version=1;value=redacted",
+      "egress_bucket_id": "bucket-a",
+      "policy_version": "2.1.175",
+      "response_status": 403,
+      "response_error_kind": "control-plane",
+      "response_error_code": "billing_cch_mode_disabled",
+      "client_header_order": [
+        "Content-Type",
+        "X-CC-Gateway-Token",
+        "X-CC-Provider",
+        "X-CC-Account-Id",
+        "X-CC-Egress-Bucket",
+        "X-CC-Policy-Version",
+        "X-Claude-Code-Session-Id",
+        "X-CC-Token-Type",
+        "Authorization"
+      ],
+      "request_count": 0,
+      "fail_closed": true,
+      "no_real_upstream": true,
+      "no_native_fallback": true,
+      "sub2api_final_mutation": true,
+      "cc_gateway_owns_final_output": false,
+      "passed": true,
+      "notes": [
+        "direct gateway control-plane probe; no upstream request observed"
+      ]
+    }
+  ],
+  "redaction_scan": {
+    "passed": true,
+    "patterns": [
+      "forbidden_bearer_fixture",
+      "forbidden_selected_api_key_fixture",
+      "forbidden_oauth_fixture",
+      "forbidden_setup_token_fixture",
+      "forbidden_client_device_fixture",
+      "forbidden_fake_device_fixture",
+      "forbidden_account_uuid_fixture",
+      "forbidden_org_uuid_fixture",
+      "forbidden_user_email_fixture",
+      "forbidden_selected_email_fixture",
+      "forbidden_session_uuid_fixture",
+      "forbidden_alt_session_uuid_fixture",
+      "forbidden_cch_fixture",
+      "forbidden_email_at_sign",
+      "forbidden_bearer_prefix"
+    ]
+  }
+}

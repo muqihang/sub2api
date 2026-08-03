@@ -1,12 +1,15 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
 	"errors"
+	"time"
 
 	entsql "entgo.io/ent/dialect/sql"
 	"github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/google/wire"
 	"github.com/redis/go-redis/v9"
@@ -94,8 +97,12 @@ var ProviderSet = wire.NewSet(
 	NewChannelMonitorRequestTemplateRepository,
 	NewContentModerationRepository,
 	NewAffiliateRepository,
-	NewUserPlatformQuotaRepository,     // T14: user × platform quota
-	NewUserPlatformQuotaServiceAdapter, // T14: adapter → service.UserPlatformQuotaRepository
+	NewEntityRegistryRepository,
+	NewEntityRateLimitPolicyRepository,
+	NewCodexAgentRepository,
+	wire.Bind(new(service.CodexAgentRepository), new(*codexAgentRepository)),
+	NewUserPlatformQuotaRepository,     // T14: user x platform quota
+	NewUserPlatformQuotaServiceAdapter, // T14: adapter -> service.UserPlatformQuotaRepository
 
 	// Cache implementations
 	NewGatewayCache,
@@ -120,12 +127,16 @@ var ProviderSet = wire.NewSet(
 	NewBatchImageDownloadLimiter,
 	NewLeaderLockCache,
 	ProvideSchedulerCache,
+	ProvideAugmentOfficialSessionStore,
+	ProvideAugmentOfficialPoolSessionStore,
+	ProvideAugmentGatewaySettingsStore,
 	NewSchedulerOutboxRepository,
 	NewProxyLatencyCache,
 	NewTotpCache,
 	NewRefreshTokenCache,
 	NewErrorPassthroughCache,
 	NewTLSFingerprintProfileCache,
+	NewEntityRateLimitCache,
 	NewContentModerationHashCache,
 
 	// Encryptors
@@ -144,10 +155,10 @@ var ProviderSet = wire.NewSet(
 	NewClaudeOAuthClient,
 	NewHTTPUpstream,
 	NewOpenAIOAuthClient,
-	NewGrokOAuthClient,
 	NewGeminiOAuthClient,
 	NewGeminiCliCodeAssistClient,
 	NewGeminiDriveClient,
+	NewGrokOAuthClient,
 
 	ProvideEnt,
 	ProvideSQLDB,
@@ -202,4 +213,266 @@ func ProvideSQLDB(client *ent.Client) (*sql.DB, error) {
 // 提供：*redis.Client
 func ProvideRedis(cfg *config.Config) *redis.Client {
 	return InitRedis(cfg)
+}
+
+type augmentOfficialSessionStoreAdapter struct {
+	repo *augmentOfficialSessionRepository
+}
+
+func ProvideAugmentOfficialSessionStore(client *ent.Client, sqlDB *sql.DB) service.AugmentOfficialSessionStore {
+	return &augmentOfficialSessionStoreAdapter{
+		repo: NewAugmentOfficialSessionRepository(client, sqlDB),
+	}
+}
+
+func ProvideAugmentOfficialPoolSessionStore(sqlDB *sql.DB) service.AugmentOfficialPoolSessionStore {
+	return NewAugmentOfficialPoolSessionRepository(sqlDB)
+}
+
+func ProvideAugmentGatewaySettingsStore(sqlDB *sql.DB) service.AugmentGatewaySettingsStore {
+	return NewAugmentGatewaySettingsRepository(sqlDB)
+}
+
+func (a *augmentOfficialSessionStoreAdapter) CreateBindIntent(ctx context.Context, input service.AugmentOfficialSessionBindIntentStoreCreateInput) (*service.AugmentOfficialSessionBindIntentStoreRecord, error) {
+	record, err := a.repo.CreateBindIntent(ctx, AugmentOfficialSessionBindIntentCreateInput{
+		UserID:          input.UserID,
+		StateHash:       input.StateHash,
+		Mode:            input.Mode,
+		Source:          input.Source,
+		TenantAllowlist: append([]string(nil), input.TenantAllowlist...),
+	})
+	if err != nil || record == nil {
+		return nil, translateAugmentOfficialSessionStoreError(err)
+	}
+	return &service.AugmentOfficialSessionBindIntentStoreRecord{
+		ID:              record.ID,
+		UserID:          record.UserID,
+		BindIntentID:    record.BindIntentID,
+		StateHash:       record.StateHash,
+		Mode:            record.Mode,
+		Source:          record.Source,
+		TenantAllowlist: append([]string(nil), record.TenantAllowlist...),
+		ExpiresAt:       record.ExpiresAt.UTC(),
+		ConsumedAt:      cloneTimePtrForAdapter(record.ConsumedAt),
+		CreatedAt:       record.CreatedAt.UTC(),
+	}, nil
+}
+
+func (a *augmentOfficialSessionStoreAdapter) ConsumeBindIntent(ctx context.Context, bindIntentID string, userID int64) (*service.AugmentOfficialSessionBindIntentStoreRecord, error) {
+	record, err := a.repo.ConsumeBindIntent(ctx, bindIntentID, userID)
+	if err != nil || record == nil {
+		return nil, translateAugmentOfficialSessionStoreError(err)
+	}
+	return &service.AugmentOfficialSessionBindIntentStoreRecord{
+		ID:              record.ID,
+		UserID:          record.UserID,
+		BindIntentID:    record.BindIntentID,
+		StateHash:       record.StateHash,
+		Mode:            record.Mode,
+		Source:          record.Source,
+		TenantAllowlist: append([]string(nil), record.TenantAllowlist...),
+		ExpiresAt:       record.ExpiresAt.UTC(),
+		ConsumedAt:      cloneTimePtrForAdapter(record.ConsumedAt),
+		CreatedAt:       record.CreatedAt.UTC(),
+	}, nil
+}
+
+func (a *augmentOfficialSessionStoreAdapter) UpsertActiveSession(ctx context.Context, input service.AugmentOfficialSessionStoredSessionInput) (*service.AugmentOfficialSessionStoredPublicView, error) {
+	view, err := a.repo.UpsertActiveSession(ctx, AugmentOfficialSessionUpsertInput{
+		UserID:                     input.UserID,
+		Mode:                       input.Mode,
+		Source:                     input.Source,
+		TenantOrigin:               input.TenantOrigin,
+		PortalOrigin:               cloneStringPtrForAdapter(input.PortalOrigin),
+		Scopes:                     append([]string(nil), input.Scopes...),
+		ExpiresAt:                  cloneTimePtrForAdapter(input.ExpiresAt),
+		LastRefreshAt:              cloneTimePtrForAdapter(input.LastRefreshAt),
+		LastSuccessAt:              cloneTimePtrForAdapter(input.LastSuccessAt),
+		LastErrorAt:                cloneTimePtrForAdapter(input.LastErrorAt),
+		LastErrorCode:              cloneStringPtrForAdapter(input.LastErrorCode),
+		Status:                     input.Status,
+		EncryptedCredentialPayload: append([]byte(nil), input.EncryptedCredentialPayload...),
+		CredentialSchemaVersion:    input.CredentialSchemaVersion,
+		KeyVersion:                 input.KeyVersion,
+		Fingerprint:                input.Fingerprint,
+	})
+	if err != nil || view == nil {
+		return nil, translateAugmentOfficialSessionStoreError(err)
+	}
+	return adminViewToStoredPublicView(view), nil
+}
+
+func (a *augmentOfficialSessionStoreAdapter) GetActiveSessionPublicView(ctx context.Context, userID int64) (*service.AugmentOfficialSessionStoredPublicView, error) {
+	view, err := a.repo.GetActiveSessionPublicView(ctx, userID)
+	if err != nil || view == nil {
+		return nil, translateAugmentOfficialSessionStoreError(err)
+	}
+	return &service.AugmentOfficialSessionStoredPublicView{
+		UserID:                  view.UserID,
+		Mode:                    view.Mode,
+		Source:                  view.Source,
+		TenantOrigin:            view.TenantOrigin,
+		PortalOrigin:            cloneStringPtrForAdapter(view.PortalOrigin),
+		Scopes:                  append([]string(nil), view.Scopes...),
+		ExpiresAt:               cloneTimePtrForAdapter(view.ExpiresAt),
+		LastRefreshAt:           cloneTimePtrForAdapter(view.LastRefreshAt),
+		LastSuccessAt:           cloneTimePtrForAdapter(view.LastSuccessAt),
+		LastErrorAt:             cloneTimePtrForAdapter(view.LastErrorAt),
+		LastErrorCode:           cloneStringPtrForAdapter(view.LastErrorCode),
+		Status:                  view.Status,
+		CredentialSchemaVersion: view.CredentialSchemaVersion,
+		KeyVersion:              view.KeyVersion,
+		Fingerprint:             view.Fingerprint,
+		CreatedAt:               view.CreatedAt.UTC(),
+		UpdatedAt:               view.UpdatedAt.UTC(),
+		RevokedAt:               cloneTimePtrForAdapter(view.RevokedAt),
+	}, nil
+}
+
+func (a *augmentOfficialSessionStoreAdapter) GetActiveSessionAdminView(ctx context.Context, userID int64) (*service.AugmentOfficialSessionStoredAdminView, error) {
+	view, err := a.repo.GetActiveSessionAdminView(ctx, userID)
+	if err != nil || view == nil {
+		return nil, translateAugmentOfficialSessionStoreError(err)
+	}
+	return adminViewToStoredAdminView(view), nil
+}
+
+func (a *augmentOfficialSessionStoreAdapter) ListAdminSessions(ctx context.Context) ([]service.AugmentOfficialSessionStoredAdminView, error) {
+	views, err := a.repo.ListAdminViews(ctx)
+	if err != nil {
+		return nil, translateAugmentOfficialSessionStoreError(err)
+	}
+	out := make([]service.AugmentOfficialSessionStoredAdminView, 0, len(views))
+	for i := range views {
+		out = append(out, *adminViewToStoredAdminView(&views[i]))
+	}
+	return out, nil
+}
+
+func (a *augmentOfficialSessionStoreAdapter) GetActiveSessionCredentialRow(ctx context.Context, userID int64) (*service.AugmentOfficialSessionStoredCredentialRow, error) {
+	row, err := a.repo.GetActiveSessionCredentialRow(ctx, userID)
+	if err != nil || row == nil {
+		return nil, translateAugmentOfficialSessionStoreError(err)
+	}
+	return &service.AugmentOfficialSessionStoredCredentialRow{
+		UserID:                     row.UserID,
+		Mode:                       row.Mode,
+		Source:                     row.Source,
+		TenantOrigin:               row.TenantOrigin,
+		PortalOrigin:               cloneStringPtrForAdapter(row.PortalOrigin),
+		Scopes:                     append([]string(nil), row.Scopes...),
+		ExpiresAt:                  cloneTimePtrForAdapter(row.ExpiresAt),
+		LastRefreshAt:              cloneTimePtrForAdapter(row.LastRefreshAt),
+		LastSuccessAt:              cloneTimePtrForAdapter(row.LastSuccessAt),
+		LastErrorAt:                cloneTimePtrForAdapter(row.LastErrorAt),
+		LastErrorCode:              cloneStringPtrForAdapter(row.LastErrorCode),
+		Status:                     row.Status,
+		EncryptedCredentialPayload: append([]byte(nil), row.EncryptedCredentialPayload...),
+		CredentialSchemaVersion:    row.CredentialSchemaVersion,
+		KeyVersion:                 row.KeyVersion,
+		Fingerprint:                row.Fingerprint,
+		CreatedAt:                  row.CreatedAt.UTC(),
+		UpdatedAt:                  row.UpdatedAt.UTC(),
+		RevokedAt:                  cloneTimePtrForAdapter(row.RevokedAt),
+	}, nil
+}
+
+func (a *augmentOfficialSessionStoreAdapter) RevokeActiveSession(ctx context.Context, userID int64) (*service.AugmentOfficialSessionStoredPublicView, error) {
+	view, err := a.repo.RevokeActiveSession(ctx, userID)
+	if err != nil || view == nil {
+		return nil, translateAugmentOfficialSessionStoreError(err)
+	}
+	return adminViewToStoredPublicView(view), nil
+}
+
+func adminViewToStoredPublicView(view *AugmentOfficialSessionAdminView) *service.AugmentOfficialSessionStoredPublicView {
+	if view == nil {
+		return nil
+	}
+	return &service.AugmentOfficialSessionStoredPublicView{
+		UserID:                  view.UserID,
+		Mode:                    view.Mode,
+		Source:                  view.Source,
+		TenantOrigin:            view.TenantOrigin,
+		PortalOrigin:            cloneStringPtrForAdapter(view.PortalOrigin),
+		Scopes:                  append([]string(nil), view.Scopes...),
+		ExpiresAt:               cloneTimePtrForAdapter(view.ExpiresAt),
+		LastRefreshAt:           cloneTimePtrForAdapter(view.LastRefreshAt),
+		LastSuccessAt:           cloneTimePtrForAdapter(view.LastSuccessAt),
+		LastErrorAt:             cloneTimePtrForAdapter(view.LastErrorAt),
+		LastErrorCode:           cloneStringPtrForAdapter(view.LastErrorCode),
+		Status:                  view.Status,
+		CredentialSchemaVersion: view.CredentialSchemaVersion,
+		KeyVersion:              view.KeyVersion,
+		Fingerprint:             view.Fingerprint,
+		CreatedAt:               view.CreatedAt.UTC(),
+		UpdatedAt:               view.UpdatedAt.UTC(),
+		RevokedAt:               cloneTimePtrForAdapter(view.RevokedAt),
+	}
+}
+
+func adminViewToStoredAdminView(view *AugmentOfficialSessionAdminView) *service.AugmentOfficialSessionStoredAdminView {
+	if view == nil {
+		return nil
+	}
+	return &service.AugmentOfficialSessionStoredAdminView{
+		UserID:                  view.UserID,
+		Mode:                    view.Mode,
+		Source:                  view.Source,
+		TenantOrigin:            view.TenantOrigin,
+		PortalOrigin:            cloneStringPtrForAdapter(view.PortalOrigin),
+		Scopes:                  append([]string(nil), view.Scopes...),
+		ExpiresAt:               cloneTimePtrForAdapter(view.ExpiresAt),
+		LastRefreshAt:           cloneTimePtrForAdapter(view.LastRefreshAt),
+		LastSuccessAt:           cloneTimePtrForAdapter(view.LastSuccessAt),
+		LastErrorAt:             cloneTimePtrForAdapter(view.LastErrorAt),
+		LastErrorCode:           cloneStringPtrForAdapter(view.LastErrorCode),
+		Status:                  view.Status,
+		CredentialSchemaVersion: view.CredentialSchemaVersion,
+		KeyVersion:              view.KeyVersion,
+		Fingerprint:             view.Fingerprint,
+		CreatedAt:               view.CreatedAt.UTC(),
+		UpdatedAt:               view.UpdatedAt.UTC(),
+		RevokedAt:               cloneTimePtrForAdapter(view.RevokedAt),
+		HasCredentialPayload:    view.HasCredentialPayload,
+	}
+}
+
+func cloneTimePtrForAdapter(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := value.UTC()
+	return &cloned
+}
+
+func cloneStringPtrForAdapter(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func translateAugmentOfficialSessionStoreError(err error) error {
+	if err == nil {
+		return nil
+	}
+	switch {
+	case errors.Is(err, ErrAugmentOfficialSessionBindIntentNotFound):
+		return infraerrors.NotFound("AUGMENT_OFFICIAL_BIND_INTENT_NOT_FOUND", "augment official bind intent was not found")
+	case errors.Is(err, ErrAugmentOfficialSessionBindIntentExpired):
+		return infraerrors.Unauthorized("AUGMENT_OFFICIAL_BIND_INTENT_EXPIRED", "augment official bind intent has expired")
+	case errors.Is(err, ErrAugmentOfficialSessionBindIntentCrossUser):
+		return infraerrors.Forbidden("AUGMENT_OFFICIAL_BIND_INTENT_FORBIDDEN", "augment official bind intent does not belong to this user")
+	case errors.Is(err, ErrAugmentOfficialSessionBindIntentConsumed):
+		return infraerrors.Conflict("AUGMENT_OFFICIAL_BIND_INTENT_CONSUMED", "augment official bind intent has already been consumed")
+	case errors.Is(err, ErrAugmentOfficialSessionSourceInvalid),
+		errors.Is(err, ErrAugmentOfficialSessionModeInvalid),
+		errors.Is(err, ErrAugmentOfficialSessionStatusInvalid),
+		errors.Is(err, ErrAugmentOfficialSessionCredentialPayloadEmpty):
+		return infraerrors.BadRequest("AUGMENT_OFFICIAL_SESSION_INVALID", err.Error())
+	default:
+		return err
+	}
 }

@@ -277,19 +277,13 @@ func TestGatewayModels_AnthropicCustomModelsListIncludesOAuthClaudeAndMappedDeep
 		&gatewayModelsAccountRepoStub{
 			byGroup: map[int64][]service.Account{
 				groupID: {
-					{
-						ID:       1,
-						Platform: service.PlatformAnthropic,
-						Type:     service.AccountTypeOAuth,
-					},
+					{ID: 1, Platform: service.PlatformAnthropic, Type: service.AccountTypeOAuth},
 					{
 						ID:       2,
 						Platform: service.PlatformAnthropic,
 						Type:     service.AccountTypeAPIKey,
 						Credentials: map[string]any{
-							"model_mapping": map[string]any{
-								"deepseek-v4-pro": "deepseek-v4-pro",
-							},
+							"model_mapping": map[string]any{"deepseek-v4-pro": "deepseek-v4-pro"},
 						},
 					},
 				},
@@ -306,7 +300,7 @@ func TestGatewayModels_AnthropicCustomModelsListIncludesOAuthClaudeAndMappedDeep
 			Platform: service.PlatformAnthropic,
 			ModelsListConfig: service.GroupModelsListConfig{
 				Enabled: true,
-				Models:  []string{"claude-fable-5", "claude-opus-4-8", "deepseek-v4-pro"},
+				Models:  []string{"claude-opus-4-8", "deepseek-v4-pro"},
 			},
 		},
 	})
@@ -314,102 +308,9 @@ func TestGatewayModels_AnthropicCustomModelsListIncludesOAuthClaudeAndMappedDeep
 	h.Models(c)
 
 	require.Equal(t, http.StatusOK, rec.Code)
-
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"claude-fable-5", "claude-opus-4-8", "deepseek-v4-pro"}, modelIDsForTest(got.Data))
-}
-
-func TestGatewayModels_AnthropicCustomModelsListDisabledKeepsMappedModelList(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	groupID := int64(29)
-	h := newGatewayModelsHandlerForTest(
-		&gatewayModelsAccountRepoStub{
-			byGroup: map[int64][]service.Account{
-				groupID: {
-					{
-						ID:       1,
-						Platform: service.PlatformAnthropic,
-						Type:     service.AccountTypeOAuth,
-					},
-					{
-						ID:       2,
-						Platform: service.PlatformAnthropic,
-						Type:     service.AccountTypeAPIKey,
-						Credentials: map[string]any{
-							"model_mapping": map[string]any{
-								"deepseek-v4-pro": "deepseek-v4-pro",
-							},
-						},
-					},
-				},
-			},
-		},
-	)
-
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
-		Group: &service.Group{
-			ID:       groupID,
-			Platform: service.PlatformAnthropic,
-			ModelsListConfig: service.GroupModelsListConfig{
-				Enabled: false,
-				Models:  []string{"claude-fable-5", "deepseek-v4-pro"},
-			},
-		},
-	})
-
-	h.Models(c)
-
-	require.Equal(t, http.StatusOK, rec.Code)
-
-	var got gatewayModelsResponseForTest
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"deepseek-v4-pro"}, modelIDsForTest(got.Data))
-}
-
-func TestGatewayModels_AnthropicCustomModelsListIncludesOAuthClaudeWithoutMappings(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	groupID := int64(30)
-	h := newGatewayModelsHandlerForTest(
-		&gatewayModelsAccountRepoStub{
-			byGroup: map[int64][]service.Account{
-				groupID: {
-					{
-						ID:       1,
-						Platform: service.PlatformAnthropic,
-						Type:     service.AccountTypeOAuth,
-					},
-				},
-			},
-		},
-	)
-
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
-		Group: &service.Group{
-			ID:       groupID,
-			Platform: service.PlatformAnthropic,
-			ModelsListConfig: service.GroupModelsListConfig{
-				Enabled: true,
-				Models:  []string{"claude-opus-4-6-thinking", "claude-sonnet-4-5"},
-			},
-		},
-	})
-
-	h.Models(c)
-
-	require.Equal(t, http.StatusOK, rec.Code)
-
-	var got gatewayModelsResponseForTest
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"claude-opus-4-6-thinking", "claude-sonnet-4-5"}, modelIDsForTest(got.Data))
+	require.Equal(t, []string{"claude-opus-4-8", "deepseek-v4-pro"}, modelIDsForTest(got.Data))
 }
 
 func TestGatewayModels_CustomModelsListCanReturnEmptyWhenSelectionsUnavailable(t *testing.T) {
@@ -533,6 +434,60 @@ func TestGatewayModels_OpenAICustomModelsListKeepsOpenAIResponseShapeForDefaultF
 	require.NotZero(t, got.Data[0].Created)
 	require.Equal(t, "openai", got.Data[0].OwnedBy)
 	require.Empty(t, got.Data[0].CreatedAt)
+}
+
+func TestGatewayModels_ClaudeCodeOnlyCustomModelsListUsesExactRuntimeCatalog(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	groupID := int64(28)
+	h := newGatewayModelsHandlerForTest(
+		&gatewayModelsAccountRepoStub{
+			byGroup: map[int64][]service.Account{
+				groupID: {
+					{ID: 1, Platform: service.PlatformAnthropic},
+				},
+			},
+		},
+	)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{
+			ID:             groupID,
+			Platform:       service.PlatformAnthropic,
+			ClaudeCodeOnly: true,
+			ModelsListConfig: service.GroupModelsListConfig{
+				Enabled: true,
+				Models: []string{
+					"claude-opus-4-8",
+					"claude-sonnet-4-6",
+					"claude-haiku-4-5-20251001",
+					"claude-code-bridge-gpt-5.5",
+					"claude-code-bridge-deepseek-v4-pro",
+				},
+			},
+		},
+	})
+
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, []string{
+		"claude-opus-4-8",
+		"claude-sonnet-4-6",
+		"claude-haiku-4-5-20251001",
+		"claude-code-bridge-gpt-5.5",
+		"claude-code-bridge-deepseek-v4-pro",
+	}, modelIDsForTest(got.Data))
+	require.NotContains(t, modelIDsForTest(got.Data), "claude-opus-4-7")
+	require.NotContains(t, modelIDsForTest(got.Data), "claude-fable-5")
+	require.NotContains(t, modelIDsForTest(got.Data), "claude-opus-4-5-20251101")
+	require.NotContains(t, modelIDsForTest(got.Data), "claude-sonnet-4-5-20250929")
 }
 
 func modelIDsForTest(models []gatewayModelItemForTest) []string {

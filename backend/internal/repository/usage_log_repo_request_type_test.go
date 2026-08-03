@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,63 +39,10 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 		OpenAIWSMode:   false,
 		CreatedAt:      createdAt,
 	}
+	prepared := prepareUsageLogInsert(log)
 
 	mock.ExpectQuery("INSERT INTO usage_logs").
-		WithArgs(
-			log.UserID,
-			log.APIKeyID,
-			log.AccountID,
-			log.RequestID,
-			log.Model,
-			log.RequestedModel,
-			sqlmock.AnyArg(), // upstream_model
-			sqlmock.AnyArg(), // group_id
-			sqlmock.AnyArg(), // subscription_id
-			log.InputTokens,
-			log.OutputTokens,
-			log.CacheCreationTokens,
-			log.CacheReadTokens,
-			log.CacheCreation5mTokens,
-			log.CacheCreation1hTokens,
-			log.ImageOutputTokens,
-			log.ImageOutputCost,
-			log.InputCost,
-			log.OutputCost,
-			log.CacheCreationCost,
-			log.CacheReadCost,
-			log.TotalCost,
-			log.ActualCost,
-			log.RateMultiplier,
-			log.AccountRateMultiplier,
-			log.BillingType,
-			int16(service.RequestTypeWSV2),
-			true,
-			true,
-			sqlmock.AnyArg(), // duration_ms
-			sqlmock.AnyArg(), // first_token_ms
-			sqlmock.AnyArg(), // user_agent
-			sqlmock.AnyArg(), // ip_address
-			log.ImageCount,
-			sqlmock.AnyArg(), // image_size
-			sqlmock.AnyArg(), // image_input_size
-			sqlmock.AnyArg(), // image_output_size
-			sqlmock.AnyArg(), // image_size_source
-			sqlmock.AnyArg(), // image_size_breakdown
-			sqlmock.AnyArg(), // video_count
-			sqlmock.AnyArg(), // video_resolution
-			sqlmock.AnyArg(), // video_duration_seconds
-			sqlmock.AnyArg(), // service_tier
-			sqlmock.AnyArg(), // reasoning_effort
-			sqlmock.AnyArg(), // inbound_endpoint
-			sqlmock.AnyArg(), // upstream_endpoint
-			log.CacheTTLOverridden,
-			sqlmock.AnyArg(), // channel_id
-			sqlmock.AnyArg(), // model_mapping_chain
-			sqlmock.AnyArg(), // billing_tier
-			sqlmock.AnyArg(), // billing_mode
-			sqlmock.AnyArg(), // account_stats_cost
-			createdAt,
-		).
+		WithArgs(anySliceToDriverValues(prepared.args)...).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(99), createdAt))
 
 	inserted, err := repo.Create(context.Background(), log)
@@ -124,63 +72,10 @@ func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
 		ServiceTier:    &serviceTier,
 		CreatedAt:      createdAt,
 	}
+	prepared := prepareUsageLogInsert(log)
 
 	mock.ExpectQuery("INSERT INTO usage_logs").
-		WithArgs(
-			log.UserID,
-			log.APIKeyID,
-			log.AccountID,
-			log.RequestID,
-			log.Model,
-			log.RequestedModel,
-			sqlmock.AnyArg(),
-			sqlmock.AnyArg(),
-			sqlmock.AnyArg(),
-			log.InputTokens,
-			log.OutputTokens,
-			log.CacheCreationTokens,
-			log.CacheReadTokens,
-			log.CacheCreation5mTokens,
-			log.CacheCreation1hTokens,
-			log.ImageOutputTokens,
-			log.ImageOutputCost,
-			log.InputCost,
-			log.OutputCost,
-			log.CacheCreationCost,
-			log.CacheReadCost,
-			log.TotalCost,
-			log.ActualCost,
-			log.RateMultiplier,
-			log.AccountRateMultiplier,
-			log.BillingType,
-			int16(service.RequestTypeSync),
-			false,
-			false,
-			sqlmock.AnyArg(),
-			sqlmock.AnyArg(),
-			sqlmock.AnyArg(),
-			sqlmock.AnyArg(),
-			log.ImageCount,
-			sqlmock.AnyArg(),
-			sqlmock.AnyArg(), // image_input_size
-			sqlmock.AnyArg(), // image_output_size
-			sqlmock.AnyArg(), // image_size_source
-			sqlmock.AnyArg(), // image_size_breakdown
-			sqlmock.AnyArg(), // video_count
-			sqlmock.AnyArg(), // video_resolution
-			sqlmock.AnyArg(), // video_duration_seconds
-			serviceTier,
-			sqlmock.AnyArg(),
-			sqlmock.AnyArg(),
-			sqlmock.AnyArg(),
-			log.CacheTTLOverridden,
-			sqlmock.AnyArg(), // channel_id
-			sqlmock.AnyArg(), // model_mapping_chain
-			sqlmock.AnyArg(), // billing_tier
-			sqlmock.AnyArg(), // billing_mode
-			sqlmock.AnyArg(), // account_stats_cost
-			createdAt,
-		).
+		WithArgs(anySliceToDriverValues(prepared.args)...).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(100), createdAt))
 
 	inserted, err := repo.Create(context.Background(), log)
@@ -244,6 +139,106 @@ func TestPrepareUsageLogInsert_ArgCountMatchesTypes(t *testing.T) {
 	require.Len(t, prepared.args, len(usageLogInsertArgTypes))
 }
 
+func TestScanUsageLog_AllowsLegacyNullEntityAuditFields(t *testing.T) {
+	db, mock := newSQLMock(t)
+	createdAt := time.Date(2025, 1, 6, 12, 0, 0, 0, time.UTC)
+	rows := sqlmock.NewRows(strings.Split(usageLogSelectColumns, ", ")).
+		AddRow(
+			int64(99),                // id
+			int64(1),                 // user_id
+			int64(2),                 // api_key_id
+			int64(3),                 // account_id
+			"req-legacy-entity-null", // request_id
+			"gpt-5",                  // model
+			nil,                      // requested_model
+			nil,                      // upstream_model
+			nil,                      // entity_id
+			nil,                      // entity_type
+			nil,                      // claimed_entity_id
+			nil,                      // group_id
+			nil,                      // subscription_id
+			10,                       // input_tokens
+			5,                        // output_tokens
+			0,                        // cache_creation_tokens
+			0,                        // cache_read_tokens
+			0,                        // cache_creation_5m_tokens
+			0,                        // cache_creation_1h_tokens
+			0,                        // image_output_tokens
+			float64(0),               // image_output_cost
+			float64(0),               // input_cost
+			float64(0),               // output_cost
+			float64(0),               // cache_creation_cost
+			float64(0),               // cache_read_cost
+			float64(0),               // total_cost
+			float64(0),               // actual_cost
+			float64(1),               // rate_multiplier
+			nil,                      // account_rate_multiplier
+			int16(0),                 // billing_type
+			int16(service.RequestTypeSync),
+			false,     // stream
+			false,     // openai_ws_mode
+			nil,       // duration_ms
+			nil,       // first_token_ms
+			nil,       // user_agent
+			nil,       // ip_address
+			0,         // image_count
+			nil,       // image_size
+			nil,       // image_input_size
+			nil,       // image_output_size
+			nil,       // image_size_source
+			nil,       // image_size_breakdown
+			0,         // video_count
+			nil,       // video_resolution
+			nil,       // video_duration_seconds
+			nil,       // service_tier
+			nil,       // reasoning_effort
+			nil,       // inbound_endpoint
+			nil,       // upstream_endpoint
+			false,     // cache_ttl_overridden
+			nil,       // channel_id
+			nil,       // model_mapping_chain
+			nil,       // billing_tier
+			nil,       // billing_mode
+			nil,       // account_stats_cost
+			nil,       // client_product
+			nil,       // request_scope
+			nil,       // feature_scope
+			nil,       // augment_session_id
+			nil,       // route_policy_version
+			nil,       // pricing_version
+			nil,       // billable
+			nil,       // cost_source
+			nil,       // currency
+			nil,       // upstream_attempt_id
+			nil,       // settlement_status
+			nil,       // input_unit_price
+			nil,       // output_unit_price
+			nil,       // cache_read_unit_price
+			nil,       // cache_creation_unit_price
+			nil,       // reasoning_unit_price
+			nil,       // estimated_cost
+			nil,       // settled_cost
+			nil,       // free_quota_applied
+			nil,       // paid_balance_applied
+			createdAt, // created_at
+		)
+	mock.ExpectQuery("SELECT").
+		WillReturnRows(rows)
+
+	queryRows, err := db.QueryContext(context.Background(), "SELECT")
+	require.NoError(t, err)
+	defer queryRows.Close()
+	require.True(t, queryRows.Next())
+
+	log, err := scanUsageLog(queryRows)
+	require.NoError(t, err)
+	require.Equal(t, int64(99), log.ID)
+	require.Nil(t, log.EntityID)
+	require.Nil(t, log.EntityType)
+	require.Nil(t, log.ClaimedEntityID)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestPrepareUsageLogInsert_PersistsImageSizeMetadata(t *testing.T) {
 	imageSize := "4K"
 	inputSize := "1024x1024"
@@ -265,19 +260,272 @@ func TestPrepareUsageLogInsert_PersistsImageSizeMetadata(t *testing.T) {
 		CreatedAt:          time.Date(2025, 1, 6, 12, 0, 0, 0, time.UTC),
 	})
 
-	require.Equal(t, sql.NullString{String: imageSize, Valid: true}, prepared.args[34])
-	require.Equal(t, sql.NullString{String: inputSize, Valid: true}, prepared.args[35])
-	require.Equal(t, sql.NullString{String: outputSize, Valid: true}, prepared.args[36])
-	require.Equal(t, sql.NullString{String: source, Valid: true}, prepared.args[37])
-	breakdownJSON, ok := prepared.args[38].(string)
+	require.Equal(t, sql.NullString{String: imageSize, Valid: true}, prepared.args[37])
+	require.Equal(t, sql.NullString{String: inputSize, Valid: true}, prepared.args[38])
+	require.Equal(t, sql.NullString{String: outputSize, Valid: true}, prepared.args[39])
+	require.Equal(t, sql.NullString{String: source, Valid: true}, prepared.args[40])
+	breakdownJSON, ok := prepared.args[41].(string)
 	require.True(t, ok)
 	require.JSONEq(t, `{"1K":1,"4K":1}`, breakdownJSON)
+}
+
+func TestPrepareUsageLogInsert_PersistsVideoMetadata(t *testing.T) {
+	resolution := "720p"
+	durationSeconds := 8
+	prepared := prepareUsageLogInsert(&service.UsageLog{
+		UserID:               1,
+		APIKeyID:             2,
+		AccountID:            3,
+		RequestID:            "req-video-metadata",
+		Model:                "grok-imagine-video",
+		RequestedModel:       "grok-imagine-video",
+		VideoCount:           1,
+		VideoResolution:      &resolution,
+		VideoDurationSeconds: &durationSeconds,
+		CreatedAt:            time.Date(2025, 1, 6, 12, 0, 0, 0, time.UTC),
+	})
+
+	require.Equal(t, 1, prepared.args[42])
+	require.Equal(t, sql.NullString{String: resolution, Valid: true}, prepared.args[43])
+	require.Equal(t, sql.NullInt64{Int64: int64(durationSeconds), Valid: true}, prepared.args[44])
 }
 
 func TestCoalesceTrimmedString(t *testing.T) {
 	require.Equal(t, "fallback", coalesceTrimmedString(sql.NullString{}, "fallback"))
 	require.Equal(t, "fallback", coalesceTrimmedString(sql.NullString{Valid: true, String: "   "}, "fallback"))
 	require.Equal(t, "value", coalesceTrimmedString(sql.NullString{Valid: true, String: "value"}, "fallback"))
+}
+
+func TestUsageLogInsertStoresAugmentScopeFields(t *testing.T) {
+	db, mock := newSQLMock(t)
+	repo := &usageLogRepository{sql: db}
+
+	createdAt := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	clientProduct := service.AugmentUsageClientProduct
+	requestScope := service.AugmentUsageRequestScopeGateway
+	featureScope := service.AugmentUsageFeatureScopeChat
+	routePolicyVersion := service.AugmentOfficialRoutePolicyVersion
+	pricingVersion := service.AugmentUsagePricingVersionV1
+	costSource := service.AugmentUsageCostSourceProviderUsage
+	currency := service.AugmentUsageCurrencyUSD
+	upstreamAttemptID := "upstream-attempt-1"
+	settlementStatus := service.AugmentUsageSettlementSettled
+	augmentSessionID := "conv-123"
+	billable := true
+	estimatedCost := 1.25
+	settledCost := 1.10
+	log := &service.UsageLog{
+		UserID:         1,
+		APIKeyID:       2,
+		AccountID:      3,
+		RequestID:      "req-augment-scope",
+		Model:          "gpt-5.4",
+		RequestedModel: "gpt-5.4",
+		CreatedAt:      createdAt,
+		AugmentUsageFields: service.AugmentUsageFields{
+			ClientProduct:      &clientProduct,
+			RequestScope:       &requestScope,
+			FeatureScope:       &featureScope,
+			AugmentSessionID:   &augmentSessionID,
+			RoutePolicyVersion: &routePolicyVersion,
+			PricingVersion:     &pricingVersion,
+			Billable:           &billable,
+			CostSource:         &costSource,
+			Currency:           &currency,
+			UpstreamAttemptID:  &upstreamAttemptID,
+			SettlementStatus:   &settlementStatus,
+			EstimatedCost:      &estimatedCost,
+			SettledCost:        &settledCost,
+		},
+	}
+	prepared := prepareUsageLogInsert(log)
+
+	require.Equal(t, clientProduct, prepared.args[55].(sql.NullString).String)
+	require.Equal(t, requestScope, prepared.args[56].(sql.NullString).String)
+	require.Equal(t, featureScope, prepared.args[57].(sql.NullString).String)
+	require.Equal(t, augmentSessionID, prepared.args[58].(sql.NullString).String)
+	require.Equal(t, routePolicyVersion, prepared.args[59].(sql.NullString).String)
+	require.Equal(t, pricingVersion, prepared.args[60].(sql.NullString).String)
+	require.Equal(t, billable, prepared.args[61].(sql.NullBool).Bool)
+	require.Equal(t, upstreamAttemptID, prepared.args[64].(sql.NullString).String)
+	require.Equal(t, estimatedCost, prepared.args[71].(sql.NullFloat64).Float64)
+	require.Equal(t, settledCost, prepared.args[72].(sql.NullFloat64).Float64)
+
+	mock.ExpectQuery("INSERT INTO usage_logs").
+		WithArgs(anySliceToDriverValues(prepared.args)...).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at"}).AddRow(int64(101), createdAt))
+
+	inserted, err := repo.Create(context.Background(), log)
+	require.NoError(t, err)
+	require.True(t, inserted)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPrepareUsageLogInsert_PreservesEntityAndAugmentColumnOrder(t *testing.T) {
+	clientProduct := service.AugmentUsageClientProduct
+	requestScope := service.AugmentUsageRequestScopeGateway
+	featureScope := service.AugmentUsageFeatureScopeChat
+	entityType := service.EntityTypeWorkspace
+	claimedEntityID := "workspace-alpha"
+	log := &service.UsageLog{
+		UserID:          1,
+		APIKeyID:        2,
+		AccountID:       3,
+		RequestID:       "req-union-order",
+		Model:           "gpt-5.4",
+		RequestedModel:  "gpt-5.4",
+		EntityID:        ptrInt64(99),
+		EntityType:      &entityType,
+		ClaimedEntityID: &claimedEntityID,
+		CreatedAt:       time.Date(2026, 5, 8, 12, 30, 0, 0, time.UTC),
+		AugmentUsageFields: service.AugmentUsageFields{
+			ClientProduct: &clientProduct,
+			RequestScope:  &requestScope,
+			FeatureScope:  &featureScope,
+		},
+	}
+
+	prepared := prepareUsageLogInsert(log)
+	require.Equal(t, int64(99), prepared.args[7].(sql.NullInt64).Int64)
+	require.Equal(t, entityType, prepared.args[8].(sql.NullString).String)
+	require.Equal(t, claimedEntityID, prepared.args[9].(sql.NullString).String)
+	require.Equal(t, clientProduct, prepared.args[55].(sql.NullString).String)
+	require.Equal(t, requestScope, prepared.args[56].(sql.NullString).String)
+	require.Equal(t, featureScope, prepared.args[57].(sql.NullString).String)
+
+	query, _ := buildUsageLogBestEffortInsertQuery([]usageLogInsertPrepared{prepared})
+	require.Contains(t, query, "upstream_model,\n\t\t\tentity_id,\n\t\t\tentity_type,\n\t\t\tclaimed_entity_id,\n\t\t\tgroup_id,")
+	require.Contains(t, query, "account_stats_cost,\n\t\t\t\tclient_product,\n\t\t\t\trequest_scope,\n\t\t\t\tfeature_scope,")
+}
+
+func TestUsageLogListFiltersClientProductZhumengAugment(t *testing.T) {
+	db, mock := newSQLMock(t)
+	repo := &usageLogRepository{sql: db}
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM usage_logs WHERE client_product = \\$1").
+		WithArgs(service.AugmentUsageClientProduct).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	mock.ExpectQuery("SELECT .* FROM usage_logs WHERE client_product = \\$1 ORDER BY id DESC LIMIT \\$2 OFFSET \\$3").
+		WithArgs(service.AugmentUsageClientProduct, 20, 0).
+		WillReturnRows(sqlmock.NewRows(splitUsageLogSelectColumns()))
+
+	logs, page, err := repo.ListWithFilters(context.Background(), pagination.PaginationParams{Page: 1, PageSize: 20}, usagestats.UsageLogFilters{
+		ClientProduct: service.AugmentUsageClientProduct,
+		ExactTotal:    true,
+	})
+	require.NoError(t, err)
+	require.Empty(t, logs)
+	require.NotNil(t, page)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUsageLogPricingVersionDoesNotChangeHistoricalCost(t *testing.T) {
+	clientProduct := service.AugmentUsageClientProduct
+	pricingVersion := service.AugmentUsagePricingVersionV1
+	log := &service.UsageLog{
+		UserID:         1,
+		APIKeyID:       2,
+		AccountID:      3,
+		RequestID:      "req-pricing-version",
+		Model:          "gpt-5.4",
+		RequestedModel: "gpt-5.4",
+		TotalCost:      2.5,
+		ActualCost:     2.0,
+		CreatedAt:      time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC),
+		AugmentUsageFields: service.AugmentUsageFields{
+			ClientProduct:  &clientProduct,
+			PricingVersion: &pricingVersion,
+		},
+	}
+	prepared := prepareUsageLogInsert(log)
+	require.Equal(t, 2.5, prepared.args[24])
+	require.Equal(t, 2.0, prepared.args[25])
+	require.Equal(t, pricingVersion, prepared.args[60].(sql.NullString).String)
+}
+
+func TestUsageLogProviderRetryDedupUsesRequestIDAndAttempt(t *testing.T) {
+	clientProduct := service.AugmentUsageClientProduct
+	upstreamAttemptID := "upstream-attempt-2"
+	log := &service.UsageLog{
+		UserID:         1,
+		APIKeyID:       2,
+		AccountID:      3,
+		RequestID:      "req-provider-retry",
+		Model:          "gpt-5.5",
+		RequestedModel: "gpt-5.5",
+		CreatedAt:      time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC),
+		AugmentUsageFields: service.AugmentUsageFields{
+			ClientProduct:     &clientProduct,
+			UpstreamAttemptID: &upstreamAttemptID,
+		},
+	}
+	prepared := prepareUsageLogInsert(log)
+	require.Equal(t, "req-provider-retry", prepared.requestID)
+	require.Equal(t, upstreamAttemptID, prepared.args[64].(sql.NullString).String)
+}
+
+func TestUsageLogStoresPriceSnapshotForAugmentBilling(t *testing.T) {
+	clientProduct := service.AugmentUsageClientProduct
+	inputUnitPrice := 0.01
+	outputUnitPrice := 0.02
+	cacheReadUnitPrice := 0.003
+	cacheCreationUnitPrice := 0.004
+	reasoningUnitPrice := 0.005
+	log := &service.UsageLog{
+		UserID:         1,
+		APIKeyID:       2,
+		AccountID:      3,
+		RequestID:      "req-price-snapshot",
+		Model:          "gpt-5.5",
+		RequestedModel: "gpt-5.5",
+		CreatedAt:      time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC),
+		AugmentUsageFields: service.AugmentUsageFields{
+			ClientProduct:          &clientProduct,
+			InputUnitPrice:         &inputUnitPrice,
+			OutputUnitPrice:        &outputUnitPrice,
+			CacheReadUnitPrice:     &cacheReadUnitPrice,
+			CacheCreationUnitPrice: &cacheCreationUnitPrice,
+			ReasoningUnitPrice:     &reasoningUnitPrice,
+		},
+	}
+	prepared := prepareUsageLogInsert(log)
+	require.Equal(t, inputUnitPrice, prepared.args[66].(sql.NullFloat64).Float64)
+	require.Equal(t, outputUnitPrice, prepared.args[67].(sql.NullFloat64).Float64)
+	require.Equal(t, cacheReadUnitPrice, prepared.args[68].(sql.NullFloat64).Float64)
+	require.Equal(t, cacheCreationUnitPrice, prepared.args[69].(sql.NullFloat64).Float64)
+	require.Equal(t, reasoningUnitPrice, prepared.args[70].(sql.NullFloat64).Float64)
+}
+
+func TestUsageLogBillingRulesForFailuresPartialStreamsCacheAndReasoning(t *testing.T) {
+	clientProduct := service.AugmentUsageClientProduct
+	billable := false
+	settlementStatus := service.AugmentUsageSettlementSkipped
+	estimatedCost := 0.42
+	settledCost := 0.0
+	log := &service.UsageLog{
+		UserID:              1,
+		APIKeyID:            2,
+		AccountID:           3,
+		RequestID:           "req-billing-rules",
+		Model:               "gpt-5.4-mini",
+		RequestedModel:      "gpt-5.4-mini",
+		CacheReadTokens:     12,
+		CacheCreationTokens: 4,
+		CreatedAt:           time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC),
+		AugmentUsageFields: service.AugmentUsageFields{
+			ClientProduct:    &clientProduct,
+			Billable:         &billable,
+			SettlementStatus: &settlementStatus,
+			EstimatedCost:    &estimatedCost,
+			SettledCost:      &settledCost,
+		},
+	}
+	prepared := prepareUsageLogInsert(log)
+	require.Equal(t, false, prepared.args[61].(sql.NullBool).Bool)
+	require.Equal(t, settlementStatus, prepared.args[65].(sql.NullString).String)
+	require.Equal(t, estimatedCost, prepared.args[71].(sql.NullFloat64).Float64)
+	require.Equal(t, settledCost, prepared.args[72].(sql.NullFloat64).Float64)
 }
 
 func TestAppendUsageLogBillingModeWhereCondition(t *testing.T) {
@@ -287,14 +535,9 @@ func TestAppendUsageLogBillingModeWhereCondition(t *testing.T) {
 		wantCondition string
 	}{
 		{
-			name:          "image includes explicit image and legacy image rows",
+			name:          "image includes legacy image rows",
 			billingMode:   string(service.BillingModeImage),
-			wantCondition: "(billing_mode = $1 OR ((billing_mode IS NULL OR billing_mode = '') AND COALESCE(image_count, 0) > 0))",
-		},
-		{
-			name:          "video remains exact",
-			billingMode:   string(service.BillingModeVideo),
-			wantCondition: "billing_mode = $1",
+			wantCondition: "(billing_mode = $1 OR COALESCE(image_count, 0) > 0)",
 		},
 		{
 			name:          "token includes legacy non-image rows",
@@ -317,26 +560,16 @@ func TestAppendUsageLogBillingModeWhereCondition(t *testing.T) {
 	}
 }
 
-func TestAppendUsageLogBillingModeWhereConditionWithAlias(t *testing.T) {
-	conditions, args := appendUsageLogBillingModeWhereConditionWithAlias(nil, nil, string(service.BillingModeImage), "ul")
-
-	require.Equal(t, []string{"(ul.billing_mode = $1 OR ((ul.billing_mode IS NULL OR ul.billing_mode = '') AND COALESCE(ul.image_count, 0) > 0))"}, conditions)
-	require.Equal(t, []any{string(service.BillingModeImage)}, args)
-}
-
-func TestAppendUsageLogBillingModeQueryFilter(t *testing.T) {
-	query, args := appendUsageLogBillingModeQueryFilter("SELECT * FROM usage_logs WHERE user_id = $1", []any{int64(42)}, string(service.BillingModeToken), "")
-
-	require.Equal(t, "SELECT * FROM usage_logs WHERE user_id = $1 AND (billing_mode = $2 OR ((billing_mode IS NULL OR billing_mode = '') AND COALESCE(image_count, 0) <= 0))", query)
-	require.Equal(t, []any{int64(42), string(service.BillingModeToken)}, args)
-}
-
 func anySliceToDriverValues(values []any) []driver.Value {
 	out := make([]driver.Value, 0, len(values))
 	for _, value := range values {
 		out = append(out, value)
 	}
 	return out
+}
+
+func splitUsageLogSelectColumns() []string {
+	return strings.Split(usageLogSelectColumns, ", ")
 }
 
 func TestUsageLogRepositoryListWithFiltersRequestTypePriority(t *testing.T) {
@@ -366,23 +599,29 @@ func TestUsageLogRepositoryListWithFiltersRequestTypePriority(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestUsageLogRepositoryListWithFiltersRequestedModelSource(t *testing.T) {
+func TestUsageLogRepositoryListWithFiltersEntityPredicates(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := &usageLogRepository{sql: db}
 
 	filters := usagestats.UsageLogFilters{
-		Model:             "gpt-5",
-		ModelFilterSource: usagestats.ModelSourceRequested,
+		EntityID:        123,
+		EntityType:      service.EntityTypeWorkspace,
+		ClaimedEntityID: "workspace-alpha",
+		ExactTotal:      true,
 	}
 
-	mock.ExpectQuery("SELECT .* FROM usage_logs WHERE COALESCE\\(NULLIF\\(TRIM\\(requested_model\\), ''\\), model\\) = \\$1 ORDER BY id DESC LIMIT \\$2 OFFSET \\$3").
-		WithArgs("gpt-5", 21, 0).
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM usage_logs WHERE entity_id = \\$1 AND entity_type = \\$2 AND claimed_entity_id = \\$3").
+		WithArgs(int64(123), service.EntityTypeWorkspace, "workspace-alpha").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(0)))
+	mock.ExpectQuery("SELECT .* FROM usage_logs WHERE entity_id = \\$1 AND entity_type = \\$2 AND claimed_entity_id = \\$3 ORDER BY id DESC LIMIT \\$4 OFFSET \\$5").
+		WithArgs(int64(123), service.EntityTypeWorkspace, "workspace-alpha", 20, 0).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
 	logs, page, err := repo.ListWithFilters(context.Background(), pagination.PaginationParams{Page: 1, PageSize: 20}, filters)
 	require.NoError(t, err)
 	require.Empty(t, logs)
 	require.NotNil(t, page)
+	require.Equal(t, int64(0), page.Total)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -400,27 +639,6 @@ func TestUsageLogRepositoryGetUsageTrendWithFiltersRequestTypePriority(t *testin
 		WillReturnRows(sqlmock.NewRows([]string{"date", "requests", "input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens", "total_tokens", "cost", "actual_cost"}))
 
 	trend, err := repo.GetUsageTrendWithFilters(context.Background(), start, end, "day", 0, 0, 0, 0, "", &requestType, &stream, nil)
-	require.NoError(t, err)
-	require.Empty(t, trend)
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestUsageLogRepositoryGetUsageTrendWithUsageFiltersRequestedModelSource(t *testing.T) {
-	db, mock := newSQLMock(t)
-	repo := &usageLogRepository{sql: db}
-
-	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	end := start.Add(24 * time.Hour)
-	filters := usagestats.UsageLogFilters{
-		Model:             "gpt-5",
-		ModelFilterSource: usagestats.ModelSourceRequested,
-	}
-
-	mock.ExpectQuery("AND COALESCE\\(NULLIF\\(TRIM\\(requested_model\\), ''\\), model\\) = \\$3").
-		WithArgs(start, end, "gpt-5").
-		WillReturnRows(sqlmock.NewRows([]string{"date", "requests", "input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens", "total_tokens", "cost", "actual_cost"}))
-
-	trend, err := repo.GetUsageTrendWithUsageFilters(context.Background(), start, end, "day", filters)
 	require.NoError(t, err)
 	require.Empty(t, trend)
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -467,45 +685,6 @@ func TestUsageLogRepositoryGetUserModelStatsUsesRequestedModel(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestUsageLogRepositoryGetStatsWithFiltersRequestedModelSource(t *testing.T) {
-	db, mock := newSQLMock(t)
-	repo := &usageLogRepository{sql: db}
-
-	filters := usagestats.UsageLogFilters{
-		Model:             "gpt-5",
-		ModelFilterSource: usagestats.ModelSourceRequested,
-	}
-
-	mock.ExpectQuery("FROM usage_logs\\s+WHERE COALESCE\\(NULLIF\\(TRIM\\(requested_model\\), ''\\), model\\) = \\$1").
-		WithArgs("gpt-5").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"total_requests",
-			"total_input_tokens",
-			"total_output_tokens",
-			"total_cache_tokens",
-			"total_cache_creation_tokens",
-			"total_cache_read_tokens",
-			"total_cost",
-			"total_actual_cost",
-			"total_account_cost",
-			"avg_duration_ms",
-		}).AddRow(int64(1), int64(2), int64(3), int64(4), int64(1), int64(3), 1.2, 1.0, 1.2, 20.0))
-	mock.ExpectQuery("SELECT COALESCE\\(NULLIF\\(TRIM\\(inbound_endpoint\\), ''\\), 'unknown'\\) AS endpoint").
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "gpt-5").
-		WillReturnRows(sqlmock.NewRows([]string{"endpoint", "requests", "total_tokens", "cost", "actual_cost"}))
-	mock.ExpectQuery("SELECT COALESCE\\(NULLIF\\(TRIM\\(upstream_endpoint\\), ''\\), 'unknown'\\) AS endpoint").
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "gpt-5").
-		WillReturnRows(sqlmock.NewRows([]string{"endpoint", "requests", "total_tokens", "cost", "actual_cost"}))
-	mock.ExpectQuery("SELECT CONCAT\\(").
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "gpt-5").
-		WillReturnRows(sqlmock.NewRows([]string{"endpoint", "requests", "total_tokens", "cost", "actual_cost"}))
-
-	stats, err := repo.GetStatsWithFilters(context.Background(), filters)
-	require.NoError(t, err)
-	require.Equal(t, int64(1), stats.TotalRequests)
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
 func TestUsageLogRepositoryGetStatsWithFiltersRequestTypePriority(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := &usageLogRepository{sql: db}
@@ -545,6 +724,8 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestTypePriority(t *testing.T) 
 	require.NoError(t, err)
 	require.Equal(t, int64(1), stats.TotalRequests)
 	require.Equal(t, int64(9), stats.TotalTokens)
+	require.Equal(t, int64(1), stats.TotalCacheCreationTokens)
+	require.Equal(t, int64(3), stats.TotalCacheReadTokens)
 	require.NotNil(t, stats.TotalAccountCost, "TotalAccountCost should always be returned")
 	require.Equal(t, 1.2, *stats.TotalAccountCost)
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -579,29 +760,6 @@ func TestUsageLogRepositoryGetModelStatsAccountCostColumn(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestUsageLogRepositoryGetModelStatsWithUsageFiltersAppliesRequestedModelFilter(t *testing.T) {
-	db, mock := newSQLMock(t)
-	repo := &usageLogRepository{sql: db}
-
-	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	end := start.Add(24 * time.Hour)
-	filters := usagestats.UsageLogFilters{Model: "gpt-5"}
-
-	mock.ExpectQuery("AND COALESCE\\(NULLIF\\(TRIM\\(requested_model\\), ''\\), model\\) = \\$3").
-		WithArgs(start, end, "gpt-5").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"model", "requests", "input_tokens", "output_tokens",
-			"cache_creation_tokens", "cache_read_tokens", "total_tokens",
-			"cost", "actual_cost", "account_cost",
-		}).AddRow("gpt-5", int64(1), int64(10), int64(20), int64(0), int64(0), int64(30), 0.1, 0.08, 0.07))
-
-	results, err := repo.GetModelStatsWithUsageFiltersBySource(context.Background(), start, end, filters, usagestats.ModelSourceRequested)
-	require.NoError(t, err)
-	require.Len(t, results, 1)
-	require.Equal(t, "gpt-5", results[0].Model)
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
 func TestUsageLogRepositoryGetGroupStatsAccountCostColumn(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := &usageLogRepository{sql: db}
@@ -631,28 +789,6 @@ func TestUsageLogRepositoryGetGroupStatsAccountCostColumn(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestUsageLogRepositoryGetGroupStatsWithUsageFiltersAppliesRequestedModelFilter(t *testing.T) {
-	db, mock := newSQLMock(t)
-	repo := &usageLogRepository{sql: db}
-
-	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	end := start.Add(24 * time.Hour)
-	filters := usagestats.UsageLogFilters{Model: "gpt-5"}
-
-	mock.ExpectQuery("AND COALESCE\\(NULLIF\\(TRIM\\(ul.requested_model\\), ''\\), ul.model\\) = \\$3").
-		WithArgs(start, end, "gpt-5").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"group_id", "group_name", "requests", "total_tokens",
-			"cost", "actual_cost", "account_cost",
-		}).AddRow(int64(1), "default", int64(1), int64(30), 0.1, 0.08, 0.07))
-
-	results, err := repo.GetGroupStatsWithUsageFilters(context.Background(), start, end, filters)
-	require.NoError(t, err)
-	require.Len(t, results, 1)
-	require.Equal(t, int64(1), results[0].GroupID)
-	require.NoError(t, mock.ExpectationsWereMet())
-}
-
 func TestUsageLogRepositoryGetStatsWithFiltersAlwaysReturnsAccountCost(t *testing.T) {
 	db, mock := newSQLMock(t)
 	repo := &usageLogRepository{sql: db}
@@ -676,6 +812,8 @@ func TestUsageLogRepositoryGetStatsWithFiltersAlwaysReturnsAccountCost(t *testin
 
 	stats, err := repo.GetStatsWithFilters(context.Background(), filters)
 	require.NoError(t, err)
+	require.Equal(t, int64(60), stats.TotalCacheCreationTokens)
+	require.Equal(t, int64(40), stats.TotalCacheReadTokens)
 	require.NotNil(t, stats.TotalAccountCost, "TotalAccountCost must always be returned, even without AccountID filter")
 	require.Equal(t, 11.0, *stats.TotalAccountCost)
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -775,7 +913,7 @@ func (s usageLogScannerStub) Scan(dest ...any) error {
 func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 	t.Run("image_size_metadata_is_scanned", func(t *testing.T) {
 		now := time.Now().UTC()
-		log, err := scanUsageLog(usageLogScannerStub{values: []any{
+		values := []any{
 			int64(4),
 			int64(13),
 			int64(23),
@@ -784,6 +922,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			"gpt-image-2",
 			sql.NullString{Valid: true, String: "gpt-image-2"},
 			sql.NullString{},
+			sql.NullInt64{},  // entity_id
+			sql.NullString{}, // entity_type
+			sql.NullString{}, // claimed_entity_id
 			sql.NullInt64{},
 			sql.NullInt64{},
 			0, 0, 0, 0, 0, 0,
@@ -805,9 +946,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{Valid: true, String: "3840x2160"},
 			sql.NullString{Valid: true, String: "output"},
 			sql.NullString{Valid: true, String: `{"4K":2}`},
-			0,                // video_count
-			sql.NullString{}, // video_resolution
-			sql.NullInt64{},  // video_duration_seconds
+			0,
+			sql.NullString{},
+			sql.NullInt64{},
 			sql.NullString{},
 			sql.NullString{},
 			sql.NullString{},
@@ -818,8 +959,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},
 			sql.NullString{},
 			sql.NullFloat64{},
-			now,
-		}})
+		}
+		values = append(values, usageLogAugmentScanTail(now)...)
+		log, err := scanUsageLog(usageLogScannerStub{values: values})
 		require.NoError(t, err)
 		require.Equal(t, 2, log.ImageCount)
 		require.NotNil(t, log.ImageSize)
@@ -835,7 +977,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 
 	t.Run("request_type_ws_v2_overrides_legacy", func(t *testing.T) {
 		now := time.Now().UTC()
-		log, err := scanUsageLog(usageLogScannerStub{values: []any{
+		values := []any{
 			int64(1),  // id
 			int64(10), // user_id
 			int64(20), // api_key_id
@@ -844,6 +986,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			"gpt-5", // model
 			sql.NullString{Valid: true, String: "gpt-5"}, // requested_model
 			sql.NullString{},  // upstream_model
+			sql.NullInt64{},   // entity_id
+			sql.NullString{},  // entity_type
+			sql.NullString{},  // claimed_entity_id
 			sql.NullInt64{},   // group_id
 			sql.NullInt64{},   // subscription_id
 			1,                 // input_tokens
@@ -889,8 +1034,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},  // billing_tier
 			sql.NullString{},  // billing_mode
 			sql.NullFloat64{}, // account_stats_cost
-			now,
-		}})
+		}
+		values = append(values, usageLogAugmentScanTail(now)...)
+		log, err := scanUsageLog(usageLogScannerStub{values: values})
 		require.NoError(t, err)
 		require.NotNil(t, log.ServiceTier)
 		require.Equal(t, "priority", *log.ServiceTier)
@@ -901,7 +1047,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 
 	t.Run("request_type_unknown_falls_back_to_legacy", func(t *testing.T) {
 		now := time.Now().UTC()
-		log, err := scanUsageLog(usageLogScannerStub{values: []any{
+		values := []any{
 			int64(2),
 			int64(11),
 			int64(21),
@@ -909,6 +1055,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{Valid: true, String: "req-2"},
 			"gpt-5",
 			sql.NullString{Valid: true, String: "gpt-5"},
+			sql.NullString{},
+			sql.NullInt64{},
+			sql.NullString{},
 			sql.NullString{},
 			sql.NullInt64{},
 			sql.NullInt64{},
@@ -944,8 +1093,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},  // billing_tier
 			sql.NullString{},  // billing_mode
 			sql.NullFloat64{}, // account_stats_cost
-			now,
-		}})
+		}
+		values = append(values, usageLogAugmentScanTail(now)...)
+		log, err := scanUsageLog(usageLogScannerStub{values: values})
 		require.NoError(t, err)
 		require.NotNil(t, log.ServiceTier)
 		require.Equal(t, "flex", *log.ServiceTier)
@@ -956,7 +1106,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 
 	t.Run("service_tier_is_scanned", func(t *testing.T) {
 		now := time.Now().UTC()
-		log, err := scanUsageLog(usageLogScannerStub{values: []any{
+		values := []any{
 			int64(3),
 			int64(12),
 			int64(22),
@@ -964,6 +1114,9 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{Valid: true, String: "req-3"},
 			"gpt-5.4",
 			sql.NullString{Valid: true, String: "gpt-5.4"},
+			sql.NullString{},
+			sql.NullInt64{},
+			sql.NullString{},
 			sql.NullString{},
 			sql.NullInt64{},
 			sql.NullInt64{},
@@ -999,11 +1152,38 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			sql.NullString{},  // billing_tier
 			sql.NullString{},  // billing_mode
 			sql.NullFloat64{}, // account_stats_cost
-			now,
-		}})
+		}
+		values = append(values, usageLogAugmentScanTail(now)...)
+		log, err := scanUsageLog(usageLogScannerStub{values: values})
 		require.NoError(t, err)
 		require.NotNil(t, log.ServiceTier)
 		require.Equal(t, "priority", *log.ServiceTier)
 	})
 
+}
+
+func usageLogAugmentScanTail(now time.Time) []any {
+	return []any{
+		sql.NullString{},  // client_product
+		sql.NullString{},  // request_scope
+		sql.NullString{},  // feature_scope
+		sql.NullString{},  // augment_session_id
+		sql.NullString{},  // route_policy_version
+		sql.NullString{},  // pricing_version
+		sql.NullBool{},    // billable
+		sql.NullString{},  // cost_source
+		sql.NullString{},  // currency
+		sql.NullString{},  // upstream_attempt_id
+		sql.NullString{},  // settlement_status
+		sql.NullFloat64{}, // input_unit_price
+		sql.NullFloat64{}, // output_unit_price
+		sql.NullFloat64{}, // cache_read_unit_price
+		sql.NullFloat64{}, // cache_creation_unit_price
+		sql.NullFloat64{}, // reasoning_unit_price
+		sql.NullFloat64{}, // estimated_cost
+		sql.NullFloat64{}, // settled_cost
+		sql.NullFloat64{}, // free_quota_applied
+		sql.NullFloat64{}, // paid_balance_applied
+		now,
+	}
 }

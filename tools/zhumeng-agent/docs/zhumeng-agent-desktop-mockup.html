@@ -1,0 +1,1747 @@
+<!doctype html>
+<!--
+  逐梦注入工具 · 桌面版草图
+  ---------------------------------------------------------------
+  本文件是一份静态视觉草图，仅用于沟通信息架构与视觉调性。
+
+  几点说明：
+  - 主色 #6366F1 仅作占位（待品牌组确认逐梦正式品牌色）。
+    所有引用均走 CSS 变量 --brand，替换一处即可全局生效。
+  - 草图里没有真实 Adapter 图标，先用单字母色块占位（C / A / ▶）。
+  - 这是静态草图，按钮 / 输入框 / 命令面板 / 切换全部无业务逻辑，
+    仅用于评审视觉与交互框架。
+  - 数据均为示例：账户、token、端口、时间、模型名、价格数字等不代表真实状态。
+  - 草图中的价格数字只用于展示 tooltip 字段形态；真实价格必须来自后端数据库模型单价（database_model_pricing）。
+  - 真实窗口由 Tauri 渲染，外壳的 macOS 三色按钮仅用于演示。
+  - 原始设计文档：./zhumeng-agent-desktop-design.md
+-->
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<title>逐梦注入工具 · 桌面版草图</title>
+<meta name="viewport" content="width=1280, initial-scale=1" />
+<style>
+/* === 设计 token === */
+:root {
+  --brand: #6366F1;        /* 逐梦占位主色（待品牌组确认） */
+  --brand-soft: rgba(99,102,241,0.14);
+  --ok: #16A34A;
+  --ok-soft: rgba(22,163,74,0.14);
+  --warn: #D97706;
+  --warn-soft: rgba(217,119,6,0.14);
+  --err: #DC2626;
+  --err-soft: rgba(220,38,38,0.14);
+  --r-card: 10px;
+  --r-btn: 6px;
+  --r-pill: 999px;
+  --shadow-card: 0 1px 2px rgba(0,0,0,0.04), 0 1px 1px rgba(0,0,0,0.03);
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable",
+          "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+}
+
+[data-theme="light"] {
+  --bg: #F4F5F7;
+  --bg-elev: #FFFFFF;
+  --bg-sub: #FAFBFC;
+  --text: #18181B;
+  --text-mute: #52525B;
+  --text-soft: #71717A;
+  --border: #E4E4E7;
+  --border-strong: #D4D4D8;
+  --hover: #F1F2F4;
+  --selected: #ECECF1;
+  --row: #FFFFFF;
+  --code-bg: #F4F4F5;
+}
+
+[data-theme="dark"] {
+  --bg: #0F1115;
+  --bg-elev: #171A21;
+  --bg-sub: #131620;
+  --text: #ECECEE;
+  --text-mute: #B4B4BB;
+  --text-soft: #8A8A93;
+  --border: #23262F;
+  --border-strong: #2F333D;
+  --hover: #1C2029;
+  --selected: #20242E;
+  --row: #181B23;
+  --code-bg: #11141B;
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  font-family: var(--font);
+  background: #0a0c10;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* === 页面级容器（演示用） === */
+.page {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 56px 32px 96px;
+}
+.page-title {
+  font-size: 26px; font-weight: 700; color: #ECECEE; letter-spacing: -0.01em;
+  margin: 0 0 6px;
+}
+.page-sub {
+  color: #8A8A93; margin: 0 0 28px; font-size: 13px;
+}
+.theme-toggle {
+  position: fixed; top: 16px; right: 20px; z-index: 50;
+  display: flex; gap: 6px; background: #181B23;
+  padding: 4px; border-radius: 999px;
+  border: 1px solid #23262F;
+}
+.theme-toggle button {
+  background: transparent; color: #B4B4BB;
+  border: 0; border-radius: 999px; padding: 4px 12px;
+  font-size: 12px; cursor: pointer; font-family: inherit;
+}
+.theme-toggle button.active {
+  background: var(--brand); color: white;
+}
+.section-label {
+  display: flex; align-items: center; gap: 12px;
+  margin: 56px 0 16px;
+  color: #8A8A93; font-size: 12px; letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.section-label::after {
+  content: ""; flex: 1; height: 1px; background: #23262F;
+}
+
+/* === Mac 风格窗口外壳 === */
+.window {
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.04) inset,
+    0 22px 60px -10px rgba(0,0,0,0.55),
+    0 0 0 1px rgba(255,255,255,0.03);
+  border: 1px solid #1f222a;
+}
+.titlebar {
+  display: flex; align-items: center; gap: 10px;
+  height: 36px; padding: 0 14px;
+  background: linear-gradient(to bottom, rgba(255,255,255,0.02), rgba(0,0,0,0.06));
+  border-bottom: 1px solid var(--border);
+}
+.tlight { width: 12px; height: 12px; border-radius: 50%; }
+.tlight.r { background: #FF5F57; }
+.tlight.y { background: #FEBC2E; }
+.tlight.g { background: #28C840; }
+.titlebar .title {
+  flex: 1; text-align: center; color: var(--text-soft);
+  font-size: 12px; font-weight: 500;
+}
+
+/* === 顶部全局状态条 === */
+.global-bar {
+  display: flex; align-items: center; gap: 14px;
+  height: 48px; padding: 0 16px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+}
+.global-bar.is-warn { background: linear-gradient(to right, var(--warn-soft), transparent 60%), var(--bg-elev); }
+.global-bar.is-err  { background: linear-gradient(to right, var(--err-soft), transparent 60%), var(--bg-elev); }
+.dot {
+  width: 8px; height: 8px; border-radius: 999px;
+  box-shadow: 0 0 0 4px var(--ok-soft);
+  background: var(--ok); flex-shrink: 0;
+}
+.dot.warn { background: var(--warn); box-shadow: 0 0 0 4px var(--warn-soft); }
+.dot.err  { background: var(--err);  box-shadow: 0 0 0 4px var(--err-soft); }
+.dot.idle { background: #8A8A93; box-shadow: 0 0 0 4px rgba(138,138,147,0.18); }
+.gb-status { font-weight: 600; }
+.gb-account { color: var(--text-mute); font-size: 13px; }
+.gb-spacer { flex: 1; }
+.pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 26px; padding: 0 10px;
+  border: 1px solid var(--border); border-radius: var(--r-pill);
+  background: var(--bg-sub);
+  font-size: 12px; color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+}
+.pill .dot { width: 6px; height: 6px; box-shadow: none; }
+.iconbtn {
+  width: 30px; height: 30px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--r-btn); background: transparent;
+  color: var(--text-mute); border: 1px solid transparent;
+  cursor: pointer; font-family: inherit;
+}
+.iconbtn:hover { background: var(--hover); color: var(--text); }
+.iconbtn.primary { background: var(--brand); color: #fff; }
+
+/* === 主体两栏 === */
+.shell { display: grid; grid-template-columns: 220px 1fr; min-height: 640px; }
+.nav {
+  background: var(--bg-sub);
+  border-right: 1px solid var(--border);
+  padding: 12px 8px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.nav .nav-group {
+  font-size: 11px; color: var(--text-soft);
+  letter-spacing: 0.08em; text-transform: uppercase;
+  margin: 14px 12px 6px;
+}
+.nav a {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 12px; border-radius: 6px;
+  color: var(--text-mute); text-decoration: none;
+  font-size: 13px;
+}
+.nav a:hover { background: var(--hover); color: var(--text); }
+.nav a.active { background: var(--selected); color: var(--text); }
+.nav a .badge {
+  margin-left: auto;
+  background: var(--err); color: white;
+  font-size: 10px; padding: 1px 6px; border-radius: 999px;
+}
+.nav-foot {
+  margin-top: auto; padding: 10px 12px;
+  font-size: 11px; color: var(--text-soft);
+}
+
+.main {
+  background: var(--bg);
+  padding: 22px 28px;
+  overflow: hidden;
+}
+.crumbs {
+  display: flex; gap: 8px; align-items: center;
+  font-size: 12px; color: var(--text-soft);
+  margin-bottom: 6px;
+}
+.h1 { font-size: 20px; font-weight: 700; margin: 0 0 4px; letter-spacing: -0.01em; }
+.h1-sub { color: var(--text-soft); margin: 0 0 22px; font-size: 13px; }
+
+/* === 卡片基础 === */
+.card {
+  background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: var(--r-card); padding: 16px;
+  box-shadow: var(--shadow-card);
+}
+.card.warn { border-color: var(--warn); }
+.card.err  { border-color: var(--err);  }
+.card-title {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px;
+}
+.card-title .t { font-weight: 600; font-size: 13px; color: var(--text); }
+.card-title .a { font-size: 12px; color: var(--brand); cursor: pointer; }
+.kv { display: grid; grid-template-columns: 88px 1fr; row-gap: 8px; column-gap: 12px; }
+.kv .k { color: var(--text-soft); font-size: 12px; }
+.kv .v { color: var(--text); font-size: 13px; font-variant-numeric: tabular-nums; }
+.muted { color: var(--text-soft); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+
+/* === 按钮 === */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 28px; padding: 0 12px;
+  background: var(--bg-elev); color: var(--text);
+  border: 1px solid var(--border-strong); border-radius: var(--r-btn);
+  font-size: 12px; font-family: inherit; cursor: pointer;
+}
+.btn:hover { background: var(--hover); }
+.btn.primary {
+  background: var(--brand); color: #fff;
+  border-color: var(--brand);
+}
+.btn.primary:hover { filter: brightness(1.05); }
+.btn.danger { color: var(--err); border-color: rgba(220,38,38,0.3); }
+.btn.ghost { background: transparent; }
+.btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* === 状态徽章 === */
+.badge2 {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 22px; padding: 0 9px; border-radius: var(--r-pill);
+  font-size: 11px; font-weight: 500;
+  background: var(--ok-soft); color: var(--ok);
+}
+.badge2.warn { background: var(--warn-soft); color: var(--warn); }
+.badge2.err  { background: var(--err-soft);  color: var(--err); }
+.badge2.idle { background: rgba(138,138,147,0.16); color: var(--text-soft); }
+
+/* === 概览页布局 === */
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+.event {
+  display: grid; grid-template-columns: 64px 22px 1fr auto;
+  gap: 10px; align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border);
+  font-size: 13px;
+}
+.event:last-child { border-bottom: 0; }
+.event .time { color: var(--text-soft); font-size: 12px; font-variant-numeric: tabular-nums; }
+.event .ico {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--ok-soft); color: var(--ok);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px;
+}
+.event .ico.w { background: var(--warn-soft); color: var(--warn); }
+.event .ico.e { background: var(--err-soft);  color: var(--err); }
+.event .meta { color: var(--text-soft); font-size: 12px; }
+
+.callout {
+  display: flex; gap: 12px;
+  padding: 12px 14px; border-radius: 10px;
+  background: var(--err-soft); border: 1px solid rgba(220,38,38,0.25);
+  color: var(--text);
+  margin-bottom: 16px;
+}
+.callout .ic {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--err); color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700;
+}
+.callout .ttl { font-weight: 600; margin-bottom: 2px; }
+.callout .desc { color: var(--text-mute); font-size: 12px; }
+.callout.warn { background: var(--warn-soft); border-color: rgba(217,119,6,0.3); }
+.callout.warn .ic { background: var(--warn); }
+
+/* === 已接入应用卡片 === */
+.app-card {
+  background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: var(--r-card); padding: 14px;
+  display: grid; grid-template-columns: 44px 1fr auto; gap: 12px;
+  align-items: center;
+}
+.app-card.bad { border-color: var(--err); }
+.app-card .logo {
+  width: 44px; height: 44px; border-radius: 10px;
+  background: var(--bg-sub); border: 1px solid var(--border);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 14px; color: var(--text-mute);
+}
+.app-card .logo.codex   { background: #0d0d10; color: #fff; }
+.app-card .logo.claude  { background: #f3eee7; color: #d97706; }
+.app-card .logo.continue{ background: #0b1f3a; color: #6aa1ff; }
+.app-card .name { font-weight: 600; }
+.app-card .sub  { font-size: 12px; color: var(--text-soft); }
+.app-card .ops  { display: flex; gap: 6px; }
+
+/* === 步骤条 === */
+.steps { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; margin: 8px 0 16px; }
+.step {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 10px 12px;
+  background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.step .n { font-size: 10px; color: var(--text-soft); letter-spacing: 0.1em; text-transform: uppercase; }
+.step .t { font-size: 13px; font-weight: 500; }
+.step.done { border-color: var(--ok); }
+.step.done .n { color: var(--ok); }
+.step.run  { border-color: var(--brand); background: var(--brand-soft); }
+.step.run  .n { color: var(--brand); }
+.step.fail { border-color: var(--err); background: var(--err-soft); }
+.step.fail .n { color: var(--err); }
+.step.todo { opacity: 0.55; }
+
+/* === 诊断行 === */
+.diag-row {
+  display: grid; grid-template-columns: 22px 1fr 80px 80px;
+  align-items: center; gap: 10px;
+  padding: 10px 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.diag-row:last-child { border-bottom: 0; }
+.diag-row .t { color: var(--text-soft); font-size: 12px; }
+
+/* === 日志面板 === */
+.log {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-mute);
+  max-height: 220px; overflow: auto;
+}
+.log .lv-info { color: var(--text-mute); }
+.log .lv-warn { color: var(--warn); }
+.log .lv-err  { color: var(--err); }
+.log .ts      { color: var(--text-soft); }
+
+/* === 托盘菜单 === */
+.tray {
+  width: 280px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px;
+  box-shadow: 0 12px 36px rgba(0,0,0,0.45);
+  overflow: hidden;
+}
+.tray .tray-head {
+  padding: 10px 12px;
+  display: flex; align-items: center; gap: 10px;
+}
+.tray .tray-head.bad { background: var(--err-soft); border-radius: 6px; }
+.tray .tray-head .name { font-weight: 600; }
+.tray .tray-head .sub  { font-size: 11px; color: var(--text-soft); }
+.tray .tray-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 7px 12px; border-radius: 6px;
+  font-size: 13px; color: var(--text);
+}
+.tray .tray-row .key { color: var(--text-soft); font-size: 11px; }
+.tray .tray-row:hover { background: var(--hover); }
+.tray .tray-row.danger { color: var(--err); }
+.tray hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
+.tray .tray-cta {
+  margin: 6px; padding: 8px;
+  background: var(--err); color: white;
+  text-align: center; border-radius: 6px;
+  font-weight: 600; font-size: 13px;
+}
+.tray .tray-cta.warn { background: var(--warn); }
+
+/* 双窗对比 */
+.tray-wrap { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
+
+/* 顶部状态条端口胶囊 popover 演示 */
+.popover {
+  margin-top: 8px;
+  width: 280px; padding: 12px;
+  background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: var(--shadow-card);
+}
+
+/* 让窗口里部分内容能横向滚动避免错位 */
+.shell .main { min-width: 0; }
+
+/* 兼容容器 */
+.row { display: flex; gap: 8px; align-items: center; }
+.spacer { flex: 1; }
+hr.soft { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
+
+/* tag */
+.tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 18px; padding: 0 6px; border-radius: 4px;
+  background: var(--bg-sub); color: var(--text-soft);
+  font-size: 11px; border: 1px solid var(--border);
+}
+.tag.brand { background: var(--brand-soft); color: var(--brand); border-color: transparent; }
+.tag.ok    { background: var(--ok-soft);    color: var(--ok);    border-color: transparent; }
+.tag.warn  { background: var(--warn-soft);  color: var(--warn);  border-color: transparent; }
+.tag.idle  { background: rgba(138,138,147,0.16); color: var(--text-soft); border-color: transparent; }
+
+/* checklist */
+.check { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 13px; }
+.check .ck { width: 16px; height: 16px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; }
+.check .ck.ok { background: var(--ok-soft); color: var(--ok); }
+.check .ck.no { background: var(--err-soft); color: var(--err); }
+
+/* 能力矩阵 */
+.cap-grid {
+  display: grid; grid-template-columns: repeat(6, 1fr);
+  gap: 6px; margin-top: 6px;
+}
+.cap {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 6px 4px; border-radius: 6px;
+  background: var(--bg-sub); border: 1px solid var(--border);
+  font-size: 10px; color: var(--text-soft);
+}
+.cap .v { font-size: 12px; font-weight: 600; color: var(--text); }
+.cap.ok  { background: var(--ok-soft);   color: var(--ok);   border-color: transparent; }
+.cap.no  { background: var(--bg-sub);    color: var(--text-soft); }
+.cap.no .v { color: var(--text-soft); text-decoration: line-through; }
+
+/* Provider 卡片 */
+.provider {
+  border: 1px solid var(--border); border-radius: var(--r-card);
+  background: var(--bg-elev); padding: 14px;
+}
+.provider .head {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 6px;
+}
+.provider .head .pname { font-weight: 600; }
+.provider .head .pvendor { color: var(--text-soft); font-size: 12px; }
+
+/* 模型行 */
+.model-row {
+  display: grid;
+  grid-template-columns: 1.25fr 100px 92px 100px 90px 92px 92px;
+  gap: 10px; align-items: center;
+  padding: 9px 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.model-row.head {
+  font-size: 11px; color: var(--text-soft);
+  text-transform: uppercase; letter-spacing: 0.06em;
+  padding: 6px 4px;
+}
+.model-row:last-child { border-bottom: 0; }
+.model-row .mname { display: flex; align-items: center; gap: 8px; }
+.model-row .mname .dim { color: var(--text-soft); font-size: 12px; }
+.model-toolbar {
+  display: grid; grid-template-columns: 1.4fr 132px 132px 132px 132px;
+  gap: 8px; margin: 12px 0;
+}
+.model-toolbar input,
+.model-toolbar .select {
+  height: 30px; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--bg-sub); color: var(--text);
+  padding: 0 10px; font: inherit; font-size: 12px;
+}
+.model-table {
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+}
+.model-table .model-row.head {
+  position: sticky; top: 0; z-index: 2;
+  background: var(--bg-sub);
+  border-bottom: 1px solid var(--border-strong);
+}
+.price-tip {
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 22px; padding: 0 8px; border-radius: 999px;
+  background: var(--brand-soft); color: var(--brand);
+  font-size: 11px; cursor: default;
+}
+.price-tip.missing { background: rgba(138,138,147,0.16); color: var(--text-soft); }
+.price-tip .tip {
+  display: none;
+  position: absolute; right: 0; top: 26px; z-index: 5;
+  width: 260px; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-elev); color: var(--text);
+  box-shadow: 0 12px 32px rgba(0,0,0,0.35);
+  text-align: left; line-height: 1.7;
+}
+.price-tip:hover .tip { display: block; }
+.tip .line { display: flex; justify-content: space-between; gap: 16px; }
+.enhance-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.enhance-item {
+  background: var(--bg-sub); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px;
+}
+.enhance-item .label { font-size: 12px; color: var(--text-soft); margin-bottom: 6px; }
+.enhance-item .value { font-weight: 600; }
+
+</style>
+</head>
+<body>
+
+<div class="theme-toggle" role="tablist" aria-label="主题">
+  <button id="t-light">浅色</button>
+  <button id="t-dark" class="active">深色</button>
+</div>
+
+<div class="page">
+  <h1 class="page-title">逐梦注入工具 · 桌面版草图</h1>
+  <p class="page-sub">本页是静态视觉草图，用于沟通信息架构与视觉调性。所有数据均为示例；价格数字仅展示悬浮层字段形态，真实价格必须来自后端数据库模型单价。Mac 风格窗口外壳仅用于演示，最终窗口由 Tauri 渲染。</p>
+
+  <!-- ============== 1. 主窗口 · 概览（正常态） ============== -->
+  <div class="section-label">① 主窗口 · 概览（运行中）</div>
+  <div class="window">
+    <div class="titlebar">
+      <span class="tlight r"></span><span class="tlight y"></span><span class="tlight g"></span>
+      <span class="title">逐梦注入工具</span>
+      <span style="width:54px"></span>
+    </div>
+
+    <!-- 顶部全局状态条 -->
+    <div class="global-bar">
+      <span class="dot" aria-hidden="true"></span>
+      <span class="gb-status">已连接</span>
+      <span class="gb-account">muqi***@zhumeng · 设备 MBP-Muqi</span>
+      <span class="gb-spacer"></span>
+      <span class="pill"><span class="dot"></span><span class="mono">127.0.0.1:50793</span></span>
+      <button class="iconbtn" title="刷新">↻</button>
+      <button class="iconbtn" title="一键修复">⚒</button>
+      <button class="iconbtn" title="复制诊断">⎘</button>
+      <button class="iconbtn" title="设置">⚙</button>
+    </div>
+
+    <div class="shell">
+      <!-- 左侧导航 -->
+      <aside class="nav">
+        <div class="nav-group">主菜单</div>
+        <a class="active">◐ 概览</a>
+        <a>▤ 已接入应用</a>
+        <a>⊞ 应用目录</a>
+        <a>◇ 诊断与日志</a>
+        <div class="nav-group">系统</div>
+        <a>⚙ 设置</a>
+        <a>ⓘ 关于</a>
+        <div class="nav-foot">v0.1.0 · 简体中文 · 跟随系统主题</div>
+      </aside>
+
+      <!-- 主内容区 -->
+      <section class="main">
+        <div class="crumbs">概览</div>
+        <h2 class="h1">一切运行正常</h2>
+        <p class="h1-sub">1 个应用接入正常 · 0 个异常 · 上次健康检查 12 秒前</p>
+
+        <div class="grid-3">
+          <!-- 卡片 A: 当前连接 -->
+          <div class="card">
+            <div class="card-title">
+              <span class="t">当前连接</span>
+              <span class="badge2">在线</span>
+            </div>
+            <div class="kv">
+              <span class="k">账户</span><span class="v">muqi***@zhumeng</span>
+              <span class="k">设备</span><span class="v">MBP-Muqi · ID 9f3a…1c2b</span>
+              <span class="k">后端</span><span class="v mono">https://api.zhumeng…</span>
+              <span class="k">心跳</span><span class="v">12 秒前</span>
+              <span class="k">授权</span><span class="v">还有 28 天到期</span>
+            </div>
+            <hr class="soft" />
+            <div class="btn-row">
+              <button class="btn">刷新</button>
+              <button class="btn">重新授权</button>
+            </div>
+          </div>
+
+          <!-- 卡片 B: 本机代理 -->
+          <div class="card">
+            <div class="card-title">
+              <span class="t">本机代理</span>
+              <span class="badge2">运行中</span>
+            </div>
+            <div class="kv">
+              <span class="k">监听</span><span class="v mono">127.0.0.1:50793</span>
+              <span class="k">运行</span><span class="v">2 小时 14 分钟</span>
+              <span class="k">CPU</span><span class="v">0.4 %</span>
+              <span class="k">内存</span><span class="v">38 MB</span>
+              <span class="k">自启</span><span class="v">已开启</span>
+            </div>
+            <hr class="soft" />
+            <div class="btn-row">
+              <button class="btn">重启代理</button>
+              <button class="btn ghost">查看日志</button>
+            </div>
+          </div>
+
+          <!-- 卡片 C: 目标应用 -->
+          <div class="card">
+            <div class="card-title">
+              <span class="t">目标应用</span>
+              <span class="badge2">1 / 1 正常</span>
+            </div>
+            <div style="display:flex; gap:10px; align-items:center; padding:6px 0;">
+              <div class="logo" style="width:36px;height:36px;border-radius:8px;background:#0d0d10;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700">C</div>
+              <div style="flex:1">
+              <div style="font-weight:600">Codex App</div>
+                <div class="muted" style="font-size:12px">v0.x · 已接入 · 模型 12 · 插件市场重启后生效</div>
+              </div>
+              <span class="badge2">●</span>
+            </div>
+            <div class="muted" style="font-size:12px; margin-top:8px;">即将支持：Claude Desktop · Continue.dev · 自定义注入</div>
+            <hr class="soft" />
+            <div class="btn-row">
+              <button class="btn primary">打开 Codex App</button>
+              <button class="btn">查看应用列表</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 最近事件 -->
+        <div class="card" style="margin-top:16px">
+          <div class="card-title">
+            <span class="t">最近事件</span>
+            <span class="a">查看全部 →</span>
+          </div>
+          <div>
+            <div class="event">
+              <span class="time">14:02</span>
+              <span class="ico">✓</span>
+              <span>健康检查全部通过 <span class="meta">· 端口 50793 · /v1/models 200</span></span>
+              <span class="muted">12 秒前</span>
+            </div>
+            <div class="event">
+              <span class="time">13:48</span>
+              <span class="ico">↻</span>
+              <span>本机代理重启完成 <span class="meta">· 端口由 50211 切换到 50793</span></span>
+              <span class="muted">14 分钟前</span>
+            </div>
+            <div class="event">
+              <span class="time">13:48</span>
+              <span class="ico w">!</span>
+              <span>检测到 Codex 仍指向旧端口 <span class="meta">· 已自动回写配置</span></span>
+              <span class="muted">14 分钟前</span>
+            </div>
+            <div class="event">
+              <span class="time">12:30</span>
+              <span class="ico">✓</span>
+              <span>接入完成 <span class="meta">· Codex App · 模型目录已同步 · 插件市场已启用（需重启）</span></span>
+              <span class="muted">1 小时 32 分前</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ============== 2. 主窗口 · 异常态（端口失联） ============== -->
+  <div class="section-label">② 主窗口 · 异常态（本机代理已离线）</div>
+  <div class="window">
+    <div class="titlebar">
+      <span class="tlight r"></span><span class="tlight y"></span><span class="tlight g"></span>
+      <span class="title">逐梦注入工具 — 需要修复</span>
+      <span style="width:54px"></span>
+    </div>
+
+    <div class="global-bar is-err">
+      <span class="dot err"></span>
+      <span class="gb-status" style="color:var(--err)">需要修复</span>
+      <span class="gb-account">本机代理已离线，Codex 仍在使用旧端口 50793</span>
+      <span class="gb-spacer"></span>
+      <button class="btn primary" style="background:var(--err); border-color:var(--err)">一键修复</button>
+      <button class="iconbtn" title="复制诊断">⎘</button>
+      <button class="iconbtn" title="设置">⚙</button>
+    </div>
+
+    <div class="shell">
+      <aside class="nav">
+        <div class="nav-group">主菜单</div>
+        <a>◐ 概览</a>
+        <a class="active">▤ 已接入应用 <span class="badge">1</span></a>
+        <a>⊞ 应用目录</a>
+        <a>◇ 诊断与日志</a>
+        <div class="nav-group">系统</div>
+        <a>⚙ 设置</a>
+        <a>ⓘ 关于</a>
+        <div class="nav-foot">v0.1.0</div>
+      </aside>
+
+      <section class="main">
+        <div class="crumbs">已接入应用</div>
+        <h2 class="h1">已接入应用</h2>
+        <p class="h1-sub">这里管理所有已接入的本机程序。每个应用都是一个独立的 Adapter。</p>
+
+        <!-- 顶部错误提示 -->
+        <div class="callout">
+          <span class="ic">!</span>
+          <div style="flex:1">
+            <div class="ttl">本机代理已离线</div>
+            <div class="desc">Codex 报错 <span class="mono">stream disconnected · http://127.0.0.1:50793/v1/responses</span>。代理进程已退出，但 Codex 仍指向旧端口。点击修复将重启代理并自动回写配置。</div>
+          </div>
+          <div class="btn-row" style="align-self:center">
+            <button class="btn primary" style="background:var(--err); border-color:var(--err)">立即修复</button>
+            <button class="btn ghost">查看诊断</button>
+          </div>
+        </div>
+
+        <!-- Codex 卡片（异常） -->
+        <div class="app-card bad" style="margin-bottom:12px">
+          <div class="logo codex">C</div>
+          <div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span class="name">Codex App</span>
+              <span class="badge2 err">需要修复</span>
+              <span class="tag">v0.x</span>
+              <span class="tag">macOS</span>
+            </div>
+            <div class="sub">代理 <span class="mono">127.0.0.1:50793</span> · 模型 12 · 上次心跳 4 分钟前 · 配置 ~/.codex/config.toml</div>
+          </div>
+          <div class="ops">
+            <button class="btn primary">修复</button>
+            <button class="btn">打开</button>
+            <button class="btn">⋯</button>
+          </div>
+        </div>
+
+        <!-- 占位卡片：即将支持 -->
+        <div class="app-card" style="opacity:0.7">
+          <div class="logo claude">A</div>
+          <div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span class="name">Claude Desktop</span>
+              <span class="badge2 idle">即将支持</span>
+              <span class="tag">macOS</span><span class="tag">Windows</span>
+            </div>
+            <div class="sub">逐梦注入将在第二阶段支持 Claude Desktop。</div>
+          </div>
+          <div class="ops">
+            <button class="btn ghost" disabled>接入</button>
+          </div>
+        </div>
+
+        <div class="app-card" style="opacity:0.7; margin-top:12px;">
+          <div class="logo continue">▶</div>
+          <div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span class="name">Continue.dev</span>
+              <span class="badge2 idle">即将支持</span>
+              <span class="tag">VS Code</span>
+            </div>
+            <div class="sub">基于 Adapter 框架的示例非桌面应用扩展。</div>
+          </div>
+          <div class="ops">
+            <button class="btn ghost" disabled>接入</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ============== 3. 应用详情：Codex ============== -->
+  <div class="section-label">③ 应用详情 · Codex App</div>
+  <div class="window">
+    <div class="titlebar">
+      <span class="tlight r"></span><span class="tlight y"></span><span class="tlight g"></span>
+      <span class="title">Codex App · 详情</span>
+      <span style="width:54px"></span>
+    </div>
+
+    <div class="global-bar">
+      <span class="dot"></span>
+      <span class="gb-status">已连接</span>
+      <span class="gb-account">muqi***@zhumeng</span>
+      <span class="gb-spacer"></span>
+      <span class="pill"><span class="dot"></span><span class="mono">127.0.0.1:50793</span></span>
+      <button class="iconbtn">↻</button>
+      <button class="iconbtn">⚒</button>
+      <button class="iconbtn">⎘</button>
+      <button class="iconbtn">⚙</button>
+    </div>
+
+    <div class="shell">
+      <aside class="nav">
+        <a>◐ 概览</a>
+        <a class="active">▤ 已接入应用</a>
+        <a>⊞ 应用目录</a>
+        <a>◇ 诊断与日志</a>
+        <a>⚙ 设置</a>
+        <a>ⓘ 关于</a>
+      </aside>
+
+      <section class="main">
+        <div class="crumbs">已接入应用 / Codex App</div>
+        <div style="display:flex; align-items:center; gap:14px; margin-bottom:16px">
+          <div class="logo codex" style="width:54px;height:54px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:20px;background:#0d0d10;color:#fff;">C</div>
+          <div style="flex:1">
+            <h2 class="h1" style="margin-bottom:2px">Codex App</h2>
+            <div class="muted" style="font-size:12px">由 OpenAI 出品 · 适配器 <span class="tag brand">CodexAdapter</span> <span class="tag">macOS</span> <span class="tag ok">已接入</span></div>
+          </div>
+          <div class="btn-row">
+            <button class="btn primary">打开 Codex App</button>
+            <button class="btn">修复</button>
+            <button class="btn">⋯</button>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <!-- 接入状态 -->
+          <div class="card">
+            <div class="card-title"><span class="t">接入状态</span><span class="badge2">健康</span></div>
+            <div class="kv">
+              <span class="k">设备</span><span class="v">MBP-Muqi · 9f3a…1c2b</span>
+              <span class="k">Token</span><span class="v mono">zh_a1b2…f9e0</span>
+              <span class="k">过期</span><span class="v">28 天后</span>
+              <span class="k">心跳</span><span class="v">12 秒前</span>
+            </div>
+            <hr class="soft" />
+            <div class="btn-row">
+              <button class="btn">重新授权</button>
+              <button class="btn ghost">查看证书</button>
+            </div>
+          </div>
+
+          <!-- 本机代理映射 -->
+          <div class="card">
+            <div class="card-title"><span class="t">代理映射</span><span class="badge2">监听中</span></div>
+            <div class="mono" style="font-size:12px; line-height:1.9">
+              <div>Codex App</div>
+              <div class="muted">  ↓ 请求</div>
+              <div>http://127.0.0.1:50793/v1/*</div>
+              <div class="muted">  ↓ 本机代理</div>
+              <div>http://127.0.0.1:18081/codex/v1/*</div>
+              <div class="muted">  ↓ 后端服务</div>
+              <div>逐梦托管多来源模型（能力由后端目录返回）</div>
+            </div>
+          </div>
+
+          <!-- 配置文件 -->
+          <div class="card" style="grid-column: 1 / -1">
+            <div class="card-title"><span class="t">配置文件</span><span class="muted" style="font-size:12px">由本工具管理 · 操作前自动备份</span></div>
+            <div>
+              <div class="diag-row">
+                <span style="color:var(--ok)">●</span>
+                <span class="mono">~/.codex/config.toml</span>
+                <span class="t">已托管</span>
+                <span class="btn-row" style="justify-self:end"><button class="btn ghost">查看</button><button class="btn ghost">还原</button></span>
+              </div>
+              <div class="diag-row">
+                <span style="color:var(--ok)">●</span>
+                <span class="mono">~/.codex/auth.json</span>
+                <span class="t">已托管</span>
+                <span class="btn-row" style="justify-self:end"><button class="btn ghost">查看</button><button class="btn ghost">还原</button></span>
+              </div>
+              <div class="diag-row">
+                <span style="color:var(--ok)">●</span>
+                <span class="mono">~/.codex/zhumeng-codex-models.json</span>
+                <span class="t">已托管</span>
+                <span class="btn-row" style="justify-self:end"><button class="btn ghost">查看</button><button class="btn ghost">还原</button></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 健康检查 -->
+          <div class="card">
+            <div class="card-title"><span class="t">健康检查</span><span class="muted" style="font-size:12px">每 30 秒一次</span></div>
+            <div class="check"><span class="ck ok">✓</span>本机代理端口可达 <span class="muted">· 6ms</span></div>
+            <div class="check"><span class="ck ok">✓</span>后端 /codex/v1/models 200 <span class="muted">· 142ms</span></div>
+            <div class="check"><span class="ck ok">✓</span>设备心跳 < 10 分钟 <span class="muted">· 12s 前</span></div>
+            <div class="check"><span class="ck ok">✓</span>Codex App 版本兼容 <span class="muted">· v0.x</span></div>
+            <div class="check"><span class="ck ok">✓</span>配置 base_url 指向当前代理 <span class="muted">· 50793</span></div>
+            <div class="check"><span class="ck ok">✓</span>model-picker 已修补</div>
+            <div class="check"><span class="ck ok">✓</span>插件市场入口可用 <span class="muted">· 重启后生效</span></div>
+            <div class="check"><span class="ck ok">✓</span>plugin-auth-gate 已修补</div>
+            <div class="check"><span class="ck ok">✓</span>plugin-mention-marketplace 已修补</div>
+            <div class="check"><span class="ck ok">✓</span>app.asar 修补状态正常</div>
+            <div class="check"><span class="ck ok">✓</span>app.asar 备份可恢复 <span class="muted">· hash ok</span></div>
+          </div>
+
+          <!-- Codex 增强项 -->
+          <div class="card">
+            <div class="card-title"><span class="t">Codex 增强项</span><span class="badge2 warn">重启后生效</span></div>
+            <div class="enhance-grid" style="grid-template-columns: repeat(2, 1fr);">
+              <div class="enhance-item">
+                <div class="label">Model Picker</div>
+                <div class="value" style="color:var(--ok)">已修补</div>
+              </div>
+              <div class="enhance-item">
+                <div class="label">Plugin Auth Gate</div>
+                <div class="value" style="color:var(--warn)">需重启</div>
+              </div>
+              <div class="enhance-item">
+                <div class="label">Plugin Mention Marketplace</div>
+                <div class="value" style="color:var(--warn)">需重启</div>
+              </div>
+              <div class="enhance-item">
+                <div class="label">备份</div>
+                <div class="value" style="color:var(--ok)">可恢复</div>
+              </div>
+            </div>
+            <hr class="soft" />
+            <div class="btn-row">
+              <button class="btn primary">重启 Codex 后生效</button>
+              <button class="btn">检查并修复</button>
+              <button class="btn ghost">一键恢复增强项</button>
+            </div>
+          </div>
+
+          <!-- 模型目录 -->
+          <div class="card">
+            <div class="card-title"><span class="t">模型目录</span><span class="a">同步 ↻</span></div>
+            <div class="model-toolbar" style="grid-template-columns: 1fr 1fr; margin:8px 0;">
+              <input value="搜索模型名 / 供应商 / 能力" readonly />
+              <div class="select">主列表：按后端 capabilities 判定 ▾</div>
+            </div>
+            <div class="model-table" style="max-height:180px;">
+              <div class="model-row head">
+                <span>模型</span><span>供应商</span><span>来源</span><span>能力</span><span>上下文</span><span>价格</span><span style="text-align:right">主列表</span>
+              </div>
+              <div class="model-row">
+                <span class="mname">example-codex-primary</span><span>逐梦托管</span><span><span class="tag mono">zhumeng</span></span><span><span class="badge2">后端返回</span></span><span class="mono">200k</span><span><span class="price-tip">价格<span class="tip"><span class="line"><b>输入</b><span>来自数据库</span></span><span class="line"><b>输出</b><span>来自数据库</span></span><span class="line"><b>缓存命中</b><span>来自数据库</span></span><span class="line"><b>缓存写入</b><span>来自数据库</span></span><span class="line"><b>来源</b><span>database_model_pricing</span></span></span></span></span><span style="text-align:right"><span class="tag ok">后端判定</span></span>
+              </div>
+              <div class="model-row">
+                <span class="mname">example-deepseek-route</span><span>逐梦托管</span><span><span class="tag mono">zhumeng</span></span><span><span class="badge2">后端返回</span></span><span class="mono">128k</span><span><span class="price-tip missing">未配置<span class="tip"><span class="line"><b>输入</b><span>未配置</span></span><span class="line"><b>输出</b><span>未配置</span></span><span class="line"><b>缓存命中</b><span>未配置</span></span><span class="line"><b>缓存写入</b><span>未配置</span></span><span class="line"><b>来源</b><span>database_model_pricing</span></span></span></span></span><span style="text-align:right"><span class="tag">后端判定</span></span>
+              </div>
+              <div class="model-row">
+                <span class="mname">example-claude-route</span><span>逐梦托管</span><span><span class="tag mono">zhumeng</span></span><span><span class="badge2">后端返回</span></span><span class="mono">200k</span><span><span class="price-tip">价格<span class="tip"><span class="line"><b>输入</b><span>来自数据库</span></span><span class="line"><b>输出</b><span>来自数据库</span></span><span class="line"><b>缓存命中</b><span>来自数据库</span></span><span class="line"><b>缓存写入</b><span>来自数据库</span></span><span class="line"><b>来源</b><span>database_model_pricing</span></span></span></span></span><span style="text-align:right"><span class="tag ok">后端判定</span></span>
+              </div>
+            </div>
+            <div class="muted" style="font-size:12px; margin-top:6px">完整列表固定高度滚动；兼容性和价格均来自后端返回。</div>
+          </div>
+
+          <!-- 高级 -->
+          <div class="card" style="grid-column: 1 / -1">
+            <div class="card-title"><span class="t">高级 · 手动修复入口</span><span class="muted" style="font-size:12px">主流程已自动处理，必要时手动触发</span></div>
+            <div class="btn-row">
+              <button class="btn">Model Picker · 状态</button>
+              <button class="btn">Model Picker · 修补</button>
+              <button class="btn">Plugin Auth Gate · 修补</button>
+              <button class="btn">Plugin Mention Marketplace · 修补</button>
+              <button class="btn">Capture · 安装</button>
+              <button class="btn">Capture · 报告</button>
+              <button class="btn danger">退出接入并恢复配置 + 增强项</button>
+            </div>
+            <div class="muted" style="font-size:12px; margin-top:8px">这些按钮是高级手动修复入口，不是插件市场可用化的唯一入口。Model Picker / Plugin Auth Gate / Plugin Mention Marketplace 可能修改 <span class="mono">app.asar</span>，修补前会检测、备份、校验唯一补丁点，修补后必须重启 Codex App。</div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ============== 4. 接入向导（深链触发） ============== -->
+  <div class="section-label">④ 接入向导 · 深链触发（zhumeng-agent://setup）</div>
+  <div class="window" style="max-width:880px; margin:0 auto;">
+    <div class="titlebar">
+      <span class="tlight r"></span><span class="tlight y"></span><span class="tlight g"></span>
+      <span class="title">接入向导</span>
+      <span style="width:54px"></span>
+    </div>
+    <div style="padding:24px 28px; background:var(--bg);">
+      <h2 class="h1">正在接入 Codex App</h2>
+      <p class="h1-sub">来自浏览器 <span class="mono">zhumeng.example.com/codex</span> · 客户端 <span class="tag brand">codex</span> · 服务器 <span class="mono">https://api.zhumeng…</span></p>
+
+      <div class="steps">
+        <div class="step done"><span class="n">01 · 完成</span><span class="t">确认</span></div>
+        <div class="step done"><span class="n">02 · 完成</span><span class="t">检测应用</span></div>
+        <div class="step done"><span class="n">03 · 完成</span><span class="t">启动代理</span></div>
+        <div class="step done"><span class="n">04 · 完成</span><span class="t">写入配置</span></div>
+        <div class="step run" ><span class="n">05 · 进行中</span><span class="t">启用 Codex 增强项</span></div>
+        <div class="step todo"><span class="n">06 · 待执行</span><span class="t">健康检查</span></div>
+        <div class="step todo"><span class="n">07 · 待执行</span><span class="t">完成</span></div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title"><span class="t">即将发生</span></div>
+          <div class="check"><span class="ck ok">✓</span>使用一次性 code 兑换设备 token</div>
+          <div class="check"><span class="ck ok">✓</span>检测到 <span class="mono">/Applications/Codex.app</span></div>
+          <div class="check"><span class="ck ok">✓</span>启动本机代理 <span class="mono">127.0.0.1:50793</span></div>
+          <div class="check"><span class="ck ok">✓</span>已备份 <span class="mono">~/.codex/config.toml</span></div>
+          <div class="check"><span class="ck ok">✓</span>写入 <span class="mono">~/.codex/config.toml · auth.json · models.json</span></div>
+          <div class="check"><span class="ck no" style="background:var(--brand-soft); color:var(--brand)">…</span>启用 Codex 增强项（model-picker · plugin-auth-gate · plugin-mention-marketplace）</div>
+          <div class="check"><span class="ck no" style="background:transparent; color:var(--text-soft); border:1px solid var(--border);">○</span>健康检查（端口可达 · 插件市场入口 · app.asar 备份）</div>
+        </div>
+        <div class="card">
+          <div class="card-title"><span class="t">原始日志</span><span class="muted" style="font-size:12px">debug 模式</span></div>
+          <div class="log">
+            <div><span class="ts">14:01:58</span> <span class="lv-info">INFO</span>  exchange code -> device_token ok</div>
+            <div><span class="ts">14:01:58</span> <span class="lv-info">INFO</span>  detect codex app: /Applications/Codex.app v0.x</div>
+            <div><span class="ts">14:01:59</span> <span class="lv-info">INFO</span>  proxy serve --port 0 ...</div>
+            <div><span class="ts">14:01:59</span> <span class="lv-warn">WARN</span>  port 50211 in use, retry</div>
+            <div><span class="ts">14:01:59</span> <span class="lv-info">INFO</span>  bound 127.0.0.1:50793</div>
+            <div><span class="ts">14:01:59</span> <span class="lv-info">INFO</span>  backup ~/.codex/config.toml -> .bak.20260521-1401</div>
+            <div><span class="ts">14:01:59</span> <span class="lv-info">INFO</span>  write ~/.codex/{config.toml, auth.json, models.json} (atomic)</div>
+            <div><span class="ts">14:01:59</span> <span class="lv-info">INFO</span>  config.base_url -> http://127.0.0.1:50793/v1</div>
+            <div><span class="ts">14:02:00</span> <span class="lv-info">INFO</span>  codex-enhance: inspect app.asar hash ok</div>
+            <div><span class="ts">14:02:00</span> <span class="lv-info">INFO</span>  codex-enhance: backup app.asar -> app.asar.zhumeng.bak</div>
+            <div><span class="ts">14:02:00</span> <span class="lv-info">INFO</span>  patch plugin-auth-gate unique-point ok</div>
+            <div><span class="ts">14:02:01</span> <span class="lv-warn">WARN</span>  restart_required: Codex App must restart for marketplace</div>
+          </div>
+        </div>
+      </div>
+
+      <hr class="soft" />
+      <div class="row">
+        <span class="muted" style="font-size:12px">这里只展示工具将做什么；任意一步失败都可重试或中止。</span>
+        <span class="spacer"></span>
+        <button class="btn">复制诊断</button>
+        <button class="btn">中止</button>
+        <button class="btn primary" disabled>继续</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============== 5. 诊断与日志 ============== -->
+  <div class="section-label">⑤ 诊断与日志 · 脱敏报告</div>
+  <div class="window">
+    <div class="titlebar">
+      <span class="tlight r"></span><span class="tlight y"></span><span class="tlight g"></span>
+      <span class="title">诊断与日志</span>
+      <span style="width:54px"></span>
+    </div>
+
+    <div class="global-bar is-warn">
+      <span class="dot warn"></span>
+      <span class="gb-status" style="color:var(--warn)">注意</span>
+      <span class="gb-account">单次健康检查失败 · 正在重试</span>
+      <span class="gb-spacer"></span>
+      <button class="btn">复制诊断</button>
+      <button class="iconbtn">⚙</button>
+    </div>
+
+    <div class="shell">
+      <aside class="nav">
+        <a>◐ 概览</a>
+        <a>▤ 已接入应用</a>
+        <a>⊞ 应用目录</a>
+        <a class="active">◇ 诊断与日志</a>
+        <a>⚙ 设置</a>
+        <a>ⓘ 关于</a>
+      </aside>
+
+      <section class="main">
+        <div class="crumbs">诊断与日志</div>
+        <h2 class="h1">诊断与日志</h2>
+        <p class="h1-sub">默认仅本地保存。诊断报告自动脱敏；上传是显式动作。</p>
+
+        <div class="grid-2">
+          <!-- 实时检查 -->
+          <div class="card">
+            <div class="card-title"><span class="t">实时健康检查</span><span class="a">手动重跑 ↻</span></div>
+            <div class="diag-row">
+              <span style="color:var(--ok)">●</span>
+              <span>本机代理端口可达 <span class="muted mono">127.0.0.1:50793</span></span>
+              <span class="t">通过</span>
+              <span class="t" style="text-align:right">6ms</span>
+            </div>
+            <div class="diag-row">
+              <span style="color:var(--ok)">●</span>
+              <span>后端 /codex/v1/models 200</span>
+              <span class="t">通过</span>
+              <span class="t" style="text-align:right">142ms</span>
+            </div>
+            <div class="diag-row">
+              <span style="color:var(--warn)">●</span>
+              <span>设备心跳 < 10 分钟</span>
+              <span class="t" style="color:var(--warn)">注意</span>
+              <span class="t" style="text-align:right">9m 02s</span>
+            </div>
+            <div class="diag-row">
+              <span style="color:var(--ok)">●</span>
+              <span>Codex App 版本兼容</span>
+              <span class="t">通过</span>
+              <span class="t" style="text-align:right">2ms</span>
+            </div>
+            <div class="diag-row">
+              <span style="color:var(--ok)">●</span>
+              <span>config.toml 指向当前代理端口</span>
+              <span class="t">通过</span>
+              <span class="t" style="text-align:right">1ms</span>
+            </div>
+          </div>
+
+          <!-- 日志 -->
+          <div class="card">
+            <div class="card-title">
+              <span class="t">日志</span>
+              <span style="display:inline-flex; gap:6px;">
+                <span class="tag brand">全局</span><span class="tag">Codex</span><span class="tag">Proxy</span><span class="tag">Backend</span>
+              </span>
+            </div>
+            <div class="log">
+              <div><span class="ts">14:02:11</span> <span class="lv-info">INFO</span>  proxy.health ok port=50793</div>
+              <div><span class="ts">14:02:11</span> <span class="lv-info">INFO</span>  models.sync ok count=12</div>
+              <div><span class="ts">14:01:48</span> <span class="lv-warn">WARN</span>  heartbeat last_seen=09m02s warn_threshold=10m</div>
+              <div><span class="ts">14:01:48</span> <span class="lv-info">INFO</span>  proxy.bind 127.0.0.1:50793</div>
+              <div><span class="ts">14:01:48</span> <span class="lv-warn">WARN</span>  port 50211 conflict; retry</div>
+              <div><span class="ts">13:58:00</span> <span class="lv-err">ERROR</span> codex stream disconnected url=http://127.0.0.1:50793/v1/responses</div>
+              <div><span class="ts">13:58:00</span> <span class="lv-info">INFO</span>  triage: proxy_port_lost suggested=repair</div>
+              <div><span class="ts">13:58:01</span> <span class="lv-info">INFO</span>  repair.codex run</div>
+              <div><span class="ts">13:58:02</span> <span class="lv-info">INFO</span>  repair.codex ok</div>
+            </div>
+          </div>
+
+          <!-- 脱敏报告 -->
+          <div class="card" style="grid-column: 1 / -1;">
+            <div class="card-title">
+              <span class="t">脱敏诊断报告</span>
+              <span class="muted" style="font-size:12px">默认不上传。复制后请自行决定是否粘贴给支持。</span>
+            </div>
+            <div class="grid-2">
+              <div>
+                <div style="font-size:12px; color:var(--text-soft); margin-bottom:6px;">将包含</div>
+                <div class="check"><span class="ck ok">✓</span>版本、平台、Adapter 状态</div>
+                <div class="check"><span class="ck ok">✓</span>本机代理端口、健康检查耗时</div>
+                <div class="check"><span class="ck ok">✓</span>最近 200 行日志（脱敏后）</div>
+                <div class="check"><span class="ck ok">✓</span>配置文件 hash（不含原文）</div>
+              </div>
+              <div>
+                <div style="font-size:12px; color:var(--text-soft); margin-bottom:6px;">将被脱敏</div>
+                <div class="check"><span class="ck no">✕</span>完整 token / device_token</div>
+                <div class="check"><span class="ck no">✕</span>邮箱中段、用户名、机器名</div>
+                <div class="check"><span class="ck no">✕</span>本机绝对路径中段</div>
+                <div class="check"><span class="ck no">✕</span>原始 prompt / 业务请求体</div>
+              </div>
+            </div>
+            <hr class="soft" />
+            <div class="btn-row">
+              <button class="btn primary">生成报告</button>
+              <button class="btn">复制到剪贴板</button>
+              <button class="btn ghost">另存为 .txt</button>
+              <span class="spacer"></span>
+              <button class="btn ghost">脱敏强度：标准 ▾</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ============== 6. 托盘菜单（默认 vs 异常） ============== -->
+  <div class="section-label">⑥ 托盘菜单 · 默认 vs 异常</div>
+  <div class="tray-wrap">
+    <div>
+      <div class="muted" style="font-size:12px; margin-bottom:8px;">默认（已连接）</div>
+      <div class="tray">
+        <div class="tray-head">
+          <span class="dot"></span>
+          <div>
+            <div class="name">已连接 — Codex App</div>
+            <div class="sub mono">Proxy 127.0.0.1:50793</div>
+          </div>
+        </div>
+        <hr />
+        <div class="tray-row"><span>打开主窗口</span><span class="key">⌘O</span></div>
+        <div class="tray-row"><span>打开 Codex App</span><span class="key">⌘L</span></div>
+        <hr />
+        <div class="tray-row"><span>重启本机代理</span></div>
+        <div class="tray-row"><span>修复全部应用</span></div>
+        <div class="tray-row"><span>重新授权…</span></div>
+        <hr />
+        <div class="tray-row"><span>诊断与日志…</span></div>
+        <div class="tray-row"><span>复制脱敏诊断报告</span></div>
+        <hr />
+        <div class="tray-row"><span>设置…</span></div>
+        <div class="tray-row"><span>关于</span></div>
+        <hr />
+        <div class="tray-row danger"><span>退出</span><span class="key">⌘Q</span></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="muted" style="font-size:12px; margin-bottom:8px;">异常（代理离线）</div>
+      <div class="tray">
+        <div class="tray-head bad">
+          <span class="dot err"></span>
+          <div>
+            <div class="name" style="color:var(--err)">需要修复</div>
+            <div class="sub">本机代理已离线 · 端口 50793 不再监听</div>
+          </div>
+        </div>
+        <div class="tray-cta">⚒ 一键修复</div>
+        <div class="tray-row"><span>查看诊断</span></div>
+        <hr />
+        <div class="tray-row"><span>打开主窗口</span><span class="key">⌘O</span></div>
+        <div class="tray-row"><span>重启本机代理</span></div>
+        <div class="tray-row"><span>重新授权…</span></div>
+        <hr />
+        <div class="tray-row"><span>设置…</span></div>
+        <div class="tray-row danger"><span>退出</span><span class="key">⌘Q</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============== 7. 顶部状态条 popover 演示 ============== -->
+  <div class="section-label">⑦ 顶部状态条 · 端口胶囊点击展开</div>
+  <div style="display:flex; gap:32px; align-items:flex-start;">
+    <div class="window" style="flex:1">
+      <div class="titlebar">
+        <span class="tlight r"></span><span class="tlight y"></span><span class="tlight g"></span>
+        <span class="title">逐梦注入工具</span>
+        <span style="width:54px"></span>
+      </div>
+      <div class="global-bar">
+        <span class="dot"></span>
+        <span class="gb-status">已连接</span>
+        <span class="gb-account">muqi***@zhumeng</span>
+        <span class="gb-spacer"></span>
+        <span class="pill" style="outline:2px solid var(--brand); outline-offset:2px">
+          <span class="dot"></span><span class="mono">127.0.0.1:50793</span>
+        </span>
+        <button class="iconbtn">↻</button>
+        <button class="iconbtn">⚒</button>
+      </div>
+      <div style="padding:18px 16px 28px;">
+        <div class="popover" style="margin-left:auto; transform:translateX(-32px);">
+          <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+            <span class="dot"></span>
+            <div>
+              <div style="font-weight:600">本机代理</div>
+              <div class="muted mono" style="font-size:12px">http://127.0.0.1:50793/v1</div>
+            </div>
+          </div>
+          <div class="kv" style="grid-template-columns: 80px 1fr">
+            <span class="k">运行</span><span class="v">2 小时 14 分</span>
+            <span class="k">上次重启</span><span class="v">14 分钟前</span>
+            <span class="k">自启</span><span class="v">已开启</span>
+          </div>
+          <hr class="soft" />
+          <div class="btn-row">
+            <button class="btn">重启</button>
+            <button class="btn ghost">复制 URL</button>
+            <button class="btn ghost">查看日志</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 命令面板 -->
+    <div style="flex:1">
+      <div class="muted" style="font-size:12px; margin-bottom:8px;">⌘K 命令面板（全局可达）</div>
+      <div class="popover">
+        <div style="display:flex; gap:8px; align-items:center; padding:8px; border:1px solid var(--border); border-radius:8px; background:var(--bg-sub);">
+          <span class="muted">⌘K</span>
+          <input style="flex:1; background:transparent; border:0; color:var(--text); outline:none; font-family:inherit; font-size:14px;" value="修复" readonly />
+        </div>
+        <div style="margin-top:10px;">
+          <div class="tray-row"><span>⚒ 修复全部应用</span><span class="key">↵</span></div>
+          <div class="tray-row"><span>↻ 重启本机代理</span></div>
+          <div class="tray-row"><span>↗ 打开 Codex App</span></div>
+          <div class="tray-row"><span>⎘ 复制脱敏诊断报告</span></div>
+          <div class="tray-row"><span>◐ 切换到深色 / 浅色</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============== 8. 多供应商模型路由 · 模型目录 ============== -->
+  <div class="section-label">⑧ 模型目录 · 多供应商路由（v1 仅逐梦可用）</div>
+  <div class="window">
+    <div class="titlebar">
+      <span class="tlight r"></span><span class="tlight y"></span><span class="tlight g"></span>
+      <span class="title">模型目录 · Codex App</span>
+      <span style="width:54px"></span>
+    </div>
+    <div class="global-bar">
+      <span class="dot"></span>
+      <span class="gb-status">已连接</span>
+      <span class="gb-account">Codex App · 4 个供应商可见 · 1 个启用</span>
+      <span class="gb-spacer"></span>
+      <span class="pill"><span class="dot"></span><span class="mono">127.0.0.1:50793</span></span>
+      <button class="iconbtn">↻</button>
+      <button class="iconbtn">⚒</button>
+      <button class="iconbtn">⚙</button>
+    </div>
+
+    <div class="shell">
+      <aside class="nav">
+        <a>◐ 概览</a>
+        <a class="active">▤ 已接入应用</a>
+        <a>⊞ 应用目录</a>
+        <a>◇ 诊断与日志</a>
+        <a>⚙ 设置</a>
+        <a>ⓘ 关于</a>
+      </aside>
+
+      <section class="main">
+        <div class="crumbs">已接入应用 / Codex App / 模型目录</div>
+        <div style="display:flex; align-items:flex-end; gap:14px; margin-bottom:6px;">
+          <h2 class="h1" style="margin:0">模型目录</h2>
+          <span class="muted" style="font-size:12px; padding-bottom:3px;">
+            来源：<span class="tag brand">逐梦托管</span><span class="tag idle">自定义本机</span><span class="tag idle">自定义云端</span>
+          </span>
+          <span class="spacer"></span>
+          <span class="muted" style="font-size:12px;">显示规则：</span>
+          <button class="btn">严格 · 仅 Codex 兼容 ▾</button>
+          <button class="btn">同步目录 ↻</button>
+        </div>
+        <p class="h1-sub">v1 默认只启用"逐梦托管"。其它供应商显示为占位，"+ 添加供应商"将在 v2 提供。不满足 Codex Agent 能力（Responses + 工具 + 上下文续接）的模型不会出现在 Codex App 主模型列表里，只在本目录灰显并标注。模型能力与价格均来自后端模型目录；草图仅展示字段形态。</p>
+
+        <!-- Provider 1: 逐梦托管 -->
+        <div class="provider" style="margin-bottom:14px;">
+          <div class="head">
+            <div class="logo" style="width:40px;height:40px;border-radius:10px;background:#0d0d10;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;">逐</div>
+            <div style="flex:1">
+              <div class="head"><span class="pname">逐梦托管</span>
+                <span class="tag brand">默认</span>
+                <span class="tag ok">已启用</span>
+                <span class="tag">protocol: zhumeng-codex</span>
+                <span class="tag mono">/codex/v1</span>
+              </div>
+              <div class="pvendor">来源 <span class="mono">zhumeng</span> · 凭据由后端持有 · 12 个模型 · 上次同步 12 秒前</div>
+            </div>
+            <div class="btn-row">
+              <button class="btn">试连</button>
+              <button class="btn">查看协议</button>
+              <button class="btn ghost">⋯</button>
+            </div>
+          </div>
+
+          <!-- 能力矩阵 -->
+          <div class="cap-grid">
+            <div class="cap ok"><span>Responses</span><span class="v">✓</span></div>
+            <div class="cap ok"><span>流式</span><span class="v">✓</span></div>
+            <div class="cap ok"><span>工具调用</span><span class="v">✓</span></div>
+            <div class="cap ok"><span>图片输入</span><span class="v">✓</span></div>
+            <div class="cap ok"><span>缓存计费</span><span class="v">✓</span></div>
+            <div class="cap ok"><span>上下文续接</span><span class="v">✓</span></div>
+          </div>
+
+          <hr class="soft" />
+
+          <div class="model-toolbar">
+            <input value="搜索模型名 / 供应商 / 能力" readonly />
+            <div class="select">供应商：逐梦托管 ▾</div>
+            <div class="select">能力：全部 ▾</div>
+            <div class="select">主列表：全部 ▾</div>
+            <div class="select">可用性：全部 ▾</div>
+          </div>
+          <div class="muted" style="font-size:12px; margin-bottom:8px;">价格来自后端数据库模型单价 <span class="mono">database_model_pricing</span>；缺失字段显示"未配置"，不会前端硬编码。</div>
+
+          <div class="model-table">
+            <div class="model-row head">
+              <span>模型</span>
+              <span>供应商</span>
+              <span>来源</span>
+              <span>能力</span>
+              <span>上下文</span>
+              <span>价格</span>
+              <span style="text-align:right">主列表</span>
+            </div>
+            <div class="model-row">
+              <span class="mname"><span class="badge2">●</span>gpt-5-codex-high <span class="tag brand">推荐</span></span>
+              <span>逐梦托管</span>
+              <span><span class="tag mono">zhumeng</span></span>
+              <span><span class="badge2">后端返回</span></span>
+              <span class="mono">200k</span>
+              <span><span class="price-tip">价格<span class="tip"><span class="line"><b>输入</b><span>$1.25 / 1M</span></span><span class="line"><b>输出</b><span>$10.00 / 1M</span></span><span class="line"><b>缓存命中</b><span>$0.125 / 1M</span></span><span class="line"><b>缓存写入</b><span>$1.25 / 1M</span></span><span class="line"><b>单位</b><span>per_1m_tokens</span></span><span class="line"><b>来源</b><span>database_model_pricing</span></span><span class="line"><b>更新</b><span>2026-05-21</span></span></span></span></span>
+              <span style="text-align:right"><span class="tag ok">后端判定</span></span>
+            </div>
+            <div class="model-row">
+              <span class="mname">gpt-5-codex-medium</span>
+              <span>逐梦托管</span>
+              <span><span class="tag mono">zhumeng</span></span>
+              <span><span class="badge2">后端返回</span></span>
+              <span class="mono">200k</span>
+              <span><span class="price-tip">价格<span class="tip"><span class="line"><b>输入</b><span>$0.80 / 1M</span></span><span class="line"><b>输出</b><span>$6.00 / 1M</span></span><span class="line"><b>缓存命中</b><span>$0.08 / 1M</span></span><span class="line"><b>缓存写入</b><span>$0.80 / 1M</span></span><span class="line"><b>单位</b><span>per_1m_tokens</span></span><span class="line"><b>来源</b><span>database_model_pricing</span></span><span class="line"><b>更新</b><span>2026-05-21</span></span></span></span></span>
+              <span style="text-align:right"><span class="tag ok">后端判定</span></span>
+            </div>
+            <div class="model-row">
+              <span class="mname">claude-sonnet-4.6</span>
+              <span>逐梦托管</span>
+              <span><span class="tag mono">zhumeng</span></span>
+              <span><span class="badge2">后端返回</span></span>
+              <span class="mono">200k</span>
+              <span><span class="price-tip">价格<span class="tip"><span class="line"><b>输入</b><span>$3.00 / 1M</span></span><span class="line"><b>输出</b><span>$15.00 / 1M</span></span><span class="line"><b>缓存命中</b><span>$0.30 / 1M</span></span><span class="line"><b>缓存写入</b><span>$3.75 / 1M</span></span><span class="line"><b>单位</b><span>per_1m_tokens</span></span><span class="line"><b>来源</b><span>database_model_pricing</span></span><span class="line"><b>更新</b><span>2026-05-21</span></span></span></span></span>
+              <span style="text-align:right"><span class="tag ok">后端判定</span></span>
+            </div>
+            <div class="model-row">
+              <span class="mname">deepseek-coder-32b <span class="dim">(能力由后端返回)</span></span>
+              <span>逐梦托管</span>
+              <span><span class="tag mono">zhumeng</span></span>
+              <span><span class="badge2">后端返回</span></span>
+              <span class="mono">128k</span>
+              <span><span class="price-tip">价格<span class="tip"><span class="line"><b>输入</b><span>¥1.00 / 1M</span></span><span class="line"><b>输出</b><span>¥2.00 / 1M</span></span><span class="line"><b>缓存命中</b><span>未配置</span></span><span class="line"><b>缓存写入</b><span>未配置</span></span><span class="line"><b>单位</b><span>per_1m_tokens</span></span><span class="line"><b>来源</b><span>database_model_pricing</span></span><span class="line"><b>更新</b><span>2026-05-21</span></span></span></span></span>
+              <span style="text-align:right"><span class="tag ok">后端判定</span></span>
+            </div>
+            <div class="model-row">
+              <span class="mname">claude-haiku-4.5</span>
+              <span>逐梦托管</span>
+              <span><span class="tag mono">zhumeng</span></span>
+              <span><span class="badge2">后端返回</span></span>
+              <span class="mono">128k</span>
+              <span><span class="price-tip">价格<span class="tip"><span class="line"><b>输入</b><span>$0.80 / 1M</span></span><span class="line"><b>输出</b><span>$4.00 / 1M</span></span><span class="line"><b>缓存命中</b><span>$0.08 / 1M</span></span><span class="line"><b>缓存写入</b><span>$1.00 / 1M</span></span><span class="line"><b>单位</b><span>per_1m_tokens</span></span><span class="line"><b>来源</b><span>database_model_pricing</span></span><span class="line"><b>更新</b><span>2026-05-21</span></span></span></span></span>
+              <span style="text-align:right"><span class="tag ok">后端判定</span></span>
+            </div>
+            <div class="model-row">
+              <span class="mname">gpt-4.1-mini</span>
+              <span>逐梦托管</span>
+              <span><span class="tag mono">zhumeng</span></span>
+              <span><span class="badge2">后端返回</span></span>
+              <span class="mono">128k</span>
+              <span><span class="price-tip">价格<span class="tip"><span class="line"><b>输入</b><span>$0.40 / 1M</span></span><span class="line"><b>输出</b><span>$1.60 / 1M</span></span><span class="line"><b>缓存命中</b><span>$0.04 / 1M</span></span><span class="line"><b>缓存写入</b><span>$0.40 / 1M</span></span><span class="line"><b>单位</b><span>per_1m_tokens</span></span><span class="line"><b>来源</b><span>database_model_pricing</span></span><span class="line"><b>更新</b><span>2026-05-21</span></span></span></span></span>
+              <span style="text-align:right"><span class="tag ok">后端判定</span></span>
+            </div>
+            <div class="model-row">
+              <span class="mname">example-chat-only <span class="dim">(示例：后端标记工具能力有限)</span></span>
+              <span>逐梦托管</span>
+              <span><span class="tag mono">zhumeng</span></span>
+              <span><span class="badge2 warn">工具有限</span></span>
+              <span class="mono">32k</span>
+              <span><span class="price-tip missing">未配置<span class="tip"><span class="line"><b>输入</b><span>未配置</span></span><span class="line"><b>输出</b><span>未配置</span></span><span class="line"><b>缓存命中</b><span>未配置</span></span><span class="line"><b>缓存写入</b><span>未配置</span></span><span class="line"><b>单位</b><span>未配置</span></span><span class="line"><b>来源</b><span>database_model_pricing</span></span><span class="line"><b>更新</b><span>未配置</span></span></span></span></span>
+              <span style="text-align:right"><span class="tag warn">宽松可见</span></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Provider 2: 自定义云端 (占位) -->
+        <div class="provider" style="margin-bottom:14px; opacity:0.78;">
+          <div class="head">
+            <div class="logo" style="width:40px;height:40px;border-radius:10px;background:#1a1f2b;color:#9fb6ff;display:flex;align-items:center;justify-content:center;font-weight:700;">+</div>
+            <div style="flex:1">
+              <div class="head"><span class="pname">添加你的 OpenAI Responses 兼容供应商</span>
+                <span class="tag idle">v2 开放</span>
+                <span class="tag">protocol: openai-responses</span>
+              </div>
+              <div class="pvendor">来源 <span class="mono">custom_cloud</span> · 凭据走 macOS Keychain · 请求不经过逐梦后端</div>
+            </div>
+            <div class="btn-row">
+              <button class="btn ghost" disabled>+ 添加供应商</button>
+            </div>
+          </div>
+
+          <div class="cap-grid">
+            <div class="cap ok"><span>Responses</span><span class="v">✓</span></div>
+            <div class="cap ok"><span>流式</span><span class="v">✓</span></div>
+            <div class="cap ok"><span>工具调用</span><span class="v">✓</span></div>
+            <div class="cap ok"><span>图片输入</span><span class="v">✓</span></div>
+            <div class="cap no"><span>缓存计费</span><span class="v">—</span></div>
+            <div class="cap ok"><span>上下文续接</span><span class="v">✓</span></div>
+          </div>
+          <div class="muted" style="font-size:12px; margin-top:8px;">
+            v2 起允许填写 endpoint、API key、模型清单。第一版只展示数据结构与界面入口，不真正生效。
+          </div>
+        </div>
+
+        <!-- Provider 3: 自定义本机 (占位) -->
+        <div class="provider" style="margin-bottom:14px; opacity:0.78;">
+          <div class="head">
+            <div class="logo" style="width:40px;height:40px;border-radius:10px;background:#162018;color:#7ad19a;display:flex;align-items:center;justify-content:center;font-weight:700;">L</div>
+            <div style="flex:1">
+              <div class="head"><span class="pname">本机 LLM（Ollama / LM Studio）</span>
+                <span class="tag idle">v4 开放</span>
+                <span class="tag">protocol: openai-chat-completions</span>
+              </div>
+              <div class="pvendor">来源 <span class="mono">custom_local</span> · 端点 <span class="mono">127.0.0.1:11434</span> · 一般无密钥</div>
+            </div>
+          </div>
+
+          <div class="cap-grid">
+            <div class="cap no"><span>Responses</span><span class="v">—</span></div>
+            <div class="cap ok"><span>流式</span><span class="v">✓</span></div>
+            <div class="cap no"><span>工具调用</span><span class="v">—</span></div>
+            <div class="cap no"><span>图片输入</span><span class="v">—</span></div>
+            <div class="cap no"><span>缓存计费</span><span class="v">—</span></div>
+            <div class="cap no"><span>上下文续接</span><span class="v">—</span></div>
+          </div>
+          <div class="callout warn" style="margin-top:10px;">
+            <span class="ic">!</span>
+            <div style="flex:1">
+              <div class="ttl">不满足 Codex Agent 能力</div>
+              <div class="desc">缺少 Responses / 工具 / 上下文续接。该供应商的模型默认<strong>不会</strong>出现在 Codex App 主模型列表，仅在本目录可见，并标注 <span class="tag warn">聊天可用，工具能力有限</span>。可在设置 → 模型 中启用"宽松显示"。</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 路由示意 -->
+        <div class="card">
+          <div class="card-title"><span class="t">本机代理 · 路由层</span><span class="muted" style="font-size:12px">协议变形发生在代理层，桌面工具进程不持有业务 Payload</span></div>
+          <div class="mono" style="font-size:12px; line-height:1.9">
+            <div>Codex App  →  POST /v1/responses  body{ model: "example-codex-primary" }</div>
+            <div class="muted">  ↓ 本机代理 50793 解析 model → provider → protocol</div>
+            <div>分支 A · provider=zhumeng        → POST <span class="muted">https://api.zhumeng/codex/v1/responses</span></div>
+            <div>分支 B · provider=oa-direct-1    → POST <span class="muted">https://api.openai.com/v1/responses</span>            <span class="tag idle">v2</span></div>
+            <div>分支 C · provider=anth-direct-1  → POST <span class="muted">https://api.anthropic.com/v1/messages</span>           <span class="tag idle">v3</span></div>
+            <div>分支 D · provider=ollama-local   → POST <span class="muted">http://127.0.0.1:11434/v1/chat/completions</span>      <span class="tag idle">v4</span></div>
+          </div>
+          <hr class="soft" />
+          <div class="muted" style="font-size:12px;">回退策略默认 <span class="mono">none</span>。可单 provider 设为 <span class="mono">to_zhumeng</span>，失败时回退到逐梦托管。自定义供应商默认<strong>不</strong>把请求体上报逐梦后端。</div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ============== 9. 设置 · 供应商管理 ============== -->
+  <div class="section-label">⑨ 设置 · 供应商（v1 仅占位）</div>
+  <div class="window">
+    <div class="titlebar">
+      <span class="tlight r"></span><span class="tlight y"></span><span class="tlight g"></span>
+      <span class="title">设置 · 供应商</span>
+      <span style="width:54px"></span>
+    </div>
+    <div class="global-bar">
+      <span class="dot"></span>
+      <span class="gb-status">已连接</span>
+      <span class="gb-account">muqi***@zhumeng</span>
+      <span class="gb-spacer"></span>
+      <span class="pill"><span class="dot"></span><span class="mono">127.0.0.1:50793</span></span>
+    </div>
+    <div class="shell">
+      <aside class="nav">
+        <a>◐ 概览</a>
+        <a>▤ 已接入应用</a>
+        <a>⊞ 应用目录</a>
+        <a>◇ 诊断与日志</a>
+        <a class="active">⚙ 设置</a>
+        <a>ⓘ 关于</a>
+      </aside>
+      <section class="main">
+        <div class="crumbs">设置 / 供应商</div>
+        <h2 class="h1">供应商</h2>
+        <p class="h1-sub">默认仅启用"逐梦托管"。其它供应商在后续版本逐步开放。</p>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-title"><span class="t">逐梦托管 (zhumeng)</span><span class="badge2">默认 · 已启用</span></div>
+            <div class="kv">
+              <span class="k">协议</span><span class="v mono">zhumeng-codex</span>
+              <span class="k">端点</span><span class="v mono">由后端持有</span>
+              <span class="k">凭据</span><span class="v">设备 token (脱敏)</span>
+              <span class="k">模型</span><span class="v">12 个 · 同步中</span>
+              <span class="k">兜底</span><span class="v">不适用</span>
+            </div>
+            <hr class="soft" />
+            <div class="btn-row">
+              <button class="btn">同步目录</button>
+              <button class="btn">试连</button>
+              <button class="btn ghost">查看协议</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title"><span class="t">显示规则</span></div>
+            <div class="check"><span class="ck ok">●</span><strong>严格</strong>：只在主模型列表显示完全兼容 Codex Agent 的模型 <span class="tag brand">默认</span></div>
+            <div class="check"><span class="ck no" style="background:transparent; color:var(--text-soft); border:1px solid var(--border);">○</span>宽松：聊天可用的模型也显示，但加角标</div>
+            <hr class="soft" />
+            <div class="muted" style="font-size:12px;">
+              不满足 Codex Agent 能力（Responses + 工具 + 上下文续接）的模型，默认<strong>不</strong>出现在 Codex 主列表里。
+            </div>
+          </div>
+
+          <div class="card" style="grid-column: 1 / -1;">
+            <div class="card-title">
+              <span class="t">自定义供应商</span>
+              <span class="tag idle">v2 起开放</span>
+            </div>
+            <div class="grid-3" style="margin-top:6px;">
+              <div class="card" style="background:var(--bg-sub); box-shadow:none;">
+                <div style="font-weight:600; margin-bottom:4px;">OpenAI Responses 兼容</div>
+                <div class="muted" style="font-size:12px;">protocol: <span class="mono">openai-responses</span></div>
+                <div class="muted" style="font-size:12px;">v2 · 优先级最高</div>
+              </div>
+              <div class="card" style="background:var(--bg-sub); box-shadow:none;">
+                <div style="font-weight:600; margin-bottom:4px;">Anthropic Messages</div>
+                <div class="muted" style="font-size:12px;">protocol: <span class="mono">anthropic-messages</span></div>
+                <div class="muted" style="font-size:12px;">v3</div>
+              </div>
+              <div class="card" style="background:var(--bg-sub); box-shadow:none;">
+                <div style="font-weight:600; margin-bottom:4px;">OpenAI Chat Completions</div>
+                <div class="muted" style="font-size:12px;">protocol: <span class="mono">openai-chat-completions</span></div>
+                <div class="muted" style="font-size:12px;">v4 · DeepSeek / Ollama / 自建网关</div>
+              </div>
+            </div>
+            <hr class="soft" />
+            <div class="btn-row">
+              <button class="btn primary" disabled>+ 添加供应商</button>
+              <button class="btn ghost" disabled>导入 Provider 清单 (.json)</button>
+              <span class="spacer"></span>
+              <span class="muted" style="font-size:12px;">v1 此入口仅占位，不写任何凭据。</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ============== 10. 关于 · 分发与安全 ============== -->
+  <div class="section-label">⑩ 关于 · 分发与安全（示例数据）</div>
+  <div class="window">
+    <div class="titlebar">
+      <span class="tlight r"></span><span class="tlight y"></span><span class="tlight g"></span>
+      <span class="title">关于 · 分发与安全</span>
+      <span style="width:54px"></span>
+    </div>
+    <div class="shell">
+      <aside class="nav">
+        <a>◐ 概览</a>
+        <a>▤ 已接入应用</a>
+        <a>⊞ 应用目录</a>
+        <a>◇ 诊断与日志</a>
+        <a>⚙ 设置</a>
+        <a class="active">ⓘ 关于</a>
+      </aside>
+      <section class="main">
+        <div class="crumbs">关于 / 分发与安全</div>
+        <h2 class="h1">分发与安全</h2>
+        <p class="h1-sub">以下为静态草图示例数据，用于展示官网直发版的信息结构。</p>
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-title"><span class="t">macOS 分发</span><span class="badge2">官网直发</span></div>
+            <div class="kv">
+              <span class="k">分发方式</span><span class="v">官网下载 DMG / PKG</span>
+              <span class="k">商店状态</span><span class="v">不走 Mac App Store</span>
+              <span class="k">架构</span><span class="v">Universal · Apple Silicon / Intel</span>
+              <span class="k">版本</span><span class="v mono">0.1.0 (示例)</span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title"><span class="t">签名与校验</span><span class="badge2">Notarized</span></div>
+            <div class="kv">
+              <span class="k">签名状态</span><span class="v">Developer ID Application</span>
+              <span class="k">安装器</span><span class="v">Developer ID Installer（如提供 PKG）</span>
+              <span class="k">公证状态</span><span class="v">Apple Notarization</span>
+              <span class="k">SHA256</span><span class="v mono">7e3a…9f21（示例）</span>
+            </div>
+          </div>
+          <div class="card" style="grid-column:1/-1;">
+            <div class="card-title"><span class="t">为什么首版不上架 Mac App Store</span></div>
+            <div class="check"><span class="ck ok">✓</span>需要写入 <span class="mono">~/.codex</span> 配置并注册 <span class="mono">zhumeng-agent://</span> 深链</div>
+            <div class="check"><span class="ck ok">✓</span>需要运行本机代理 <span class="mono">127.0.0.1:&lt;port&gt;</span></div>
+            <div class="check"><span class="ck ok">✓</span>可能修补 <span class="mono">Codex.app/app.asar</span> 以启用模型选择和插件市场</div>
+            <div class="muted" style="font-size:12px; margin-top:8px;">未签名内测包会被 Gatekeeper 强提示；未公证包可能显示"无法验证"。正式官网发布必须 Developer ID 签名 + Apple Notarization + SHA256 校验。</div>
+          </div>
+          <div class="card" style="grid-column:1/-1;">
+            <div class="card-title"><span class="t">推荐技术路线</span><span class="tag brand">首版推荐</span></div>
+            <div class="grid-3">
+              <div class="enhance-item"><div class="label">桌面壳</div><div class="value">Tauri 2</div></div>
+              <div class="enhance-item"><div class="label">前端</div><div class="value">React / Vite / Tailwind</div></div>
+              <div class="enhance-item"><div class="label">后端能力</div><div class="value">现有 Python CLI sidecar</div></div>
+            </div>
+            <div class="muted" style="font-size:12px; margin-top:8px;">SwiftUI + WinUI 只是对比方案，不是首版推荐路线。</div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ============== 11. 状态色与文案速览 ============== -->
+  <div class="section-label">⑪ 状态色与文案速览</div>
+  <div class="window">
+    <div class="titlebar">
+      <span class="tlight r"></span><span class="tlight y"></span><span class="tlight g"></span>
+      <span class="title">状态语言</span>
+      <span style="width:54px"></span>
+    </div>
+    <div style="padding:20px 24px;">
+      <div class="grid-3">
+        <div class="card">
+          <div class="card-title"><span class="t">正常</span><span class="badge2">●</span></div>
+          <div class="muted" style="font-size:12px">绿系。一句话说明状态。</div>
+          <hr class="soft" />
+          <div>已连接 — Codex App</div>
+          <div class="muted">健康检查全部通过</div>
+        </div>
+        <div class="card warn">
+          <div class="card-title"><span class="t">注意</span><span class="badge2 warn">●</span></div>
+          <div class="muted" style="font-size:12px">琥珀。可恢复的抖动或软异常。</div>
+          <hr class="soft" />
+          <div>检查中 · 刚刚一次失败</div>
+          <div class="muted">设备心跳 9 分 02 秒前</div>
+        </div>
+        <div class="card err">
+          <div class="card-title"><span class="t">异常</span><span class="badge2 err">●</span></div>
+          <div class="muted" style="font-size:12px">红。关键链路断开，必须给出动作。</div>
+          <hr class="soft" />
+          <div>本机代理已离线</div>
+          <div class="muted">建议：[一键修复]</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const root = document.documentElement;
+const btnLight = document.getElementById('t-light');
+const btnDark  = document.getElementById('t-dark');
+function setTheme(t) {
+  root.setAttribute('data-theme', t);
+  btnLight.classList.toggle('active', t === 'light');
+  btnDark.classList.toggle('active', t === 'dark');
+  document.body.style.background = (t === 'light') ? '#E5E7EB' : '#0a0c10';
+}
+btnLight.addEventListener('click', () => setTheme('light'));
+btnDark.addEventListener('click',  () => setTheme('dark'));
+</script>
+</body>
+</html>

@@ -3,7 +3,6 @@ import { flushPromises, shallowMount } from '@vue/test-utils'
 import PaymentView from '../PaymentView.vue'
 import { PAYMENT_RECOVERY_STORAGE_KEY } from '@/components/payment/paymentFlow'
 import { formatPaymentAmount } from '@/components/payment/currency'
-import type { CheckoutInfoResponse, MethodLimit, SubscriptionPlan } from '@/types/payment'
 
 const routeState = vi.hoisted(() => ({
   path: '/purchase',
@@ -86,8 +85,16 @@ vi.mock('@/utils/device', () => ({
   isMobileDevice: () => true,
 }))
 
-function checkoutInfoFixture(overrides: Partial<CheckoutInfoResponse> = {}) {
-  const wxpayMethod: MethodLimit = {
+
+type CheckoutInfoFixtureOptions = {
+  checkout?: Record<string, unknown>
+  methods?: Record<string, Record<string, unknown>>
+  method?: Record<string, unknown>
+  plan?: Record<string, unknown>
+}
+
+function checkoutInfoFixture(options: CheckoutInfoFixtureOptions = {}) {
+  const wxpay = {
     daily_limit: 0,
     daily_used: 0,
     daily_remaining: 0,
@@ -95,66 +102,53 @@ function checkoutInfoFixture(overrides: Partial<CheckoutInfoResponse> = {}) {
     single_max: 0,
     fee_rate: 0,
     available: true,
+    ...(options.method || {}),
   }
-  const data: CheckoutInfoResponse = {
-    methods: {
-      wxpay: wxpayMethod,
-    },
-    global_min: 0,
-    global_max: 0,
-    plans: [],
-    balance_disabled: false,
-    balance_recharge_multiplier: 1,
-    subscription_usd_to_cny_rate: 0,
-    recharge_fee_rate: 0,
-    help_text: '',
-    help_image_url: '',
-    stripe_publishable_key: '',
-  }
-
   return {
-    data: { ...data, ...overrides },
+    data: {
+      methods: options.methods || { wxpay },
+      global_min: 0,
+      global_max: 0,
+      plans: [],
+      balance_disabled: false,
+      balance_recharge_multiplier: 1,
+      subscription_usd_to_cny_rate: 0,
+      recharge_fee_rate: 0,
+      help_text: '',
+      help_image_url: '',
+      stripe_publishable_key: '',
+      ...(options.checkout || {}),
+    },
   }
 }
 
-function checkoutInfoWithPlansFixture(options: {
-  checkout?: Partial<CheckoutInfoResponse>
-  method?: Partial<MethodLimit>
-  plan?: Partial<SubscriptionPlan>
-} = {}) {
-  const base = checkoutInfoFixture(options.checkout).data
-  const plan: SubscriptionPlan = {
-    id: 7,
-    group_id: 3,
-    name: 'Starter',
-    description: '',
-    price: 128,
-    original_price: 0,
-    validity_days: 30,
-    validity_unit: 'day',
-    rate_multiplier: 1,
-    daily_limit_usd: null,
-    weekly_limit_usd: null,
-    monthly_limit_usd: null,
-    features: [],
-    group_platform: 'openai',
-    sort_order: 1,
-    for_sale: true,
-    group_name: 'OpenAI',
-    ...options.plan,
-  }
-
+function checkoutInfoWithPlansFixture(options: CheckoutInfoFixtureOptions = {}) {
+  const base = checkoutInfoFixture(options)
   return {
     data: {
-      ...base,
-      methods: {
-        ...base.methods,
-        wxpay: {
-          ...base.methods.wxpay,
-          ...options.method,
+      ...base.data,
+      plans: [
+        {
+          id: 7,
+          group_id: 3,
+          name: 'Starter',
+          description: '',
+          price: 128,
+          original_price: 0,
+          validity_days: 30,
+          validity_unit: 'day',
+          rate_multiplier: 1,
+          daily_limit_usd: null,
+          weekly_limit_usd: null,
+          monthly_limit_usd: null,
+          features: [],
+          group_platform: 'openai',
+          sort_order: 1,
+          for_sale: true,
+          group_name: 'OpenAI',
+          ...(options.plan || {}),
         },
-      },
-      plans: [plan],
+      ],
     },
   }
 }
@@ -199,7 +193,9 @@ function oauthOrderFixture() {
   }
 }
 
-async function mountSubscriptionConfirm(options: Parameters<typeof checkoutInfoWithPlansFixture>[0] = {}) {
+
+
+async function mountSubscriptionConfirm(options: CheckoutInfoFixtureOptions = {}) {
   vi.useRealTimers()
   routeState.path = '/purchase'
   routeState.query = {
@@ -259,13 +255,11 @@ describe('PaymentView subscription confirmation amounts', () => {
     expect(text).toContain(convertedPrice)
     expect(text).toContain(convertedOriginalPrice)
     expect(text).not.toContain(formatPaymentAmount(9.99, 'CNY'))
-    // 换算必须使用订阅汇率（×7.15），而不是余额倍率（÷0.14 = 71.36）
     expect(text).not.toContain(formatPaymentAmount(71.36, 'CNY'))
     expect(wrapper.findAll('button').some(button => button.text().includes(convertedPrice))).toBe(true)
   })
 
   it('keeps plan price when the subscription rate is not configured or payment currency is not CNY', async () => {
-    // opt-in 回归锁：即使余额倍率已配置，未配置订阅汇率时 CNY 订阅仍按 price 直付
     const cnyWrapper = await mountSubscriptionConfirm({
       checkout: {
         balance_recharge_multiplier: 0.14,
@@ -346,21 +340,21 @@ describe('PaymentView payment recovery', () => {
   })
 
   it('restores a custom EasyPay method as the selected payment method', async () => {
-    getCheckoutInfo.mockResolvedValue(checkoutInfoFixture({
-      methods: {
-        wxpay: checkoutInfoFixture().data.methods.wxpay,
-        ldc: {
-          daily_limit: 0,
-          daily_used: 0,
-          daily_remaining: 0,
-          single_min: 0,
-          single_max: 0,
-          fee_rate: 0,
-          available: true,
-          display_name: 'LDC Pay',
-        },
+    const checkout = checkoutInfoFixture()
+    checkout.data.methods = {
+      wxpay: checkoutInfoFixture().data.methods.wxpay,
+      ldc: {
+        daily_limit: 0,
+        daily_used: 0,
+        daily_remaining: 0,
+        single_min: 0,
+        single_max: 0,
+        fee_rate: 0,
+        available: true,
+        display_name: 'LDC Pay',
       },
-    }))
+    }
+    getCheckoutInfo.mockResolvedValue(checkout)
     window.localStorage.setItem(PAYMENT_RECOVERY_STORAGE_KEY, JSON.stringify({
       orderId: 888,
       amount: 66,
@@ -407,6 +401,7 @@ describe('PaymentView payment recovery', () => {
     expect(wrapper.find('[data-test="method-selector"]').text()).toBe('ldc')
   })
 })
+
 
 describe('PaymentView WeChat JSAPI flow', () => {
   beforeEach(() => {

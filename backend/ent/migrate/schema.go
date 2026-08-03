@@ -18,6 +18,7 @@ var (
 		{Name: "key", Type: field.TypeString, Unique: true, Size: 128},
 		{Name: "name", Type: field.TypeString, Size: 100},
 		{Name: "status", Type: field.TypeString, Size: 20, Default: "active"},
+		{Name: "restricted_client_product", Type: field.TypeString, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "last_used_at", Type: field.TypeTime, Nullable: true},
 		{Name: "ip_whitelist", Type: field.TypeJSON, Nullable: true},
 		{Name: "ip_blacklist", Type: field.TypeJSON, Nullable: true},
@@ -44,13 +45,13 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "api_keys_groups_api_keys",
-				Columns:    []*schema.Column{APIKeysColumns[22]},
+				Columns:    []*schema.Column{APIKeysColumns[23]},
 				RefColumns: []*schema.Column{GroupsColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
 			{
 				Symbol:     "api_keys_users_api_keys",
-				Columns:    []*schema.Column{APIKeysColumns[23]},
+				Columns:    []*schema.Column{APIKeysColumns[24]},
 				RefColumns: []*schema.Column{UsersColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
@@ -59,12 +60,12 @@ var (
 			{
 				Name:    "apikey_user_id",
 				Unique:  false,
-				Columns: []*schema.Column{APIKeysColumns[23]},
+				Columns: []*schema.Column{APIKeysColumns[24]},
 			},
 			{
 				Name:    "apikey_group_id",
 				Unique:  false,
-				Columns: []*schema.Column{APIKeysColumns[22]},
+				Columns: []*schema.Column{APIKeysColumns[23]},
 			},
 			{
 				Name:    "apikey_status",
@@ -79,17 +80,17 @@ var (
 			{
 				Name:    "apikey_last_used_at",
 				Unique:  false,
-				Columns: []*schema.Column{APIKeysColumns[7]},
+				Columns: []*schema.Column{APIKeysColumns[8]},
 			},
 			{
 				Name:    "apikey_quota_quota_used",
 				Unique:  false,
-				Columns: []*schema.Column{APIKeysColumns[10], APIKeysColumns[11]},
+				Columns: []*schema.Column{APIKeysColumns[11], APIKeysColumns[12]},
 			},
 			{
 				Name:    "apikey_expires_at",
 				Unique:  false,
-				Columns: []*schema.Column{APIKeysColumns[12]},
+				Columns: []*schema.Column{APIKeysColumns[13]},
 			},
 		},
 	}
@@ -585,9 +586,9 @@ var (
 				Columns: []*schema.Column{BatchImageJobsColumns[5], BatchImageJobsColumns[8]},
 			},
 			{
-				Name:    "batchimagejob_idempotency_key",
-				Unique:  false,
-				Columns: []*schema.Column{BatchImageJobsColumns[23]},
+				Name:    "batchimagejob_user_id_api_key_id_idempotency_key",
+				Unique:  true,
+				Columns: []*schema.Column{BatchImageJobsColumns[2], BatchImageJobsColumns[3], BatchImageJobsColumns[23]},
 				Annotation: &entsql.IndexAnnotation{
 					Where: "idempotency_key IS NOT NULL AND idempotency_key <> ''",
 				},
@@ -793,6 +794,207 @@ var (
 			},
 		},
 	}
+	// CodexDeviceAuditLogsColumns holds the columns for the "codex_device_audit_logs" table.
+	CodexDeviceAuditLogsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "event", Type: field.TypeString, Size: 64},
+		{Name: "ip", Type: field.TypeString, Size: 64, Default: ""},
+		{Name: "user_agent", Type: field.TypeString, Default: "", SchemaType: map[string]string{"postgres": "text"}},
+		{Name: "metadata", Type: field.TypeJSON},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "user_id", Type: field.TypeInt64},
+		{Name: "device_id", Type: field.TypeInt64},
+	}
+	// CodexDeviceAuditLogsTable holds the schema information for the "codex_device_audit_logs" table.
+	CodexDeviceAuditLogsTable = &schema.Table{
+		Name:       "codex_device_audit_logs",
+		Columns:    CodexDeviceAuditLogsColumns,
+		PrimaryKey: []*schema.Column{CodexDeviceAuditLogsColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "codex_device_audit_logs_users_user",
+				Columns:    []*schema.Column{CodexDeviceAuditLogsColumns[6]},
+				RefColumns: []*schema.Column{UsersColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+			{
+				Symbol:     "codex_device_audit_logs_codex_managed_devices_audit_logs",
+				Columns:    []*schema.Column{CodexDeviceAuditLogsColumns[7]},
+				RefColumns: []*schema.Column{CodexManagedDevicesColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "codexdeviceauditlog_device_id",
+				Unique:  false,
+				Columns: []*schema.Column{CodexDeviceAuditLogsColumns[7]},
+			},
+			{
+				Name:    "codexdeviceauditlog_user_id",
+				Unique:  false,
+				Columns: []*schema.Column{CodexDeviceAuditLogsColumns[6]},
+			},
+			{
+				Name:    "codexdeviceauditlog_event",
+				Unique:  false,
+				Columns: []*schema.Column{CodexDeviceAuditLogsColumns[1]},
+			},
+			{
+				Name:    "codexdeviceauditlog_created_at",
+				Unique:  false,
+				Columns: []*schema.Column{CodexDeviceAuditLogsColumns[5]},
+			},
+		},
+	}
+	// CodexDeviceTokensColumns holds the columns for the "codex_device_tokens" table.
+	CodexDeviceTokensColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "refresh_token_hash", Type: field.TypeString, Unique: true, Size: 128},
+		{Name: "expires_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "rotated_at", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "revoked_at", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "device_id", Type: field.TypeInt64},
+	}
+	// CodexDeviceTokensTable holds the schema information for the "codex_device_tokens" table.
+	CodexDeviceTokensTable = &schema.Table{
+		Name:       "codex_device_tokens",
+		Columns:    CodexDeviceTokensColumns,
+		PrimaryKey: []*schema.Column{CodexDeviceTokensColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "codex_device_tokens_codex_managed_devices_tokens",
+				Columns:    []*schema.Column{CodexDeviceTokensColumns[6]},
+				RefColumns: []*schema.Column{CodexManagedDevicesColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "codexdevicetoken_device_id",
+				Unique:  false,
+				Columns: []*schema.Column{CodexDeviceTokensColumns[6]},
+			},
+			{
+				Name:    "codexdevicetoken_refresh_token_hash",
+				Unique:  false,
+				Columns: []*schema.Column{CodexDeviceTokensColumns[1]},
+			},
+			{
+				Name:    "codexdevicetoken_expires_at",
+				Unique:  false,
+				Columns: []*schema.Column{CodexDeviceTokensColumns[2]},
+			},
+		},
+	}
+	// CodexManagedDevicesColumns holds the columns for the "codex_managed_devices" table.
+	CodexManagedDevicesColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "name", Type: field.TypeString, Size: 128},
+		{Name: "platform", Type: field.TypeString, Size: 32},
+		{Name: "arch", Type: field.TypeString, Size: 32},
+		{Name: "manager_version", Type: field.TypeString, Size: 64},
+		{Name: "status", Type: field.TypeEnum, Enums: []string{"active", "revoked", "reauthorization_required"}, Default: "active"},
+		{Name: "last_seen_at", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "revoked_at", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "user_id", Type: field.TypeInt64},
+		{Name: "api_key_id", Type: field.TypeInt64},
+	}
+	// CodexManagedDevicesTable holds the schema information for the "codex_managed_devices" table.
+	CodexManagedDevicesTable = &schema.Table{
+		Name:       "codex_managed_devices",
+		Columns:    CodexManagedDevicesColumns,
+		PrimaryKey: []*schema.Column{CodexManagedDevicesColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "codex_managed_devices_users_user",
+				Columns:    []*schema.Column{CodexManagedDevicesColumns[10]},
+				RefColumns: []*schema.Column{UsersColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+			{
+				Symbol:     "codex_managed_devices_api_keys_api_key",
+				Columns:    []*schema.Column{CodexManagedDevicesColumns[11]},
+				RefColumns: []*schema.Column{APIKeysColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "codexmanageddevice_user_id",
+				Unique:  false,
+				Columns: []*schema.Column{CodexManagedDevicesColumns[10]},
+			},
+			{
+				Name:    "codexmanageddevice_api_key_id",
+				Unique:  false,
+				Columns: []*schema.Column{CodexManagedDevicesColumns[11]},
+			},
+			{
+				Name:    "codexmanageddevice_status",
+				Unique:  false,
+				Columns: []*schema.Column{CodexManagedDevicesColumns[7]},
+			},
+		},
+	}
+	// CodexSetupGrantsColumns holds the columns for the "codex_setup_grants" table.
+	CodexSetupGrantsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "code_hash", Type: field.TypeString, Unique: true, Size: 128},
+		{Name: "mode", Type: field.TypeString, Size: 32},
+		{Name: "server_origin", Type: field.TypeString, Size: 255},
+		{Name: "gateway_origin", Type: field.TypeString, Size: 255},
+		{Name: "expires_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "consumed_at", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "user_id", Type: field.TypeInt64},
+		{Name: "api_key_id", Type: field.TypeInt64},
+	}
+	// CodexSetupGrantsTable holds the schema information for the "codex_setup_grants" table.
+	CodexSetupGrantsTable = &schema.Table{
+		Name:       "codex_setup_grants",
+		Columns:    CodexSetupGrantsColumns,
+		PrimaryKey: []*schema.Column{CodexSetupGrantsColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "codex_setup_grants_users_user",
+				Columns:    []*schema.Column{CodexSetupGrantsColumns[8]},
+				RefColumns: []*schema.Column{UsersColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+			{
+				Symbol:     "codex_setup_grants_api_keys_api_key",
+				Columns:    []*schema.Column{CodexSetupGrantsColumns[9]},
+				RefColumns: []*schema.Column{APIKeysColumns[0]},
+				OnDelete:   schema.NoAction,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "codexsetupgrant_code_hash",
+				Unique:  false,
+				Columns: []*schema.Column{CodexSetupGrantsColumns[1]},
+			},
+			{
+				Name:    "codexsetupgrant_user_id",
+				Unique:  false,
+				Columns: []*schema.Column{CodexSetupGrantsColumns[8]},
+			},
+			{
+				Name:    "codexsetupgrant_api_key_id",
+				Unique:  false,
+				Columns: []*schema.Column{CodexSetupGrantsColumns[9]},
+			},
+			{
+				Name:    "codexsetupgrant_expires_at",
+				Unique:  false,
+				Columns: []*schema.Column{CodexSetupGrantsColumns[5]},
+			},
+		},
+	}
 	// ErrorPassthroughRulesColumns holds the columns for the "error_passthrough_rules" table.
 	ErrorPassthroughRulesColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeInt64, Increment: true},
@@ -850,6 +1052,8 @@ var (
 		{Name: "daily_limit_usd", Type: field.TypeFloat64, Nullable: true, SchemaType: map[string]string{"postgres": "decimal(20,8)"}},
 		{Name: "weekly_limit_usd", Type: field.TypeFloat64, Nullable: true, SchemaType: map[string]string{"postgres": "decimal(20,8)"}},
 		{Name: "monthly_limit_usd", Type: field.TypeFloat64, Nullable: true, SchemaType: map[string]string{"postgres": "decimal(20,8)"}},
+		{Name: "augment_gateway_entitled", Type: field.TypeBool, Default: false},
+		{Name: "codex_gateway_entitled", Type: field.TypeBool, Default: false},
 		{Name: "default_validity_days", Type: field.TypeInt, Default: 30},
 		{Name: "allow_image_generation", Type: field.TypeBool, Default: false},
 		{Name: "allow_batch_image_generation", Type: field.TypeBool, Default: false},
@@ -915,7 +1119,7 @@ var (
 			{
 				Name:    "group_sort_order",
 				Unique:  false,
-				Columns: []*schema.Column{GroupsColumns[40]},
+				Columns: []*schema.Column{GroupsColumns[42]},
 			},
 		},
 	}
@@ -1542,6 +1746,9 @@ var (
 		{Name: "model", Type: field.TypeString, Size: 100},
 		{Name: "requested_model", Type: field.TypeString, Nullable: true, Size: 100},
 		{Name: "upstream_model", Type: field.TypeString, Nullable: true, Size: 100},
+		{Name: "entity_id", Type: field.TypeInt64, Nullable: true},
+		{Name: "entity_type", Type: field.TypeString, Nullable: true, Size: 64},
+		{Name: "claimed_entity_id", Type: field.TypeString, Nullable: true, Size: 128},
 		{Name: "channel_id", Type: field.TypeInt64, Nullable: true},
 		{Name: "model_mapping_chain", Type: field.TypeString, Nullable: true, Size: 500},
 		{Name: "billing_tier", Type: field.TypeString, Nullable: true, Size: 50},
@@ -1591,31 +1798,31 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "usage_logs_api_keys_usage_logs",
-				Columns:    []*schema.Column{UsageLogsColumns[40]},
+				Columns:    []*schema.Column{UsageLogsColumns[43]},
 				RefColumns: []*schema.Column{APIKeysColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
 			{
 				Symbol:     "usage_logs_accounts_usage_logs",
-				Columns:    []*schema.Column{UsageLogsColumns[41]},
+				Columns:    []*schema.Column{UsageLogsColumns[44]},
 				RefColumns: []*schema.Column{AccountsColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
 			{
 				Symbol:     "usage_logs_groups_usage_logs",
-				Columns:    []*schema.Column{UsageLogsColumns[42]},
+				Columns:    []*schema.Column{UsageLogsColumns[45]},
 				RefColumns: []*schema.Column{GroupsColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
 			{
 				Symbol:     "usage_logs_users_usage_logs",
-				Columns:    []*schema.Column{UsageLogsColumns[43]},
+				Columns:    []*schema.Column{UsageLogsColumns[46]},
 				RefColumns: []*schema.Column{UsersColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
 			{
 				Symbol:     "usage_logs_user_subscriptions_usage_logs",
-				Columns:    []*schema.Column{UsageLogsColumns[44]},
+				Columns:    []*schema.Column{UsageLogsColumns[47]},
 				RefColumns: []*schema.Column{UserSubscriptionsColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
@@ -1624,32 +1831,32 @@ var (
 			{
 				Name:    "usagelog_user_id",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[43]},
+				Columns: []*schema.Column{UsageLogsColumns[46]},
 			},
 			{
 				Name:    "usagelog_api_key_id",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[40]},
+				Columns: []*schema.Column{UsageLogsColumns[43]},
 			},
 			{
 				Name:    "usagelog_account_id",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[41]},
+				Columns: []*schema.Column{UsageLogsColumns[44]},
 			},
 			{
 				Name:    "usagelog_group_id",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[42]},
+				Columns: []*schema.Column{UsageLogsColumns[45]},
 			},
 			{
 				Name:    "usagelog_subscription_id",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[44]},
+				Columns: []*schema.Column{UsageLogsColumns[47]},
 			},
 			{
 				Name:    "usagelog_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[39]},
+				Columns: []*schema.Column{UsageLogsColumns[42]},
 			},
 			{
 				Name:    "usagelog_model",
@@ -1662,6 +1869,21 @@ var (
 				Columns: []*schema.Column{UsageLogsColumns[3]},
 			},
 			{
+				Name:    "usagelog_entity_id",
+				Unique:  false,
+				Columns: []*schema.Column{UsageLogsColumns[5]},
+			},
+			{
+				Name:    "usagelog_entity_type",
+				Unique:  false,
+				Columns: []*schema.Column{UsageLogsColumns[6]},
+			},
+			{
+				Name:    "usagelog_claimed_entity_id",
+				Unique:  false,
+				Columns: []*schema.Column{UsageLogsColumns[7]},
+			},
+			{
 				Name:    "usagelog_request_id",
 				Unique:  false,
 				Columns: []*schema.Column{UsageLogsColumns[1]},
@@ -1669,17 +1891,22 @@ var (
 			{
 				Name:    "usagelog_user_id_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[43], UsageLogsColumns[39]},
+				Columns: []*schema.Column{UsageLogsColumns[46], UsageLogsColumns[42]},
 			},
 			{
 				Name:    "usagelog_api_key_id_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[40], UsageLogsColumns[39]},
+				Columns: []*schema.Column{UsageLogsColumns[43], UsageLogsColumns[42]},
+			},
+			{
+				Name:    "usagelog_entity_id_created_at",
+				Unique:  false,
+				Columns: []*schema.Column{UsageLogsColumns[5], UsageLogsColumns[42]},
 			},
 			{
 				Name:    "usagelog_group_id_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[42], UsageLogsColumns[39]},
+				Columns: []*schema.Column{UsageLogsColumns[45], UsageLogsColumns[42]},
 			},
 		},
 	}
@@ -2000,6 +2227,10 @@ var (
 		ChannelMonitorDailyRollupsTable,
 		ChannelMonitorHistoriesTable,
 		ChannelMonitorRequestTemplatesTable,
+		CodexDeviceAuditLogsTable,
+		CodexDeviceTokensTable,
+		CodexManagedDevicesTable,
+		CodexSetupGrantsTable,
 		ErrorPassthroughRulesTable,
 		GroupsTable,
 		IdempotencyRecordsTable,
@@ -2082,6 +2313,25 @@ func init() {
 	}
 	ChannelMonitorRequestTemplatesTable.Annotation = &entsql.Annotation{
 		Table: "channel_monitor_request_templates",
+	}
+	CodexDeviceAuditLogsTable.ForeignKeys[0].RefTable = UsersTable
+	CodexDeviceAuditLogsTable.ForeignKeys[1].RefTable = CodexManagedDevicesTable
+	CodexDeviceAuditLogsTable.Annotation = &entsql.Annotation{
+		Table: "codex_device_audit_logs",
+	}
+	CodexDeviceTokensTable.ForeignKeys[0].RefTable = CodexManagedDevicesTable
+	CodexDeviceTokensTable.Annotation = &entsql.Annotation{
+		Table: "codex_device_tokens",
+	}
+	CodexManagedDevicesTable.ForeignKeys[0].RefTable = UsersTable
+	CodexManagedDevicesTable.ForeignKeys[1].RefTable = APIKeysTable
+	CodexManagedDevicesTable.Annotation = &entsql.Annotation{
+		Table: "codex_managed_devices",
+	}
+	CodexSetupGrantsTable.ForeignKeys[0].RefTable = UsersTable
+	CodexSetupGrantsTable.ForeignKeys[1].RefTable = APIKeysTable
+	CodexSetupGrantsTable.Annotation = &entsql.Annotation{
+		Table: "codex_setup_grants",
 	}
 	ErrorPassthroughRulesTable.Annotation = &entsql.Annotation{
 		Table: "error_passthrough_rules",

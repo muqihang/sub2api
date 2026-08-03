@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 )
 
 // sessionWindowSyncRepo 记录 syncActiveToPassive 触发的所有写操作。
@@ -37,6 +39,26 @@ func (r *sessionWindowSyncRepo) UpdateSessionWindowEnd(_ context.Context, id int
 	defer r.mu.Unlock()
 	r.sessionWindowEnds = append(r.sessionWindowEnds, sessionWindowEndCall{AccountID: id, End: end})
 	return nil
+}
+
+type passiveUsageAccountRepo struct {
+	AccountRepository
+	account *Account
+}
+
+func (r *passiveUsageAccountRepo) GetByID(_ context.Context, id int64) (*Account, error) {
+	if r.account == nil || r.account.ID != id {
+		return nil, ErrAccountNotFound
+	}
+	return r.account, nil
+}
+
+type usageWindowStatsRepo struct {
+	UsageLogRepository
+}
+
+func (r *usageWindowStatsRepo) GetAccountWindowStats(context.Context, int64, time.Time) (*usagestats.AccountStats, error) {
+	return &usagestats.AccountStats{}, nil
 }
 
 func TestEstimateSetupTokenUsage_ExpiredWindowZeroes(t *testing.T) {
@@ -88,6 +110,87 @@ func TestEstimateSetupTokenUsage_ActiveWindowPreservesUtilization(t *testing.T) 
 	}
 	if info.FiveHour.RemainingSeconds <= 0 {
 		t.Fatalf("expected positive RemainingSeconds, got %v", info.FiveHour.RemainingSeconds)
+	}
+}
+
+func TestGetPassiveUsage_IncludesSevenDayFableWindow(t *testing.T) {
+	t.Parallel()
+
+	resetAt := time.Now().Add(48 * time.Hour).UTC().Truncate(time.Second)
+	repo := &passiveUsageAccountRepo{account: &Account{
+		ID:       515,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"passive_usage_7d_oi_utilization": 0.82,
+			"passive_usage_7d_oi_reset":       resetAt.Unix(),
+			"passive_usage_sampled_at":        time.Now().UTC().Format(time.RFC3339),
+		},
+	}}
+	svc := &AccountUsageService{accountRepo: repo, usageLogRepo: &usageWindowStatsRepo{}, cache: NewUsageCache()}
+
+	info, err := svc.GetPassiveUsage(context.Background(), 515)
+	if err != nil {
+		t.Fatalf("GetPassiveUsage failed: %v", err)
+	}
+	if info.SevenDayFable == nil {
+		t.Fatal("expected seven_day_fable passive window")
+	}
+	if info.SevenDayFable.Utilization != 82 {
+		t.Fatalf("expected Fable utilization=82, got %v", info.SevenDayFable.Utilization)
+	}
+	if info.SevenDayFable.ResetsAt == nil || !info.SevenDayFable.ResetsAt.Equal(resetAt) {
+		t.Fatalf("expected Fable reset=%v, got %v", resetAt, info.SevenDayFable.ResetsAt)
+	}
+}
+
+func TestBuildUsageInfo_IncludesSevenDayFableWindow(t *testing.T) {
+	t.Parallel()
+
+	resetAt := time.Now().Add(72 * time.Hour).UTC().Truncate(time.Second)
+	svc := &AccountUsageService{}
+	info := svc.buildUsageInfo(&ClaudeUsageResponse{
+		SevenDayOverageIncluded: ClaudeUsageWindow{
+			Utilization: 66,
+			ResetsAt:    resetAt.Format(time.RFC3339),
+		},
+	}, ptrTime(time.Now()))
+
+	if info.SevenDayFable == nil {
+		t.Fatal("expected active usage to include seven_day_fable")
+	}
+	if info.SevenDayFable.Utilization != 66 {
+		t.Fatalf("expected Fable utilization=66, got %v", info.SevenDayFable.Utilization)
+	}
+	if info.SevenDayFable.ResetsAt == nil || !info.SevenDayFable.ResetsAt.Equal(resetAt) {
+		t.Fatalf("expected Fable reset=%v, got %v", resetAt, info.SevenDayFable.ResetsAt)
+	}
+}
+
+func TestSyncActiveToPassive_WritesSevenDayFableWindow(t *testing.T) {
+	t.Parallel()
+
+	repo := &sessionWindowSyncRepo{}
+	svc := &AccountUsageService{accountRepo: repo}
+	resetsAt := time.Now().Add(6 * 24 * time.Hour).UTC().Truncate(time.Second)
+	svc.syncActiveToPassive(context.Background(), 616, &UsageInfo{
+		SevenDayFable: &UsageProgress{
+			Utilization: 91,
+			ResetsAt:    &resetsAt,
+		},
+	})
+
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	if len(repo.extraUpdates) != 1 {
+		t.Fatalf("expected one UpdateExtra call, got %d", len(repo.extraUpdates))
+	}
+	updates := repo.extraUpdates[0]
+	if got := updates["passive_usage_7d_oi_utilization"]; got != 0.91 {
+		t.Fatalf("expected passive_usage_7d_oi_utilization=0.91, got %#v", got)
+	}
+	if got := updates["passive_usage_7d_oi_reset"]; got != resetsAt.Unix() {
+		t.Fatalf("expected passive_usage_7d_oi_reset=%d, got %#v", resetsAt.Unix(), got)
 	}
 }
 

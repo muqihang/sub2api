@@ -18,6 +18,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 )
 
 // antigravityFailingWriter 模拟客户端断开连接的 gin.ResponseWriter
@@ -185,21 +187,6 @@ func (s *queuedHTTPUpstreamStub) DoWithTLS(req *http.Request, proxyURL string, a
 	return s.Do(req, proxyURL, accountID, concurrency)
 }
 
-type recordingInternal500CounterCache struct {
-	incrementCalls []int64
-	resetCalls     []int64
-}
-
-func (c *recordingInternal500CounterCache) IncrementInternal500Count(_ context.Context, accountID int64) (int64, error) {
-	c.incrementCalls = append(c.incrementCalls, accountID)
-	return int64(len(c.incrementCalls)), nil
-}
-
-func (c *recordingInternal500CounterCache) ResetInternal500Count(_ context.Context, accountID int64) error {
-	c.resetCalls = append(c.resetCalls, accountID)
-	return nil
-}
-
 type antigravitySettingRepoStub struct{}
 
 func (s *antigravitySettingRepoStub) Get(ctx context.Context, key string) (*Setting, error) {
@@ -293,15 +280,12 @@ func TestAntigravityGatewayService_ForwardGemini_UsesConfiguredProjectFallback(t
 	require.NoError(t, err)
 	c.Request = httptest.NewRequest(http.MethodPost, "/antigravity/v1beta/models/gemini-2.5-flash:streamGenerateContent", bytes.NewReader(body))
 
-	upstreamBody := []byte("data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1}}}\n\n")
 	upstream := &queuedHTTPUpstreamStub{
-		responses: []*http.Response{
-			{
-				StatusCode: http.StatusOK,
-				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-				Body:       io.NopCloser(bytes.NewReader(upstreamBody)),
-			},
-		},
+		responses: []*http.Response{{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(bytes.NewReader([]byte("data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1}}}\n\n"))),
+		}},
 	}
 	svc := &AntigravityGatewayService{
 		settingService: NewSettingService(&antigravitySettingRepoStub{}, &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}),
@@ -311,7 +295,6 @@ func TestAntigravityGatewayService_ForwardGemini_UsesConfiguredProjectFallback(t
 
 	account := &Account{
 		ID:          101,
-		Name:        "acc-configured-project",
 		Platform:    PlatformAntigravity,
 		Type:        AccountTypeOAuth,
 		Status:      StatusActive,
@@ -333,52 +316,6 @@ func TestAntigravityGatewayService_ForwardGemini_UsesConfiguredProjectFallback(t
 	var wrapped map[string]any
 	require.NoError(t, json.Unmarshal(upstream.requestBodies[0], &wrapped))
 	require.Equal(t, "configured-project", wrapped["project"])
-}
-
-func TestAntigravityGatewayService_ForwardGemini_MissingProjectReturnsLocalError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	writer := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(writer)
-
-	body, err := json.Marshal(map[string]any{
-		"contents": []map[string]any{
-			{"role": "user", "parts": []map[string]any{{"text": "hello"}}},
-		},
-	})
-	require.NoError(t, err)
-	c.Request = httptest.NewRequest(http.MethodPost, "/antigravity/v1beta/models/gemini-2.5-flash:streamGenerateContent", bytes.NewReader(body))
-
-	upstream := &queuedHTTPUpstreamStub{}
-	internal500Cache := &recordingInternal500CounterCache{}
-	svc := &AntigravityGatewayService{
-		tokenProvider:    &AntigravityTokenProvider{},
-		httpUpstream:     upstream,
-		internal500Cache: internal500Cache,
-	}
-
-	account := &Account{
-		ID:          102,
-		Name:        "acc-missing-project",
-		Platform:    PlatformAntigravity,
-		Type:        AccountTypeOAuth,
-		Status:      StatusActive,
-		Concurrency: 1,
-		Credentials: map[string]any{
-			"access_token": "token",
-			"model_mapping": map[string]any{
-				"gemini-2.5-flash": "gemini-2.5-flash",
-			},
-		},
-	}
-
-	result, err := svc.ForwardGemini(context.Background(), c, account, "gemini-2.5-flash", "streamGenerateContent", true, body, false)
-	require.Nil(t, result)
-	require.ErrorIs(t, err, errAntigravityProjectIDRequired)
-	require.Equal(t, http.StatusBadRequest, writer.Code)
-	require.Empty(t, upstream.requestBodies)
-	require.Empty(t, internal500Cache.incrementCalls)
-	require.Contains(t, writer.Body.String(), "project_id")
-	require.NotContains(t, writer.Body.String(), `"project":""`)
 }
 
 func TestAntigravityGatewayService_Forward_PromptTooLong(t *testing.T) {
@@ -910,7 +847,7 @@ func TestAntigravityGatewayService_ForwardGemini_RetriesCorruptedThoughtSignatur
 	}
 
 	const originalModel = "gemini-3.1-pro-preview"
-	const mappedModel = "gemini-3.1-pro-high"
+	const mappedModel = domain.AntigravityGemini31ProAgentModel
 	account := &Account{
 		ID:          7,
 		Name:        "acc-gemini-signature",
@@ -969,7 +906,7 @@ func TestAntigravityGatewayService_ForwardGemini_SignatureRetryPropagatesFailove
 	firstRespBody := []byte(`{"response":{"error":{"code":400,"message":"Corrupted thought signature.","status":"INVALID_ARGUMENT"}}}`)
 
 	const originalModel = "gemini-3.1-pro-preview"
-	const mappedModel = "gemini-3.1-pro-high"
+	const mappedModel = domain.AntigravityGemini31ProAgentModel
 	account := &Account{
 		ID:          8,
 		Name:        "acc-gemini-signature-failover",

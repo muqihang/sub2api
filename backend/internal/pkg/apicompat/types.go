@@ -275,6 +275,7 @@ type ResponsesResponse struct {
 // ResponsesError describes an error in a failed response.
 type ResponsesError struct {
 	Code    string `json:"code"`
+	Type    string `json:"type"`
 	Message string `json:"message"`
 }
 
@@ -375,6 +376,13 @@ func (u *ResponsesUsage) UnmarshalJSON(data []byte) error {
 	}
 	if u.InputTokensDetails == nil && aux.PromptTokensDetails != nil {
 		u.InputTokensDetails = aux.PromptTokensDetails
+	}
+	if u.InputTokensDetails != nil {
+		if u.InputTokensDetails.CacheWriteTokens > 0 {
+			u.CacheCreationInputTokens = u.InputTokensDetails.CacheWriteTokens
+		} else if u.InputTokensDetails.CacheCreationTokens > 0 {
+			u.CacheCreationInputTokens = u.InputTokensDetails.CacheCreationTokens
+		}
 	}
 	if u.OutputTokensDetails == nil && aux.CompletionTokensDetails != nil {
 		u.OutputTokensDetails = aux.CompletionTokensDetails
@@ -574,6 +582,8 @@ type ChatUsage struct {
 	TotalTokens             int               `json:"total_tokens"`
 	PromptTokensDetails     *ChatTokenDetails `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails *ChatTokenDetails `json:"completion_tokens_details,omitempty"`
+	PromptCacheHitTokens    int               `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens   int               `json:"prompt_cache_miss_tokens,omitempty"`
 }
 
 // ChatTokenDetails provides a breakdown of token usage. The same type is

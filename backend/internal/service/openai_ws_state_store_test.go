@@ -193,6 +193,30 @@ func (c *openAIWSStateStoreTimeoutProbeCache) DeleteSessionAccountID(ctx context
 	return nil
 }
 
+func (c *openAIWSStateStoreTimeoutProbeCache) IncrModelCallCount(context.Context, int64, string) (int64, error) {
+	return 0, nil
+}
+
+func (c *openAIWSStateStoreTimeoutProbeCache) GetModelLoadBatch(context.Context, []int64, string) (map[int64]*ModelLoadInfo, error) {
+	return map[int64]*ModelLoadInfo{}, nil
+}
+
+func (c *openAIWSStateStoreTimeoutProbeCache) RecordOpenAICacheSample(context.Context, int64, string, int64, int64) error {
+	return nil
+}
+
+func (c *openAIWSStateStoreTimeoutProbeCache) GetOpenAICacheHealthBatch(context.Context, []int64, string) (map[int64]*OpenAICacheHealthInfo, error) {
+	return map[int64]*OpenAICacheHealthInfo{}, nil
+}
+
+func (c *openAIWSStateStoreTimeoutProbeCache) FindGeminiSession(context.Context, int64, string, string) (string, int64, bool) {
+	return "", 0, false
+}
+
+func (c *openAIWSStateStoreTimeoutProbeCache) SaveGeminiSession(context.Context, int64, string, string, string, int64) error {
+	return nil
+}
+
 func TestOpenAIWSStateStore_RedisOpsUseShortTimeout(t *testing.T) {
 	probe := &openAIWSStateStoreTimeoutProbeCache{}
 	store := NewOpenAIWSStateStore(probe)

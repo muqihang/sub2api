@@ -26,6 +26,7 @@ import (
 	dbpredicate "github.com/Wei-Shaw/sub2api/ent/predicate"
 	dbproxy "github.com/Wei-Shaw/sub2api/ent/proxy"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
@@ -50,6 +51,8 @@ type accountRepository struct {
 	// ensuring sticky sessions can promptly detect unavailable accounts.
 	schedulerCache service.SchedulerCache
 }
+
+var _ service.OpenAINativeSearchAccountRepository = (*accountRepository)(nil)
 
 var schedulerNeutralExtraKeyPrefixes = []string{
 	"codex_primary_",
@@ -482,7 +485,7 @@ func (r *accountRepository) List(ctx context.Context, params pagination.Paginati
 	return r.ListWithFilters(ctx, params, "", "", "", "", 0, "")
 }
 
-func (r *accountRepository) accountListFilteredQuery(platform, accountType, status, search string, groupID int64, privacyMode string) *dbent.AccountQuery {
+func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, *pagination.PaginationResult, error) {
 	q := r.client.Account.Query()
 
 	if platform != "" {
@@ -575,15 +578,6 @@ func (r *accountRepository) accountListFilteredQuery(platform, accountType, stat
 		}))
 	}
 
-	return q
-}
-
-func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, *pagination.PaginationResult, error) {
-	q := r.accountListFilteredQuery(platform, accountType, status, search, groupID, privacyMode)
-	// Clone before Count so interceptor-appended predicates (SoftDeleteMixin's
-	// deleted_at IS NULL) don't accumulate on the shared builder and pollute the
-	// subsequent list query. Same pattern used in group_repo/promo_code_repo/user_repo
-	// (P1-03 audit fix, commit 2588fa6a).
 	total, err := q.Clone().Count(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -606,14 +600,6 @@ func (r *accountRepository) ListWithFilters(ctx context.Context, params paginati
 		return nil, nil, err
 	}
 	return outAccounts, paginationResultFromTotal(int64(total), params), nil
-}
-
-func (r *accountRepository) ListAllWithFilters(ctx context.Context, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, error) {
-	accounts, err := r.accountListFilteredQuery(platform, accountType, status, search, groupID, privacyMode).All(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return r.accountsToService(ctx, accounts)
 }
 
 func (r *accountRepository) ListOpsAccountsForStats(ctx context.Context, platformFilter string, groupIDFilter *int64) ([]service.Account, error) {
@@ -716,29 +702,26 @@ func (r *accountRepository) ListActive(ctx context.Context) ([]service.Account, 
 	return r.accountsToService(ctx, accounts)
 }
 
-func (r *accountRepository) ListOAuthRefreshCandidates(ctx context.Context) ([]service.Account, error) {
+func (r *accountRepository) ListTokenRefreshCandidates(ctx context.Context) ([]service.Account, error) {
 	if r.sql == nil {
 		return nil, errors.New("account repository SQL executor not configured")
 	}
-	// (cond) IS NOT TRUE 把 NULL 和 FALSE 都视为"可被刷新"。直接写
-	// NOT (a AND b) 在 PG 三值逻辑下会把 a 或 b 为 NULL 的行（即绝大多数
-	// 健康账号：temp_unschedulable_until=NULL）也排除，导致后台 token
-	// 刷新工作器漏掉所有正常账号 → access_token 到期后请求开始 401。
 	rows, err := r.sql.QueryContext(ctx, `
 		SELECT id
 		FROM accounts
 		WHERE deleted_at IS NULL
 			AND status = 'active'
-			AND type IN ('oauth', 'setup-token')
-			AND platform IN ('anthropic', 'openai', 'gemini', 'antigravity')
-			AND credentials ? 'refresh_token'
-			AND btrim(credentials->>'refresh_token') <> ''
 			AND (
-				temp_unschedulable_until > NOW()
-				AND temp_unschedulable_reason LIKE 'token refresh retry exhausted:%'
-			) IS NOT TRUE
+				(platform = 'anthropic' AND type IN ('oauth', 'setup-token'))
+				OR (platform IN ('openai', 'gemini', 'antigravity') AND type = 'oauth')
+			)
+			AND NOT (
+				temp_unschedulable_until IS NOT NULL
+				AND temp_unschedulable_until > NOW()
+				AND COALESCE(temp_unschedulable_reason, '') LIKE $1
+			)
 		ORDER BY priority ASC, id ASC
-	`)
+	`, service.TokenRefreshRetryExhaustedReasonPrefix+"%")
 	if err != nil {
 		return nil, err
 	}
@@ -1187,6 +1170,54 @@ func (r *accountRepository) ListSchedulableByGroupIDAndPlatform(ctx context.Cont
 	})
 }
 
+func (r *accountRepository) ListOpenAINativeSearchCandidatesByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
+	now := time.Now()
+	accounts, err := r.client.Account.Query().
+		Where(
+			dbaccount.PlatformEQ(platform),
+			dbaccount.StatusEQ(service.StatusActive),
+			dbaccount.SchedulableEQ(true),
+			tempUnschedulablePredicate(),
+			notExpiredPredicate(now),
+			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
+		).
+		Order(dbent.Asc(dbaccount.FieldPriority)).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return r.accountsToService(ctx, accounts)
+}
+
+func (r *accountRepository) ListOpenAINativeSearchCandidatesByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]service.Account, error) {
+	return r.queryAccountsByGroup(ctx, groupID, accountGroupQueryOptions{
+		status:                 service.StatusActive,
+		schedulable:            true,
+		platforms:              []string{platform},
+		ignoreRateLimitResetAt: true,
+	})
+}
+
+func (r *accountRepository) ListOpenAINativeSearchCandidatesUngroupedByPlatform(ctx context.Context, platform string) ([]service.Account, error) {
+	now := time.Now()
+	accounts, err := r.client.Account.Query().
+		Where(
+			dbaccount.PlatformEQ(platform),
+			dbaccount.StatusEQ(service.StatusActive),
+			dbaccount.SchedulableEQ(true),
+			dbaccount.Not(dbaccount.HasAccountGroups()),
+			tempUnschedulablePredicate(),
+			notExpiredPredicate(now),
+			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
+		).
+		Order(dbent.Asc(dbaccount.FieldPriority)).
+		All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return r.accountsToService(ctx, accounts)
+}
+
 func (r *accountRepository) ListSchedulableByPlatforms(ctx context.Context, platforms []string) ([]service.Account, error) {
 	if len(platforms) == 0 {
 		return nil, nil
@@ -1579,12 +1610,65 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
 			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue extra update failed: account=%d err=%v", id, err)
 		}
-	} else {
-		// 观测型 extra 字段不需要触发 bucket 重建，但仍同步单账号快照，
-		// 让 sticky session / GetAccount 命中缓存时也能读到最新数据，
-		// 同时避免缓存局部 patch 覆盖掉并发写入的其它账号字段。
-		r.syncSchedulerAccountSnapshot(ctx, id)
 	}
+	// Extra 字段会参与 endpoint capability、model mapping 和运行时防护判定。
+	// outbox 负责重建 bucket，这里同步最新的单账号 metadata，避免 worker
+	// 消费前请求继续命中旧能力。从数据库重读也能避免局部 patch 覆盖并发写入。
+	r.syncSchedulerAccountSnapshot(ctx, id)
+	return nil
+}
+
+// UpdateOpenAIResponsesProbeResult atomically merges probe evidence while
+// keeping an explicit semantic failure sticky for the same target and model.
+func (r *accountRepository) UpdateOpenAIResponsesProbeResult(ctx context.Context, id int64, updates map[string]any) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	payload, err := json.Marshal(updates)
+	if err != nil {
+		return err
+	}
+	probeModel, _ := updates[openai_compat.ExtraKeyResponsesCustomToolsProbeModel].(string)
+	probeTarget, _ := updates[openai_compat.ExtraKeyResponsesCustomToolsProbeTarget].(string)
+
+	client := clientFromContext(ctx, r.client)
+	result, err := client.ExecContext(ctx, `
+		UPDATE accounts
+		SET extra = COALESCE(extra, '{}'::jsonb) ||
+			CASE
+				WHEN ($1::jsonb ->> $3) = 'true'
+					AND (COALESCE(extra, '{}'::jsonb) ->> $3) = 'false'
+					AND (COALESCE(extra, '{}'::jsonb) ->> $4) = $5
+					AND (COALESCE(extra, '{}'::jsonb) ->> $6) = $7
+				THEN jsonb_set($1::jsonb, ARRAY[$3]::text[], 'false'::jsonb, true)
+				ELSE $1::jsonb
+			END,
+			updated_at = NOW()
+		WHERE id = $2 AND deleted_at IS NULL`,
+		string(payload),
+		id,
+		openai_compat.ExtraKeyResponsesCustomToolsSupported,
+		openai_compat.ExtraKeyResponsesCustomToolsProbeModel,
+		probeModel,
+		openai_compat.ExtraKeyResponsesCustomToolsProbeTarget,
+		probeTarget,
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return service.ErrAccountNotFound
+	}
+	if shouldEnqueueSchedulerOutboxForExtraUpdates(updates) {
+		if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue probe result update failed: account=%d err=%v", id, err)
+		}
+	}
+	r.syncSchedulerAccountSnapshot(ctx, id)
 	return nil
 }
 
@@ -1732,9 +1816,10 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 }
 
 type accountGroupQueryOptions struct {
-	status      string
-	schedulable bool
-	platforms   []string // 允许的多个平台，空切片表示不进行平台过滤
+	status                 string
+	schedulable            bool
+	platforms              []string // 允许的多个平台，空切片表示不进行平台过滤
+	ignoreRateLimitResetAt bool
 }
 
 func (r *accountRepository) queryAccountsByGroup(ctx context.Context, groupID int64, opts accountGroupQueryOptions) ([]service.Account, error) {
@@ -1757,8 +1842,10 @@ func (r *accountRepository) queryAccountsByGroup(ctx context.Context, groupID in
 			tempUnschedulablePredicate(),
 			notExpiredPredicate(now),
 			dbaccount.Or(dbaccount.OverloadUntilIsNil(), dbaccount.OverloadUntilLTE(now)),
-			dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)),
 		)
+		if !opts.ignoreRateLimitResetAt {
+			preds = append(preds, dbaccount.Or(dbaccount.RateLimitResetAtIsNil(), dbaccount.RateLimitResetAtLTE(now)))
+		}
 	}
 
 	if len(preds) > 0 {
@@ -1884,10 +1971,7 @@ func (r *accountRepository) loadProxies(ctx context.Context, proxyIDs []int64) (
 	}
 
 	for start := 0; start < len(proxyIDs); start += postgresParameterBatchSize {
-		end := start + postgresParameterBatchSize
-		if end > len(proxyIDs) {
-			end = len(proxyIDs)
-		}
+		end := min(start+postgresParameterBatchSize, len(proxyIDs))
 		proxies, err := r.client.Proxy.Query().Where(dbproxy.IDIn(proxyIDs[start:end]...)).All(ctx)
 		if err != nil {
 			return nil, err
@@ -1910,10 +1994,7 @@ func (r *accountRepository) loadAccountGroups(ctx context.Context, accountIDs []
 	}
 
 	for start := 0; start < len(accountIDs); start += postgresParameterBatchSize {
-		end := start + postgresParameterBatchSize
-		if end > len(accountIDs) {
-			end = len(accountIDs)
-		}
+		end := min(start+postgresParameterBatchSize, len(accountIDs))
 		entries, err := r.client.AccountGroup.Query().
 			Where(dbaccountgroup.AccountIDIn(accountIDs[start:end]...)).
 			Order(dbaccountgroup.ByAccountID(), dbaccountgroup.ByPriority()).
@@ -1921,6 +2002,7 @@ func (r *accountRepository) loadAccountGroups(ctx context.Context, accountIDs []
 		if err != nil {
 			return nil, nil, nil, err
 		}
+
 		groupIDs := make([]int64, 0, len(entries))
 		for _, ag := range entries {
 			groupIDs = append(groupIDs, ag.GroupID)
@@ -1958,10 +2040,7 @@ func (r *accountRepository) loadGroups(ctx context.Context, groupIDs []int64) (m
 	}
 
 	for start := 0; start < len(groupIDs); start += postgresParameterBatchSize {
-		end := start + postgresParameterBatchSize
-		if end > len(groupIDs) {
-			end = len(groupIDs)
-		}
+		end := min(start+postgresParameterBatchSize, len(groupIDs))
 		groups, err := r.client.Group.Query().Where(dbgroup.IDIn(groupIDs[start:end]...)).All(ctx)
 		if err != nil {
 			return nil, err
@@ -2033,10 +2112,6 @@ func mergeGroupIDs(a []int64, b []int64) []int64 {
 	return out
 }
 
-// buildSchedulerGroupPayload 构造 EventAccountChanged / EventAccountGroupsChanged
-// 事件的 payload。空 groupIDs 必须返回 untyped nil（any 而非 map[string]any(nil)），
-// 否则 enqueueSchedulerOutbox 的 "payload != nil" 接口判空会被 typed-nil 欺骗，
-// 把 payload marshal 成 "null" 写入 dedup_key 哈希，破坏与其他 nil-payload 调用的去重一致性。
 func buildSchedulerGroupPayload(groupIDs []int64) any {
 	if len(groupIDs) == 0 {
 		return nil

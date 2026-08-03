@@ -21,7 +21,6 @@ const (
 	DiscoveryURL        = OAuthIssuer + "/.well-known/openid-configuration"
 	DefaultAuthorizeURL = OAuthIssuer + "/oauth2/authorize"
 	DefaultTokenURL     = OAuthIssuer + "/oauth2/token"
-	DefaultBaseURL      = "https://api.x.ai/v1"
 	DefaultCLIBaseURL   = "https://cli-chat-proxy.grok.com/v1"
 	DefaultClientID     = "b1a00492-073a-47ea-816f-4c329264a828"
 	DefaultScope        = "openid profile email offline_access grok-cli:access api:access"
@@ -253,13 +252,21 @@ func ValidateOAuthEndpointURL(raw string) (string, error) {
 
 func ValidateBaseURL(raw string) (string, error) {
 	if AllowUnsafeURLOverrides() {
-		return urlvalidator.ValidateURLFormat(raw, true)
+		return normalizeKnownBaseURLPathFromFormat(raw)
 	}
 	normalized, err := urlvalidator.ValidateHTTPSURL(raw, urlvalidator.ValidationOptions{
 		AllowedHosts:     baseURLAllowedHosts,
 		RequireAllowlist: true,
 		AllowPrivate:     false,
 	})
+	if err != nil {
+		return "", err
+	}
+	return normalizeKnownBaseURLPath(normalized)
+}
+
+func normalizeKnownBaseURLPathFromFormat(raw string) (string, error) {
+	normalized, err := urlvalidator.ValidateURLFormat(raw, true)
 	if err != nil {
 		return "", err
 	}
@@ -435,42 +442,6 @@ func BuildChatCompletionsURL(baseURL string) (string, error) {
 		return "", fmt.Errorf("invalid base url: %w", err)
 	}
 	return validatedBaseURL + "/chat/completions", nil
-}
-
-func BuildImagesGenerationsURL(baseURL string) (string, error) {
-	validatedBaseURL, err := ValidatedBaseURL(baseURL)
-	if err != nil {
-		return "", fmt.Errorf("invalid base url: %w", err)
-	}
-	return validatedBaseURL + "/images/generations", nil
-}
-
-func BuildImagesEditsURL(baseURL string) (string, error) {
-	validatedBaseURL, err := ValidatedBaseURL(baseURL)
-	if err != nil {
-		return "", fmt.Errorf("invalid base url: %w", err)
-	}
-	return validatedBaseURL + "/images/edits", nil
-}
-
-func BuildVideosGenerationsURL(baseURL string) (string, error) {
-	validatedBaseURL, err := ValidatedBaseURL(baseURL)
-	if err != nil {
-		return "", fmt.Errorf("invalid base url: %w", err)
-	}
-	return validatedBaseURL + "/videos/generations", nil
-}
-
-func BuildVideoURL(baseURL, requestID string) (string, error) {
-	validatedBaseURL, err := ValidatedBaseURL(baseURL)
-	if err != nil {
-		return "", fmt.Errorf("invalid base url: %w", err)
-	}
-	requestID = strings.TrimSpace(requestID)
-	if requestID == "" {
-		return "", fmt.Errorf("request id is required")
-	}
-	return validatedBaseURL + "/videos/" + url.PathEscape(requestID), nil
 }
 
 // TokenResponse represents xAI OAuth token responses.

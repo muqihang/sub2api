@@ -27,9 +27,8 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactOAuthSuccessPersi
 		Schedulable: true,
 		Concurrency: 1,
 		Credentials: map[string]any{
-			"access_token":               "oauth-token",
-			"chatgpt_account_id":         "chatgpt-acc",
-			"chatgpt_account_is_fedramp": true,
+			"access_token":       "oauth-token",
+			"chatgpt_account_id": "chatgpt-acc",
 		},
 	}
 	repo := &snapshotUpdateAccountRepo{
@@ -61,7 +60,6 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactOAuthSuccessPersi
 	require.Equal(t, HTTPUpstreamProfileOpenAI, HTTPUpstreamProfileFromContext(upstream.lastReq.Context()))
 	require.Equal(t, codexCLIUserAgent, upstream.lastReq.Header.Get("User-Agent"))
 	require.Equal(t, "chatgpt-acc", upstream.lastReq.Header.Get("chatgpt-account-id"))
-	require.Equal(t, "true", upstream.lastReq.Header.Get("x-openai-fedramp"))
 	require.Equal(t, "gpt-5.4", gjson.GetBytes(upstream.lastBody, "model").String())
 
 	updates := <-updateCalls
@@ -158,6 +156,146 @@ func TestAccountTestService_TestAccountConnection_OpenAICompactAPIKeyUsesCompact
 	require.Equal(t, "gpt-5.4-openai-compact", gjson.GetBytes(upstream.lastBody, "model").String())
 	updates := <-updateCalls
 	require.Equal(t, true, updates["openai_compact_supported"])
+}
+
+func TestAccountTestService_TestAccountConnection_OpenAICompactAPIKeyUsesBodySignal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	updateCalls := make(chan map[string]any, 1)
+	account := Account{
+		ID:          5,
+		Name:        "openai-apikey-body-signal",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://example.com/v1",
+		},
+		Extra: map[string]any{
+			"openai_compact_endpoint_mode": OpenAICompactEndpointModeBodySignal,
+		},
+	}
+	repo := &snapshotUpdateAccountRepo{
+		stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{account}},
+		updateExtraCalls:      updateCalls,
+	}
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"object":"response.compaction"}`)),
+	}}
+	svc := &AccountTestService{
+		accountRepo:  repo,
+		httpUpstream: upstream,
+		cfg:          &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/5/test", bytes.NewReader(nil))
+
+	err := svc.TestAccountConnection(c, account.ID, "gpt-5.6-sol", "", AccountTestModeCompact)
+	require.NoError(t, err)
+	require.Equal(t, "https://example.com/v1/responses", upstream.lastReq.URL.String())
+	require.Equal(t, "compaction_trigger", gjson.GetBytes(upstream.lastBody, "input.1.type").String())
+	require.Equal(t, "max", gjson.GetBytes(upstream.lastBody, "reasoning.effort").String())
+	require.Contains(t, gjson.GetBytes(upstream.lastBody, "input.0.id").String(), "item_")
+	updates := <-updateCalls
+	require.Equal(t, true, updates["openai_compact_supported"])
+	require.Equal(t, openAICompactProbeProfileCodexV2, updates["openai_compact_probe_profile"])
+	scoped := updates["openai_compact_model_support"].(map[string]any)
+	require.Equal(t, openAICompactProbeProfileCodexV2, scoped["gpt-5.6-sol"].(map[string]any)["probe_profile"])
+}
+
+func TestAccountTestService_TestAccountConnection_OpenAICompactAutoFallsBackToBodySignal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	updateCalls := make(chan map[string]any, 1)
+	account := Account{
+		ID: 6, Name: "openai-apikey-auto", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true, Concurrency: 1,
+		Credentials: map[string]any{"api_key": "sk-test", "base_url": "https://example.com/v1"},
+	}
+	repo := &snapshotUpdateAccountRepo{
+		stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{account}},
+		updateExtraCalls:      updateCalls,
+	}
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{
+			StatusCode: http.StatusServiceUnavailable,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"code":"model_not_found","message":"No available channel for model gpt-5.6-sol-openai-compact"}}`)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"object":"response.compaction"}`)),
+		},
+	}}
+	svc := &AccountTestService{
+		accountRepo: repo, httpUpstream: upstream,
+		cfg: &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/6/test", bytes.NewReader(nil))
+
+	err := svc.TestAccountConnection(c, account.ID, "gpt-5.6-sol", "", AccountTestModeCompact)
+	require.NoError(t, err)
+	require.Len(t, upstream.requests, 2)
+	require.Equal(t, "https://example.com/v1/responses/compact", upstream.requests[0].URL.String())
+	require.Equal(t, "https://example.com/v1/responses", upstream.requests[1].URL.String())
+	require.Equal(t, "compaction_trigger", gjson.GetBytes(upstream.bodies[1], "input.1.type").String())
+	updates := <-updateCalls
+	require.Equal(t, true, updates["openai_compact_supported"])
+	require.Equal(t, OpenAICompactEndpointModeBodySignal, updates["openai_compact_endpoint_mode_detected"])
+}
+
+func TestAccountTestService_TestAccountConnection_OpenAICompactAutoRejectsFalsePositiveBodySignal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	updateCalls := make(chan map[string]any, 1)
+	account := Account{
+		ID: 7, Name: "openai-apikey-auto-detected-body", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Status: StatusActive, Schedulable: true, Concurrency: 1,
+		Credentials: map[string]any{"api_key": "sk-test", "base_url": "https://example.com/v1"},
+		Extra:       map[string]any{"openai_compact_endpoint_mode_detected": OpenAICompactEndpointModeBodySignal},
+	}
+	repo := &snapshotUpdateAccountRepo{
+		stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{account}},
+		updateExtraCalls:      updateCalls,
+	}
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"object":"response","output":[{"type":"message"}]}`)),
+		},
+		{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"cmp_path","status":"completed"}`)),
+		},
+	}}
+	svc := &AccountTestService{
+		accountRepo: repo, httpUpstream: upstream,
+		cfg: &config.Config{Security: config.SecurityConfig{URLAllowlist: config.URLAllowlistConfig{Enabled: false}}},
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/7/test", bytes.NewReader(nil))
+
+	err := svc.TestAccountConnection(c, account.ID, "gpt-5.6-sol", "", AccountTestModeCompact)
+	require.NoError(t, err)
+	require.Len(t, upstream.requests, 2)
+	require.Equal(t, "https://example.com/v1/responses", upstream.requests[0].URL.String())
+	require.Equal(t, "https://example.com/v1/responses/compact", upstream.requests[1].URL.String())
+	updates := <-updateCalls
+	require.Equal(t, true, updates["openai_compact_supported"])
+	require.Equal(t, OpenAICompactEndpointModePath, updates["openai_compact_endpoint_mode_detected"])
 }
 
 func TestAccountTestService_TestAccountConnection_OpenAICompactAPIKeyDefaultBaseURLUsesV1Path(t *testing.T) {

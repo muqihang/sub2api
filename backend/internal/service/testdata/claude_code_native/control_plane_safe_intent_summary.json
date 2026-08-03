@@ -1,0 +1,10 @@
+{
+  "safe_intent": true,
+  "method": "GET",
+  "path_template": "/api/claude_cli/bootstrap",
+  "decision": "stub_json",
+  "status": 200,
+  "stores_raw": false,
+  "messages_signing_reused": false,
+  "response_schema_keys": ["data", "features", "ok"]
+}

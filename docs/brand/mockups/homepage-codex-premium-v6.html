@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>逐梦 Agent — 顶级 AI 工具，跑任意模型，只花零头</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#080b16; --bg-2:#0b1022; --panel:#0e1430; --panel-2:#121a3a;
+    --gold:#d9b779; --gold-2:#ecd5a1; --gold-deep:#b8975a;
+    --violet:#7a5cff; --rose:#ff6fa3; --jade:#5fd0a3; --amber:#e8a33d;
+    --text:#eceae3; --text-2:#b7b8c4; --muted:#7e8295; --muted-2:#5c6075;
+    --line:rgba(255,255,255,.09); --line-2:rgba(255,255,255,.045);
+    --display:"Space Grotesk","Noto Sans SC",sans-serif;
+    --body:"Inter","Noto Sans SC",sans-serif;
+    --mono:"JetBrains Mono","Noto Sans SC",monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{font-family:var(--body);background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;line-height:1.55;overflow-x:hidden}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 30px}
+  .mono{font-family:var(--mono)}
+  a{color:inherit}
+
+  /* ── aurora atmosphere ── */
+  .atmo{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+  .aurora-img{position:absolute;inset:0;background:url('/brand/mockups/assets/zhumeng-premium-hero-bg.png') center top/cover no-repeat;opacity:.78;mix-blend-mode:normal}
+  .ent-bg{position:absolute;inset:0;background:url('/brand/mockups/assets/zhumeng-premium-enterprise-bg.png') center/cover no-repeat;opacity:.48;mix-blend-mode:screen;pointer-events:none;border-radius:26px}
+  .glow{position:absolute;border-radius:50%;filter:blur(90px);opacity:.5}
+  .g1{top:-220px;left:-120px;width:760px;height:560px;background:radial-gradient(circle,rgba(45,80,150,.32),transparent 65%)}
+  .g2{top:-160px;right:-160px;width:680px;height:540px;background:radial-gradient(circle,rgba(80,116,210,.24),transparent 65%)}
+  .g3{top:160px;left:40%;width:620px;height:420px;background:radial-gradient(circle,rgba(217,183,121,.18),transparent 65%)}
+  .grain{position:absolute;inset:0;opacity:.04;background-image:radial-gradient(rgba(255,255,255,.6) .5px,transparent .5px);background-size:3px 3px}
+  @media (prefers-reduced-motion:no-preference){
+    .g1{animation:drift1 22s ease-in-out infinite alternate}
+    .g2{animation:drift2 26s ease-in-out infinite alternate}
+    .g3{animation:drift3 30s ease-in-out infinite alternate}
+    @keyframes drift1{to{transform:translate(80px,60px) scale(1.1)}}
+    @keyframes drift2{to{transform:translate(-70px,40px) scale(1.05)}}
+    @keyframes drift3{to{transform:translate(-50px,-40px) scale(1.12)}}
+  }
+  .content{position:relative;z-index:1}
+
+  /* ── shared ── */
+  .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--gold);display:inline-flex;align-items:center;gap:9px}
+  .kicker .dot{width:5px;height:5px;border-radius:50%;background:var(--gold);box-shadow:0 0 10px var(--gold)}
+  .btn{font-family:var(--body);font-size:14px;font-weight:500;border-radius:10px;padding:11px 20px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:8px;transition:transform .14s,box-shadow .25s,background .2s,border-color .2s;border:1px solid transparent;white-space:nowrap}
+  .btn-gold{background:linear-gradient(180deg,var(--gold-2),var(--gold));color:#2a1f08;font-weight:600;box-shadow:0 8px 30px -10px rgba(217,183,121,.6)}
+  .btn-gold:hover{transform:translateY(-1px);box-shadow:0 14px 40px -10px rgba(217,183,121,.8)}
+  .btn-ghost{background:rgba(255,255,255,.03);color:var(--text);border-color:var(--line)}
+  .btn-ghost:hover{border-color:var(--gold);color:var(--gold-2)}
+  .btn-lg{font-size:15px;padding:14px 28px}
+  .sec{padding:96px 0}
+  .sec-head{max-width:62ch}
+  .sec-head h2{font-family:var(--display);font-weight:600;font-size:clamp(28px,3.8vw,46px);letter-spacing:-.02em;margin-top:16px;line-height:1.08}
+  .sec-head p{margin-top:16px;color:var(--text-2);font-size:17px}
+  .em{color:var(--gold-2)}
+  .center-note{margin-top:30px;text-align:center;font-family:var(--mono);font-size:12.5px;color:var(--muted);letter-spacing:.03em}
+
+  /* ── nav ── */
+  .nav{position:sticky;top:0;z-index:50;backdrop-filter:blur(16px);background:rgba(8,11,22,.6);border-bottom:1px solid var(--line-2)}
+  .nav-inner{display:flex;align-items:center;justify-content:space-between;height:66px}
+  .brand{display:flex;align-items:center;gap:11px;font-family:var(--display);font-weight:700;font-size:19px;letter-spacing:-.01em}
+  .brand .glyph{width:32px;height:32px;border-radius:10px;background:url('/brand/mockups/assets/zhumeng-logo.svg') center/contain no-repeat;position:relative;overflow:hidden;flex:none;box-shadow:0 10px 24px -16px rgba(217,183,121,.7)}
+  .nav-links{display:flex;align-items:center;gap:30px;font-size:14px}
+  .nav-links a{color:var(--text-2);text-decoration:none;transition:color .15s}
+  .nav-links a:hover{color:var(--text)}
+  .nav-cta{display:flex;align-items:center;gap:13px}
+  .lang{font-family:var(--mono);font-size:12px;color:var(--text-2);border:1px solid var(--line);border-radius:8px;padding:6px 10px;cursor:pointer;background:none}
+
+  /* ── hero ── */
+  .hero{padding:90px 0 60px;display:grid;grid-template-columns:1.05fr .95fr;gap:54px;align-items:center}
+  .hero h1{font-family:var(--display);font-weight:600;font-size:clamp(40px,5.4vw,68px);line-height:1.03;letter-spacing:-.028em}
+  .hero h1 .grad{background:linear-gradient(100deg,var(--gold-2),#d7e7ff 52%,#8fb7ff);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .sub{margin-top:26px;font-size:clamp(16px,1.5vw,19px);color:var(--text-2);max-width:54ch;line-height:1.6}
+  .hero .sub b{color:var(--text);font-weight:600}
+  .hero-cta{margin-top:34px;display:flex;flex-wrap:wrap;gap:14px}
+  .hero-meta{margin-top:24px;font-family:var(--mono);font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:8px 20px}
+  .hero-meta span{display:inline-flex;align-items:center;gap:7px}
+  .pip{width:6px;height:6px;border-radius:50%}
+
+  /* spine signature */
+  .spine-card{position:relative;border:1px solid var(--line);border-radius:22px;padding:28px 24px;background:linear-gradient(180deg,rgba(18,26,58,.7),rgba(10,15,34,.7));box-shadow:0 40px 90px -50px rgba(0,0,0,.9),inset 0 1px 0 rgba(255,255,255,.06);overflow:hidden}
+  .spine-card .ring{position:absolute;inset:0;background:radial-gradient(ellipse 60% 50% at 50% 45%,rgba(217,183,121,.10),transparent 70%);pointer-events:none}
+  .cost-chip{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;color:var(--gold-2);background:rgba(217,183,121,.08);border:1px solid rgba(217,183,121,.25);border-radius:999px;padding:7px 13px;margin-bottom:22px}
+  .cost-chip b{color:#fff;font-weight:600}
+  .spine{position:relative;display:grid;grid-template-columns:1fr 132px 1fr;align-items:center;min-height:230px}
+  .col-h{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:13px}
+  .nodes{display:flex;flex-direction:column;gap:11px;position:relative;z-index:3}
+  .nodes.right{align-items:flex-end}
+  .node{display:inline-flex;align-items:center;gap:8px;background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:10px;padding:8px 12px;font-size:13px;font-weight:500;backdrop-filter:blur(4px)}
+  .node .ic{width:20px;height:20px;border-radius:6px;display:grid;place-items:center;color:#fff;font-family:var(--mono);font-size:10px;font-weight:600;flex:none}
+  .node .ic.app-icon{width:24px;height:24px;background:transparent;box-shadow:0 0 0 1px rgba(255,255,255,.10);overflow:hidden}
+  .node .ic.app-icon img{width:100%;height:100%;display:block;object-fit:cover}
+  .node small{font-family:var(--mono);font-size:9px;color:var(--muted);font-weight:500}
+  .node .st{margin-left:3px;width:6px;height:6px;border-radius:50%}
+  .st-live{background:var(--jade);box-shadow:0 0 8px var(--jade)}
+  .st-soon{background:var(--amber);box-shadow:0 0 8px var(--amber)}
+  .device{position:relative;z-index:4;text-align:center;border-radius:15px;padding:18px 12px;background:linear-gradient(180deg,#1a2348,#0a0f22);box-shadow:0 22px 44px -20px rgba(0,0,0,.85),inset 0 0 0 1px rgba(217,183,121,.25),0 0 40px -10px rgba(217,183,121,.3)}
+  .device .tag{font-family:var(--mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--gold)}
+  .device .name{font-family:var(--display);font-weight:600;font-size:15px;margin:6px 0 2px}
+  .device .addr{font-family:var(--mono);font-size:11px;color:var(--gold-2)}
+  .device .bus{margin-top:12px;height:4px;border-radius:3px;background:rgba(255,255,255,.08);position:relative;overflow:hidden}
+  .device .bus::after{content:"";position:absolute;top:0;left:-40%;width:40%;height:100%;background:linear-gradient(90deg,transparent,var(--gold),transparent)}
+  .links{position:absolute;inset:0;z-index:1;width:100%;height:100%;pointer-events:none}
+  .links path{fill:none;stroke:var(--gold);stroke-width:1.4;opacity:.22}
+  .links .flow{stroke:var(--gold-2);stroke-width:2;opacity:.9;stroke-dasharray:5 130;filter:drop-shadow(0 0 4px var(--gold))}
+  @media (prefers-reduced-motion:no-preference){
+    .device .bus::after{animation:bus 2.2s linear infinite}
+    .links .flow{animation:flow 2.8s linear infinite}
+    .flow.d2{animation-delay:.5s}.flow.d3{animation-delay:1s}.flow.d4{animation-delay:1.5s}.flow.d5{animation-delay:2s}
+    @keyframes bus{to{left:120%}}@keyframes flow{to{stroke-dashoffset:-135}}
+    .reveal{opacity:0;transform:translateY(16px);animation:rv .7s cubic-bezier(.2,.7,.2,1) forwards}
+    .r2{animation-delay:.08s}.r3{animation-delay:.16s}.r4{animation-delay:.24s}.r5{animation-delay:.32s}
+    @keyframes rv{to{opacity:1;transform:none}}
+  }
+
+  /* proof strip */
+  .proof{border-top:1px solid var(--line-2);border-bottom:1px solid var(--line-2);padding:22px 0}
+  .proof .wrap{display:flex;align-items:center;gap:22px;flex-wrap:wrap;justify-content:center}
+  .proof span{font-family:var(--mono);font-size:12.5px;color:var(--muted);letter-spacing:.04em}
+  .proof .logos{display:flex;gap:26px;opacity:.5}
+  .proof .logos i{width:78px;height:20px;border-radius:5px;background:linear-gradient(90deg,rgba(255,255,255,.16),rgba(255,255,255,.05));font-style:normal}
+
+  /* products */
+  .prod-grid{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:46px}
+  .prod{border:1px solid var(--line);border-radius:20px;padding:32px;background:linear-gradient(180deg,rgba(18,26,58,.5),rgba(10,15,34,.4));display:flex;flex-direction:column;min-height:290px;transition:transform .2s,box-shadow .25s,border-color .2s;text-decoration:none;color:inherit}
+  .prod:hover{transform:translateY(-3px);box-shadow:0 34px 70px -44px rgba(0,0,0,.9);border-color:rgba(217,183,121,.35)}
+  .prod-top{display:flex;align-items:center;justify-content:space-between}
+  .prod .logo{width:48px;height:48px;border-radius:13px;display:grid;place-items:center;color:#fff;font-family:var(--mono);font-weight:600;font-size:16px}
+  .prod .logo.app-logo{background:transparent;overflow:hidden;box-shadow:0 0 0 1px rgba(255,255,255,.10)}
+  .prod .logo.app-logo img{width:100%;height:100%;display:block;object-fit:cover}
+  .badge{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;padding:5px 11px;border-radius:999px;display:inline-flex;align-items:center;gap:6px}
+  .badge .dot{width:6px;height:6px;border-radius:50%}
+  .badge-live{background:rgba(95,208,163,.12);color:var(--jade)}
+  .badge-soon{background:rgba(232,163,61,.14);color:var(--amber)}
+  .prod h3{font-family:var(--display);font-weight:600;font-size:27px;margin:24px 0 10px;letter-spacing:-.015em}
+  .prod p{color:var(--text-2);font-size:15px;line-height:1.6}
+  .prod .feat{margin:16px 0 0;display:flex;flex-wrap:wrap;gap:8px}
+  .prod .feat span{font-family:var(--mono);font-size:11px;color:var(--text-2);background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:7px;padding:4px 9px}
+  .prod .go{margin-top:auto;padding-top:22px;font-size:14px;font-weight:600;color:var(--gold-2);display:inline-flex;align-items:center;gap:7px}
+  .prod .arr{transition:transform .2s}.prod:hover .arr{transform:translateX(4px)}
+
+  /* differentiator */
+  .diff-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:46px}
+  .diff-card{border:1px solid var(--line);border-radius:18px;padding:26px;background:rgba(255,255,255,.02)}
+  .diff-card.us{background:linear-gradient(180deg,rgba(217,183,121,.10),rgba(217,183,121,.02));border-color:rgba(217,183,121,.35)}
+  .diff-card .lbl{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:18px}
+  .diff-card.us .lbl{color:var(--gold)}
+  .flowline{font-family:var(--mono);font-size:13.5px;display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:16px}
+  .flowline .ar{color:var(--gold)}
+  .locked{color:var(--muted);border:1px dashed var(--line);border-radius:8px;padding:5px 10px}
+  .multi{color:var(--gold-2);background:rgba(217,183,121,.1);border:1px solid rgba(217,183,121,.25);border-radius:8px;padding:5px 10px;line-height:2}
+  .diff-card p{color:var(--text-2);font-size:14px;line-height:1.6}
+  .diff-roadmap{margin-top:22px;border:1px solid var(--line);border-radius:18px;padding:32px;background:linear-gradient(120deg,rgba(122,92,255,.12),rgba(255,111,163,.06) 50%,rgba(10,15,34,.3));position:relative;overflow:hidden}
+  .diff-roadmap h3{font-family:var(--display);font-weight:600;font-size:23px;margin:14px 0 10px;letter-spacing:-.01em}
+  .diff-roadmap p{color:var(--text-2);font-size:15px;line-height:1.65;max-width:72ch}
+
+  /* how / steps */
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);margin-top:44px}
+  .step{padding:0 30px;position:relative}
+  .step:not(:first-child)::before{content:"";position:absolute;left:0;top:4px;bottom:4px;width:1px;background:var(--line)}
+  .step .num{font-family:var(--mono);font-size:13px;color:var(--gold)}
+  .step h4{font-family:var(--display);font-weight:600;font-size:18px;margin:12px 0 8px}
+  .step p{color:var(--text-2);font-size:14px;line-height:1.6}
+  .step code{font-family:var(--mono);font-size:12px;background:rgba(217,183,121,.1);color:var(--gold-2);padding:2px 7px;border-radius:5px}
+
+  /* savings */
+  .save{background:linear-gradient(180deg,rgba(14,20,48,.5),transparent);border-top:1px solid var(--line-2);border-bottom:1px solid var(--line-2)}
+  .save-cols{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:44px;align-items:stretch}
+  .save-card{border:1px solid var(--line);border-radius:18px;padding:28px}
+  .save-card.them{background:rgba(255,255,255,.02)}
+  .save-card.us{background:linear-gradient(180deg,rgba(217,183,121,.10),rgba(217,183,121,.02));border-color:rgba(217,183,121,.35);position:relative}
+  .save-card .lbl{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+  .save-card.us .lbl{color:var(--gold)}
+  .save-card h4{font-family:var(--display);font-weight:600;font-size:19px;margin:6px 0 18px}
+  .row{display:flex;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line-2);font-size:14px;color:var(--text-2)}
+  .row b{color:var(--text);font-family:var(--mono)}
+  .row .ok{color:var(--jade);font-family:var(--mono);font-size:13px}
+  .save-total{margin-top:18px;font-family:var(--display);font-weight:600;font-size:26px}
+  .save-card.us .save-total{color:var(--gold-2)}
+  .save-badge{position:absolute;top:-12px;right:22px;font-family:var(--mono);font-size:12px;font-weight:600;color:#2a1f08;background:linear-gradient(180deg,var(--gold-2),var(--gold));padding:5px 12px;border-radius:999px}
+  .save-note{margin-top:18px;font-size:13px;color:var(--muted)}
+
+  /* segmentation */
+  .seg-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:46px}
+  .seg{position:relative;border:1px solid var(--line);border-radius:18px;padding:28px;background:linear-gradient(180deg,rgba(18,26,58,.45),rgba(10,15,34,.35));display:flex;flex-direction:column;transition:transform .2s,border-color .2s,box-shadow .25s;text-decoration:none;overflow:hidden}
+  .seg::before{content:"";position:absolute;inset:0;background:radial-gradient(ellipse 70% 50% at 50% 0%,rgba(217,183,121,.12),transparent 70%);opacity:0;transition:opacity .3s}
+  .seg:hover{transform:translateY(-4px);border-color:rgba(217,183,121,.4);box-shadow:0 30px 60px -40px rgba(0,0,0,.9)}
+  .seg:hover::before{opacity:1}
+  .seg .who{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--gold)}
+  .seg h3{font-family:var(--display);font-weight:600;font-size:23px;margin:14px 0 10px;letter-spacing:-.01em}
+  .seg p{color:var(--text-2);font-size:14.5px;line-height:1.6;flex:1}
+  .seg .price{font-family:var(--mono);font-size:12.5px;color:var(--muted);margin:16px 0 0;padding-top:16px;border-top:1px solid var(--line-2)}
+  .seg .price b{color:var(--gold-2)}
+  .seg .go{margin-top:14px;font-size:14px;font-weight:600;color:var(--gold-2);display:inline-flex;align-items:center;gap:7px}
+  .seg .arr{transition:transform .2s}.seg:hover .arr{transform:translateX(4px)}
+
+  /* enterprise */
+  .ent{position:relative;border-radius:26px;padding:64px 56px;background:linear-gradient(135deg,#0c1330,#0a0f22 60%,#140e22);border:1px solid var(--line);overflow:hidden}
+  .ent::before{content:"";position:absolute;top:-120px;right:-80px;width:520px;height:420px;background:radial-gradient(circle,rgba(122,92,255,.3),transparent 65%);filter:blur(50px)}
+  .ent-inner{position:relative;display:grid;grid-template-columns:1fr 1fr;gap:50px;align-items:center}
+  .ent h2{font-family:var(--display);font-weight:600;font-size:clamp(30px,3.6vw,44px);letter-spacing:-.02em;line-height:1.08;margin-top:16px}
+  .ent .lead{color:var(--text-2);font-size:17px;line-height:1.65;margin-top:18px;max-width:46ch}
+  .ent .lead b{color:var(--text);font-weight:600}
+  .ent-cta{margin-top:30px;display:flex;gap:14px;flex-wrap:wrap}
+  .ent-list{display:grid;grid-template-columns:1fr 1fr;gap:16px 22px}
+  .ent-item{border-left:2px solid rgba(217,183,121,.5);padding:2px 0 2px 14px}
+  .ent-item h5{font-size:15px;font-weight:600;margin-bottom:5px}
+  .ent-item p{font-size:13px;color:var(--muted);line-height:1.55}
+
+  /* trust */
+  .trust-points{display:grid;grid-template-columns:repeat(3,1fr);gap:28px;margin-top:44px}
+  .tp{border-top:1px solid var(--line);padding-top:18px}
+  .tp .ic{font-family:var(--mono);color:var(--gold);font-size:13px}
+  .tp h4{font-size:16px;font-weight:600;margin:10px 0 7px}
+  .tp p{color:var(--text-2);font-size:14px;line-height:1.6}
+
+  /* closing */
+  .closing{text-align:center;padding:120px 0}
+  .closing h2{font-family:var(--display);font-weight:600;font-size:clamp(32px,4.8vw,58px);letter-spacing:-.025em;max-width:18ch;margin:0 auto;line-height:1.05}
+  .closing h2 .grad{background:linear-gradient(100deg,var(--gold-2),var(--rose));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .closing p{color:var(--text-2);margin:22px auto 36px;font-size:17px;max-width:46ch}
+
+  /* footer */
+  footer{border-top:1px solid var(--line);padding:60px 0 44px}
+  .foot-grid{display:grid;grid-template-columns:1.8fr 1fr 1fr 1fr;gap:34px}
+  .foot-col h5{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:16px}
+  .foot-col a{display:block;color:var(--text-2);text-decoration:none;font-size:14px;margin-bottom:11px}
+  .foot-col a:hover{color:var(--gold-2)}
+  .foot-brand p{color:var(--muted);font-size:13.5px;max-width:34ch;margin-top:12px;line-height:1.6}
+  .foot-bottom{margin-top:46px;padding-top:24px;border-top:1px solid var(--line-2);display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;font-size:13px;color:var(--muted)}
+
+  @media (max-width:920px){
+    .nav-links{display:none}
+    .hero{grid-template-columns:1fr;gap:40px}
+    .seg-grid,.steps,.pillar-grid,.save-cols,.prod-grid,.trust-points,.ent-inner,.ent-list,.foot-grid,.diff-grid{grid-template-columns:1fr}
+    .ent{padding:44px 26px}
+    .step{padding:22px 0}.step:not(:first-child)::before{display:none}
+    .spine{grid-template-columns:1fr;gap:22px}.nodes.right{align-items:stretch}.links{display:none}
+  }
+</style>
+</head>
+<body>
+
+<div class="atmo">
+  <div class="aurora-img"></div>
+  <div class="glow g1"></div><div class="glow g2"></div><div class="glow g3"></div>
+  <div class="grain"></div>
+</div>
+
+<div class="content">
+
+<!-- NAV -->
+<nav class="nav"><div class="wrap nav-inner">
+  <div class="brand"><span class="glyph"></span>逐梦 Agent</div>
+  <div class="nav-links">
+    <a href="#products">产品</a><a href="#why">差异</a><a href="#segments">方案</a>
+    <a href="#enterprise">企业</a><a href="#">文档</a>
+  </div>
+  <div class="nav-cta">
+    <button class="lang">中 / EN</button>
+    <a href="/login" target="_top" class="btn btn-ghost" data-auth-cta="login">登录</a>
+    <a href="#" class="btn btn-gold">下载逐梦 Agent</a>
+  </div>
+</div></nav>
+
+<!-- HERO -->
+<header class="wrap hero">
+  <div>
+    <div class="kicker reveal"><span class="dot"></span>桌面接管 · 多模型自由切换 · 本地优先</div>
+    <h1 class="reveal r2">顶级 AI 工具，<br/>跑<span class="grad">任意模型</span>，只花零头。</h1>
+    <p class="sub reveal r3">逐梦 Agent 接管 Codex、Claude Code 这类顶级 AI 工具，让它们在 DeepSeek V4、Claude、GPT、GLM、Qwen 之间自由切换。<b>个人按量付费、开箱即用；团队统一治理；企业可私有化部署。</b></p>
+    <div class="hero-cta reveal r4">
+      <a href="#" class="btn btn-gold btn-lg">下载逐梦 Agent · macOS</a>
+      <a href="#segments" class="btn btn-ghost btn-lg">看团队与企业方案 →</a>
+    </div>
+    <div class="hero-meta reveal r5">
+      <span><i class="pip" style="background:var(--jade)"></i>macOS 已上线</span>
+      <span><i class="pip" style="background:var(--amber)"></i>Windows 即将</span>
+      <span><i class="pip" style="background:var(--gold)"></i>本地优先 · BYOK · 模型目录可配置</span>
+    </div>
+  </div>
+
+  <!-- signature: glowing local spine -->
+  <div class="spine-card reveal r3">
+    <div class="ring"></div>
+    <div class="cost-chip"><span class="pip" style="background:var(--jade)"></span>在 Codex 里跑 DeepSeek V4 · 成本约官方订阅的<b>零头</b></div>
+    <div class="spine">
+      <svg class="links" viewBox="0 0 520 230" preserveAspectRatio="none">
+        <path d="M150,70 C215,70 215,115 260,115"/><path d="M150,160 C215,160 215,115 260,115"/>
+        <path class="flow" d="M150,70 C215,70 215,115 260,115"/><path class="flow d2" d="M150,160 C215,160 215,115 260,115"/>
+        <path d="M260,115 C310,115 310,52 375,52"/><path d="M260,115 C310,115 310,94 375,94"/>
+        <path d="M260,115 C310,115 310,136 375,136"/><path d="M260,115 C310,115 310,178 375,178"/>
+        <path class="flow d3" d="M260,115 C310,115 310,52 375,52"/><path class="flow d4" d="M260,115 C310,115 310,94 375,94"/>
+        <path class="flow d5" d="M260,115 C310,115 310,136 375,136"/><path class="flow d2" d="M260,115 C310,115 310,178 375,178"/>
+      </svg>
+      <div>
+        <div class="col-h">工具入口</div>
+        <div class="nodes">
+          <div class="node"><span class="ic app-icon"><img src="/brand/mockups/assets/codex-logo.png" alt="Codex Desktop logo" /></span>Codex<span class="st st-live"></span></div>
+          <div class="node"><span class="ic app-icon"><img src="/brand/mockups/assets/claude-code-logo.png" alt="Claude Code logo" /></span>Claude Code<span class="st st-soon"></span></div>
+        </div>
+      </div>
+      <div class="device">
+        <div class="tag">AGENT</div><div class="name">逐梦 · 本地网关</div><div class="addr">127.0.0.1</div>
+        <div class="bus"></div>
+      </div>
+      <div>
+        <div class="col-h" style="text-align:right">模型 · 随时切换</div>
+        <div class="nodes right">
+          <div class="node">DeepSeek <small>V4</small></div>
+          <div class="node">Claude <small>4.8</small></div>
+          <div class="node">GPT <small>5.5</small></div>
+          <div class="node">自定义 Endpoint <small>BYOK</small></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- PROOF -->
+<div class="proof"><div class="wrap">
+  <span>面向个人开发者 · 研发团队 · 科研机构 · 企业 IT</span>
+  <div class="logos"><i></i><i></i><i></i><i></i></div>
+</div></div>
+
+<!-- PRODUCTS -->
+<section class="sec" id="products"><div class="wrap">
+  <div class="sec-head">
+    <div class="kicker"><span class="dot"></span>工具接管</div>
+    <h2>你熟悉的工具，<br/>逐梦在底层换引擎。</h2>
+    <p>不改你的使用习惯，只把模型层接管到本地。我们先把两个旗舰做透，再往外扩展。</p>
+  </div>
+  <div class="prod-grid">
+    <a href="#" class="prod">
+      <div class="prod-top"><span class="logo app-logo"><img src="/brand/mockups/assets/codex-logo.png" alt="Codex Desktop logo" /></span><span class="badge badge-live"><span class="dot" style="background:var(--jade)"></span>已上线</span></div>
+      <h3>Codex Desktop</h3>
+      <p>把 Codex 的模型层接管到本地。自由切换模型、按量计费、用量可见，使用体验和原生一致。</p>
+      <div class="feat"><span>多模型切换</span><span>按量计费</span><span>本地网关</span><span>用量归因</span></div>
+      <span class="go">了解 Codex 接管 <span class="arr">→</span></span>
+    </a>
+    <a href="#" class="prod">
+      <div class="prod-top"><span class="logo app-logo"><img src="/brand/mockups/assets/claude-code-logo.png" alt="Claude Code logo" /></span><span class="badge badge-soon"><span class="dot" style="background:var(--amber)"></span>即将到来</span></div>
+      <h3>Claude Code CLI</h3>
+      <p>为终端工作流准备。保留 CLI 的轻量手感，同时接入统一的模型目录、凭证与用量体系。</p>
+      <div class="feat"><span>终端原生</span><span>模型目录</span><span>统一凭证</span><span>抢先体验</span></div>
+      <span class="go">抢先了解 <span class="arr">→</span></span>
+    </a>
+  </div>
+  <div class="center-note">更多工具陆续接入 — 同一套接管方式，复用到下一个旗舰。</div>
+</div></section>
+
+<!-- DIFFERENTIATOR -->
+<section class="sec" id="why" style="padding-top:0"><div class="wrap">
+  <div class="sec-head">
+    <div class="kicker"><span class="dot"></span>核心差异</div>
+    <h2>别人只能换一家模型，<br/>我们让你<span class="em">随时切换</span>。</h2>
+    <p>市面上的接管工具，大多只能把模型换成另一家——换了 DeepSeek，就被锁死在 DeepSeek。逐梦把多家模型放进同一个列表。</p>
+  </div>
+  <div class="diff-grid">
+    <div class="diff-card them">
+      <div class="lbl">其他接管工具</div>
+      <div class="flowline">工具 <span class="ar">→</span> <span class="locked">只能 DeepSeek</span></div>
+      <p>换了一家模型，就被锁死在那一家。想换别的，得整套重配一遍。</p>
+    </div>
+    <div class="diff-card us">
+      <div class="lbl">逐梦 Agent</div>
+      <div class="flowline">工具 <span class="ar">→</span> 逐梦 Agent <span class="ar">→</span> <span class="multi">DeepSeek V4 · Claude · GPT · GLM · Qwen</span></div>
+      <p>一个列表里全都在，随时来回切。难题用最强的脑子，日常用最划算的。</p>
+    </div>
+  </div>
+  <div class="diff-roadmap">
+    <span class="badge badge-soon"><span class="dot" style="background:var(--amber)"></span>路线图 · 旗舰能力</span>
+    <h3>智能混合路由 — 把多个顶级模型，融成一个更强的。</h3>
+    <p>未来按任务把 Claude 4.8、GPT-5.5 等动态组合成一个「专家小组」(MoE)：推理、长上下文、代码、视觉各走最擅长的模型。对你是一个稳定入口，对团队是可治理、可优化的 AI 基础设施。该能力仍在路线图上，我们会诚实标注上线进度。</p>
+  </div>
+</div></section>
+
+<!-- HOW -->
+<section class="sec" style="padding-top:0"><div class="wrap">
+  <div class="sec-head">
+    <div class="kicker"><span class="dot"></span>开箱即用</div>
+    <h2>从下载到接入，几分钟。</h2>
+  </div>
+  <div class="steps">
+    <div class="step"><div class="num">01</div><h4>下载逐梦 Agent</h4><p>macOS 一键安装，Windows 即将。装完进入统一的工具与模型入口。</p></div>
+    <div class="step"><div class="num">02</div><h4>接入模型</h4><p>填自己的 Key（<code>BYOK</code>），或直接用逐梦按量计费的模型服务；按地区选择模型目录。</p></div>
+    <div class="step"><div class="num">03</div><h4>照常工作</h4><p>继续用 Codex、Claude Code 等熟悉的工具，底层接入、切换与用量由逐梦接管。</p></div>
+  </div>
+</div></section>
+
+<!-- SAVINGS -->
+<section class="sec save"><div class="wrap">
+  <div class="sec-head">
+    <div class="kicker"><span class="dot"></span>成本可见</div>
+    <h2>把 AI 账单，从黑盒变成报表。</h2>
+    <p>不只是省。逐梦把模型、成员、项目和调用量放进同一张账，让钱花在哪一目了然。</p>
+  </div>
+  <div class="save-cols">
+    <div class="save-card them">
+      <div class="lbl">各买各的</div>
+      <h4>10 人团队 · 多份官方订阅并行</h4>
+      <div class="row"><span>顶级模型订阅 ×10 人</span><b>多份并行</b></div>
+      <div class="row"><span>调用归因</span><b>做不到</b></div>
+      <div class="row"><span>Key · 权限</span><b>手工维护</b></div>
+      <div class="save-total">约 ¥21,000+/月</div>
+    </div>
+    <div class="save-card us">
+      <div class="save-badge">统一治理</div>
+      <div class="lbl">逐梦 Agent</div>
+      <h4>同样 10 人 · 统一模型目录与成本中心</h4>
+      <div class="row"><span>计费方式</span><span class="ok">按量付费 / BYOK ✓</span></div>
+      <div class="row"><span>调用归因</span><span class="ok">按成员 · 项目 ✓</span></div>
+      <div class="row"><span>Key · 权限 · 审计</span><span class="ok">统一策略 ✓</span></div>
+      <div class="save-total">约 ¥2,990/月 · 省 ~86%</div>
+    </div>
+  </div>
+  <p class="save-note">* 示例数字，随用量与套餐而变，待真实计费校准；这里强调的是「成本可见 + 自由切换」带来的省法。</p>
+</div></section>
+
+<!-- SEGMENTATION -->
+<section class="sec" id="segments"><div class="wrap">
+  <div class="sec-head">
+    <div class="kicker"><span class="dot"></span>适合谁</div>
+    <h2>从个人效率，到团队治理，再到企业部署。</h2>
+    <p>同一个逐梦 Agent，按规模逐步打开更多能力。</p>
+  </div>
+  <div class="seg-grid">
+    <a href="#" class="seg">
+      <div class="who">个人开发者</div>
+      <h3>个人版</h3>
+      <p>装上常用 AI 工具，接入自己的模型与 Key。少折腾配置，把注意力放回任务本身。</p>
+      <div class="price"><b>Free 可用</b> · BYOK · 按量付费</div>
+      <span class="go">下载个人版 <span class="arr">→</span></span>
+    </a>
+    <a href="#" class="seg">
+      <div class="who">研发团队</div>
+      <h3>团队控制台</h3>
+      <p>统一管理 Key、模型目录、成员权限、用量审计与成本策略。让团队用 AI 的方式可见、可控、可复用。</p>
+      <div class="price"><b>统一账户 · 用量审计 · 成本中心</b></div>
+      <span class="go">看团队方案 <span class="arr">→</span></span>
+    </a>
+    <a href="#enterprise" class="seg">
+      <div class="who">企业 · 组织</div>
+      <h3>企业部署</h3>
+      <p>工作台、网关与模型服务进入组织自己的边界，支持私有化、混合云、SSO、审计与 SLA。</p>
+      <div class="price"><b>私有化部署 · 数据不出域 · SLA</b></div>
+      <span class="go">预约方案演示 <span class="arr">→</span></span>
+    </a>
+  </div>
+</div></section>
+
+<!-- ENTERPRISE -->
+<section class="sec" id="enterprise" style="padding-top:0"><div class="wrap">
+  <div class="ent"><div class="ent-bg"></div><div class="ent-inner">
+    <div>
+      <div class="kicker"><span class="dot"></span>企业级确定性</div>
+      <h2>把整套系统，<br/>部署进你自己的边界。</h2>
+      <p class="lead">企业要的不只是工具，而是<b>可控的 AI 基础设施</b>：模型目录、凭证、数据边界、审计和服务等级，都纳入你自己的治理框架。</p>
+      <div class="ent-cta">
+        <a href="#" class="btn btn-gold btn-lg">预约方案演示</a>
+        <a href="#" class="btn btn-ghost btn-lg">下载企业白皮书</a>
+      </div>
+    </div>
+    <div class="ent-list">
+      <div class="ent-item"><h5>私有化 / 混合云部署</h5><p>工作台、网关与控制台部署在你的机房、私有云或指定环境。</p></div>
+      <div class="ent-item"><h5>数据边界可控</h5><p>按组织要求配置模型服务、日志策略与数据留存边界。</p></div>
+      <div class="ent-item"><h5>统一账户 · 用量审计</h5><p>SSO / SAML 接入，谁用什么模型、花多少，管理员全程可见可控。</p></div>
+      <div class="ent-item"><h5>成本中心 · 配额</h5><p>按部门 / 项目设预算与告警，把组织的 AI 开支收进一张报表。</p></div>
+      <div class="ent-item"><h5>业务系统集成</h5><p>把内部知识库、研发流程与业务系统接入工作台能力。</p></div>
+      <div class="ent-item"><h5>SLA · 专属支持</h5><p>专属客户经理、培训交付与服务等级承诺，让 AI 落地有保障。</p></div>
+    </div>
+  </div></div>
+</div></section>
+
+<!-- TRUST -->
+<section class="sec" style="padding-top:0"><div class="wrap">
+  <div class="sec-head">
+    <div class="kicker"><span class="dot"></span>可信基础</div>
+    <h2>本地优先，关键链路可审计。</h2>
+    <p>逐梦把敏感配置和模型访问边界，前置到你和组织可控的位置，降低黑盒工具带来的不确定性。</p>
+  </div>
+  <div class="trust-points">
+    <div class="tp"><div class="ic">// local</div><h4>本地优先</h4><p>经手 Key 和流量的本地网关计划开源，敏感配置留在你自己的机器上。</p></div>
+    <div class="tp"><div class="ic">// policy</div><h4>策略可配置</h4><p>按地区、团队和业务要求配置模型目录、日志、审计与访问权限。</p></div>
+    <div class="tp"><div class="ic">// models</div><h4>模型分层</h4><p>国内接入已备案模型服务，国际接入全球模型与自定义 Endpoint。</p></div>
+  </div>
+</div></section>
+
+<!-- CLOSING -->
+<section class="closing"><div class="wrap">
+  <h2>让顶级 AI 工具，跑在<span class="grad">你自己的规则</span>上。</h2>
+  <p>从个人开箱即用，到团队统一治理，再到企业私有化部署。</p>
+  <a href="#" class="btn btn-gold btn-lg">下载逐梦 Agent</a>
+</div></section>
+
+<!-- FOOTER -->
+<footer><div class="wrap">
+  <div class="foot-grid">
+    <div class="foot-col foot-brand">
+      <div class="brand"><span class="glyph"></span>逐梦 Agent</div>
+      <p>接管顶级 AI 工具，让它们跑任意模型——个人省钱原生，团队治理可控，企业私有部署。</p>
+    </div>
+    <div class="foot-col"><h5>产品</h5><a href="#">Codex Desktop</a><a href="#">Claude Code CLI</a><a href="#">定价</a></div>
+    <div class="foot-col"><h5>方案</h5><a href="#">个人</a><a href="#">团队</a><a href="#">企业</a></div>
+    <div class="foot-col"><h5>资源</h5><a href="#">文档</a><a href="#">接入中心</a><a href="#">GitHub</a></div>
+  </div>
+  <div class="foot-bottom">
+    <span>© 2026 逐梦 · 保留所有权利。</span>
+    <span class="mono">本地优先 · BYOK · 多模型 · 团队治理</span>
+  </div>
+</div></footer>
+
+</div>
+
+<script>
+(function () {
+  function parseUser() {
+    try {
+      return JSON.parse(window.localStorage.getItem('auth_user') || 'null') || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function isAdminUser(user) {
+    if (!user || typeof user !== 'object') return false;
+    return user.role === 'admin' || user.is_admin === true || user.isAdmin === true;
+  }
+
+  function updateAuthCta() {
+    var token = window.localStorage.getItem('auth_token');
+    var links = document.querySelectorAll('[data-auth-cta="login"]');
+    if (!token || !links.length) return;
+
+    var target = isAdminUser(parseUser()) ? '/admin/dashboard' : '/dashboard';
+    links.forEach(function (link) {
+      link.textContent = '进入控制台';
+      link.setAttribute('href', target);
+      link.setAttribute('aria-label', '进入控制台');
+    });
+  }
+
+  updateAuthCta();
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', updateAuthCta);
+  }
+})();
+</script>
+
+</body>
+</html>

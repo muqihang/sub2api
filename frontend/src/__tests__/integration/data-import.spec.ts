@@ -41,10 +41,19 @@ const mountModal = () =>
 const makeJsonFile = (name: string, content: string, type = 'application/json') => {
   const file = new File([content], name, { type })
   Object.defineProperty(file, 'text', {
-    value: () => Promise.resolve(content)
+    value: () => Promise.resolve(content),
+    configurable: true
   })
   return file
 }
+
+const exportPayload = (overrides: Record<string, unknown> = {}) =>
+  JSON.stringify({
+    exported_at: '2026-07-05T00:00:00Z',
+    proxies: [],
+    accounts: [],
+    ...overrides
+  })
 
 const setInputFiles = (element: Element, files: File[]) => {
   Object.defineProperty(element, 'files', {
@@ -69,7 +78,7 @@ describe('ImportDataModal', () => {
     expect(showError).toHaveBeenCalledWith('admin.accounts.dataImportSelectFile')
   })
 
-  it('无效 JSON 时按文件名提示解析失败', async () => {
+  it('无效 JSON 时按文件名提示解析失败且不调用导入 API', async () => {
     const { adminAPI } = await import('@/api/admin')
     const wrapper = mountModal()
 
@@ -84,7 +93,7 @@ describe('ImportDataModal', () => {
     expect(adminAPI.accounts.importData).not.toHaveBeenCalled()
   })
 
-  it('不是导出数据的 JSON 按文件名拒绝', async () => {
+  it('不是导出数据的 JSON 按文件名拒绝且不调用导入 API', async () => {
     const { adminAPI } = await import('@/api/admin')
     const wrapper = mountModal()
 
@@ -99,7 +108,7 @@ describe('ImportDataModal', () => {
     expect(adminAPI.accounts.importData).not.toHaveBeenCalled()
   })
 
-  it('无有效 JSON 的选择不清空已有选择', async () => {
+  it('无有效 JSON 的选择不清空已有有效选择', async () => {
     const { adminAPI } = await import('@/api/admin')
     vi.mocked(adminAPI.accounts.importData).mockResolvedValue({
       proxy_created: 0,
@@ -114,7 +123,7 @@ describe('ImportDataModal', () => {
 
     const valid = makeJsonFile(
       'valid.json',
-      JSON.stringify({ exported_at: '2026-07-05T00:00:00Z', proxies: [], accounts: [{ name: 'a' }] })
+      exportPayload({ accounts: [{ name: 'a' }] })
     )
     setInputFiles(input.element, [valid])
     await input.trigger('change')
@@ -137,7 +146,7 @@ describe('ImportDataModal', () => {
   it('merges multiple selected JSON files before importing', async () => {
     const { adminAPI } = await import('@/api/admin')
     vi.mocked(adminAPI.accounts.importData).mockResolvedValue({
-      proxy_created: 0,
+      proxy_created: 1,
       proxy_reused: 0,
       proxy_failed: 0,
       account_created: 2,
@@ -147,18 +156,16 @@ describe('ImportDataModal', () => {
     const wrapper = mountModal()
 
     const input = wrapper.find('input[type="file"]')
-    const first = makeJsonFile(
-      'first.json',
-      JSON.stringify({ exported_at: '2026-07-05T00:00:00Z', proxies: [], accounts: [{ name: 'a' }] })
-    )
+    const first = makeJsonFile('first.json', exportPayload({ accounts: [{ name: 'a' }] }))
     const second = makeJsonFile(
       'second.json',
-      JSON.stringify({
+      exportPayload({
         exported_at: '2026-07-05T00:00:01Z',
         proxies: [{ proxy_key: 'p' }],
         accounts: [{ name: 'b' }]
       })
     )
+
     setInputFiles(input.element, [first, second])
 
     await input.trigger('change')
@@ -173,6 +180,34 @@ describe('ImportDataModal', () => {
       skip_default_group_bind: true
     })
     expect(showSuccess).toHaveBeenCalledWith('admin.accounts.dataImportSuccess')
+  })
+
+  it('多选中混有非 JSON 文件时忽略并警告', async () => {
+    const { adminAPI } = await import('@/api/admin')
+    vi.mocked(adminAPI.accounts.importData).mockResolvedValue({
+      proxy_created: 0,
+      proxy_reused: 0,
+      proxy_failed: 0,
+      account_created: 1,
+      account_failed: 0
+    })
+
+    const wrapper = mountModal()
+    const input = wrapper.find('input[type="file"]')
+    setInputFiles(input.element, [
+      makeJsonFile('valid.json', exportPayload({ accounts: [{ name: 'a' }] })),
+      new File(['ignore me'], 'notes.txt', { type: 'text/plain' })
+    ])
+
+    await input.trigger('change')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(showWarning).toHaveBeenCalledWith('admin.accounts.dataImportIgnoredFiles')
+    expect(adminAPI.accounts.importData).toHaveBeenCalledWith({
+      data: expect.objectContaining({ accounts: [{ name: 'a' }] }),
+      skip_default_group_bind: true
+    })
   })
 
   it('部分成功时关闭弹窗仍通知父组件刷新', async () => {
@@ -190,11 +225,7 @@ describe('ImportDataModal', () => {
     setInputFiles(input.element, [
       makeJsonFile(
         'mixed.json',
-        JSON.stringify({
-          exported_at: '2026-07-05T00:00:00Z',
-          proxies: [],
-          accounts: [{ name: 'a' }, { name: 'b' }]
-        })
+        exportPayload({ accounts: [{ name: 'a' }, { name: 'b' }] })
       )
     ])
 

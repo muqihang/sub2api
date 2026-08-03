@@ -2,10 +2,14 @@ package handler
 
 import (
 	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -60,6 +64,9 @@ func TestNormalizeOpenAIResponsesCompactRequest_BodySignalPromoted(t *testing.T)
 	seed, exists := c.Get(service.OpenAICompactSessionSeedKeyForTest())
 	require.True(t, exists)
 	require.Equal(t, "pck-signal-1", seed)
+	clientStream, exists := c.Get("openai_compact_client_stream")
+	require.True(t, exists)
+	require.Equal(t, true, clientStream)
 }
 
 func TestNormalizeOpenAIResponsesCompactRequest_BodySignalTrailingSlash(t *testing.T) {
@@ -118,45 +125,119 @@ func TestNormalizeOpenAIResponsesCompactRequest_SubpathNotPromoted(t *testing.T)
 	require.Equal(t, body, normalized)
 }
 
-// 回归 #3875：body-signal 原始请求 stream:true 时必须标记 client-stream，
-// 供响应写回阶段把上游 unary JSON 合成回 Codex remote compact v2 所需的 SSE。
-func TestNormalizeOpenAIResponsesCompactRequest_BodySignalStreamTrueMarksClientStream(t *testing.T) {
-	h := &OpenAIGatewayHandler{}
-	body := []byte(`{"model":"gpt-5.5","stream":true,"input":[{"type":"compaction_trigger"}]}`)
-	c := newCompactBodySignalTestContext(t, "/v1/responses", body)
+func TestMarkOpenAICompactClientStreamFromHeaders_RemoteCompactionV2(t *testing.T) {
+	c := newCompactBodySignalTestContext(t, "/responses", []byte(`{}`))
+	c.Request.Header.Set("Accept", "text/event-stream")
+	c.Request.Header.Set("X-Codex-Turn-Metadata", `{
+		"request_kind":"compaction",
+		"compaction":{"implementation":"responses_compaction_v2"}
+	}`)
 
-	_, ok := h.normalizeOpenAIResponsesCompactRequest(c, zap.NewNop(), body)
-	require.True(t, ok)
-
-	marked, exists := c.Get(service.OpenAICompactClientStreamKeyForTest())
+	require.True(t, markOpenAICompactClientStreamFromHeaders(c))
+	clientStream, exists := c.Get(service.OpenAICompactClientStreamKeyForTest())
 	require.True(t, exists)
-	require.Equal(t, true, marked)
+	require.Equal(t, true, clientStream)
 }
 
-func TestNormalizeOpenAIResponsesCompactRequest_BodySignalStreamFalseNotMarked(t *testing.T) {
-	h := &OpenAIGatewayHandler{}
-	for name, body := range map[string][]byte{
-		"stream_false":  []byte(`{"model":"gpt-5.5","stream":false,"input":[{"type":"compaction_trigger"}]}`),
-		"stream_absent": []byte(`{"model":"gpt-5.5","input":[{"type":"compaction_trigger"}]}`),
-	} {
-		c := newCompactBodySignalTestContext(t, "/v1/responses", body)
-		_, ok := h.normalizeOpenAIResponsesCompactRequest(c, zap.NewNop(), body)
-		require.True(t, ok, name)
-		require.Equal(t, "/v1/responses/compact", c.Request.URL.Path, name)
-		_, exists := c.Get(service.OpenAICompactClientStreamKeyForTest())
-		require.False(t, exists, "case %s 不应标记 client-stream", name)
+func TestMarkOpenAICompactClientStreamFromHeaders_RejectsAmbiguousRequests(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		accept   string
+		metadata string
+	}{
+		{
+			name:     "normal responses request",
+			path:     "/responses",
+			accept:   "text/event-stream",
+			metadata: `{"request_kind":"response","compaction":{"implementation":"responses_compaction_v2"}}`,
+		},
+		{
+			name:     "compact metadata without event stream",
+			path:     "/responses",
+			accept:   "application/json",
+			metadata: `{"request_kind":"compaction","compaction":{"implementation":"responses_compaction_v2"}}`,
+		},
+		{
+			name:     "compact metadata on subresource",
+			path:     "/responses/resp_123/cancel",
+			accept:   "text/event-stream",
+			metadata: `{"request_kind":"compaction","compaction":{"implementation":"responses_compaction_v2"}}`,
+		},
+		{
+			name:     "missing implementation",
+			path:     "/responses",
+			accept:   "text/event-stream",
+			metadata: `{"request_kind":"compaction"}`,
+		},
+		{
+			name:     "invalid metadata",
+			path:     "/responses",
+			accept:   "text/event-stream",
+			metadata: `{`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newCompactBodySignalTestContext(t, tt.path, []byte(`{}`))
+			c.Request.Header.Set("Accept", tt.accept)
+			c.Request.Header.Set("X-Codex-Turn-Metadata", tt.metadata)
+
+			require.False(t, markOpenAICompactClientStreamFromHeaders(c))
+			_, exists := c.Get(service.OpenAICompactClientStreamKeyForTest())
+			require.False(t, exists)
+		})
 	}
 }
 
-// path-based compact（Codex v1 unary 协议）即使 body 带 stream:true 也不标记，
-// 保持 JSON 写回行为不变。
-func TestNormalizeOpenAIResponsesCompactRequest_PathBasedStreamTrueNotMarked(t *testing.T) {
-	h := &OpenAIGatewayHandler{}
-	body := []byte(`{"model":"gpt-5.5","stream":true,"input":[{"type":"message","role":"user","content":"hello"}]}`)
-	c := newCompactBodySignalTestContext(t, "/v1/responses/compact", body)
+func TestOpenAIResponses_RemoteCompactHeartbeatStartsBeforeBodyReadCompletes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := newOpenAIHandlerForPreviousResponseIDValidation(t, nil)
+	h.cfg = &config.Config{}
+	h.cfg.Gateway.StreamKeepaliveInterval = 1
 
-	_, ok := h.normalizeOpenAIResponsesCompactRequest(c, zap.NewNop(), body)
-	require.True(t, ok)
-	_, exists := c.Get(service.OpenAICompactClientStreamKeyForTest())
-	require.False(t, exists)
+	groupID := int64(2)
+	apiKey := &service.APIKey{ID: 101, GroupID: &groupID, User: &service.User{ID: 1}}
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(middleware.ContextKeyAPIKey), apiKey)
+		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 1, Concurrency: 1})
+		c.Next()
+	})
+	router.POST("/responses", h.Responses)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	bodyReader, bodyWriter := io.Pipe()
+	defer func() { _ = bodyWriter.Close() }()
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/responses", bodyReader)
+	require.NoError(t, err)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "text/event-stream")
+	request.Header.Set("X-Codex-Turn-Metadata", `{"request_kind":"compaction","compaction":{"implementation":"responses_compaction_v2"}}`)
+
+	type responseResult struct {
+		response *http.Response
+		err      error
+	}
+	responseCh := make(chan responseResult, 1)
+	go func() {
+		response, requestErr := server.Client().Do(request)
+		responseCh <- responseResult{response: response, err: requestErr}
+	}()
+
+	select {
+	case result := <-responseCh:
+		require.NoError(t, result.err)
+		defer func() { _ = result.response.Body.Close() }()
+		require.Equal(t, http.StatusOK, result.response.StatusCode)
+		ping := make([]byte, len("event: ping\ndata: {\"type\":\"ping\"}\n\n"))
+		_, err = io.ReadFull(result.response.Body, ping)
+		require.NoError(t, err)
+		require.Equal(t, "event: ping\ndata: {\"type\":\"ping\"}\n\n", string(ping))
+	case <-time.After(4 * time.Second):
+		t.Fatal("remote compact heartbeat did not arrive while request body remained open")
+	}
+	require.NoError(t, bodyWriter.Close())
 }

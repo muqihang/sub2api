@@ -34,21 +34,10 @@ func TestAPIKeyAuthForwardsUserScopedOpenAIFastPolicyToUpstream(t *testing.T) {
 	}))
 	defer upstreamServer.Close()
 
-	settings := &service.OpenAIFastPolicySettings{
-		Rules: []service.OpenAIFastPolicyRule{
-			{
-				ServiceTier: service.OpenAIFastTierPriority,
-				Action:      service.BetaPolicyActionFilter,
-				Scope:       service.BetaPolicyScopeAll,
-			},
-			{
-				ServiceTier: service.OpenAIFastTierPriority,
-				Action:      service.BetaPolicyActionPass,
-				Scope:       service.BetaPolicyScopeAll,
-				UserIDs:     []int64{42},
-			},
-		},
-	}
+	settings := &service.OpenAIFastPolicySettings{Rules: []service.OpenAIFastPolicyRule{
+		{ServiceTier: service.OpenAIFastTierPriority, Action: service.BetaPolicyActionFilter, Scope: service.BetaPolicyScopeAll},
+		{ServiceTier: service.OpenAIFastTierPriority, Action: service.BetaPolicyActionPass, Scope: service.BetaPolicyScopeAll, UserIDs: []int64{42}},
+	}}
 	settingsJSON, err := json.Marshal(settings)
 	require.NoError(t, err)
 
@@ -56,9 +45,7 @@ func TestAPIKeyAuthForwardsUserScopedOpenAIFastPolicyToUpstream(t *testing.T) {
 	cfg.Security.URLAllowlist.Enabled = false
 	cfg.Security.URLAllowlist.AllowInsecureHTTP = true
 
-	settingService := service.NewSettingService(&openAIFastPolicyForwardingSettingRepo{
-		value: string(settingsJSON),
-	}, cfg)
+	settingService := service.NewSettingService(&openAIFastPolicyForwardingSettingRepo{value: string(settingsJSON)}, cfg)
 	gatewayService := service.NewOpenAIGatewayService(
 		nil, nil, nil, nil, nil, nil, nil, cfg,
 		nil, nil, nil, nil, nil, &openAIFastPolicyForwardingHTTPUpstream{client: upstreamServer.Client()},
@@ -66,32 +53,13 @@ func TestAPIKeyAuthForwardsUserScopedOpenAIFastPolicyToUpstream(t *testing.T) {
 	)
 
 	groupID := int64(101)
-	group := &service.Group{
-		ID:       groupID,
-		Name:     "openai",
-		Status:   service.StatusActive,
-		Platform: service.PlatformOpenAI,
-		Hydrated: true,
-	}
+	group := &service.Group{ID: groupID, Name: "openai", Status: service.StatusActive, Platform: service.PlatformOpenAI, Hydrated: true}
 	apiKeys := map[string]*service.APIKey{
 		"key-user-42": newOpenAIFastPolicyForwardingAPIKey(1, "key-user-42", 42, groupID, group),
 		"key-user-43": newOpenAIFastPolicyForwardingAPIKey(2, "key-user-43", 43, groupID, group),
 	}
 	apiKeyService := service.NewAPIKeyService(&openAIFastPolicyForwardingAPIKeyRepo{apiKeys: apiKeys}, nil, nil, nil, nil, nil, cfg)
-	account := &service.Account{
-		ID:          900,
-		Name:        "openai-upstream",
-		Platform:    service.PlatformOpenAI,
-		Type:        service.AccountTypeAPIKey,
-		Status:      service.StatusActive,
-		Schedulable: true,
-		Concurrency: 1,
-		Credentials: map[string]any{
-			"api_key":  "sk-test",
-			"base_url": upstreamServer.URL,
-		},
-		Extra: map[string]any{"use_responses_api": true},
-	}
+	account := &service.Account{ID: 900, Name: "openai-upstream", Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Status: service.StatusActive, Schedulable: true, Concurrency: 1, Credentials: map[string]any{"api_key": "sk-test", "base_url": upstreamServer.URL}, Extra: map[string]any{"use_responses_api": true}}
 
 	router := gin.New()
 	router.Use(gin.HandlerFunc(NewAPIKeyAuthMiddleware(apiKeyService, nil, cfg)))
@@ -110,11 +78,7 @@ func TestAPIKeyAuthForwardsUserScopedOpenAIFastPolicyToUpstream(t *testing.T) {
 	})
 
 	send := func(apiKey string) {
-		request := httptest.NewRequest(
-			http.MethodPost,
-			"/v1/responses",
-			bytes.NewBufferString(`{"model":"gpt-5","stream":false,"service_tier":"priority","input":"hi"}`),
-		)
+		request := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewBufferString(`{"model":"gpt-5","stream":false,"service_tier":"priority","input":"hi"}`))
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("x-api-key", apiKey)
 		response := httptest.NewRecorder()
@@ -132,21 +96,7 @@ func TestAPIKeyAuthForwardsUserScopedOpenAIFastPolicyToUpstream(t *testing.T) {
 }
 
 func newOpenAIFastPolicyForwardingAPIKey(id int64, key string, userID, groupID int64, group *service.Group) *service.APIKey {
-	return &service.APIKey{
-		ID:      id,
-		UserID:  userID,
-		Key:     key,
-		Status:  service.StatusActive,
-		GroupID: &groupID,
-		User: &service.User{
-			ID:          userID,
-			Role:        service.RoleUser,
-			Status:      service.StatusActive,
-			Balance:     10,
-			Concurrency: 1,
-		},
-		Group: group,
-	}
+	return &service.APIKey{ID: id, UserID: userID, Key: key, Status: service.StatusActive, GroupID: &groupID, User: &service.User{ID: userID, Role: service.RoleUser, Status: service.StatusActive, Balance: 10, Concurrency: 1}, Group: group}
 }
 
 type openAIFastPolicyForwardingAPIKeyRepo struct {

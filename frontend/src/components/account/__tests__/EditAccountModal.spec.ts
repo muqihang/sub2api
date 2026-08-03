@@ -216,68 +216,6 @@ function buildVertexAccount() {
   } as any
 }
 
-function buildAntigravityAccount(projectId = 'configured-project') {
-  return {
-    id: 3,
-    name: 'Antigravity OAuth',
-    notes: '',
-    platform: 'antigravity',
-    type: 'oauth',
-    credentials: {
-      antigravity_project_id: projectId,
-      model_mapping: {
-        'gemini-2.5-flash': 'gemini-2.5-flash'
-      }
-    },
-    extra: {},
-    proxy_id: null,
-    concurrency: 1,
-    priority: 1,
-    rate_multiplier: 1,
-    status: 'active',
-    group_ids: [],
-    expires_at: null,
-    auto_pause_on_expired: false
-  } as any
-}
-
-function buildGrokOAuthAccount() {
-  return {
-    id: 5,
-    name: 'Grok OAuth',
-    notes: '',
-    platform: 'grok',
-    type: 'oauth',
-    credentials: {
-      refresh_token: 'grok-rt',
-      base_url: 'https://api.x.ai/v1',
-      model_mapping: {
-        'grok-latest': 'grok-4.3'
-      }
-    },
-    extra: {},
-    proxy_id: null,
-    concurrency: 1,
-    priority: 1,
-    rate_multiplier: 1,
-    status: 'active',
-    group_ids: [],
-    expires_at: null,
-    auto_pause_on_expired: false
-  } as any
-}
-
-function buildOpenAISetupTokenAccount() {
-  return {
-    ...buildAccount(),
-    type: 'setup-token',
-    extra: {
-      openai_oauth_responses_websockets_v2_mode: 'ctx_pool',
-      openai_oauth_responses_websockets_v2_enabled: true
-    }
-  } as any
-}
-
 function mountModal(account = buildAccount()) {
   return mount(EditAccountModal, {
     props: {
@@ -383,35 +321,6 @@ describe('EditAccountModal', () => {
     })
   })
 
-  it('loads and submits Grok OAuth model mapping edits', async () => {
-    const account = buildGrokOAuthAccount()
-    updateAccountMock.mockReset()
-    checkMixedChannelRiskMock.mockReset()
-    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
-    updateAccountMock.mockResolvedValue(account)
-
-    const wrapper = mountModal(account)
-    expect(wrapper.text()).toContain('Imagine Image')
-    expect(wrapper.text()).toContain('Imagine Video')
-
-    const inputWithValue = (value: string) => {
-      const input = wrapper
-        .findAll('input')
-        .find((input) => (input.element as HTMLInputElement).value === value)
-      expect(input).toBeTruthy()
-      return input!
-    }
-
-    await inputWithValue('grok-latest').setValue('grok')
-    await inputWithValue('grok-4.3').setValue('grok-build-0.1')
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-
-    expect(updateAccountMock).toHaveBeenCalledTimes(1)
-    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.model_mapping).toEqual({
-      grok: 'grok-build-0.1'
-    })
-  })
-
   it('only submits model mapping credentials when saving an OpenAI spark shadow account', async () => {
     authIsSimpleMode.value = false
     const account = buildOpenAISparkShadowAccount()
@@ -500,6 +409,27 @@ describe('EditAccountModal', () => {
     ])
   })
 
+  it('preserves rerank-only OpenAI APIKey capability when editing', async () => {
+    const account = buildAccount()
+    account.credentials.openai_capabilities = ['rerank']
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+
+    expect(
+      wrapper.get<HTMLInputElement>('[data-testid="openai-endpoint-capability-rerank"]').element.checked
+    ).toBe(true)
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.openai_capabilities).toEqual([
+      'rerank'
+    ])
+  })
+
 	it('submits OpenAI quota auto-pause thresholds in extra', async () => {
 	  const account = buildAccount()
 	  account.extra = {
@@ -558,19 +488,26 @@ describe('EditAccountModal', () => {
     const embeddingsCheckbox = wrapper.get<HTMLInputElement>(
       '[data-testid="openai-endpoint-capability-embeddings"]'
     )
+    const rerankCheckbox = wrapper.get<HTMLInputElement>(
+      '[data-testid="openai-endpoint-capability-rerank"]'
+    )
 
     expect(chatCheckbox.element.checked).toBe(true)
     expect(embeddingsCheckbox.element.checked).toBe(true)
+    expect(rerankCheckbox.element.checked).toBe(true)
 
     await embeddingsCheckbox.setValue(false)
+    await rerankCheckbox.setValue(false)
 
     expect(chatCheckbox.element.checked).toBe(true)
     expect(embeddingsCheckbox.element.checked).toBe(false)
+    expect(rerankCheckbox.element.checked).toBe(false)
 
     await chatCheckbox.setValue(false)
 
     expect(chatCheckbox.element.checked).toBe(true)
     expect(embeddingsCheckbox.element.checked).toBe(false)
+    expect(rerankCheckbox.element.checked).toBe(false)
 
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
 
@@ -630,30 +567,13 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.codex_image_generation_bridge).toBe(true)
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('codex_image_generation_bridge_enabled')
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('codex_image_generation_explicit_tool_policy')
   })
 
-  it('submits Codex image tool no-injection mode without strip policy', async () => {
-    const account = buildAccount()
-    updateAccountMock.mockReset()
-    checkMixedChannelRiskMock.mockReset()
-    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
-    updateAccountMock.mockResolvedValue(account)
-
-    const wrapper = mountModal(account)
-
-    await wrapper.get('button[data-testid="codex-image-tool-disabled"]').trigger('click')
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-
-    expect(updateAccountMock).toHaveBeenCalledTimes(1)
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.codex_image_generation_bridge).toBe(false)
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('codex_image_generation_explicit_tool_policy')
-  })
-
-  it('submits Codex image tool block mode as strip policy and clears bridge override', async () => {
+  it('submits Codex image tool block mode as strip policy', async () => {
     const account = buildAccount()
     account.extra = {
-      codex_image_generation_bridge: true
+      codex_image_generation_bridge: true,
+      codex_image_generation_bridge_enabled: true
     }
     updateAccountMock.mockReset()
     checkMixedChannelRiskMock.mockReset()
@@ -668,43 +588,7 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.codex_image_generation_explicit_tool_policy).toBe('strip')
     expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('codex_image_generation_bridge')
-  })
-
-  it('loads strip policy as block mode and clears both keys when reset to inherit', async () => {
-    const account = buildAccount()
-    account.extra = {
-      codex_image_generation_explicit_tool_policy: 'strip'
-    }
-    updateAccountMock.mockReset()
-    checkMixedChannelRiskMock.mockReset()
-    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
-    updateAccountMock.mockResolvedValue(account)
-
-    const wrapper = mountModal(account)
-
-    await wrapper.get('button[data-testid="codex-image-tool-inherit"]').trigger('click')
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-
-    expect(updateAccountMock).toHaveBeenCalledTimes(1)
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('codex_image_generation_explicit_tool_policy')
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('codex_image_generation_bridge')
-  })
-
-  it('setup-token account can select and submit OAuth WS mode', async () => {
-    const account = buildOpenAISetupTokenAccount()
-    updateAccountMock.mockReset()
-    checkMixedChannelRiskMock.mockReset()
-    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
-    updateAccountMock.mockResolvedValue(account)
-
-    const wrapper = mountModal(account)
-
-    await wrapper.get('[data-testid="edit-openai-ws-mode-select"]').setValue('http_bridge')
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-
-    expect(updateAccountMock).toHaveBeenCalledTimes(1)
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.openai_oauth_responses_websockets_v2_mode).toBe('http_bridge')
-    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.openai_oauth_responses_websockets_v2_enabled).toBe(true)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).not.toHaveProperty('codex_image_generation_bridge_enabled')
   })
 
   it('allows saving apikey account when backend redacted api_key but credentials_status reports it exists', async () => {
@@ -825,42 +709,34 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock).not.toHaveBeenCalled()
   })
 
-  it('loads and submits Antigravity configured project fallback', async () => {
-    const account = buildAntigravityAccount('configured-project')
+  it('loads and persists Grok OAuth model mappings', async () => {
+    const account = buildAccount()
+    account.platform = 'grok'
+    account.type = 'oauth'
+    account.credentials = {
+      access_token: 'redacted',
+      model_mapping: {
+        'grok-imagine': 'grok-imagine-image-quality'
+      }
+    }
     updateAccountMock.mockReset()
     checkMixedChannelRiskMock.mockReset()
     checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
     updateAccountMock.mockResolvedValue(account)
 
     const wrapper = mountModal(account)
-    const input = wrapper.get<HTMLInputElement>('[data-testid="antigravity-project-id-input"]')
-    expect(input.element.value).toBe('configured-project')
 
-    await input.setValue('  updated-project  ')
+    const requestInputs = wrapper.findAll('input[placeholder="admin.accounts.requestModel"]')
+    const actualInputs = wrapper.findAll('input[placeholder="admin.accounts.actualModel"]')
+    expect((requestInputs[0].element as HTMLInputElement).value).toBe('grok-imagine')
+    expect((actualInputs[0].element as HTMLInputElement).value).toBe('grok-imagine-image-quality')
+
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
 
     expect(updateAccountMock).toHaveBeenCalledTimes(1)
-    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.antigravity_project_id).toBe(
-      'updated-project'
-    )
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.model_mapping).toEqual({
+      'grok-imagine': 'grok-imagine-image-quality'
+    })
   })
 
-  it('clears Antigravity configured project fallback when input is empty', async () => {
-    const account = buildAntigravityAccount('configured-project')
-    updateAccountMock.mockReset()
-    checkMixedChannelRiskMock.mockReset()
-    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
-    updateAccountMock.mockResolvedValue(account)
-
-    const wrapper = mountModal(account)
-    const input = wrapper.get<HTMLInputElement>('[data-testid="antigravity-project-id-input"]')
-
-    await input.setValue('')
-    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
-
-    expect(updateAccountMock).toHaveBeenCalledTimes(1)
-    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty(
-      'antigravity_project_id'
-    )
-  })
 })

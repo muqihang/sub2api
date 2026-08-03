@@ -19,31 +19,85 @@ import (
 
 // AuthHandler handles authentication-related requests
 type AuthHandler struct {
-	cfg                  *config.Config
-	authService          *service.AuthService
-	userService          *service.UserService
-	settingSvc           *service.SettingService
-	promoService         *service.PromoService
-	redeemService        *service.RedeemService
-	totpService          *service.TotpService
-	userAttributeService *service.UserAttributeService
+	cfg                           *config.Config
+	authService                   *service.AuthService
+	userService                   *service.UserService
+	settingSvc                    *service.SettingService
+	promoService                  *service.PromoService
+	redeemService                 *service.RedeemService
+	totpService                   *service.TotpService
+	augmentPluginService          *service.AugmentPluginService
+	augmentGatewayService         *service.AugmentGatewayService
+	augmentOfficialSessionService *service.AugmentOfficialSessionService
+	augmentOfficialPoolService    *service.AugmentOfficialPoolSessionService
+	augmentGatewayUsageService    *service.AugmentGatewayUsageService
+	userAttributeService          *service.UserAttributeService
 
 	dingTalkClientInstance *DingTalkClient
 	dingTalkClientMu       sync.Mutex
 }
 
-// NewAuthHandler creates a new AuthHandler
-func NewAuthHandler(cfg *config.Config, authService *service.AuthService, userService *service.UserService, settingService *service.SettingService, promoService *service.PromoService, redeemService *service.RedeemService, totpService *service.TotpService, userAttributeService *service.UserAttributeService) *AuthHandler {
+// NewAuthHandler creates a new AuthHandler. Optional deps keep older tests and
+// local Augment wiring source-compatible while allowing upstream auth enrichers.
+func NewAuthHandler(
+	cfg *config.Config,
+	authService *service.AuthService,
+	userService *service.UserService,
+	settingService *service.SettingService,
+	promoService *service.PromoService,
+	redeemService *service.RedeemService,
+	totpService *service.TotpService,
+	deps ...any,
+) *AuthHandler {
+	augmentPluginService, augmentGatewayService, augmentOfficialSessionService, augmentOfficialPoolService, augmentGatewayUsageService := resolveAuthHandlerAugmentDeps(deps...)
+	userAttributeService := resolveAuthHandlerUserAttributeService(deps...)
 	return &AuthHandler{
-		cfg:                  cfg,
-		authService:          authService,
-		userService:          userService,
-		settingSvc:           settingService,
-		promoService:         promoService,
-		redeemService:        redeemService,
-		totpService:          totpService,
-		userAttributeService: userAttributeService,
+		cfg:                           cfg,
+		authService:                   authService,
+		userService:                   userService,
+		settingSvc:                    settingService,
+		promoService:                  promoService,
+		redeemService:                 redeemService,
+		totpService:                   totpService,
+		augmentPluginService:          augmentPluginService,
+		augmentGatewayService:         augmentGatewayService,
+		augmentOfficialSessionService: augmentOfficialSessionService,
+		augmentOfficialPoolService:    augmentOfficialPoolService,
+		augmentGatewayUsageService:    augmentGatewayUsageService,
+		userAttributeService:          userAttributeService,
 	}
+}
+
+func resolveAuthHandlerUserAttributeService(deps ...any) *service.UserAttributeService {
+	for _, dep := range deps {
+		if typed, ok := dep.(*service.UserAttributeService); ok {
+			return typed
+		}
+	}
+	return nil
+}
+
+func resolveAuthHandlerAugmentDeps(augmentDeps ...any) (*service.AugmentPluginService, *service.AugmentGatewayService, *service.AugmentOfficialSessionService, *service.AugmentOfficialPoolSessionService, *service.AugmentGatewayUsageService) {
+	var augmentPluginService *service.AugmentPluginService
+	var augmentGatewayService *service.AugmentGatewayService
+	var augmentOfficialSessionService *service.AugmentOfficialSessionService
+	var augmentOfficialPoolService *service.AugmentOfficialPoolSessionService
+	var augmentGatewayUsageService *service.AugmentGatewayUsageService
+	for _, dep := range augmentDeps {
+		switch typed := dep.(type) {
+		case *service.AugmentPluginService:
+			augmentPluginService = typed
+		case *service.AugmentGatewayService:
+			augmentGatewayService = typed
+		case *service.AugmentOfficialSessionService:
+			augmentOfficialSessionService = typed
+		case *service.AugmentOfficialPoolSessionService:
+			augmentOfficialPoolService = typed
+		case *service.AugmentGatewayUsageService:
+			augmentGatewayUsageService = typed
+		}
+	}
+	return augmentPluginService, augmentGatewayService, augmentOfficialSessionService, augmentOfficialPoolService, augmentGatewayUsageService
 }
 
 // RegisterRequest represents the registration request payload

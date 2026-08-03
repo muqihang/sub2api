@@ -2,7 +2,9 @@
 package dto
 
 import (
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -85,6 +87,8 @@ func APIKeyFromService(k *service.APIKey) *APIKey {
 		Key:                k.Key,
 		Name:               k.Name,
 		GroupID:            k.GroupID,
+		AugmentOnly:        k.IsAugmentOnly(),
+		CodexOnly:          k.IsCodexOnly(),
 		Status:             k.Status,
 		IPWhitelist:        k.IPWhitelist,
 		IPBlacklist:        k.IPBlacklist,
@@ -151,7 +155,6 @@ func GroupFromServiceAdmin(g *service.Group) *AdminGroup {
 		MCPXMLInject:                g.MCPXMLInject,
 		DefaultMappedModel:          g.DefaultMappedModel,
 		MessagesDispatchModelConfig: g.MessagesDispatchModelConfig,
-		ModelsListConfig:            g.ModelsListConfig,
 		SupportedModelScopes:        g.SupportedModelScopes,
 		AccountCount:                g.AccountCount,
 		ActiveAccountCount:          g.ActiveAccountCount,
@@ -181,14 +184,14 @@ func groupFromServiceBase(g *service.Group) Group {
 		DailyLimitUSD:                   g.DailyLimitUSD,
 		WeeklyLimitUSD:                  g.WeeklyLimitUSD,
 		MonthlyLimitUSD:                 g.MonthlyLimitUSD,
+		AugmentGatewayEntitled:          g.AugmentGatewayEntitled,
+		CodexGatewayEntitled:            g.CodexGatewayEntitled,
 		AllowImageGeneration:            g.AllowImageGeneration,
 		AllowBatchImageGeneration:       g.AllowBatchImageGeneration,
 		ImageRateIndependent:            g.ImageRateIndependent,
 		ImageRateMultiplier:             g.ImageRateMultiplier,
 		BatchImageDiscountMultiplier:    g.BatchImageDiscountMultiplier,
 		BatchImageHoldMultiplier:        g.BatchImageHoldMultiplier,
-		VideoRateIndependent:            g.VideoRateIndependent,
-		VideoRateMultiplier:             g.VideoRateMultiplier,
 		PeakRateEnabled:                 g.PeakRateEnabled,
 		PeakStart:                       g.PeakStart,
 		PeakEnd:                         g.PeakEnd,
@@ -196,6 +199,8 @@ func groupFromServiceBase(g *service.Group) Group {
 		ImagePrice1K:                    g.ImagePrice1K,
 		ImagePrice2K:                    g.ImagePrice2K,
 		ImagePrice4K:                    g.ImagePrice4K,
+		VideoRateIndependent:            g.VideoRateIndependent,
+		VideoRateMultiplier:             g.VideoRateMultiplier,
 		VideoPrice480P:                  g.VideoPrice480P,
 		VideoPrice720P:                  g.VideoPrice720P,
 		VideoPrice1080P:                 g.VideoPrice1080P,
@@ -203,6 +208,7 @@ func groupFromServiceBase(g *service.Group) Group {
 		FallbackGroupID:                 g.FallbackGroupID,
 		FallbackGroupIDOnInvalidRequest: g.FallbackGroupIDOnInvalidRequest,
 		AllowMessagesDispatch:           g.AllowMessagesDispatch,
+		ModelsListConfig:                g.ModelsListConfig,
 		RequireOAuthOnly:                g.RequireOAuthOnly,
 		RequirePrivacySet:               g.RequirePrivacySet,
 		RPMLimit:                        g.RPMLimit,
@@ -215,7 +221,7 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 	if a == nil {
 		return nil
 	}
-	redactedCreds, credsStatus := RedactCredentials(a.Credentials)
+	redactedCreds, credsStatus := accountCredentialsForDTO(a)
 	out := &Account{
 		ID:                      a.ID,
 		Name:                    a.Name,
@@ -224,7 +230,7 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		Type:                    a.Type,
 		Credentials:             redactedCreds,
 		CredentialsStatus:       credsStatus,
-		Extra:                   a.Extra,
+		Extra:                   accountExtraForDTO(a),
 		ProxyID:                 a.ProxyID,
 		ProxyFallbackOriginID:   a.ProxyFallbackOriginID,
 		ProxyFallbackOriginName: a.ProxyFallbackOriginName,
@@ -240,6 +246,8 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		CreatedAt:               a.CreatedAt,
 		UpdatedAt:               a.UpdatedAt,
 		Schedulable:             a.Schedulable,
+		EffectiveSchedulable:    a.IsSchedulable(),
+		IsFormalPool:            service.IsFormalPoolAccount(a),
 		RateLimitedAt:           a.RateLimitedAt,
 		RateLimitResetAt:        a.RateLimitResetAt,
 		OverloadUntil:           a.OverloadUntil,
@@ -255,6 +263,7 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 
 	// 提取 5h 窗口费用控制和会话数量控制配置（仅 Anthropic OAuth/SetupToken 账号有效）
 	if a.IsAnthropicOAuthOrSetupToken() {
+		applyFormalPoolAccountFields(out, a)
 		if limit := a.GetWindowCostLimit(); limit > 0 {
 			out.WindowCostLimit = &limit
 		}
@@ -305,6 +314,16 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 			out.CustomBaseURLEnabled = &enabled
 			if customURL := a.GetCustomBaseURL(); customURL != "" {
 				out.CustomBaseURL = &customURL
+			}
+		}
+	}
+
+	if a.Platform == service.PlatformOpenAI && a.Extra != nil {
+		if _, ok := a.Extra["openai_gateway_tls"]; ok {
+			policy := a.GetOpenAIGatewayTLSOverride()
+			out.OpenAIGatewayTLS = &service.OpenAIGatewayAccountTLSPolicy{
+				Enabled:   policy.Enabled,
+				ProfileID: policy.ProfileID,
 			}
 		}
 	}
@@ -382,12 +401,369 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 	return out
 }
 
+func accountCredentialsForDTO(a *service.Account) (map[string]any, map[string]bool) {
+	if a == nil {
+		return nil, nil
+	}
+	if a.IsAnthropicOAuthOrSetupToken() && service.IsFormalPoolAccount(a) {
+		out := map[string]any{}
+		for _, key := range []string{"plan_type", "subscription_expires_at"} {
+			if v, ok := a.Credentials[key]; ok {
+				out[key] = v
+			}
+		}
+		_, status := RedactCredentials(a.Credentials)
+		return out, status
+	}
+	return RedactCredentials(a.Credentials)
+}
+
+func accountExtraForDTO(a *service.Account) map[string]any {
+	if a == nil {
+		return nil
+	}
+	if a.IsClaudePlatformAWS() {
+		return claudePlatformAWSExtraForDTO(a)
+	}
+	if !a.IsAnthropicOAuthOrSetupToken() || !service.IsFormalPoolAccount(a) {
+		return a.Extra
+	}
+	allowed := []string{
+		service.FormalPoolExtraOnboardingStage,
+		service.FormalPoolExtraOnboardingStageUpdatedAt,
+		service.FormalPoolExtraOnboardingLastCheck,
+		service.FormalPoolExtraOnboardingLastCheckAt,
+		service.FormalPoolExtraOnboardingLastErrorCode,
+		service.FormalPoolExtraOnboardingLastErrorBucket,
+		service.FormalPoolExtraHealthcheckStatus,
+		service.FormalPoolExtraHealthcheckStatusCodeBucket,
+		service.FormalPoolExtraHealthcheckRawRef,
+		service.FormalPoolExtraLastFailureOrigin,
+		service.FormalPoolExtraLastFailureCode,
+		service.FormalPoolExtraLastFailureSource,
+		service.FormalPoolExtraLastCCGatewayErrorCode,
+		service.FormalPoolExtraLastHealthcheckAt,
+		service.FormalPoolExtraLastHealthcheckResult,
+		service.FormalPoolExtraHealthcheckCCGatewaySeen,
+		service.FormalPoolExtraHealthcheckFallbackDetected,
+		service.FormalPoolExtraHealthcheckProxyMismatch,
+		service.FormalPoolExtraHealthcheckRiskTextDetected,
+		service.FormalPoolExtraHealthcheckSafeErrorCode,
+		service.FormalPoolExtraHealthcheckSafeErrorBucket,
+		service.FormalPoolExtraRateLimitErrorClass,
+		service.FormalPoolExtraRateLimitWindow,
+		service.FormalPoolExtraRateLimitAction,
+		service.FormalPoolExtraRateLimitResetBucket,
+		service.FormalPoolExtraRateLimitLastAt,
+		service.FormalPoolExtraCredentialGeneration,
+		service.FormalPoolExtraRepairedAt,
+		service.FormalPoolExtraRepairedBy,
+		service.FormalPoolExtraRuntimeRegistered,
+		service.FormalPoolExtraRuntimeRegisteredAt,
+		service.FormalPoolExtraWarmingStartedAt,
+		service.FormalPoolExtraWarmingUntil,
+		service.FormalPoolExtraPoolProfileRequested,
+		service.FormalPoolExtraPoolProfileEffective,
+		service.FormalPoolExtraPoolWeightMode,
+		service.FormalPoolExtraRiskEventRef,
+		service.FormalPoolExtraQuarantineReason,
+		service.FormalPoolExtraQuarantineAt,
+		"cc_gateway_enabled",
+		"cc_gateway_canary_only",
+		"cc_gateway_policy_version",
+		"cc_gateway_routes",
+		"cc_gateway_routes_deny",
+		"cc_gateway_egress_bucket_enabled",
+		"cc_gateway_egress_bucket",
+		"cc_gateway_account_ref",
+		"pool_profile",
+		"oauth_refresh_fail_closed",
+		"onboarding_state",
+	}
+	out := map[string]any{}
+	for _, key := range allowed {
+		if v, ok := a.Extra[key]; ok {
+			switch key {
+			case service.FormalPoolExtraHealthcheckRawRef, "cc_gateway_account_ref":
+				if safe, ok := safeFormalPoolDTORef(v); ok {
+					out[key] = safe
+				}
+			case "cc_gateway_egress_bucket":
+				if safe, ok := safeFormalPoolDTOBucket(v); ok {
+					out[key] = safe
+				}
+			case service.FormalPoolExtraLastFailureOrigin,
+				service.FormalPoolExtraLastFailureCode,
+				service.FormalPoolExtraLastFailureSource,
+				service.FormalPoolExtraLastCCGatewayErrorCode,
+				service.FormalPoolExtraLastHealthcheckAt,
+				service.FormalPoolExtraLastHealthcheckResult,
+				service.FormalPoolExtraRepairedAt,
+				service.FormalPoolExtraRepairedBy,
+				service.FormalPoolExtraQuarantineReason,
+				service.FormalPoolExtraWarmingUntil,
+				service.FormalPoolExtraHealthcheckSafeErrorCode,
+				service.FormalPoolExtraHealthcheckSafeErrorBucket,
+				service.FormalPoolExtraRateLimitErrorClass,
+				service.FormalPoolExtraRateLimitWindow,
+				service.FormalPoolExtraRateLimitAction,
+				service.FormalPoolExtraRateLimitResetBucket,
+				service.FormalPoolExtraRateLimitLastAt:
+				if safe, ok := safeFormalPoolDTOText(v); ok {
+					out[key] = safe
+				}
+			case service.FormalPoolExtraRiskEventRef:
+				if safe, ok := safeFormalPoolDTORef(v); ok {
+					out[key] = safe
+				}
+			case service.FormalPoolExtraHealthcheckCCGatewaySeen,
+				service.FormalPoolExtraHealthcheckFallbackDetected,
+				service.FormalPoolExtraHealthcheckProxyMismatch,
+				service.FormalPoolExtraHealthcheckRiskTextDetected:
+				if safe, ok := safeFormalPoolDTOBool(v); ok {
+					out[key] = safe
+				}
+			case service.FormalPoolExtraCredentialGeneration:
+				if safe, ok := safeFormalPoolDTOInt(v); ok {
+					out[key] = safe
+				}
+			default:
+				out[key] = v
+			}
+		}
+	}
+	return out
+}
+
+func claudePlatformAWSExtraForDTO(a *service.Account) map[string]any {
+	allowed := []string{
+		service.ClaudePlatformAWSExtraWorkspaceRef,
+		service.ClaudePlatformAWSExtraEndpointRef,
+		service.ClaudePlatformAWSExtraRegion,
+		service.ClaudePlatformAWSExtraAuthScheme,
+		service.ClaudePlatformAWSExtraRequestShapeProfileRef,
+		service.ClaudePlatformAWSExtraCacheParityProfileRef,
+		service.ClaudePlatformAWSExtraBetaPolicyRef,
+		service.ClaudePlatformAWSExtraCP0AuthProfileEvidenceStatus,
+		service.ClaudePlatformAWSExtraCP0RegionWorkspaceEvidenceStatus,
+		service.ClaudePlatformAWSExtraProductionAdmitted,
+	}
+	out := map[string]any{}
+	for _, key := range allowed {
+		v, ok := a.Extra[key]
+		if !ok {
+			continue
+		}
+		switch key {
+		case service.ClaudePlatformAWSExtraWorkspaceRef,
+			service.ClaudePlatformAWSExtraEndpointRef,
+			service.ClaudePlatformAWSExtraRequestShapeProfileRef,
+			service.ClaudePlatformAWSExtraCacheParityProfileRef,
+			service.ClaudePlatformAWSExtraBetaPolicyRef:
+			if text, ok := formalPoolDTOString(v); ok && !formalPoolDTOUnsafeText(text) {
+				out[key] = text
+			}
+		case service.ClaudePlatformAWSExtraProductionAdmitted:
+			if safe, ok := safeFormalPoolDTOBool(v); ok {
+				out[key] = safe
+			}
+		case service.ClaudePlatformAWSExtraAuthScheme:
+			if text, ok := safeClaudePlatformAWSAuthSchemeDTO(v); ok {
+				out[key] = text
+			}
+		case service.ClaudePlatformAWSExtraCP0AuthProfileEvidenceStatus,
+			service.ClaudePlatformAWSExtraCP0RegionWorkspaceEvidenceStatus:
+			if text, ok := safeClaudePlatformAWSStatusDTO(v); ok {
+				out[key] = text
+			}
+		default:
+			if text, ok := formalPoolDTOString(v); ok && !formalPoolDTOUnsafeText(text) {
+				out[key] = text
+			}
+		}
+	}
+	return out
+}
+
+func safeClaudePlatformAWSAuthSchemeDTO(v any) (string, bool) {
+	text, ok := formalPoolDTOString(v)
+	if !ok {
+		return "", false
+	}
+	switch text {
+	case service.ClaudePlatformAWSAuthProfileXAPIKey,
+		service.ClaudePlatformAWSAuthProfileBearerAPIKey,
+		service.ClaudePlatformAWSAuthProfileBlocked:
+		return text, true
+	default:
+		return "", false
+	}
+}
+
+func safeClaudePlatformAWSStatusDTO(v any) (string, bool) {
+	text, ok := formalPoolDTOString(v)
+	if !ok {
+		return "", false
+	}
+	switch strings.ToLower(text) {
+	case "pass", "blocked", "fail", "unknown":
+		return text, true
+	default:
+		if text == service.ClaudePlatformAWSAuthProfileBlocked {
+			return text, true
+		}
+		return "", false
+	}
+}
+
+var (
+	formalPoolDTOHMACRefRe      = regexp.MustCompile(`^hmac-sha256:[0-9a-f]{64}$`)
+	formalPoolDTOUUIDLikeRe     = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
+	formalPoolDTOEmailLikeRe    = regexp.MustCompile(`(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b`)
+	formalPoolDTOURLLikeRe      = regexp.MustCompile(`(?i)^[a-z][a-z0-9+.-]*://`)
+	formalPoolDTOClaudeBucketRe = regexp.MustCompile(`^claude-[0-9a-f]{16}$`)
+	formalPoolDTOLocalBucketRe  = regexp.MustCompile(`^bucket-[A-Za-z0-9_-]{1,56}$`)
+	formalPoolDTOSensitiveRe    = regexp.MustCompile(`(?i)(authorization|access[_ -]?token|refresh[_ -]?token|id[_ -]?token|raw[_ -]?token|token\s*[:=]|x-api-key|cookie|cch|credential|password|passwd|secret|client[_ -]?secret|proxy[_ -]?url|proxy[_ -]?credential|bearer)`)
+)
+
+func safeFormalPoolDTORef(v any) (string, bool) {
+	ref, ok := formalPoolDTOString(v)
+	if !ok || formalPoolDTOUnsafeText(ref) {
+		return "", false
+	}
+	if formalPoolDTOHMACRefRe.MatchString(ref) {
+		return ref, true
+	}
+	if strings.HasPrefix(ref, "opaque:") || strings.HasPrefix(ref, "scoped:") || strings.HasPrefix(ref, "scoped_hmac_ref:") {
+		return ref, true
+	}
+	return "", false
+}
+
+func safeFormalPoolDTOBucket(v any) (string, bool) {
+	bucket, ok := formalPoolDTOString(v)
+	if !ok || formalPoolDTOUnsafeText(bucket) {
+		return "", false
+	}
+	if formalPoolDTOClaudeBucketRe.MatchString(bucket) {
+		return bucket, true
+	}
+	if _, ok := safeFormalPoolDTORef(bucket); ok {
+		return bucket, true
+	}
+	// Keep compatibility with local/test bucket IDs such as "bucket-a", but do
+	// not expose hosts, URLs, credentials, UUIDs, emails, or token-like values.
+	if formalPoolDTOLocalBucketRe.MatchString(bucket) {
+		return bucket, true
+	}
+	return "", false
+}
+
+func safeFormalPoolDTOText(v any) (string, bool) {
+	s, ok := formalPoolDTOString(v)
+	if !ok || formalPoolDTOUnsafeText(s) {
+		return "", false
+	}
+	return s, true
+}
+
+func safeFormalPoolDTOBool(v any) (bool, bool) {
+	switch x := v.(type) {
+	case bool:
+		return x, true
+	case string:
+		x = strings.ToLower(strings.TrimSpace(x))
+		switch x {
+		case "true", "1", "yes":
+			return true, true
+		case "false", "0", "no":
+			return false, true
+		default:
+			return false, false
+		}
+	case int:
+		if x == 0 {
+			return false, true
+		}
+		if x == 1 {
+			return true, true
+		}
+	case int64:
+		if x == 0 {
+			return false, true
+		}
+		if x == 1 {
+			return true, true
+		}
+	case float64:
+		if x == 0 {
+			return false, true
+		}
+		if x == 1 {
+			return true, true
+		}
+	}
+	return false, false
+}
+
+func safeFormalPoolDTOInt(v any) (int, bool) {
+	switch x := v.(type) {
+	case int:
+		return x, true
+	case int64:
+		return int(x), true
+	case int32:
+		return int(x), true
+	case float64:
+		return int(x), true
+	case float32:
+		return int(x), true
+	case string:
+		s := strings.TrimSpace(x)
+		if formalPoolDTOUnsafeText(s) {
+			return 0, false
+		}
+		n, err := strconv.Atoi(s)
+		if err == nil {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+func formalPoolDTOString(v any) (string, bool) {
+	s, ok := v.(string)
+	if !ok {
+		return "", false
+	}
+	s = strings.TrimSpace(s)
+	return s, s != ""
+}
+
+func formalPoolDTOUnsafeText(s string) bool {
+	if strings.ContainsAny(s, "\r\n\t") {
+		return true
+	}
+	lower := strings.ToLower(s)
+	if formalPoolDTOURLLikeRe.MatchString(s) || strings.Contains(s, "://") || strings.Contains(s, "@") {
+		return true
+	}
+	for _, marker := range []string{"raw_body", "raw body", "raw-body", "raw_prompt", "raw prompt", "raw-prompt", "raw_telemetry", "raw telemetry", "raw-telemetry", "raw_cch", "raw cch", "raw-cch", "raw_token", "raw token", "raw-token", "sk-ant-sid"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return formalPoolDTOUUIDLikeRe.MatchString(s) || formalPoolDTOEmailLikeRe.MatchString(s) || formalPoolDTOSensitiveRe.MatchString(s)
+}
+
 func AccountFromService(a *service.Account) *Account {
 	if a == nil {
 		return nil
 	}
 	out := AccountFromServiceShallow(a)
-	out.Proxy = ProxyFromService(a.Proxy)
+	if !service.IsFormalPoolAccount(a) {
+		out.Proxy = ProxyFromService(a.Proxy)
+	}
 	if len(a.AccountGroups) > 0 {
 		out.AccountGroups = make([]AccountGroup, 0, len(a.AccountGroups))
 		for i := range a.AccountGroups {
@@ -590,7 +966,7 @@ func AccountSummaryFromService(a *service.Account) *AccountSummary {
 }
 
 func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
-	// 普通用户 DTO：严禁包含管理员字段（例如 account_rate_multiplier、account、upstream_model）。
+	// 普通用户 DTO：严禁包含管理员字段（例如 account_rate_multiplier、ip_address、account）。
 	requestType := l.EffectiveRequestType()
 	stream, openAIWSMode := service.ApplyLegacyRequestFields(requestType, l.Stream, l.OpenAIWSMode)
 	requestedModel := l.RequestedModel
@@ -604,9 +980,13 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
 		AccountID:             l.AccountID,
 		RequestID:             l.RequestID,
 		Model:                 requestedModel,
+		EntityID:              l.EntityID,
+		EntityType:            l.EntityType,
+		ClaimedEntityID:       l.ClaimedEntityID,
 		ServiceTier:           l.ServiceTier,
 		ReasoningEffort:       l.ReasoningEffort,
 		InboundEndpoint:       l.InboundEndpoint,
+		UpstreamEndpoint:      l.UpstreamEndpoint,
 		GroupID:               l.GroupID,
 		SubscriptionID:        l.SubscriptionID,
 		InputTokens:           l.InputTokens,
@@ -638,7 +1018,6 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
 		ImageSizeBreakdown:    l.ImageSizeBreakdown,
 		MediaType:             l.MediaType,
 		UserAgent:             l.UserAgent,
-		IPAddress:             l.IPAddress,
 		CacheTTLOverridden:    l.CacheTTLOverridden,
 		BillingMode:           l.BillingMode,
 		CreatedAt:             l.CreatedAt,
@@ -650,7 +1029,7 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
 }
 
 // UsageLogFromService converts a service UsageLog to DTO for regular users.
-// It excludes admin-only account/upstream internals while keeping user billing and request metadata.
+// It excludes Account details and IP address - users should not see these.
 func UsageLogFromService(l *service.UsageLog) *UsageLog {
 	if l == nil {
 		return nil
@@ -665,19 +1044,32 @@ func UsageLogFromServiceAdmin(l *service.UsageLog) *AdminUsageLog {
 	if l == nil {
 		return nil
 	}
-	usageLog := usageLogFromServiceUser(l)
-	usageLog.UpstreamEndpoint = l.UpstreamEndpoint
+	providerPromptCacheStatus, providerPromptCacheDetail := providerPromptCacheDiagnosticsFromUsageLog(l)
 	return &AdminUsageLog{
-		UsageLog:              usageLog,
-		UpstreamModel:         l.UpstreamModel,
-		ChannelID:             l.ChannelID,
-		ModelMappingChain:     l.ModelMappingChain,
-		BillingTier:           l.BillingTier,
-		AccountRateMultiplier: l.AccountRateMultiplier,
-		AccountStatsCost:      l.AccountStatsCost,
-		IPAddress:             l.IPAddress,
-		Account:               AccountSummaryFromService(l.Account),
+		UsageLog:                  usageLogFromServiceUser(l),
+		UpstreamModel:             l.UpstreamModel,
+		ChannelID:                 l.ChannelID,
+		ModelMappingChain:         l.ModelMappingChain,
+		BillingTier:               l.BillingTier,
+		ProviderPromptCacheStatus: providerPromptCacheStatus,
+		ProviderPromptCacheDetail: providerPromptCacheDetail,
+		AccountRateMultiplier:     l.AccountRateMultiplier,
+		AccountStatsCost:          l.AccountStatsCost,
+		IPAddress:                 l.IPAddress,
+		Account:                   AccountSummaryFromService(l.Account),
 	}
+}
+
+func providerPromptCacheDiagnosticsFromUsageLog(l *service.UsageLog) (*string, *string) {
+	if l == nil || l.ClientProduct == nil || *l.ClientProduct != service.CodexUsageClientProduct {
+		return nil, nil
+	}
+	if l.FeatureScope == nil || *l.FeatureScope != string(service.CodexGatewayProviderAgnes) {
+		return nil, nil
+	}
+	status := "unsupported"
+	detail := "AGNES upstream usage does not expose provider prompt cache hit fields; zero cache tokens mean unsupported/unknown, not a confirmed cold miss."
+	return &status, &detail
 }
 
 func UsageCleanupTaskFromService(task *service.UsageCleanupTask) *UsageCleanupTask {
@@ -828,5 +1220,108 @@ func PromoCodeUsageFromService(u *service.PromoCodeUsage) *PromoCodeUsage {
 		BonusAmount: u.BonusAmount,
 		UsedAt:      u.UsedAt,
 		User:        UserFromServiceShallow(u.User),
+	}
+}
+
+func applyFormalPoolAccountFields(out *Account, a *service.Account) {
+	if out == nil || a == nil || !a.IsAnthropicOAuthOrSetupToken() {
+		return
+	}
+	stage := a.GetExtraString(service.FormalPoolExtraOnboardingStage)
+	if stage == "" && a.Extra != nil {
+		stage = service.FormalPoolStageLegacyUnknown
+	}
+	out.OnboardingStage = stage
+	out.PoolProfileRequested = a.GetExtraString(service.FormalPoolExtraPoolProfileRequested)
+	out.PoolProfileEffective = a.GetExtraString(service.FormalPoolExtraPoolProfileEffective)
+	out.PoolWeightMode = a.GetExtraString(service.FormalPoolExtraPoolWeightMode)
+	out.HealthcheckStatus = a.GetExtraString(service.FormalPoolExtraHealthcheckStatus)
+	out.HealthcheckLastStatusCodeBucket = a.GetExtraString(service.FormalPoolExtraHealthcheckStatusCodeBucket)
+	out.FormalPoolLastFailureOrigin = safeFormalPoolAccountText(a, service.FormalPoolExtraLastFailureOrigin)
+	out.FormalPoolLastFailureCode = safeFormalPoolAccountText(a, service.FormalPoolExtraLastFailureCode)
+	out.FormalPoolLastFailureSource = safeFormalPoolAccountText(a, service.FormalPoolExtraLastFailureSource)
+	out.FormalPoolLastCCGatewayErrorCode = safeFormalPoolAccountText(a, service.FormalPoolExtraLastCCGatewayErrorCode)
+	out.FormalPoolLastHealthcheckAt = safeFormalPoolAccountText(a, service.FormalPoolExtraLastHealthcheckAt)
+	out.FormalPoolLastHealthcheckResult = safeFormalPoolAccountText(a, service.FormalPoolExtraLastHealthcheckResult)
+	out.HealthcheckCCGatewaySeen, _ = safeFormalPoolDTOBool(a.Extra[service.FormalPoolExtraHealthcheckCCGatewaySeen])
+	out.HealthcheckFallbackDetected, _ = safeFormalPoolDTOBool(a.Extra[service.FormalPoolExtraHealthcheckFallbackDetected])
+	out.HealthcheckProxyMismatch, _ = safeFormalPoolDTOBool(a.Extra[service.FormalPoolExtraHealthcheckProxyMismatch])
+	out.HealthcheckRiskTextDetected, _ = safeFormalPoolDTOBool(a.Extra[service.FormalPoolExtraHealthcheckRiskTextDetected])
+	out.HealthcheckSafeErrorCode = safeFormalPoolAccountText(a, service.FormalPoolExtraHealthcheckSafeErrorCode)
+	out.HealthcheckSafeErrorBucket = safeFormalPoolAccountText(a, service.FormalPoolExtraHealthcheckSafeErrorBucket)
+	out.FormalPoolRateLimitErrorClass = safeFormalPoolAccountText(a, service.FormalPoolExtraRateLimitErrorClass)
+	out.FormalPoolRateLimitWindow = safeFormalPoolAccountText(a, service.FormalPoolExtraRateLimitWindow)
+	out.FormalPoolRateLimitAction = safeFormalPoolAccountText(a, service.FormalPoolExtraRateLimitAction)
+	out.FormalPoolRateLimitResetBucket = safeFormalPoolAccountText(a, service.FormalPoolExtraRateLimitResetBucket)
+	out.FormalPoolRateLimitLastAt = safeFormalPoolAccountText(a, service.FormalPoolExtraRateLimitLastAt)
+	if gen, ok := safeFormalPoolDTOInt(a.Extra[service.FormalPoolExtraCredentialGeneration]); ok {
+		out.FormalPoolCredentialGeneration = gen
+	}
+	out.FormalPoolRepairedAt = safeFormalPoolAccountText(a, service.FormalPoolExtraRepairedAt)
+	out.FormalPoolRepairedBy = safeFormalPoolAccountText(a, service.FormalPoolExtraRepairedBy)
+	out.CCGatewayRuntimeRegistered = formalPoolDTOBool(a.Extra[service.FormalPoolExtraRuntimeRegistered])
+	out.QuarantineReason = safeFormalPoolAccountText(a, service.FormalPoolExtraQuarantineReason)
+	out.RiskEventRef = safeFormalPoolAccountRef(a, service.FormalPoolExtraRiskEventRef)
+	out.WarmingUntil = safeFormalPoolAccountText(a, service.FormalPoolExtraWarmingUntil)
+	out.ProductionReady = stage == service.FormalPoolStageProduction
+}
+
+func safeFormalPoolAccountRef(a *service.Account, key string) string {
+	if a == nil {
+		return ""
+	}
+	safe, ok := safeFormalPoolDTORef(a.Extra[key])
+	if !ok {
+		return ""
+	}
+	return safe
+}
+
+func safeFormalPoolAccountText(a *service.Account, key string) string {
+	if a == nil {
+		return ""
+	}
+	safe, ok := safeFormalPoolDTOText(a.Extra[key])
+	if !ok {
+		return ""
+	}
+	return safe
+}
+
+func intFromAny(v any) int {
+	switch x := v.(type) {
+	case int:
+		return x
+	case int64:
+		return int(x)
+	case int32:
+		return int(x)
+	case float64:
+		return int(x)
+	case float32:
+		return int(x)
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(x))
+		if err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+func formalPoolDTOBool(v any) bool {
+	switch x := v.(type) {
+	case bool:
+		return x
+	case string:
+		return x == "true" || x == "1" || x == "yes"
+	case int:
+		return x != 0
+	case int64:
+		return x != 0
+	case float64:
+		return x != 0
+	default:
+		return false
 	}
 }

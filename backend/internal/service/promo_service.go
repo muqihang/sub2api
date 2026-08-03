@@ -237,9 +237,10 @@ func (s *PromoService) Update(ctx context.Context, id int64, input *UpdatePromoC
 	}
 	if input.ExpiresAt != nil {
 		if input.ExpiresAt.IsZero() {
-			input.ExpiresAt = nil
+			promoCode.ExpiresAt = nil
+		} else {
+			promoCode.ExpiresAt = input.ExpiresAt
 		}
-		promoCode.ExpiresAt = input.ExpiresAt
 	}
 	if input.Notes != nil {
 		promoCode.Notes = *input.Notes

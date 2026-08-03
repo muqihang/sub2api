@@ -18,6 +18,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
+	"github.com/Wei-Shaw/sub2api/resources"
 	"go.uber.org/zap"
 )
 
@@ -140,24 +141,22 @@ type PricingRemoteClient interface {
 
 // LiteLLMRawEntry 用于解析原始JSON数据
 type LiteLLMRawEntry struct {
-	InputCostPerToken                   *float64 `json:"input_cost_per_token"`
-	InputCostPerTokenPriority           *float64 `json:"input_cost_per_token_priority"`
-	OutputCostPerToken                  *float64 `json:"output_cost_per_token"`
-	OutputCostPerTokenPriority          *float64 `json:"output_cost_per_token_priority"`
-	CacheCreationInputTokenCost         *float64 `json:"cache_creation_input_token_cost"`
-	CacheCreationInputTokenCostPriority *float64 `json:"cache_creation_input_token_cost_priority"`
-	CacheCreationInputTokenCostAbove1hr *float64 `json:"cache_creation_input_token_cost_above_1hr"`
-	CacheReadInputTokenCost             *float64 `json:"cache_read_input_token_cost"`
-	CacheReadInputTokenCostPriority     *float64 `json:"cache_read_input_token_cost_priority"`
-	LongContextInputTokenThreshold      *int     `json:"long_context_input_token_threshold"`
-	LongContextInputCostMultiplier      *float64 `json:"long_context_input_cost_multiplier"`
-	LongContextOutputCostMultiplier     *float64 `json:"long_context_output_cost_multiplier"`
-	SupportsServiceTier                 bool     `json:"supports_service_tier"`
-	LiteLLMProvider                     string   `json:"litellm_provider"`
-	Mode                                string   `json:"mode"`
-	SupportsPromptCaching               bool     `json:"supports_prompt_caching"`
-	OutputCostPerImage                  *float64 `json:"output_cost_per_image"`
-	OutputCostPerImageToken             *float64 `json:"output_cost_per_image_token"`
+	InputCostPerToken                          *float64 `json:"input_cost_per_token"`
+	InputCostPerTokenPriority                  *float64 `json:"input_cost_per_token_priority"`
+	OutputCostPerToken                         *float64 `json:"output_cost_per_token"`
+	OutputCostPerTokenPriority                 *float64 `json:"output_cost_per_token_priority"`
+	CacheCreationInputTokenCost                *float64 `json:"cache_creation_input_token_cost"`
+	CacheCreationInputTokenCostPriority        *float64 `json:"cache_creation_input_token_cost_priority"`
+	CacheCreationInputTokenCostAbove1hr        *float64 `json:"cache_creation_input_token_cost_above_1hr"`
+	CacheCreationInputTokenCostAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_200k_tokens"`
+	CacheReadInputTokenCost                    *float64 `json:"cache_read_input_token_cost"`
+	CacheReadInputTokenCostPriority            *float64 `json:"cache_read_input_token_cost_priority"`
+	SupportsServiceTier                        bool     `json:"supports_service_tier"`
+	LiteLLMProvider                            string   `json:"litellm_provider"`
+	Mode                                       string   `json:"mode"`
+	SupportsPromptCaching                      bool     `json:"supports_prompt_caching"`
+	OutputCostPerImage                         *float64 `json:"output_cost_per_image"`
+	OutputCostPerImageToken                    *float64 `json:"output_cost_per_image_token"`
 }
 
 // PricingService 动态价格服务
@@ -380,6 +379,7 @@ func (s *PricingService) downloadPricingData() error {
 	if err != nil {
 		return fmt.Errorf("parse pricing data: %w", err)
 	}
+	s.mergeEmbeddedPricingCatalog(data)
 	data = s.mergeFallbackPricingData(data)
 
 	// 保存到本地文件
@@ -474,15 +474,6 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 		if entry.CacheReadInputTokenCostPriority != nil {
 			pricing.CacheReadInputTokenCostPriority = *entry.CacheReadInputTokenCostPriority
 		}
-		if entry.LongContextInputTokenThreshold != nil {
-			pricing.LongContextInputTokenThreshold = *entry.LongContextInputTokenThreshold
-		}
-		if entry.LongContextInputCostMultiplier != nil {
-			pricing.LongContextInputCostMultiplier = *entry.LongContextInputCostMultiplier
-		}
-		if entry.LongContextOutputCostMultiplier != nil {
-			pricing.LongContextOutputCostMultiplier = *entry.LongContextOutputCostMultiplier
-		}
 		if entry.OutputCostPerImage != nil {
 			pricing.OutputCostPerImage = *entry.OutputCostPerImage
 		}
@@ -516,6 +507,7 @@ func (s *PricingService) loadPricingData(filePath string) error {
 	if err != nil {
 		return fmt.Errorf("parse pricing data: %w", err)
 	}
+	s.mergeEmbeddedPricingCatalog(pricingData)
 	pricingData = s.mergeFallbackPricingData(pricingData)
 
 	// 计算哈希
@@ -536,6 +528,31 @@ func (s *PricingService) loadPricingData(filePath string) error {
 
 	logger.LegacyPrintf("service.pricing", "[Pricing] Loaded %d models from %s", len(pricingData), filePath)
 	return nil
+}
+
+func (s *PricingService) mergeEmbeddedPricingCatalog(pricingData map[string]*LiteLLMModelPricing) {
+	if len(resources.ModelPricingCatalogJSON) == 0 || pricingData == nil {
+		return
+	}
+	embedded, err := s.parsePricingData(resources.ModelPricingCatalogJSON)
+	if err != nil {
+		logger.LegacyPrintf("service.pricing", "[Pricing] Failed to parse embedded pricing catalog: %v", err)
+		return
+	}
+	merged := 0
+	for model, pricing := range embedded {
+		if pricing == nil {
+			continue
+		}
+		if _, ok := pricingData[model]; ok {
+			continue
+		}
+		pricingData[model] = pricing
+		merged++
+	}
+	if merged > 0 {
+		logger.LegacyPrintf("service.pricing", "[Pricing] Merged %d missing models from embedded pricing catalog", merged)
+	}
 }
 
 func (s *PricingService) mergeFallbackPricingData(data map[string]*LiteLLMModelPricing) map[string]*LiteLLMModelPricing {
@@ -784,6 +801,8 @@ func (s *PricingService) matchByModelFamily(model string) *LiteLLMModelPricing {
 	// 因子串关系误匹配 "claude-opus-4-7"（opus-4.7 系列）。
 	// 注意：原 map 实现存在 Go map 迭代随机性导致的同类 bug，此处改为有序切片修复。
 	families := []modelFamily{
+		{name: "fable-5", match: []string{"claude-fable-5", "claude-fable5"}},
+		{name: "opus-4.8", match: []string{"claude-opus-4-8", "claude-opus-4.8"}, pricing: []string{"claude-opus-4-8", "claude-opus-4.8", "claude-opus-4-6"}},
 		{name: "opus-4.7", match: []string{"claude-opus-4-7", "claude-opus-4.7"}, pricing: []string{"claude-opus-4-7", "claude-opus-4.7", "claude-opus-4-6"}},
 		{name: "opus-4.6", match: []string{"claude-opus-4-6", "claude-opus-4.6"}},
 		{name: "opus-4.5", match: []string{"claude-opus-4-5", "claude-opus-4.5"}},
@@ -816,6 +835,8 @@ func (s *PricingService) matchByModelFamily(model string) *LiteLLMModelPricing {
 		switch {
 		case strings.Contains(model, "opus"):
 			switch {
+			case strings.Contains(model, "4.8") || strings.Contains(model, "4-8"):
+				fallbackName = "opus-4.8"
 			case strings.Contains(model, "4.7") || strings.Contains(model, "4-7"):
 				fallbackName = "opus-4.7"
 			case strings.Contains(model, "4.6") || strings.Contains(model, "4-6"):
@@ -912,18 +933,12 @@ func (s *PricingService) matchOpenAIModel(model string) *LiteLLMModelPricing {
 	}
 
 	if strings.HasPrefix(model, "gpt-5.6-sol") {
-		logger.With(zap.String("component", "service.pricing")).
-			Info(fmt.Sprintf("[Pricing] OpenAI fallback matched %s -> %s", model, "gpt-5.6-sol(static)"))
 		return openAIGPT56SolFallbackPricing
 	}
 	if strings.HasPrefix(model, "gpt-5.6-terra") {
-		logger.With(zap.String("component", "service.pricing")).
-			Info(fmt.Sprintf("[Pricing] OpenAI fallback matched %s -> %s", model, "gpt-5.6-terra(static)"))
 		return openAIGPT56TerraFallbackPricing
 	}
 	if strings.HasPrefix(model, "gpt-5.6-luna") {
-		logger.With(zap.String("component", "service.pricing")).
-			Info(fmt.Sprintf("[Pricing] OpenAI fallback matched %s -> %s", model, "gpt-5.6-luna(static)"))
 		return openAIGPT56LunaFallbackPricing
 	}
 

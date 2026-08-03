@@ -262,10 +262,10 @@ func (r *userSubscriptionRepository) List(ctx context.Context, params pagination
 			),
 		)
 	case service.SubscriptionStatusRevoked:
-		// Revoked is a DTO/API display state backed by user_subscriptions.deleted_at.
+		// Revoked is an API display state backed by user_subscriptions.deleted_at.
 		q = q.Where(usersubscription.DeletedAtNotNil())
 	case "":
-		// No filter. Use SkipSoftDelete below so admin "all status" includes revoked history.
+		// No filter. Use SkipSoftDelete below so admin all-status includes revoked history.
 	default:
 		// Other persisted status.
 		q = q.Where(usersubscription.StatusEQ(status))

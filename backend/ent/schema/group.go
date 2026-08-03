@@ -45,22 +45,21 @@ func (Group) Fields() []ent.Field {
 		field.Float("rate_multiplier").
 			SchemaType(map[string]string{dialect.Postgres: "decimal(10,4)"}).
 			Default(1.0),
-		// 高峰时段倍率（added by migration 158）
 		field.Bool("peak_rate_enabled").
 			Default(false).
 			Comment("是否启用高峰时段倍率"),
 		field.String("peak_start").
 			MaxLen(5).
 			Default("").
-			Comment("高峰开始时间 HH:MM（含），如 14:00；空表示未配置；不支持跨天"),
+			Comment("高峰开始时间 HH:MM（含）；空表示未配置；不支持跨天"),
 		field.String("peak_end").
 			MaxLen(5).
 			Default("").
-			Comment("高峰结束时间 HH:MM（不含），必须大于 peak_start；不支持跨天，如 22:00-02:00"),
+			Comment("高峰结束时间 HH:MM（不含）；必须大于 peak_start；不支持跨天"),
 		field.Float("peak_rate_multiplier").
 			SchemaType(map[string]string{dialect.Postgres: "decimal(10,4)"}).
 			Default(1.0).
-			Comment("高峰时段叠加倍率，仅在 peak_rate_enabled 且处于 [peak_start, peak_end) 时乘入文本倍率"),
+			Comment("高峰时段叠加倍率，仅作用于文本 token 倍率"),
 		field.Bool("is_exclusive").
 			Default(false),
 		field.String("status").
@@ -86,6 +85,12 @@ func (Group) Fields() []ent.Field {
 			Optional().
 			Nillable().
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}),
+		field.Bool("augment_gateway_entitled").
+			Default(false).
+			Comment("是否为 Augment Gateway 用户授权分组"),
+		field.Bool("codex_gateway_entitled").
+			Default(false).
+			Comment("是否为 Codex Gateway 用户授权分组"),
 		field.Int("default_validity_days").
 			Default(30),
 

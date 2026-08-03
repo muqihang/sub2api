@@ -92,8 +92,8 @@ func (a *Account) CodexImageGenerationBridgeOverride() *bool {
 }
 
 // CodexImageGenerationExplicitToolPolicy returns the account-level policy for
-// client-provided Codex /responses image_generation tools. Unknown or unset
-// values default to allow to preserve existing behavior.
+// client-provided Codex /responses image_generation tools. Unknown/unset values
+// default to allow, preserving existing Codex gateway behavior.
 func (a *Account) CodexImageGenerationExplicitToolPolicy() string {
 	if a == nil || a.Platform != PlatformOpenAI || a.Extra == nil {
 		return codexImageGenerationExplicitToolPolicyAllow

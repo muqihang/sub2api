@@ -24,7 +24,7 @@ func (c *CompositeTokenCacheInvalidator) InvalidateToken(ctx context.Context, ac
 	if c == nil || c.cache == nil || account == nil {
 		return nil
 	}
-	if account.Type != AccountTypeOAuth {
+	if account.Type != AccountTypeOAuth && !(account.Platform == PlatformAnthropic && account.Type == AccountTypeSetupToken) {
 		return nil
 	}
 
@@ -44,9 +44,6 @@ func (c *CompositeTokenCacheInvalidator) InvalidateToken(ctx context.Context, ac
 		keysToDelete = append(keysToDelete, "ag:"+accountIDKey)
 	case PlatformOpenAI:
 		keysToDelete = append(keysToDelete, OpenAITokenCacheKey(account))
-	case PlatformGrok:
-		keysToDelete = append(keysToDelete, GrokTokenCacheKey(account))
-		keysToDelete = append(keysToDelete, "grok:"+accountIDKey)
 	case PlatformAnthropic:
 		keysToDelete = append(keysToDelete, ClaudeTokenCacheKey(account))
 	default:

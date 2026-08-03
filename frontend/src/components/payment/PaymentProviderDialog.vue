@@ -113,7 +113,6 @@
         </div>
       </div>
 
-
       <!-- Config fields -->
       <div class="border-t border-gray-200 pt-4 dark:border-dark-700">
         <div class="mb-3 flex items-center gap-2">

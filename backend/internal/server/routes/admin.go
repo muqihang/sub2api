@@ -3,6 +3,7 @@ package routes
 
 import (
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	adminhandler "github.com/Wei-Shaw/sub2api/internal/handler/admin"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
@@ -14,8 +15,12 @@ func RegisterAdminRoutes(
 	v1 *gin.RouterGroup,
 	h *handler.Handlers,
 	adminAuth middleware.AdminAuthMiddleware,
-	settingService *service.SettingService,
+	settingServices ...*service.SettingService,
 ) {
+	var settingService *service.SettingService
+	if len(settingServices) > 0 {
+		settingService = settingServices[0]
+	}
 	admin := v1.Group("/admin")
 	admin.Use(gin.HandlerFunc(adminAuth))
 	admin.Use(middleware.AdminComplianceGuard(settingService))
@@ -92,6 +97,9 @@ func RegisterAdminRoutes(
 		// API Key 管理
 		registerAdminAPIKeyRoutes(admin, h)
 
+		// Entity registry
+		registerEntityRoutes(admin, h)
+
 		// 定时测试计划
 		registerScheduledTestRoutes(admin, h)
 
@@ -106,6 +114,15 @@ func RegisterAdminRoutes(
 
 		// 邀请返利（专属用户管理）
 		registerAffiliateRoutes(admin, h)
+
+		// Claude formal pool status dashboard
+		registerFormalPoolStatusDashboardRoutes(admin, h)
+
+		// Augment Gateway 管理
+		registerAugmentGatewayAdminRoutes(admin, h)
+
+		// Codex Gateway 管理
+		registerCodexGatewayAdminRoutes(admin, h)
 	}
 }
 
@@ -135,6 +152,19 @@ func registerAdminAPIKeyRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	apiKeys := admin.Group("/api-keys")
 	{
 		apiKeys.PUT("/:id", h.Admin.APIKey.UpdateGroup)
+	}
+}
+
+func registerEntityRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	if h == nil || h.Admin == nil || h.Admin.Entity == nil {
+		return
+	}
+	entities := admin.Group("/entities")
+	{
+		entities.GET("", h.Admin.Entity.List)
+		entities.POST("", h.Admin.Entity.Create)
+		entities.GET("/bindings", h.Admin.Entity.ListBindings)
+		entities.POST("/bindings", h.Admin.Entity.CreateBinding)
 	}
 }
 
@@ -291,6 +321,16 @@ func registerGroupRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	}
 }
 
+func registerFormalPoolStatusDashboardRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	if h == nil || h.Admin == nil || h.Admin.Account == nil {
+		return
+	}
+	formalPool := admin.Group("/formal-pool")
+	{
+		formalPool.GET("/status-dashboard", h.Admin.Account.FormalPoolStatusDashboard)
+	}
+}
+
 func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	accounts := admin.Group("/accounts")
 	{
@@ -319,10 +359,22 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		accounts.POST("/:id/reset-quota", h.Admin.Account.ResetQuota)
 		accounts.GET("/:id/temp-unschedulable", h.Admin.Account.GetTempUnschedulable)
 		accounts.DELETE("/:id/temp-unschedulable", h.Admin.Account.ClearTempUnschedulable)
+		accounts.POST("/:id/quarantine", h.Admin.Account.QuarantineFormalPool)
 		accounts.POST("/:id/schedulable", h.Admin.Account.SetSchedulable)
+		accounts.POST("/:id/cc-gateway/canary-preflight", h.Admin.Account.CCGatewayCanaryPreflight)
+		if h.Admin.FormalPoolOperations != nil {
+			accounts.GET("/:id/formal-pool/diagnostics", h.Admin.FormalPoolOperations.Diagnostics)
+			accounts.POST("/:id/setup-token/replace", h.Admin.FormalPoolOperations.ReplaceSetupToken)
+			accounts.POST("/:id/formal-pool/runtime-register", h.Admin.FormalPoolOperations.RuntimeRegister)
+			accounts.POST("/:id/formal-pool/healthcheck", h.Admin.FormalPoolOperations.Healthcheck)
+			accounts.POST("/:id/formal-pool/start-warming", h.Admin.FormalPoolOperations.StartWarming)
+			accounts.POST("/:id/formal-pool/promote-production", h.Admin.FormalPoolOperations.PromoteProduction)
+			accounts.POST("/:id/formal-pool/proxy/swap", h.Admin.FormalPoolOperations.SwapProxy)
+		}
 		accounts.POST("/models/sync-upstream-preview", h.Admin.Account.SyncUpstreamModelsPreview)
 		accounts.GET("/:id/models", h.Admin.Account.GetAvailableModels)
 		accounts.POST("/:id/models/sync-upstream", h.Admin.Account.SyncUpstreamModels)
+		accounts.POST("/claude-platform-aws/batch", h.Admin.Account.ClaudePlatformAWSBatchCreate)
 		accounts.POST("/batch", h.Admin.Account.BatchCreate)
 		accounts.GET("/data", h.Admin.Account.ExportData)
 		accounts.POST("/data", h.Admin.Account.ImportData)
@@ -367,19 +419,27 @@ func registerOpenAIOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		openai.POST("/exchange-code", h.Admin.OpenAIOAuth.ExchangeCode)
 		openai.POST("/refresh-token", h.Admin.OpenAIOAuth.RefreshToken)
 		openai.POST("/accounts/:id/refresh", h.Admin.OpenAIOAuth.RefreshAccountToken)
-		openai.POST("/create-from-oauth", h.Admin.OpenAIOAuth.CreateAccountFromOAuth)
 		openai.POST("/create-from-codex-pat", h.Admin.OpenAIOAuth.CreateAccountFromCodexPAT)
 		openai.GET("/accounts/:id/quota", h.Admin.OpenAIOAuth.QueryQuota)
 		openai.POST("/accounts/:id/reset-quota", h.Admin.OpenAIOAuth.ResetQuota)
+		openai.POST("/create-from-oauth", h.Admin.OpenAIOAuth.CreateAccountFromOAuth)
+		openai.GET("/gateway/status", h.Admin.OpenAIOAuth.GatewayStatus)
+		openai.POST("/gateway/accounts/:id/runtime", h.Admin.OpenAIOAuth.UpdateGatewayRuntime)
+		openai.GET("/gateway/templates", h.Admin.OpenAIOAuth.GatewayTemplates)
+		openai.GET("/gateway/templates/download", h.Admin.OpenAIOAuth.DownloadGatewayTemplate)
 	}
 }
 
 func registerGeminiOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	gemini := admin.Group("/gemini")
 	{
+		gemini.GET("/health", h.Admin.GeminiHealth.Health)
+		gemini.GET("/verify", h.Admin.GeminiHealth.Verify)
 		gemini.POST("/oauth/auth-url", h.Admin.GeminiOAuth.GenerateAuthURL)
 		gemini.POST("/oauth/exchange-code", h.Admin.GeminiOAuth.ExchangeCode)
 		gemini.GET("/oauth/capabilities", h.Admin.GeminiOAuth.GetCapabilities)
+		gemini.POST("/create-from-oauth", h.Admin.GeminiOAuth.CreateAccountFromOAuth)
+		gemini.POST("/accounts/:id/reauthorize-from-oauth", h.Admin.GeminiOAuth.ReauthorizeAccountFromOAuth)
 	}
 }
 
@@ -393,6 +453,9 @@ func registerAntigravityOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers)
 }
 
 func registerGrokOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	if h == nil || h.Admin == nil || h.Admin.GrokOAuth == nil {
+		return
+	}
 	grok := admin.Group("/grok")
 	{
 		grok.POST("/oauth/auth-url", h.Admin.GrokOAuth.GenerateAuthURL)
@@ -687,5 +750,63 @@ func registerAffiliateRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 			users.PUT("/:user_id", h.Admin.Affiliate.UpdateUserSettings)
 			users.DELETE("/:user_id", h.Admin.Affiliate.ClearUserSettings)
 		}
+	}
+}
+
+func registerFormalPoolOnboardingAdminRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	if h == nil || h.Admin == nil || h.Admin.FormalPoolOnboarding == nil {
+		return
+	}
+	onboarding := admin.Group("/claude-onboarding")
+	{
+		sessions := onboarding.Group("/sessions")
+		{
+			sessions.POST("", h.Admin.FormalPoolOnboarding.CreateSession)
+			sessions.GET("/:id", h.Admin.FormalPoolOnboarding.GetSession)
+			sessions.POST("/:id/test-proxy", h.Admin.FormalPoolOnboarding.TestProxy)
+			sessions.POST("/:id/browser-egress-attestation", h.Admin.FormalPoolOnboarding.BrowserEgressAttestation)
+			sessions.POST("/:id/generate-auth-url", h.Admin.FormalPoolOnboarding.GenerateAuthURL)
+			sessions.POST("/:id/exchange-code-and-create", h.Admin.FormalPoolOnboarding.ExchangeCodeAndCreate)
+			sessions.POST("/:id/setup-token-cookie-auth-and-create", h.Admin.FormalPoolOnboarding.SetupTokenCookieAuthAndCreate)
+			sessions.POST("/:id/acceptance", h.Admin.FormalPoolOnboarding.Acceptance)
+			sessions.POST("/:id/activate", h.Admin.FormalPoolOnboarding.Activate)
+			sessions.POST("/:id/refresh-only", h.Admin.FormalPoolOnboarding.RefreshOnly)
+			sessions.POST("/:id/runtime-register", h.Admin.FormalPoolOnboarding.RuntimeRegister)
+			sessions.POST("/:id/healthcheck", h.Admin.FormalPoolOnboarding.Healthcheck)
+			sessions.POST("/:id/start-warming", h.Admin.FormalPoolOnboarding.StartWarming)
+			sessions.POST("/:id/promote-production", h.Admin.FormalPoolOnboarding.PromoteProduction)
+			sessions.POST("/:id/abort", h.Admin.FormalPoolOnboarding.Abort)
+		}
+		accounts := onboarding.Group("/accounts")
+		{
+			accounts.POST("/:id/healthcheck", h.Admin.FormalPoolOnboarding.AccountHealthcheck)
+		}
+	}
+}
+
+func RegisterFormalPoolOnboardingAdminRoutes(
+	v1 *gin.RouterGroup,
+	h *handler.Handlers,
+	jwtAuth middleware.FormalPoolOnboardingJWTAuthMiddleware,
+	principalResolver adminhandler.FormalPoolOnboardingPrincipalResolver,
+	settingService *service.SettingService,
+) {
+	if h == nil || h.Admin == nil || h.Admin.FormalPoolOnboarding == nil {
+		return
+	}
+	admin := v1.Group("/admin")
+	admin.Use(gin.HandlerFunc(jwtAuth))
+	admin.Use(adminhandler.FormalPoolOnboardingPrincipalGuard(principalResolver))
+	admin.Use(middleware.AdminComplianceGuard(settingService))
+	registerFormalPoolOnboardingAdminRoutes(admin, h)
+}
+
+func RegisterFormalPoolOnboardingPublicRoutes(v1 *gin.RouterGroup, h *handler.Handlers) {
+	if h == nil || h.Admin == nil || h.Admin.FormalPoolOnboarding == nil {
+		return
+	}
+	public := v1.Group("/claude-onboarding")
+	{
+		public.GET("/browser-egress-check/:nonce", h.Admin.FormalPoolOnboarding.BrowserEgressCheck)
 	}
 }

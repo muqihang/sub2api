@@ -2,12 +2,11 @@ package handler
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -75,93 +74,78 @@ func TestGatewayEnsureForwardErrorResponse_ResponsesRouteAfterWrittenEmitsRespon
 func TestGatewayForwardErrorAlreadyCommunicated(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	t.Run("json error already written", func(t *testing.T) {
+	t.Run("non-stream JSON error after write is already communicated", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest(http.MethodPost, EndpointMessages, nil)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 		before := c.Writer.Size()
-		c.JSON(http.StatusBadGateway, gin.H{
-			"type": "error",
-			"error": gin.H{
-				"type":    "upstream_error",
-				"message": "Your Claude Code version (2.1.39) is below the minimum required version (2.1.81). Please update: npm update -g @anthropic-ai/claude-code",
-			},
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"type": "error", "error": gin.H{"type": "invalid_request_error"}})
 
-		reported := gatewayForwardErrorAlreadyCommunicated(c, before, errors.New("upstream error: 400 message=version too low"))
+		reported := gatewayForwardErrorAlreadyCommunicated(c, before, assert.AnError)
 
 		require.True(t, reported)
-		body := w.Body.String()
-		assert.NotContains(t, body, `data: {"type":"error"`)
 	})
 
-	t.Run("sse ping still needs fallback", func(t *testing.T) {
+	t.Run("response committed marker is already communicated", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest(http.MethodPost, EndpointMessages, nil)
-		c.Header("Content-Type", "text/event-stream")
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 		before := c.Writer.Size()
-		_, _ = c.Writer.WriteString(":\n\n")
+		c.JSON(http.StatusBadRequest, gin.H{"type": "error"})
+		service.MarkResponseCommitted(c)
 
-		reported := gatewayForwardErrorAlreadyCommunicated(c, before, errors.New("stream read error: unexpected EOF"))
+		reported := gatewayForwardErrorAlreadyCommunicated(c, before, assert.AnError)
 
-		require.False(t, reported)
+		require.True(t, reported)
 	})
 
 	t.Run("no write still needs fallback", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest(http.MethodPost, EndpointMessages, nil)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 
-		reported := gatewayForwardErrorAlreadyCommunicated(c, c.Writer.Size(), errors.New("upstream request failed"))
+		reported := gatewayForwardErrorAlreadyCommunicated(c, c.Writer.Size(), assert.AnError)
 
 		require.False(t, reported)
 	})
 
-	// apikey 场景核心回归：复刻 GatewayService.handleErrorResponse 的 case 400 ——
-	// 原样透传上游 JSON body 后返回 err。此时错误已经完整告知客户端，
-	// handler 不得再追加 data:{"type":"error"} 帧，否则响应被污染成「JSON + 一行 data:」。
-	t.Run("upstream 400 json passthrough via c.Data", func(t *testing.T) {
+	t.Run("partial SSE ping still needs terminal fallback", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest(http.MethodPost, EndpointMessages, nil)
-		before := c.Writer.Size()
-		upstreamBody := []byte(`{"type":"error","error":{"type":"upstream_error","message":"Your Claude Code version (2.1.39) is below the minimum required version (2.1.81). Please update: npm update -g @anthropic-ai/claude-code"}}`)
-		c.Data(http.StatusBadRequest, "application/json", upstreamBody)
-
-		reported := gatewayForwardErrorAlreadyCommunicated(c, before, errors.New("upstream error: 400 message=version too low"))
-
-		require.True(t, reported)
-		body := w.Body.String()
-		assert.NotContains(t, body, `data: {"type":"error"`)
-		// 客户端只应收到上游那一份错误，没有被追加第二份。
-		assert.Equal(t, 1, strings.Count(body, `"type":"error"`))
-	})
-
-	// 流式已开始（已 flush 真实 SSE 事件，不只是 ping）+ 上游中途 400：
-	// HTTP 200 已固化，仍需 handler 补协议级终止帧，故不算「已完整告知」。
-	t.Run("streaming 400 mid-stream still needs fallback", func(t *testing.T) {
-		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest(http.MethodPost, EndpointMessages, nil)
+		c.Request = httptest.NewRequest(http.MethodPost, EndpointResponses, nil)
 		c.Header("Content-Type", "text/event-stream")
 		before := c.Writer.Size()
-		_, _ = c.Writer.WriteString("event: message_start\ndata: {\"type\":\"message_start\"}\n\n")
+		_, _ = c.Writer.WriteString(":\n\n")
 
-		reported := gatewayForwardErrorAlreadyCommunicated(c, before, errors.New("upstream error: 400 message=version too low"))
+		reported := gatewayForwardErrorAlreadyCommunicated(c, before, assert.AnError)
 
 		require.False(t, reported)
 	})
 
-	// 防御边界：err 为 nil 时永远不算「已告知」，避免在成功路径误吞兜底逻辑。
-	t.Run("nil error never reports communicated", func(t *testing.T) {
+	t.Run("nil error still needs normal handling", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest(http.MethodPost, EndpointMessages, nil)
-		c.JSON(http.StatusOK, gin.H{"ok": true})
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+		before := c.Writer.Size()
+		c.JSON(http.StatusBadRequest, gin.H{"type": "error"})
 
-		reported := gatewayForwardErrorAlreadyCommunicated(c, 0, nil)
+		reported := gatewayForwardErrorAlreadyCommunicated(c, before, nil)
 
 		require.False(t, reported)
 	})
+}
+
+func TestGatewayEnsureForwardErrorResponse_SkipsCommittedResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.JSON(http.StatusBadRequest, gin.H{"type": "error", "error": gin.H{"type": "invalid_request_error"}})
+	service.MarkResponseCommitted(c)
+
+	h := &GatewayHandler{}
+	wrote := h.ensureForwardErrorResponse(c, false)
+
+	require.False(t, wrote)
+	require.NotContains(t, w.Body.String(), `"Upstream request failed"`)
 }

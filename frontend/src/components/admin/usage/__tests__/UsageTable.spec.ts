@@ -31,6 +31,8 @@ const messages: Record<string, string> = {
   'usage.original': 'Original',
   'usage.userBilled': 'User billed',
   'usage.accountBilled': 'Account billed',
+  'usage.providerPromptCacheUnsupported': 'Provider prompt cache unsupported',
+  'usage.providerPromptCacheUnsupportedShort': 'Cache unsupported',
   'usage.imageUnit': ' images',
   'usage.imageCount': 'Image count',
   'usage.imageBillingSize': 'Billing size',
@@ -51,6 +53,9 @@ const messages: Record<string, string> = {
   'admin.usage.billingModeToken': 'Token',
   'admin.usage.billingModePerRequest': 'Per request',
   'admin.usage.billingModeImage': 'Image',
+  'usage.ipGeo.batchFetching': 'Fetching...',
+  'usage.ipGeo.batchFetch': 'Batch fetch regions',
+  'usage.ipGeo.pending': '{count} IPs pending',
 }
 
 vi.mock('vue-i18n', async () => {
@@ -208,6 +213,57 @@ describe('admin UsageTable tooltip', () => {
     expect(text).toContain('claude-sonnet-4-20250514')
   })
 
+  it('marks AGNES provider prompt cache as unsupported instead of a cold miss', async () => {
+    const row = {
+      request_id: 'req-agnes-cache-unsupported',
+      model: 'agnes-2.0-flash',
+      actual_cost: 0,
+      total_cost: 0,
+      account_rate_multiplier: 1,
+      rate_multiplier: 1,
+      input_cost: 0,
+      output_cost: 0,
+      cache_creation_cost: 0,
+      cache_read_cost: 0,
+      input_tokens: 24000,
+      output_tokens: 20,
+      cache_read_tokens: 0,
+      cache_creation_tokens: 0,
+      cache_creation_5m_tokens: 0,
+      cache_creation_1h_tokens: 0,
+      image_count: 0,
+      billing_mode: 'token',
+      provider_prompt_cache_status: 'unsupported',
+      provider_prompt_cache_detail: 'AGNES upstream usage does not expose provider prompt cache hit fields.',
+    }
+
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [row],
+        loading: false,
+        columns: [],
+      },
+      global: {
+        stubs: {
+          DataTable: DataTableStub,
+          EmptyState: true,
+          Icon: true,
+          Teleport: true,
+        },
+      },
+    })
+
+    expect(wrapper.text()).toContain('Cache unsupported')
+
+    const tooltipTriggers = wrapper.findAll('.group.relative')
+    await tooltipTriggers[0].trigger('mouseenter')
+    await nextTick()
+
+    const text = wrapper.text()
+    expect(text).toContain('Provider prompt cache unsupported')
+    expect(text).toContain('AGNES upstream usage does not expose provider prompt cache hit fields.')
+  })
+
   it.each([
     {
       name: 'defaulted row',
@@ -331,104 +387,6 @@ describe('admin UsageTable tooltip', () => {
   })
 })
 
-describe('admin UsageTable IP geolocation batch toolbar', () => {
-  const DataTableStubWithIp = {
-    props: ['data'],
-    template: `
-      <div>
-        <div v-for="row in data" :key="row.request_id">
-          <slot name="cell-ip_address" :row="row" />
-        </div>
-      </div>
-    `,
-  }
-
-  beforeEach(() => {
-    ipGeoMocks.getEntry.mockReset()
-    ipGeoMocks.fetchOne.mockReset()
-    ipGeoMocks.fetchBatch.mockReset()
-    ipGeoMocks.getEntry.mockReturnValue({ status: 'idle' })
-  })
-
-  it('does not render the batch toolbar when the ip_address column is not visible', () => {
-    const wrapper = mount(UsageTable, {
-      props: {
-        data: [{ request_id: 'r1', ip_address: '8.8.8.8' }],
-        loading: false,
-        columns: [],
-      },
-      global: { stubs: { DataTable: DataTableStubWithIp, EmptyState: true, Teleport: true } },
-    })
-    expect(wrapper.text()).not.toContain('usage.ipGeo.batchFetch')
-  })
-
-  it('renders the batch toolbar with a pending count when the ip_address column is visible', () => {
-    const wrapper = mount(UsageTable, {
-      props: {
-        data: [
-          { request_id: 'r1', ip_address: '8.8.8.8' },
-          { request_id: 'r2', ip_address: '8.8.8.8' },
-          { request_id: 'r3', ip_address: '1.1.1.1' },
-        ],
-        loading: false,
-        columns: [{ key: 'ip_address', label: 'IP' }],
-      },
-      global: { stubs: { DataTable: DataTableStubWithIp, EmptyState: true, Teleport: true } },
-    })
-    expect(wrapper.text()).toContain('usage.ipGeo.pending')
-    const button = wrapper.find('button')
-    expect(button.exists()).toBe(true)
-    expect((button.element as HTMLButtonElement).disabled).toBe(false)
-  })
-
-  it('fetches deduplicated IPs from the current page when the batch button is clicked', async () => {
-    ipGeoMocks.fetchBatch.mockResolvedValue(true)
-    const wrapper = mount(UsageTable, {
-      props: {
-        data: [
-          { request_id: 'r1', ip_address: '8.8.8.8' },
-          { request_id: 'r2', ip_address: '8.8.8.8' },
-          { request_id: 'r3', ip_address: '1.1.1.1' },
-        ],
-        loading: false,
-        columns: [{ key: 'ip_address', label: 'IP' }],
-      },
-      global: { stubs: { DataTable: DataTableStubWithIp, EmptyState: true, Teleport: true } },
-    })
-    await wrapper.find('button').trigger('click')
-    expect(ipGeoMocks.fetchBatch).toHaveBeenCalledWith(['8.8.8.8', '1.1.1.1'])
-    expect(wrapper.emitted('ipGeoBatchFailed')).toBeUndefined()
-  })
-
-  it('emits ipGeoBatchFailed when the batch request reports a network-level failure', async () => {
-    ipGeoMocks.fetchBatch.mockResolvedValue(false)
-    const wrapper = mount(UsageTable, {
-      props: {
-        data: [{ request_id: 'r1', ip_address: '8.8.8.8' }],
-        loading: false,
-        columns: [{ key: 'ip_address', label: 'IP' }],
-      },
-      global: { stubs: { DataTable: DataTableStubWithIp, EmptyState: true, Teleport: true } },
-    })
-    await wrapper.find('button').trigger('click')
-    expect(wrapper.emitted('ipGeoBatchFailed')).toHaveLength(1)
-  })
-
-  it('renders IpGeoCell content for ip_address cells', () => {
-    ipGeoMocks.getEntry.mockReturnValue({ status: 'success', label: 'CN · Guangdong · Shenzhen', detail: {} })
-    const wrapper = mount(UsageTable, {
-      props: {
-        data: [{ request_id: 'r1', ip_address: '121.35.47.43' }],
-        loading: false,
-        columns: [{ key: 'ip_address', label: 'IP' }],
-      },
-      global: { stubs: { DataTable: DataTableStubWithIp, EmptyState: true, Teleport: true } },
-    })
-    expect(wrapper.text()).toContain('121.35.47.43')
-    expect(wrapper.text()).toContain('CN · Guangdong · Shenzhen')
-  })
-})
-
 // A DataTable stub that also renders cell-user, so the deleted badge can be asserted.
 const DataTableStubWithUser = {
   props: ['data'],
@@ -514,5 +472,104 @@ describe('admin UsageTable deleted-user badge', () => {
 
     expect(wrapper.text()).not.toContain('Deleted')
     expect(wrapper.text()).toContain('active@test.com')
+  })
+})
+
+
+describe('admin UsageTable IP geolocation batch toolbar', () => {
+  const DataTableStubWithIp = {
+    props: ['data'],
+    template: `
+      <div>
+        <div v-for="row in data" :key="row.request_id">
+          <slot name="cell-ip_address" :row="row" />
+        </div>
+      </div>
+    `,
+  }
+
+  beforeEach(() => {
+    ipGeoMocks.getEntry.mockReset()
+    ipGeoMocks.fetchOne.mockReset()
+    ipGeoMocks.fetchBatch.mockReset()
+    ipGeoMocks.getEntry.mockReturnValue({ status: 'idle' })
+  })
+
+  it('does not render the batch toolbar when the ip_address column is not visible', () => {
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [{ request_id: 'r1', ip_address: '8.8.8.8' }],
+        loading: false,
+        columns: [],
+      },
+      global: { stubs: { DataTable: DataTableStubWithIp, EmptyState: true, Teleport: true } },
+    })
+    expect(wrapper.text()).not.toContain('Batch fetch regions')
+  })
+
+  it('renders the batch toolbar with a pending count when the ip_address column is visible', () => {
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [
+          { request_id: 'r1', ip_address: '8.8.8.8' },
+          { request_id: 'r2', ip_address: '8.8.8.8' },
+          { request_id: 'r3', ip_address: '1.1.1.1' },
+        ],
+        loading: false,
+        columns: [{ key: 'ip_address', label: 'IP' }],
+      },
+      global: { stubs: { DataTable: DataTableStubWithIp, EmptyState: true, Teleport: true } },
+    })
+    expect(wrapper.text()).toContain('IPs pending')
+    const button = wrapper.find('button')
+    expect(button.exists()).toBe(true)
+    expect((button.element as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('fetches deduplicated IPs from the current page when the batch button is clicked', async () => {
+    ipGeoMocks.fetchBatch.mockResolvedValue(true)
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [
+          { request_id: 'r1', ip_address: '8.8.8.8' },
+          { request_id: 'r2', ip_address: '8.8.8.8' },
+          { request_id: 'r3', ip_address: '1.1.1.1' },
+        ],
+        loading: false,
+        columns: [{ key: 'ip_address', label: 'IP' }],
+      },
+      global: { stubs: { DataTable: DataTableStubWithIp, EmptyState: true, Teleport: true } },
+    })
+    await wrapper.find('button').trigger('click')
+    expect(ipGeoMocks.fetchBatch).toHaveBeenCalledWith(['8.8.8.8', '1.1.1.1'])
+    expect(wrapper.emitted('ipGeoBatchFailed')).toBeUndefined()
+  })
+
+  it('emits ipGeoBatchFailed when the batch request reports a network-level failure', async () => {
+    ipGeoMocks.fetchBatch.mockResolvedValue(false)
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [{ request_id: 'r1', ip_address: '8.8.8.8' }],
+        loading: false,
+        columns: [{ key: 'ip_address', label: 'IP' }],
+      },
+      global: { stubs: { DataTable: DataTableStubWithIp, EmptyState: true, Teleport: true } },
+    })
+    await wrapper.find('button').trigger('click')
+    expect(wrapper.emitted('ipGeoBatchFailed')).toHaveLength(1)
+  })
+
+  it('renders IpGeoCell content for ip_address cells', () => {
+    ipGeoMocks.getEntry.mockReturnValue({ status: 'success', label: 'CN · Guangdong · Shenzhen', detail: {} })
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [{ request_id: 'r1', ip_address: '121.35.47.43' }],
+        loading: false,
+        columns: [{ key: 'ip_address', label: 'IP' }],
+      },
+      global: { stubs: { DataTable: DataTableStubWithIp, EmptyState: true, Teleport: true } },
+    })
+    expect(wrapper.text()).toContain('121.35.47.43')
+    expect(wrapper.text()).toContain('CN · Guangdong · Shenzhen')
   })
 })

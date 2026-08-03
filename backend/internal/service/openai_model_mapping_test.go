@@ -104,6 +104,15 @@ func TestResolveOpenAIForwardModel(t *testing.T) {
 			expectedModel:      "gpt-5.5-pro",
 		},
 		{
+			name: "preserves gpt-5.6 model instead of group default",
+			account: &Account{
+				Credentials: map[string]any{},
+			},
+			requestedModel:     "gpt-5.6-sol",
+			defaultMappedModel: "gpt-5.5",
+			expectedModel:      "gpt-5.6-sol",
+		},
+		{
 			name: "preserves compact-spelled gpt5.5 instead of group default",
 			account: &Account{
 				Credentials: map[string]any{},
@@ -253,18 +262,6 @@ func TestNormalizeOpenAIModelForUpstream(t *testing.T) {
 		want    string
 	}{
 		{
-			name:    "oauth routes bare GPT-5.6 alias to Sol",
-			account: &Account{Type: AccountTypeOAuth},
-			model:   "gpt-5.6",
-			want:    "gpt-5.6-sol",
-		},
-		{
-			name:    "oauth routes provider-prefixed GPT-5.6 alias to Sol",
-			account: &Account{Type: AccountTypeOAuth},
-			model:   "openai/gpt-5.6",
-			want:    "gpt-5.6-sol",
-		},
-		{
 			name:    "oauth preserves unknown non codex model",
 			account: &Account{Type: AccountTypeOAuth},
 			model:   "gemini-3-flash-preview",
@@ -289,16 +286,16 @@ func TestNormalizeOpenAIModelForUpstream(t *testing.T) {
 			want:    "gpt-5.5-pro",
 		},
 		{
+			name:    "oauth preserves GPT-5.6 tier model",
+			account: &Account{Type: AccountTypeOAuth},
+			model:   "openai/gpt-5.6-terra-high",
+			want:    "gpt-5.6-terra",
+		},
+		{
 			name:    "oauth preserves codex auto review model",
 			account: &Account{Type: AccountTypeOAuth},
 			model:   "codex-auto-review",
 			want:    "codex-auto-review",
-		},
-		{
-			name:    "apikey preserves official bare GPT-5.6 alias",
-			account: &Account{Type: AccountTypeAPIKey},
-			model:   "gpt-5.6",
-			want:    "gpt-5.6",
 		},
 		{
 			name:    "apikey preserves custom compatible model",
@@ -337,16 +334,23 @@ func TestUsageBillingModelCandidatesPreserveCodexAutoReviewModel(t *testing.T) {
 	}
 }
 
-func TestUsageBillingModelCandidatesPreserveGPT55ProModel(t *testing.T) {
-	candidates := usageBillingModelCandidates("openai/gpt-5.5-pro")
-
-	expected := []string{"openai/gpt-5.5-pro", "gpt-5.5-pro"}
-	if len(candidates) != len(expected) {
-		t.Fatalf("usageBillingModelCandidates(openai/gpt-5.5-pro) = %#v, want %#v", candidates, expected)
+func TestUsageBillingModelCandidatesPreserveNewOpenAIModelNames(t *testing.T) {
+	tests := map[string][]string{
+		"openai/gpt-5.5-pro":       {"openai/gpt-5.5-pro", "gpt-5.5-pro"},
+		"openai/gpt-5.6-luna-high": {"openai/gpt-5.6-luna-high", "gpt-5.6-luna-high", "gpt-5.6-luna"},
 	}
-	for i := range expected {
-		if candidates[i] != expected[i] {
-			t.Fatalf("usageBillingModelCandidates(openai/gpt-5.5-pro) = %#v, want %#v", candidates, expected)
-		}
+
+	for model, expected := range tests {
+		t.Run(model, func(t *testing.T) {
+			candidates := usageBillingModelCandidates(model)
+			if len(candidates) != len(expected) {
+				t.Fatalf("usageBillingModelCandidates(%q) = %#v, want %#v", model, candidates, expected)
+			}
+			for i := range expected {
+				if candidates[i] != expected[i] {
+					t.Fatalf("usageBillingModelCandidates(%q) = %#v, want %#v", model, candidates, expected)
+				}
+			}
+		})
 	}
 }

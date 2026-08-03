@@ -337,7 +337,6 @@ func TestAccountGetModelMapping_AntigravityNormalizesGemini31ProAliases(t *testi
 	}
 
 	mapping := account.GetModelMapping()
-
 	if got := mapping["gemini-3.1-pro"]; got != domain.AntigravityGemini31ProAgentModel {
 		t.Fatalf("expected gemini-3.1-pro to map to %q, got %q", domain.AntigravityGemini31ProAgentModel, got)
 	}
@@ -364,7 +363,6 @@ func TestAccountGetModelMapping_AntigravityPreservesGemini31ProOverrides(t *test
 	}
 
 	mapping := account.GetModelMapping()
-
 	if got := mapping["gemini-3.1-pro-high"]; got != "custom-high" {
 		t.Fatalf("expected gemini-3.1-pro-high override to be preserved, got %q", got)
 	}
@@ -390,7 +388,6 @@ func TestAccountGetModelMapping_AntigravityGemini31ProAliasesRespectWildcard(t *
 	}
 
 	mapping := account.GetModelMapping()
-
 	if got := mapping["gemini-3.1-pro"]; got != "" {
 		t.Fatalf("expected gemini-3.1-pro exact alias to stay unset when wildcard exists, got %q", got)
 	}
@@ -506,8 +503,8 @@ func TestAccountGetModelMapping_AntigravityEnsuresGeminiDefaultPassthroughs(t *t
 	if mapping["gemini-3-flash"] != "gemini-3-flash" {
 		t.Fatalf("expected gemini-3-flash passthrough to be auto-filled, got: %q", mapping["gemini-3-flash"])
 	}
-	if mapping["gemini-3.1-pro-high"] != "gemini-3.1-pro-high" {
-		t.Fatalf("expected gemini-3.1-pro-high passthrough to be auto-filled, got: %q", mapping["gemini-3.1-pro-high"])
+	if mapping["gemini-3.1-pro-high"] != domain.AntigravityGemini31ProAgentModel {
+		t.Fatalf("expected gemini-3.1-pro-high to use the agent route, got: %q", mapping["gemini-3.1-pro-high"])
 	}
 	if mapping["gemini-3.1-pro-low"] != "gemini-3.1-pro-low" {
 		t.Fatalf("expected gemini-3.1-pro-low passthrough to be auto-filled, got: %q", mapping["gemini-3.1-pro-low"])
@@ -536,6 +533,28 @@ func TestAccountGetModelMapping_AntigravityRespectsWildcardOverride(t *testing.T
 	}
 	if mapped := account.GetMappedModel("gemini-3-flash"); mapped != "gemini-3.1-pro-high" {
 		t.Fatalf("expected wildcard mapping to stay effective, got: %q", mapped)
+	}
+}
+
+func TestAccountGetModelMapping_AntigravityAutoFillsFablePassthrough(t *testing.T) {
+	account := &Account{
+		Platform: PlatformAntigravity,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"claude-sonnet-4-6": "claude-sonnet-4-6",
+			},
+		},
+	}
+
+	mapping := account.GetModelMapping()
+	if mapping["claude-fable-5"] != "claude-fable-5" {
+		t.Fatalf("expected claude-fable-5 passthrough to be auto-filled, got: %q", mapping["claude-fable-5"])
+	}
+	if !account.IsModelSupported("claude-fable-5") {
+		t.Fatal("expected existing Antigravity mapping account to support claude-fable-5")
+	}
+	if mapped := account.GetMappedModel("claude-fable-5"); mapped != "claude-fable-5" {
+		t.Fatalf("expected claude-fable-5 passthrough, got: %q", mapped)
 	}
 }
 

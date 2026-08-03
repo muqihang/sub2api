@@ -566,7 +566,7 @@ func normalizeAnthropicInputSchema(schema json.RawMessage) json.RawMessage {
 
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(schema, &m); err != nil {
-		return json.RawMessage(`{"type":"object","properties":{}}`)
+		return json.RawMessage(emptyObjectSchema)
 	}
 
 	typeRaw, ok := m["type"]

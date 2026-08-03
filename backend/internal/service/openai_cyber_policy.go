@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -13,6 +14,8 @@ import (
 // handler 在 Forward 返回后读取以触发风控记录、邮件与 tokens=0 用量行。
 const opsCyberPolicyKey = "ops_cyber_policy"
 
+const safeCyberPolicyMessage = "request blocked by upstream cyber policy"
+
 // errOpenAICyberPolicyForwarded 表示 cyber_policy 已按当前端点格式透传给客户端
 // （error 已写出/下发）。compat 路径 ForwardAsChatCompletions / ForwardAsAnthropic 出口
 // 据此丢弃 result 并返回该哨兵，使 handler 落入 tokens=0 免费用量行（对齐 /v1/responses），
@@ -22,8 +25,8 @@ var errOpenAICyberPolicyForwarded = errors.New("openai cyber_policy forwarded to
 // CyberPolicyMark 记录一次 cyber_policy 硬阻断的上游证据。
 type CyberPolicyMark struct {
 	Code           string // 固定 "cyber_policy"
-	Message        string // 上游 error.message
-	Body           string // 上游 response.failed / 400 原始 body（已截断；未脱敏，ops_error 落库由 sanitizeErrorBodyForStorage、风控日志由 redactContentModerationSecrets 统一脱敏）
+	Message        string // 已脱敏并限长的上游 error.message
+	Body           string // 仅包含 code/status/token counts 的结构化安全摘要
 	UpstreamStatus int    // 上游 HTTP 状态（流式=200，非流式=400）
 	UpstreamInTok  int    // 上游已报 input tokens（如有）
 	UpstreamOutTok int    // 上游已报 output tokens（如有）
@@ -39,9 +42,25 @@ func MarkOpsCyberPolicy(c *gin.Context, mark CyberPolicyMark) {
 		return
 	}
 	mark.Code = "cyber_policy"
-	mark.Message = strings.TrimSpace(mark.Message)
-	mark.Body = strings.TrimSpace(mark.Body)
+	mark.Message = safeCyberPolicyMessage
+	mark.Body = safeCyberPolicyEvidence(mark)
 	c.Set(opsCyberPolicyKey, &mark)
+}
+
+func safeCyberPolicyEvidence(mark CyberPolicyMark) string {
+	evidence := struct {
+		Event              string `json:"event"`
+		UpstreamStatusCode int    `json:"upstream_status_code"`
+		InputTokens        int    `json:"input_tokens"`
+		OutputTokens       int    `json:"output_tokens"`
+	}{
+		Event:              "cyber_policy",
+		UpstreamStatusCode: mark.UpstreamStatus,
+		InputTokens:        mark.UpstreamInTok,
+		OutputTokens:       mark.UpstreamOutTok,
+	}
+	payload, _ := json.Marshal(evidence)
+	return string(payload)
 }
 
 // GetOpsCyberPolicy 返回 cyber 标记，未命中（或已被 Clear）返回 nil。

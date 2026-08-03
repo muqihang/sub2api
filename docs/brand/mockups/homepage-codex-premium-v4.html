@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>逐梦 Workstation — 下一代 AI 工作台</title>
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        display: ['Space Grotesk', 'sans-serif'],
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        dark: '#030407',
+                        surface: '#0d1117',
+                        card: 'rgba(255, 255, 255, 0.02)',
+                        borderLight: 'rgba(255, 255, 255, 0.06)',
+                        brand: {
+                            400: '#FBBF24',
+                            500: '#F59E0B',
+                            glow: 'rgba(251, 191, 36, 0.15)'
+                        }
+                    },
+                    animation: {
+                        'float': 'float 6s ease-in-out infinite',
+                        'blob': 'blob 10s infinite alternate',
+                        'bus': 'bus 2.5s cubic-bezier(0.4, 0, 0.2, 1) infinite',
+                    },
+                    keyframes: {
+                        float: {
+                            '0%, 100%': { transform: 'translateY(0)' },
+                            '50%': { transform: 'translateY(-10px)' },
+                        },
+                        blob: {
+                            '0%': { transform: 'translate(0px, 0px) scale(1)' },
+                            '33%': { transform: 'translate(30px, -50px) scale(1.1)' },
+                            '66%': { transform: 'translate(-20px, 20px) scale(0.9)' },
+                            '100%': { transform: 'translate(0px, 0px) scale(1)' },
+                        },
+                        bus: {
+                            '0%': { left: '-30%' },
+                            '100%': { left: '130%' },
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background-color: #030407;
+            color: #ffffff;
+            -webkit-font-smoothing: antialiased;
+        }
+        /* Custom Noise Overlay */
+        .bg-noise {
+            position: fixed;
+            inset: 0;
+            z-index: 50;
+            pointer-events: none;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+            opacity: 0.025;
+            mix-blend-mode: overlay;
+        }
+        /* Refined Glass Card */
+        .glass-panel {
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0.01) 100%);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            box-shadow: 0 30px 60px -20px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+        }
+        .glass-panel:hover {
+            border-color: rgba(251, 191, 36, 0.2);
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.04) 0%, rgba(255, 255, 255, 0.01) 100%);
+        }
+        /* Glow Accents */
+        .text-glow {
+            text-shadow: 0 0 20px rgba(251, 191, 36, 0.3);
+        }
+    </style>
+</head>
+<body class="relative overflow-x-hidden selection:bg-brand-500/30">
+
+    <div class="bg-noise"></div>
+
+    <!-- Navigation -->
+    <nav class="fixed top-0 w-full z-40 border-b border-borderLight bg-dark/60 backdrop-blur-xl">
+        <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+            <div class="flex items-center gap-3 font-display font-bold text-lg tracking-tight">
+                <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-brand-400 to-orange-500 p-[1px]">
+                    <div class="w-full h-full bg-dark rounded-[7px] flex items-center justify-center text-brand-400 text-sm">Z</div>
+                </div>
+                逐梦 Workstation
+            </div>
+            <div class="hidden md:flex items-center gap-8 text-sm font-medium text-gray-400">
+                <a href="#products" class="hover:text-white transition-colors">产品生态</a>
+                <a href="#solutions" class="hover:text-white transition-colors">团队与企业</a>
+                <a href="#" class="hover:text-white transition-colors">文档</a>
+            </div>
+            <div class="flex items-center gap-4 text-sm font-medium">
+                <button class="text-gray-400 hover:text-white font-mono text-xs px-2 py-1 border border-borderLight rounded hidden sm:block">中/EN</button>
+                <a href="#" class="text-gray-400 hover:text-white hidden sm:block">登录</a>
+                <a href="#" class="bg-white text-dark px-4 py-2 rounded-lg font-semibold hover:bg-gray-200 transition-colors">下载桌面版</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="relative pt-40 pb-32">
+        <!-- Ambient Glows -->
+        <div class="absolute top-1/3 left-1/2 -translate-x-1/2 w-[800px] h-[500px] bg-brand-500/10 rounded-full blur-[120px] pointer-events-none"></div>
+        <div class="absolute top-1/2 left-1/4 w-[400px] h-[400px] bg-indigo-500/10 rounded-full blur-[100px] animate-blob pointer-events-none"></div>
+
+        <div class="max-w-7xl mx-auto px-6 relative z-10 text-center">
+            <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-brand-500/10 border border-brand-500/20 text-brand-400 text-xs font-mono mb-8 tracking-wide">
+                <span class="w-1.5 h-1.5 rounded-full bg-brand-400 shadow-[0_0_8px_rgba(251,191,36,0.8)] animate-pulse"></span>
+                桌面工作台 · 模型服务 · 团队治理
+            </div>
+
+            <h1 class="text-5xl md:text-7xl lg:text-[5.5rem] font-display font-bold tracking-tight mb-8 leading-[1.1]">
+                统一调度工具与模型。<br/>
+                <span class="text-transparent bg-clip-text bg-gradient-to-r from-amber-200 via-brand-400 to-orange-400 text-glow">
+                    你的下一代 AI 工作台。
+                </span>
+            </h1>
+
+            <p class="text-lg md:text-xl text-gray-400 max-w-2xl mx-auto mb-10 leading-relaxed font-normal">
+                将零散的开发工具、庞杂的模型服务与团队凭证收敛于一身。<br/>
+                <strong class="text-gray-200 font-medium">个人开箱即用，团队统一部署，企业私有化管控。</strong>
+            </p>
+
+            <div class="flex flex-col sm:flex-row justify-center gap-4">
+                <a href="#" class="bg-gradient-to-b from-brand-400 to-orange-500 text-dark px-8 py-4 rounded-xl font-semibold text-lg hover:shadow-[0_0_30px_rgba(251,191,36,0.3)] transition-shadow">
+                    免费下载 (macOS)
+                </a>
+                <a href="#solutions" class="glass-panel text-white px-8 py-4 rounded-xl font-semibold text-lg flex items-center justify-center gap-2">
+                    查看企业方案
+                    <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                </a>
+            </div>
+        </div>
+
+        <!-- The Spine / Architecture Visualization -->
+        <div class="max-w-5xl mx-auto px-6 mt-28 relative z-10 animate-float">
+            <div class="glass-panel rounded-3xl p-6 md:p-10 relative overflow-hidden">
+                <!-- Background Decorative Grid -->
+                <div class="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iNDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHBhdGggZD0iTTAgMGg0MHY0MEgweiIgZmlsbD0ibm9uZSIvPjxwYXRoIGQ9Ik0wIDFWMGgxdjFIMHptMzkgM1YwaDF2MUgzOXptMCAzNnYtMWgxdjFINzltLTM5IDB2LTFoMXYxSDB6IiBmaWxsPSJyZ2JhKDI1NSwyNTUsMjU1LDAuMDUpIi8+PC9zdmc+')] opacity-50 mask-image:linear-gradient(to_bottom,white,transparent)"></div>
+
+                <div class="flex flex-col md:flex-row items-stretch justify-between gap-6 relative z-10">
+
+                    <!-- Animated Routing Line (Desktop) -->
+                    <div class="hidden md:block absolute top-1/2 left-[15%] right-[15%] h-[1px] bg-borderLight -translate-y-1/2 overflow-hidden">
+                        <div class="absolute top-0 h-full w-32 bg-gradient-to-r from-transparent via-brand-400 to-transparent animate-bus opacity-70"></div>
+                    </div>
+
+                    <!-- Left: Ecosystem -->
+                    <div class="flex flex-col gap-3 w-full md:w-64">
+                        <div class="text-xs font-mono text-gray-500 uppercase tracking-widest mb-2 pl-2">Client / Tools</div>
+                        <div class="glass-panel rounded-xl p-4 flex items-center gap-4 transition-transform hover:-translate-y-1">
+                            <div class="w-10 h-10 rounded bg-white/5 border border-white/10 flex items-center justify-center text-xs font-mono">Cx</div>
+                            <div>
+                                <div class="font-bold text-sm text-gray-200">Codex Desktop</div>
+                                <div class="text-[10px] text-brand-400 font-mono flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-brand-400"></span>Connected</div>
+                            </div>
+                        </div>
+                        <div class="glass-panel rounded-xl p-4 flex items-center gap-4 transition-transform hover:-translate-y-1">
+                            <div class="w-10 h-10 rounded bg-white/5 border border-white/10 flex items-center justify-center text-xs font-mono">Cl</div>
+                            <div>
+                                <div class="font-bold text-sm text-gray-200">Claude Code</div>
+                                <div class="text-[10px] text-gray-500 font-mono flex items-center gap-1"><span class="w-1.5 h-1.5 rounded-full bg-gray-500"></span>Pending</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Center: Zhumeng Control Plane -->
+                    <div class="flex items-center justify-center w-full md:w-80 my-8 md:my-0 relative">
+                        <!-- Glow behind center -->
+                        <div class="absolute inset-0 bg-brand-500/20 blur-3xl rounded-full"></div>
+                        <div class="w-full bg-[#0a0d14] border border-brand-500/40 rounded-[2rem] p-8 text-center shadow-[0_0_50px_-15px_rgba(251,191,36,0.3)] relative z-10">
+                            <div class="text-brand-400 text-[10px] font-mono mb-3 uppercase tracking-[0.2em]">Workstation</div>
+                            <div class="font-display font-bold text-2xl mb-2 text-white">逐梦控制台</div>
+                            <div class="inline-block px-3 py-1 rounded-md bg-white/5 border border-borderLight text-gray-400 font-mono text-xs">
+                                127.0.0.1 (Local First)
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Right: Models -->
+                    <div class="flex flex-col gap-3 w-full md:w-64">
+                        <div class="text-xs font-mono text-gray-500 uppercase tracking-widest mb-2 text-right pr-2">Model Providers</div>
+                        <div class="glass-panel rounded-xl p-4 flex items-center justify-end gap-4 transition-transform hover:-translate-y-1">
+                            <div class="text-right">
+                                <div class="font-bold text-sm text-gray-200">DeepSeek-Coder V4</div>
+                                <div class="text-[10px] text-gray-400 font-mono">Active Model</div>
+                            </div>
+                            <div class="w-10 h-10 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
+                                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                            </div>
+                        </div>
+                        <div class="glass-panel rounded-xl p-4 flex items-center justify-end gap-4 transition-transform hover:-translate-y-1">
+                            <div class="text-right">
+                                <div class="font-bold text-sm text-gray-200">Custom BYOK</div>
+                                <div class="text-[10px] text-gray-400 font-mono">Enterprise Policy</div>
+                            </div>
+                            <div class="w-10 h-10 rounded-full bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400">
+                                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Bento Grid Value Props -->
+    <section class="py-32 relative border-t border-borderLight bg-gradient-to-b from-dark to-[#080a10]">
+        <div class="max-w-7xl mx-auto px-6">
+            <div class="mb-16">
+                <div class="text-brand-400 font-mono text-sm tracking-widest uppercase mb-4">Core Value</div>
+                <h2 class="text-4xl md:text-5xl font-display font-bold mb-6 leading-tight">
+                    不是再多一个工具，<br/>而是一层<span class="text-brand-400">统一的控制面</span>。
+                </h2>
+                <p class="text-gray-400 text-lg max-w-2xl">把工具入口、模型目录、凭证和成本报表收归一处。<br>告别各自为战，让团队使用 AI 的方式真正可见、可控。</p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <!-- Large Card: Governance Comparison -->
+                <div class="md:col-span-2 glass-panel rounded-[2rem] p-8 md:p-12 relative overflow-hidden group">
+                    <div class="absolute top-0 right-0 w-96 h-96 bg-brand-500/5 rounded-full blur-[80px] group-hover:bg-brand-500/10 transition-colors"></div>
+                    <div class="relative z-10 flex flex-col h-full justify-between">
+                        <div class="mb-12">
+                            <h3 class="text-2xl font-display font-bold mb-3">告别零散采购，拥抱统一治理</h3>
+                            <p class="text-gray-400">模型调用不再是一笔笔糊涂账，将散落的 Key 和账单变为团队级的数字资产。</p>
+                        </div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div class="bg-dark/50 border border-red-500/10 rounded-2xl p-6 opacity-70">
+                                <div class="text-xs font-mono text-red-400 uppercase mb-4">Before (Chaos)</div>
+                                <ul class="space-y-3 text-sm text-gray-500">
+                                    <li class="flex items-center gap-2"><svg class="w-4 h-4 text-red-500/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg> 工具和模型分散配置</li>
+                                    <li class="flex items-center gap-2"><svg class="w-4 h-4 text-red-500/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg> 明文 Key 满天飞</li>
+                                    <li class="flex items-center gap-2"><svg class="w-4 h-4 text-red-500/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg> 成本黑盒不可追溯</li>
+                                </ul>
+                            </div>
+                            <div class="bg-brand-500/5 border border-brand-500/20 rounded-2xl p-6 relative">
+                                <div class="absolute -top-3 right-4 px-3 py-1 bg-brand-500 text-dark text-xs font-bold rounded-full">Zhumeng</div>
+                                <div class="text-xs font-mono text-brand-400 uppercase mb-4">After (Governance)</div>
+                                <ul class="space-y-3 text-sm text-gray-300">
+                                    <li class="flex items-center gap-2"><svg class="w-4 h-4 text-brand-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> 统一工作台调度分发</li>
+                                    <li class="flex items-center gap-2"><svg class="w-4 h-4 text-brand-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> Key Vault 金库下发</li>
+                                    <li class="flex items-center gap-2"><svg class="w-4 h-4 text-brand-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> 按成员/项目精确审计</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Small Card: Local First -->
+                <div class="glass-panel rounded-[2rem] p-8 relative flex flex-col justify-between">
+                    <div>
+                        <div class="w-12 h-12 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-white mb-6">
+                            <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+                        </div>
+                        <h3 class="text-xl font-display font-bold mb-3">本地优先，数据不出域</h3>
+                        <p class="text-sm text-gray-400 leading-relaxed">逐梦的核心路由层运行在 127.0.0.1。个人及团队凭证绝不经过我们的云端，彻底消除安全顾虑。</p>
+                    </div>
+                    <div class="mt-8 font-mono text-[10px] text-gray-500 uppercase">Privacy By Design</div>
+                </div>
+
+                <!-- Small Card: Seamless -->
+                <div class="glass-panel rounded-[2rem] p-8 relative flex flex-col justify-between">
+                    <div>
+                        <div class="w-12 h-12 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-white mb-6">
+                            <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" /></svg>
+                        </div>
+                        <h3 class="text-xl font-display font-bold mb-3">顺畅保留原生体验</h3>
+                        <p class="text-sm text-gray-400 leading-relaxed">你依然在 Codex 或 Claude Code 内工作。逐梦只做底层协议代理与策略调度，无需改变既有工作流。</p>
+                    </div>
+                    <div class="mt-8 font-mono text-[10px] text-gray-500 uppercase">Seamless Integration</div>
+                </div>
+
+                <!-- Medium Card: Ecosystem -->
+                <div class="md:col-span-2 glass-panel rounded-[2rem] p-8 relative flex flex-col md:flex-row items-center gap-8 overflow-hidden">
+                    <div class="flex-1">
+                        <h3 class="text-2xl font-display font-bold mb-3">一次部署，接入全系生态</h3>
+                        <p class="text-gray-400 mb-6">区域模型目录与团队策略下发。国内合规模型、全球大模型，依据你的物理与组织边界自动适配。</p>
+                        <a href="#" class="text-brand-400 font-semibold text-sm flex items-center gap-2 hover:gap-3 transition-all">探索模型目录 &rarr;</a>
+                    </div>
+                    <div class="w-full md:w-1/2 h-32 relative">
+                        <!-- Abstract Nodes -->
+                        <div class="absolute inset-0 flex items-center justify-around opacity-50">
+                            <div class="px-4 py-2 rounded-lg border border-white/10 font-mono text-xs bg-dark/50">DeepSeek</div>
+                            <div class="w-8 border-t border-dashed border-white/20"></div>
+                            <div class="px-4 py-2 rounded-lg border border-brand-500/30 font-mono text-xs bg-brand-500/10 text-brand-400">Router</div>
+                            <div class="w-8 border-t border-dashed border-white/20"></div>
+                            <div class="px-4 py-2 rounded-lg border border-white/10 font-mono text-xs bg-dark/50">Qwen</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Segments / Scale -->
+    <section id="solutions" class="py-32 relative border-t border-borderLight bg-dark">
+        <div class="max-w-7xl mx-auto px-6">
+            <div class="text-center mb-20">
+                <h2 class="text-4xl md:text-5xl font-display font-bold mb-6">适应每个阶段的规模。</h2>
+                <p class="text-gray-400 text-lg">从个人尝鲜到万人企业管控，平滑升级你的 AI 生产力。</p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+                <!-- Personal -->
+                <div class="p-8 rounded-3xl border border-white/5 bg-surface hover:bg-surface2 transition-colors flex flex-col">
+                    <div class="font-mono text-xs text-gray-500 uppercase tracking-widest mb-4">For Individuals</div>
+                    <h3 class="text-2xl font-display font-bold mb-4">个人极客版</h3>
+                    <p class="text-gray-400 mb-8 flex-1">完美接管常用开发工具，自带 API Key，彻底免除繁杂配置。</p>
+                    <div class="pt-8 border-t border-borderLight flex items-end justify-between">
+                        <div>
+                            <div class="text-2xl font-bold">Free</div>
+                            <div class="text-xs text-gray-500 mt-1">本地部署，永久免费</div>
+                        </div>
+                        <button class="bg-white/10 hover:bg-white/20 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors">下载</button>
+                    </div>
+                </div>
+
+                <!-- Team -->
+                <div class="p-8 rounded-3xl border border-brand-500/30 bg-gradient-to-b from-[#11110a] to-surface relative shadow-[0_0_40px_rgba(251,191,36,0.05)] flex flex-col transform md:-translate-y-4">
+                    <div class="absolute -top-3 left-8 bg-brand-500 text-dark px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider">Most Popular</div>
+                    <div class="font-mono text-xs text-brand-400 uppercase tracking-widest mb-4">For R&D Teams</div>
+                    <h3 class="text-2xl font-display font-bold mb-4">团队控制台</h3>
+                    <p class="text-gray-300 mb-8 flex-1">集中管理 Key Vault，设置成本配额告警，下发统一路由策略与模型目录。</p>
+                    <div class="pt-8 border-t border-brand-500/20 flex items-end justify-between">
+                        <div>
+                            <div class="text-2xl font-bold text-white">按席位订阅</div>
+                            <div class="text-xs text-gray-400 mt-1">透明的成本归因报表</div>
+                        </div>
+                        <button class="bg-brand-400 hover:bg-brand-500 text-dark px-4 py-2 rounded-lg text-sm font-semibold transition-colors">联系销售</button>
+                    </div>
+                </div>
+
+                <!-- Enterprise -->
+                <div class="p-8 rounded-3xl border border-white/5 bg-surface hover:bg-surface2 transition-colors flex flex-col">
+                    <div class="font-mono text-xs text-gray-500 uppercase tracking-widest mb-4">For Organizations</div>
+                    <h3 class="text-2xl font-display font-bold mb-4">企业级私有化</h3>
+                    <p class="text-gray-400 mb-8 flex-1">深度集成内部系统。网关、控制台私有化部署，数据物理隔离，专属 SLA。</p>
+                    <div class="pt-8 border-t border-borderLight flex items-end justify-between">
+                        <div>
+                            <div class="text-2xl font-bold">定制方案</div>
+                            <div class="text-xs text-gray-500 mt-1">SSO / 审计日志 / 混合云</div>
+                        </div>
+                        <button class="bg-white/10 hover:bg-white/20 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors">预约演示</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Closing CTA -->
+    <section class="py-32 relative border-t border-borderLight overflow-hidden">
+        <div class="absolute inset-0 bg-brand-500/5 mix-blend-screen pointer-events-none"></div>
+        <div class="max-w-4xl mx-auto px-6 text-center relative z-10">
+            <h2 class="text-5xl md:text-7xl font-display font-bold mb-8 tracking-tight">准备好接入下一代<br/><span class="text-brand-400">AI 工作台</span>了吗？</h2>
+            <div class="flex flex-col sm:flex-row justify-center gap-4 mt-12">
+                <a href="#" class="bg-white text-dark px-8 py-4 rounded-xl font-semibold text-lg hover:bg-gray-200 transition-colors">
+                    下载逐梦 Workstation
+                </a>
+                <a href="#solutions" class="glass-panel text-white px-8 py-4 rounded-xl font-semibold text-lg">
+                    查看企业部署白皮书
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="border-t border-white/10 bg-dark pt-20 pb-10 px-6">
+        <div class="max-w-7xl mx-auto grid grid-cols-2 md:grid-cols-5 gap-10 mb-16">
+            <div class="col-span-2">
+                <div class="flex items-center gap-3 font-display font-bold text-lg mb-6">
+                    <div class="w-6 h-6 rounded bg-gradient-to-br from-brand-400 to-orange-500 flex items-center justify-center text-dark text-xs">Z</div>
+                    逐梦 Workstation
+                </div>
+                <p class="text-gray-400 text-sm leading-relaxed max-w-sm">
+                    统一 AI 工具、模型服务、本地网关与团队治理。让个人专注编码，让组织掌控全局。
+                </p>
+            </div>
+            <div>
+                <h4 class="font-mono text-xs text-gray-500 uppercase tracking-widest mb-6">产品生态</h4>
+                <ul class="space-y-4 text-sm text-gray-400">
+                    <li><a href="#" class="hover:text-brand-400 transition-colors">Codex Desktop</a></li>
+                    <li><a href="#" class="hover:text-brand-400 transition-colors">Claude Code CLI</a></li>
+                    <li><a href="#" class="hover:text-brand-400 transition-colors">控制台组件</a></li>
+                </ul>
+            </div>
+            <div>
+                <h4 class="font-mono text-xs text-gray-500 uppercase tracking-widest mb-6">解决方案</h4>
+                <ul class="space-y-4 text-sm text-gray-400">
+                    <li><a href="#" class="hover:text-brand-400 transition-colors">个人开发者</a></li>
+                    <li><a href="#" class="hover:text-brand-400 transition-colors">研发团队版</a></li>
+                    <li><a href="#" class="hover:text-brand-400 transition-colors">企业私有化</a></li>
+                </ul>
+            </div>
+            <div>
+                <h4 class="font-mono text-xs text-gray-500 uppercase tracking-widest mb-6">资源</h4>
+                <ul class="space-y-4 text-sm text-gray-400">
+                    <li><a href="#" class="hover:text-brand-400 transition-colors">开发文档</a></li>
+                    <li><a href="#" class="hover:text-brand-400 transition-colors">API 接入</a></li>
+                    <li><a href="#" class="hover:text-brand-400 transition-colors">服务协议</a></li>
+                </ul>
+            </div>
+        </div>
+        <div class="max-w-7xl mx-auto border-t border-white/5 pt-8 flex flex-col md:flex-row justify-between items-center gap-4 text-xs text-gray-500 font-mono">
+            <div>© 2026 逐梦科技. 保留所有权利.</div>
+            <div class="flex gap-4">
+                <span>Local-First</span>
+                <span>·</span>
+                <span>BYOK</span>
+                <span>·</span>
+                <span>Governance</span>
+            </div>
+        </div>
+    </footer>
+
+</body>
+</html>

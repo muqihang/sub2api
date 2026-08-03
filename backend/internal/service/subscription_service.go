@@ -145,7 +145,7 @@ func (s *SubscriptionService) InvalidateSubCache(userID, groupID int64) {
 	s.subCacheL1.Del(subCacheKey(userID, groupID))
 }
 
-// InvalidateSubCacheSync 失效订阅 L1 缓存并等待 Ristretto 删除操作生效。
+// InvalidateSubCacheSync invalidates L1 and waits for Ristretto's async delete to apply.
 func (s *SubscriptionService) InvalidateSubCacheSync(userID, groupID int64) {
 	s.invalidateSubCacheKeySync(subCacheKey(userID, groupID))
 }
@@ -158,7 +158,7 @@ func (s *SubscriptionService) invalidateSubCacheKeySync(key string) {
 	s.subCacheL1.Wait()
 }
 
-// StartSubCacheInvalidationSubscriber 启动跨实例订阅 L1 缓存失效订阅。
+// StartSubCacheInvalidationSubscriber subscribes to cross-instance subscription L1 invalidations.
 func (s *SubscriptionService) StartSubCacheInvalidationSubscriber(ctx context.Context) {
 	if s.billingCacheService == nil || s.subCacheL1 == nil {
 		return

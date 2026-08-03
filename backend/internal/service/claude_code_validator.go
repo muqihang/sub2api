@@ -15,11 +15,12 @@ import (
 type ClaudeCodeValidator struct{}
 
 var (
-	// User-Agent 匹配: claude-cli/x.x.x (仅支持官方 CLI，大小写不敏感)
-	claudeCodeUAPattern = regexp.MustCompile(`(?i)^claude-cli/\d+\.\d+\.\d+`)
+	// User-Agent 匹配官方 Claude Code 客户端家族，大小写不敏感。
+	// 支持 claude-cli、claude-code、Claude Code、ClaudeCode、claude-vscode，版本号可选。
+	claudeCodeUAPattern = regexp.MustCompile(`(?i)^\s*(?:claude-cli|claude[-\s]?code|claude-vscode)(?:/\d+\.\d+\.\d+(?:[.+-][A-Za-z0-9._-]+)?)?(?:\s|\(|;|$)`)
 
-	// 带捕获组的版本提取正则
-	claudeCodeUAVersionPattern = regexp.MustCompile(`(?i)^claude-cli/(\d+\.\d+\.\d+)`)
+	// 带捕获组的版本提取正则。和 UA 判定保持同一官方客户端家族。
+	claudeCodeUAVersionPattern = regexp.MustCompile(`(?i)^\s*(?:claude-cli|claude[-\s]?code|claude-vscode)/(\d+\.\d+\.\d+)`)
 
 	// System prompt 相似度阈值（默认 0.5，和 claude-relay-service 一致）
 	systemPromptThreshold = 0.5
@@ -53,9 +54,8 @@ const (
 	// 格式固定、不随提示词改版漂移，是比身份 prose 更稳定的客户端标识。
 	// 生成见 gateway_billing_block.go；同类识别见 pkg/apicompat/anthropic_to_responses.go。
 	claudeCodeBillingHeaderPrefix = "x-anthropic-billing-header"
-	// claudeCodeEntrypointMarker 标识计费块携带入口归因字段。不绑定具体入口值
-	// （cli / claude-vscode / jetbrains / sdk 等都是真实入口）：入口值会随新增 IDE 漂移，
-	// 且伪造者同样可填任意值、不构成防伪边界，故仅要求该字段存在即可。
+	// claudeCodeEntrypointMarker 标识计费块携带入口归因字段。不绑定具体入口值；
+	// CLI / VS Code / JetBrains 等入口均可能是真实 Claude Code 客户端。
 	claudeCodeEntrypointMarker = "cc_entrypoint="
 )
 
@@ -64,18 +64,12 @@ func NewClaudeCodeValidator() *ClaudeCodeValidator {
 	return &ClaudeCodeValidator{}
 }
 
-// Validate 验证请求是否来自 Claude Code CLI
-// 采用与 claude-relay-service 完全一致的验证策略：
+// Validate 验证请求是否来自 Claude Code 客户端。
 //
-//	Step 1: User-Agent 检查 (必需) - 必须是 claude-cli/x.x.x
+//	Step 1: User-Agent 检查 (必需) - 必须命中官方 Claude Code 客户端家族
 //	Step 2: 对于非 messages 路径和 /messages/count_tokens，只要 UA 匹配就通过
 //	Step 3: 检查 max_tokens=1 + haiku 探测请求绕过（UA 已验证）
-//	Step 4: 对于 messages 路径，进行严格验证：
-//	        - System prompt 相似度检查
-//	        - X-App header 检查
-//	        - anthropic-beta header 检查
-//	        - anthropic-version header 检查
-//	        - metadata.user_id 格式验证
+//	Step 4: 对于 messages 路径，要求官方 UA 之外还有可解析 metadata.user_id
 func (v *ClaudeCodeValidator) Validate(r *http.Request, body map[string]any) bool {
 	// Step 1: User-Agent 检查
 	ua := r.Header.Get("User-Agent")
@@ -100,57 +94,30 @@ func (v *ClaudeCodeValidator) Validate(r *http.Request, body map[string]any) boo
 		return true // 绕过 system prompt 检查，UA 已在 Step 1 验证
 	}
 
-	// Step 4: messages 路径，进行严格验证
+	// Step 4: messages 路径：header 可能被中转层剥离，metadata 也可能被仿造；
+	// 因此正常请求必须同时具备可解析 metadata.user_id 与 Claude Code system/billing 证据。
+	return v.hasValidMetadataUserID(body) && v.hasClaudeCodeSystemPrompt(body)
+}
 
-	// 4.1 检查 system prompt 相似度
-	if !v.hasClaudeCodeSystemPrompt(body) {
-		return false
-	}
-
-	// 4.2 检查必需的 headers（值不为空即可）
-	xApp := r.Header.Get("X-App")
-	if xApp == "" {
-		return false
-	}
-
-	anthropicBeta := r.Header.Get("anthropic-beta")
-	if anthropicBeta == "" {
-		return false
-	}
-
-	anthropicVersion := r.Header.Get("anthropic-version")
-	if anthropicVersion == "" {
-		return false
-	}
-
-	// 4.3 验证 metadata.user_id
+// hasValidMetadataUserID 检查 metadata.user_id 是否符合 Claude Code 格式。
+func (v *ClaudeCodeValidator) hasValidMetadataUserID(body map[string]any) bool {
 	if body == nil {
 		return false
 	}
-
 	metadata, ok := body["metadata"].(map[string]any)
 	if !ok {
 		return false
 	}
-
 	userID, ok := metadata["user_id"].(string)
-	if !ok || userID == "" {
-		return false
-	}
-
-	if ParseMetadataUserID(userID) == nil {
-		return false
-	}
-
-	return true
+	return ok && ParseMetadataUserID(userID) != nil
 }
 
 func isMessagesCountTokensPath(path string) bool {
 	return strings.HasSuffix(path, "/messages/count_tokens")
 }
 
-// hasClaudeCodeSystemPrompt 检查请求是否包含 Claude Code 系统提示词
-// 使用字符串相似度匹配（Dice coefficient）
+// hasClaudeCodeSystemPrompt 检查请求是否包含 Claude Code 系统提示词。
+// 使用字符串相似度匹配（Dice coefficient）。
 func (v *ClaudeCodeValidator) hasClaudeCodeSystemPrompt(body map[string]any) bool {
 	if body == nil {
 		return false
@@ -304,6 +271,14 @@ func SetClaudeCodeClient(ctx context.Context, isClaudeCode bool) context.Context
 // 返回 "2.1.22" 形式的版本号，如果不匹配返回空字符串
 func (v *ClaudeCodeValidator) ExtractVersion(ua string) string {
 	return ExtractCLIVersion(ua)
+}
+
+// IsClaudeVSCodeUserAgent reports whether the inbound client identifies as the
+// Claude VSCode extension family. It may pass ClaudeCodeOnly admission, but it
+// must not trigger raw OAuth strict passthrough; formal-pool/CC Gateway handles
+// it as observed-only input with server-selected canonical upstream identity.
+func IsClaudeVSCodeUserAgent(ua string) bool {
+	return regexp.MustCompile(`(?i)^\s*claude-vscode(?:/\d+\.\d+\.\d+(?:[.+-][A-Za-z0-9._-]+)?)?(?:\s|\(|;|$)`).MatchString(ua)
 }
 
 // SetClaudeCodeVersion 将 Claude Code 版本号设置到 context 中

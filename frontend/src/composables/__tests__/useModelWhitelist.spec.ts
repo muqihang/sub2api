@@ -4,17 +4,19 @@ vi.mock('@/api/admin/accounts', () => ({
   getAntigravityDefaultModelMapping: vi.fn()
 }))
 
-import { buildModelMappingObject, getModelsByPlatform, splitModelMappingObject } from '../useModelWhitelist'
+import { buildModelMappingObject, getModelsByPlatform, getPresetMappingsByPlatform, splitModelMappingObject } from '../useModelWhitelist'
 
 describe('useModelWhitelist', () => {
   it('openai 模型列表包含 GPT-5.4 官方快照', () => {
     const models = getModelsByPlatform('openai')
 
+    expect(models).toContain('gpt-5.6-sol')
+    expect(models).toContain('gpt-5.6-terra')
+    expect(models).toContain('gpt-5.6-luna')
     expect(models).toContain('gpt-5.4')
     expect(models).toContain('gpt-5.4-mini')
     expect(models).toContain('gpt-5.4-2026-03-05')
     expect(models).toContain('codex-auto-review')
-    expect(models).toContain('gpt-5.6')
   })
 
   it('openai 模型列表不再暴露已下线的 ChatGPT 登录 Codex 模型', () => {
@@ -36,46 +38,54 @@ describe('useModelWhitelist', () => {
     expect(models).toContain('gemini-3-pro-image')
   })
 
-  it('Claude 模型列表包含新发布的 Claude 模型', () => {
-    expect(getModelsByPlatform('claude')).toContain('claude-fable-5')
-    expect(getModelsByPlatform('antigravity')).toContain('claude-fable-5')
+  it('Claude 模型列表包含 Opus 4.8、Sonnet 5 和 Fable 5', () => {
     expect(getModelsByPlatform('claude')).toContain('claude-opus-4-8')
+    expect(getModelsByPlatform('claude')).toContain('claude-sonnet-5')
+    expect(getModelsByPlatform('claude')).toContain('claude-fable-5')
     expect(getModelsByPlatform('antigravity')).toContain('claude-opus-4-8')
+    expect(getModelsByPlatform('antigravity')).toContain('claude-fable-5')
   })
 
-  it('xAI 模型列表包含 Grok 4.5 官方模型和别名', () => {
+  it('xAI 模型列表和预设映射包含 Grok 4.5 与 Composer 兼容别名', () => {
     const models = getModelsByPlatform('grok')
 
-    expect(models).toContain('grok-4.5')
-    expect(models).toContain('grok-4.5-latest')
-    expect(models).toContain('grok-build-latest')
+    expect(models).toEqual(expect.arrayContaining([
+      'grok-4.5',
+      'grok-latest',
+      'grok-4.5-latest',
+      'grok-build-latest',
+      'grok-composer-2.5-fast',
+      'grok-composer',
+      'composer-2.5'
+    ]))
+    expect(getPresetMappingsByPlatform('grok')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: 'grok-latest', to: 'grok-4.5' }),
+      expect.objectContaining({ from: 'composer-2.5', to: 'grok-composer-2.5-fast' })
+    ]))
   })
 
-  it('combined 模式支持 Grok 4.5 官方别名映射', () => {
-    const mapping = buildModelMappingObject(
-      'combined',
-      ['grok-4.5'],
-      [
-        { from: 'grok-latest', to: 'grok-4.5' },
-        { from: 'grok-4.5-latest', to: 'grok-4.5' },
-        { from: 'grok-build-latest', to: 'grok-4.5' }
-      ]
+  it('Claude/Bedrock 预设映射包含 Sonnet 5', () => {
+    expect(getPresetMappingsByPlatform('claude')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ from: 'claude-sonnet-5', to: 'claude-sonnet-5' })
+      ])
     )
-
-    expect(mapping).toEqual({
-      'grok-4.5': 'grok-4.5',
-      'grok-latest': 'grok-4.5',
-      'grok-4.5-latest': 'grok-4.5',
-      'grok-build-latest': 'grok-4.5'
-    })
+    expect(getPresetMappingsByPlatform('bedrock')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ from: 'claude-sonnet-5', to: 'us.anthropic.claude-sonnet-5-v1' })
+      ])
+    )
   })
 
-  it('grok 模型列表包含 Composer 默认项和兼容别名', () => {
-    const models = getModelsByPlatform('grok')
+  it('zhipu 模型列表跟随 GLM-5.2 官方快照且不暴露 glm-4.6', () => {
+    const models = getModelsByPlatform('zhipu')
 
-    expect(models).toContain('grok-composer-2.5-fast')
-    expect(models).toContain('grok-composer')
-    expect(models).toContain('composer-2.5')
+    expect(models).toContain('glm-5.2')
+    expect(models).toContain('glm-5.2[1m]')
+    expect(models).toContain('glm-5-turbo')
+    expect(models).toContain('glm-4.7')
+    expect(models).toContain('glm-4.5-air')
+    expect(models).not.toContain('glm-4.6')
   })
 
   it('gemini 模型列表包含原生生图模型', () => {
@@ -152,4 +162,23 @@ describe('useModelWhitelist', () => {
       modelMappings: [{ from: 'gpt-latest', to: 'gpt-5.4' }]
     })
   })
+
+  it('xAI/Grok model list includes official media models and presets', () => {
+    const models = getModelsByPlatform('xai')
+
+    expect(models).toEqual(expect.arrayContaining([
+      'grok-imagine',
+      'grok-imagine-image',
+      'grok-imagine-image-quality',
+      'grok-imagine-edit',
+      'grok-imagine-video',
+      'grok-imagine-video-1.5'
+    ]))
+    expect(getPresetMappingsByPlatform('xai')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: 'grok-imagine', to: 'grok-imagine-image-quality' }),
+      expect.objectContaining({ from: 'grok-imagine-edit', to: 'grok-imagine-edit' }),
+      expect.objectContaining({ from: 'grok-imagine-video-1.5', to: 'grok-imagine-video-1.5' })
+    ]))
+  })
+
 })

@@ -263,9 +263,7 @@ func (c *billingCache) PublishSubscriptionCacheInvalidation(ctx context.Context,
 
 func (c *billingCache) SubscribeSubscriptionCacheInvalidation(ctx context.Context, handler func(cacheKey string)) error {
 	pubsub := c.rdb.Subscribe(ctx, subCacheInvalidateChannel)
-
-	_, err := pubsub.Receive(ctx)
-	if err != nil {
+	if _, err := pubsub.Receive(ctx); err != nil {
 		_ = pubsub.Close()
 		return fmt.Errorf("subscribe to subscription cache invalidation: %w", err)
 	}

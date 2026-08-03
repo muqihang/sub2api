@@ -113,6 +113,20 @@ func (_c *APIKeyCreate) SetNillableStatus(v *string) *APIKeyCreate {
 	return _c
 }
 
+// SetRestrictedClientProduct sets the "restricted_client_product" field.
+func (_c *APIKeyCreate) SetRestrictedClientProduct(v string) *APIKeyCreate {
+	_c.mutation.SetRestrictedClientProduct(v)
+	return _c
+}
+
+// SetNillableRestrictedClientProduct sets the "restricted_client_product" field if the given value is not nil.
+func (_c *APIKeyCreate) SetNillableRestrictedClientProduct(v *string) *APIKeyCreate {
+	if v != nil {
+		_c.SetRestrictedClientProduct(*v)
+	}
+	return _c
+}
+
 // SetLastUsedAt sets the "last_used_at" field.
 func (_c *APIKeyCreate) SetLastUsedAt(v time.Time) *APIKeyCreate {
 	_c.mutation.SetLastUsedAt(v)
@@ -535,6 +549,10 @@ func (_c *APIKeyCreate) createSpec() (*APIKey, *sqlgraph.CreateSpec) {
 		_spec.SetField(apikey.FieldStatus, field.TypeString, value)
 		_node.Status = value
 	}
+	if value, ok := _c.mutation.RestrictedClientProduct(); ok {
+		_spec.SetField(apikey.FieldRestrictedClientProduct, field.TypeString, value)
+		_node.RestrictedClientProduct = &value
+	}
 	if value, ok := _c.mutation.LastUsedAt(); ok {
 		_spec.SetField(apikey.FieldLastUsedAt, field.TypeTime, value)
 		_node.LastUsedAt = &value
@@ -790,6 +808,24 @@ func (u *APIKeyUpsert) SetStatus(v string) *APIKeyUpsert {
 // UpdateStatus sets the "status" field to the value that was provided on create.
 func (u *APIKeyUpsert) UpdateStatus() *APIKeyUpsert {
 	u.SetExcluded(apikey.FieldStatus)
+	return u
+}
+
+// SetRestrictedClientProduct sets the "restricted_client_product" field.
+func (u *APIKeyUpsert) SetRestrictedClientProduct(v string) *APIKeyUpsert {
+	u.Set(apikey.FieldRestrictedClientProduct, v)
+	return u
+}
+
+// UpdateRestrictedClientProduct sets the "restricted_client_product" field to the value that was provided on create.
+func (u *APIKeyUpsert) UpdateRestrictedClientProduct() *APIKeyUpsert {
+	u.SetExcluded(apikey.FieldRestrictedClientProduct)
+	return u
+}
+
+// ClearRestrictedClientProduct clears the value of the "restricted_client_product" field.
+func (u *APIKeyUpsert) ClearRestrictedClientProduct() *APIKeyUpsert {
+	u.SetNull(apikey.FieldRestrictedClientProduct)
 	return u
 }
 
@@ -1217,6 +1253,27 @@ func (u *APIKeyUpsertOne) SetStatus(v string) *APIKeyUpsertOne {
 func (u *APIKeyUpsertOne) UpdateStatus() *APIKeyUpsertOne {
 	return u.Update(func(s *APIKeyUpsert) {
 		s.UpdateStatus()
+	})
+}
+
+// SetRestrictedClientProduct sets the "restricted_client_product" field.
+func (u *APIKeyUpsertOne) SetRestrictedClientProduct(v string) *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.SetRestrictedClientProduct(v)
+	})
+}
+
+// UpdateRestrictedClientProduct sets the "restricted_client_product" field to the value that was provided on create.
+func (u *APIKeyUpsertOne) UpdateRestrictedClientProduct() *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.UpdateRestrictedClientProduct()
+	})
+}
+
+// ClearRestrictedClientProduct clears the value of the "restricted_client_product" field.
+func (u *APIKeyUpsertOne) ClearRestrictedClientProduct() *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.ClearRestrictedClientProduct()
 	})
 }
 
@@ -1855,6 +1912,27 @@ func (u *APIKeyUpsertBulk) SetStatus(v string) *APIKeyUpsertBulk {
 func (u *APIKeyUpsertBulk) UpdateStatus() *APIKeyUpsertBulk {
 	return u.Update(func(s *APIKeyUpsert) {
 		s.UpdateStatus()
+	})
+}
+
+// SetRestrictedClientProduct sets the "restricted_client_product" field.
+func (u *APIKeyUpsertBulk) SetRestrictedClientProduct(v string) *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.SetRestrictedClientProduct(v)
+	})
+}
+
+// UpdateRestrictedClientProduct sets the "restricted_client_product" field to the value that was provided on create.
+func (u *APIKeyUpsertBulk) UpdateRestrictedClientProduct() *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.UpdateRestrictedClientProduct()
+	})
+}
+
+// ClearRestrictedClientProduct clears the value of the "restricted_client_product" field.
+func (u *APIKeyUpsertBulk) ClearRestrictedClientProduct() *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.ClearRestrictedClientProduct()
 	})
 }
 

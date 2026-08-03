@@ -227,8 +227,6 @@ const readFileAsText = async (sourceFile: File): Promise<string> => {
 const SUPPORTED_DATA_TYPES = ['sub2api-data', 'sub2api-bundle']
 const SUPPORTED_DATA_VERSION = 1
 
-// 与后端 validateDataHeader 对齐:合并前逐文件校验,避免坏文件混入合并 payload 后
-// 报错无法定位来源,或绕过后端本会对单文件做的 type/version 检查。
 const isValidDataPayload = (payload: unknown): payload is AdminDataPayload => {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false
   const candidate = payload as Record<string, unknown>
@@ -258,11 +256,7 @@ const mergeDataPayloads = (payloads: AdminDataPayload[]): AdminDataPayload => {
     version: payloads.find((item) => typeof item.version === 'number')?.version,
     exported_at: new Date().toISOString(),
     proxies: payloads.flatMap((item) => item.proxies),
-    accounts: payloads.flatMap((item) => item.accounts),
-    skipped_shadows: payloads.reduce((sum, item) => {
-      const count = Number(item.skipped_shadows || 0)
-      return Number.isFinite(count) ? sum + count : sum
-    }, 0)
+    accounts: payloads.flatMap((item) => item.accounts)
   }
 }
 
@@ -280,9 +274,7 @@ const handleImport = async () => {
       try {
         parsed = JSON.parse(await readFileAsText(sourceFile))
       } catch {
-        appStore.showError(
-          t('admin.accounts.dataImportParseFailedFile', { name: sourceFile.name })
-        )
+        appStore.showError(t('admin.accounts.dataImportParseFailedFile', { name: sourceFile.name }))
         return
       }
       if (!isValidDataPayload(parsed)) {
@@ -308,7 +300,6 @@ const handleImport = async () => {
       proxy_failed: res.proxy_failed,
     }
     if (res.account_failed > 0 || res.proxy_failed > 0) {
-      // 部分成功也创建了数据;弹窗关闭时通过 imported 通知父组件刷新列表
       if (res.account_created > 0 || res.proxy_created > 0) {
         hasCreatedData.value = true
       }

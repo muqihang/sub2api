@@ -22,11 +22,11 @@ const parameterLimitTestDriverName = "sub2api_param_limit_test"
 
 var registerParameterLimitTestDriverOnce sync.Once
 
-func TestAccountsToService_LargeActiveAccountSetDoesNotExceedPostgresParameterLimit(t *testing.T) {
+func TestAccountsToServiceLargeActiveAccountSetDoesNotExceedPostgresParameterLimit(t *testing.T) {
 	repo := newParameterLimitAccountRepo(t)
 
 	accounts := make([]*dbent.Account, 0, 65536)
-	for i := range 65536 {
+	for i := 0; i < 65536; i++ {
 		accounts = append(accounts, &dbent.Account{
 			ID:          int64(i + 1),
 			Name:        "large-active",
@@ -74,9 +74,7 @@ func (parameterLimitConn) Prepare(query string) (driver.Stmt, error) {
 	return parameterLimitStmt{query: query}, nil
 }
 
-func (parameterLimitConn) Close() error {
-	return nil
-}
+func (parameterLimitConn) Close() error { return nil }
 
 func (parameterLimitConn) Begin() (driver.Tx, error) {
 	return parameterLimitTx{}, nil
@@ -90,13 +88,9 @@ type parameterLimitStmt struct {
 	query string
 }
 
-func (s parameterLimitStmt) Close() error {
-	return nil
-}
+func (s parameterLimitStmt) Close() error { return nil }
 
-func (s parameterLimitStmt) NumInput() int {
-	return -1
-}
+func (s parameterLimitStmt) NumInput() int { return -1 }
 
 func (s parameterLimitStmt) Exec(args []driver.Value) (driver.Result, error) {
 	return driver.RowsAffected(0), parameterLimitError(len(args))
@@ -112,13 +106,9 @@ func (s parameterLimitStmt) Query(args []driver.Value) (driver.Rows, error) {
 
 type parameterLimitTx struct{}
 
-func (parameterLimitTx) Commit() error {
-	return nil
-}
+func (parameterLimitTx) Commit() error { return nil }
 
-func (parameterLimitTx) Rollback() error {
-	return nil
-}
+func (parameterLimitTx) Rollback() error { return nil }
 
 func queryWithParameterLimit(query string, args []driver.NamedValue) (driver.Rows, error) {
 	if err := parameterLimitError(len(args)); err != nil {
@@ -145,14 +135,8 @@ type parameterLimitRows struct {
 	columns []string
 }
 
-func (r parameterLimitRows) Columns() []string {
-	return r.columns
-}
+func (r parameterLimitRows) Columns() []string { return r.columns }
 
-func (parameterLimitRows) Close() error {
-	return nil
-}
+func (parameterLimitRows) Close() error { return nil }
 
-func (parameterLimitRows) Next([]driver.Value) error {
-	return io.EOF
-}
+func (parameterLimitRows) Next([]driver.Value) error { return io.EOF }

@@ -268,6 +268,65 @@ func TestOpenAIWSConnPool_EnsureTargetIdleAsyncFailureSuppress(t *testing.T) {
 	require.Equal(t, 2, dialer.DialCount())
 }
 
+func TestOpenAIWSConnPool_DialReceivesEffectiveTLS(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 2
+	cfg.Gateway.OpenAIWS.DialTimeoutSeconds = 1
+
+	dialer := &openAIWSTLSCaptureDialer{}
+	pool := newOpenAIWSConnPool(cfg)
+	pool.setClientDialerForTest(dialer)
+	defer pool.Close()
+
+	account := &Account{ID: 5101, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	effectiveTLS := testOpenAIWSEffectiveTLS("profile-a")
+
+	lease, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+		Account:      account,
+		WSURL:        "wss://example.com/v1/responses",
+		EffectiveTLS: effectiveTLS,
+	})
+	require.NoError(t, err)
+	defer lease.Release()
+
+	require.Same(t, effectiveTLS, dialer.LastTLS(), "dial request must receive the resolved effective TLS runtime")
+}
+
+func TestOpenAIWSConnPool_DoesNotReuseConnectionAcrossTLSIdentity(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 2
+	cfg.Gateway.OpenAIWS.DialTimeoutSeconds = 1
+
+	dialer := &openAIWSTLSCaptureDialer{}
+	pool := newOpenAIWSConnPool(cfg)
+	pool.setClientDialerForTest(dialer)
+	defer pool.Close()
+
+	account := &Account{ID: 5102, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	tlsA := testOpenAIWSEffectiveTLS("profile-a")
+	tlsB := testOpenAIWSEffectiveTLS("profile-b")
+
+	leaseA, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+		Account:      account,
+		WSURL:        "wss://example.com/v1/responses",
+		EffectiveTLS: tlsA,
+	})
+	require.NoError(t, err)
+	connIDA := leaseA.ConnID()
+	leaseA.Release()
+
+	leaseB, err := pool.Acquire(context.Background(), openAIWSAcquireRequest{
+		Account:      account,
+		WSURL:        "wss://example.com/v1/responses",
+		EffectiveTLS: tlsB,
+	})
+	require.NoError(t, err)
+	defer leaseB.Release()
+
+	require.NotEqual(t, connIDA, leaseB.ConnID(), "pool key must change when TLS profile/cache identity changes")
+	require.Equal(t, 2, dialer.DialCount(), "TLS identity change should dial a fresh upstream connection")
+}
+
 func TestOpenAIWSConnPool_AcquireQueueWaitMetrics(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 1
@@ -1416,16 +1475,54 @@ func TestOpenAIWSConnPool_Acquire_ErrorBranches(t *testing.T) {
 
 type openAIWSFakeDialer struct{}
 
-func (d *openAIWSFakeDialer) Dial(
+type openAIWSTLSCaptureDialer struct {
+	mu        sync.Mutex
+	dialCount int
+	lastTLS   *OpenAIGatewayEffectiveTLS
+}
+
+func (d *openAIWSTLSCaptureDialer) Dial(
 	ctx context.Context,
 	wsURL string,
 	headers http.Header,
 	proxyURL string,
+	effectiveTLS *OpenAIGatewayEffectiveTLS,
 ) (openAIWSClientConn, int, http.Header, error) {
 	_ = ctx
 	_ = wsURL
 	_ = headers
 	_ = proxyURL
+	d.mu.Lock()
+	d.dialCount++
+	d.lastTLS = effectiveTLS
+	d.mu.Unlock()
+	return &openAIWSFakeConn{}, 0, nil, nil
+}
+
+func (d *openAIWSTLSCaptureDialer) LastTLS() *OpenAIGatewayEffectiveTLS {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.lastTLS
+}
+
+func (d *openAIWSTLSCaptureDialer) DialCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.dialCount
+}
+
+func (d *openAIWSFakeDialer) Dial(
+	ctx context.Context,
+	wsURL string,
+	headers http.Header,
+	proxyURL string,
+	effectiveTLS *OpenAIGatewayEffectiveTLS,
+) (openAIWSClientConn, int, http.Header, error) {
+	_ = ctx
+	_ = wsURL
+	_ = headers
+	_ = proxyURL
+	_ = effectiveTLS
 	return &openAIWSFakeConn{}, 0, nil, nil
 }
 
@@ -1484,11 +1581,13 @@ func (d *openAIWSCountingDialer) Dial(
 	wsURL string,
 	headers http.Header,
 	proxyURL string,
+	effectiveTLS *OpenAIGatewayEffectiveTLS,
 ) (openAIWSClientConn, int, http.Header, error) {
 	_ = ctx
 	_ = wsURL
 	_ = headers
 	_ = proxyURL
+	_ = effectiveTLS
 	d.mu.Lock()
 	d.dialCount++
 	d.mu.Unlock()
@@ -1506,11 +1605,13 @@ func (d *openAIWSAlwaysFailDialer) Dial(
 	wsURL string,
 	headers http.Header,
 	proxyURL string,
+	effectiveTLS *OpenAIGatewayEffectiveTLS,
 ) (openAIWSClientConn, int, http.Header, error) {
 	_ = ctx
 	_ = wsURL
 	_ = headers
 	_ = proxyURL
+	_ = effectiveTLS
 	d.mu.Lock()
 	d.dialCount++
 	d.mu.Unlock()
@@ -1663,11 +1764,13 @@ func (d *openAIWSNilConnDialer) Dial(
 	wsURL string,
 	headers http.Header,
 	proxyURL string,
+	effectiveTLS *OpenAIGatewayEffectiveTLS,
 ) (openAIWSClientConn, int, http.Header, error) {
 	_ = ctx
 	_ = wsURL
 	_ = headers
 	_ = proxyURL
+	_ = effectiveTLS
 	return nil, 200, nil, nil
 }
 

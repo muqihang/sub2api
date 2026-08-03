@@ -215,6 +215,9 @@ import {
   PROVIDER_GEMINI,
   API_MODE_CHAT_COMPLETIONS,
   API_MODE_RESPONSES,
+  API_MODE_EMBEDDINGS,
+  API_MODE_RERANK,
+  API_MODES,
   DEFAULT_INTERVAL_SECONDS,
 } from '@/constants/channelMonitor'
 
@@ -358,10 +361,20 @@ const apiModeOptions = computed<{ value: APIMode; label: string; hint: string }[
     label: t('admin.channelMonitor.form.apiModeResponses'),
     hint: t('admin.channelMonitor.form.apiModeResponsesHint'),
   },
+	{
+		value: API_MODE_EMBEDDINGS,
+		label: t('admin.channelMonitor.form.apiModeEmbeddings'),
+		hint: t('admin.channelMonitor.form.apiModeEmbeddingsHint'),
+	},
+	{
+		value: API_MODE_RERANK,
+		label: t('admin.channelMonitor.form.apiModeRerank'),
+		hint: t('admin.channelMonitor.form.apiModeRerankHint'),
+	},
 ])
 
 function normalizeAPIMode(mode: APIMode | undefined | null): APIMode {
-  return mode === API_MODE_RESPONSES ? API_MODE_RESPONSES : API_MODE_CHAT_COMPLETIONS
+	return mode && API_MODES.includes(mode) ? mode : API_MODE_CHAT_COMPLETIONS
 }
 
 function apiModeButtonClass(mode: APIMode): string {
@@ -374,9 +387,12 @@ function apiModeButtonClass(mode: APIMode): string {
 
 function templateOptionLabel(tpl: ChannelMonitorTemplate): string {
   if (tpl.provider !== PROVIDER_OPENAI) return tpl.name
-  const labelKey = normalizeAPIMode(tpl.api_mode) === API_MODE_RESPONSES
-    ? 'admin.channelMonitor.form.apiModeResponses'
-    : 'admin.channelMonitor.form.apiModeChatCompletions'
+	const labelKey = `admin.channelMonitor.form.apiMode${{
+		[API_MODE_CHAT_COMPLETIONS]: 'ChatCompletions',
+		[API_MODE_RESPONSES]: 'Responses',
+		[API_MODE_EMBEDDINGS]: 'Embeddings',
+		[API_MODE_RERANK]: 'Rerank',
+	}[normalizeAPIMode(tpl.api_mode)]}`
   return `${tpl.name} · ${t(labelKey)}`
 }
 

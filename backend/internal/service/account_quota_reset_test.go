@@ -211,8 +211,8 @@ func TestIsFixedDailyPeriodExpired_NotExpired(t *testing.T) {
 		"quota_reset_timezone":   "UTC",
 	}}
 	// Anchor periodStart to today's 12:00 UTC: always strictly after today's
-	// 09:00 UTC reset (and yesterday's). Using time.Now().Add(-1*time.Minute)
-	// is flaky inside the 09:00-09:01 UTC reset window.
+	// 09:00 UTC reset. Using time.Now().Add(-1*time.Minute) is flaky inside
+	// the 09:00-09:01 UTC reset window.
 	now := time.Now().UTC()
 	periodStart := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, time.UTC)
 	assert.False(t, a.isFixedDailyPeriodExpired(periodStart))

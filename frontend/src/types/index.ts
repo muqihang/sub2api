@@ -145,6 +145,17 @@ export interface UserAffiliateDetail {
   aff_history_quota: number
   /** 当前用户作为邀请人时实际生效的返利比例（专属覆盖全局）。0-100。 */
   effective_rebate_rate_percent: number
+  rebate_rate_custom?: boolean
+  effective_invitee_count: number
+  next_tier_invitee_threshold?: number
+  invitees_until_next_tier?: number
+  growth_mode?: string
+  invitee_first_payment_bonus_rate?: number
+  tier_window_days?: number
+  tier_rules?: Array<{
+    min_effective_invitees: number
+    rate_percent: number
+  }>
   invitees: AffiliateInvitee[]
 }
 
@@ -185,12 +196,17 @@ export interface LoginAgreementDocument {
   id: string
   title: string
   content_md: string
+  title_en?: string
+  content_md_en?: string
 }
 
 export interface PublicSettings {
   registration_enabled: boolean
   email_verify_enabled: boolean
   force_email_on_third_party_signup: boolean
+  auth_agreement_enabled?: boolean
+  auth_agreement_version?: string
+  auth_agreement_prompt_on_first_visit?: boolean
   registration_email_suffix_whitelist: string[]
   promo_code_enabled: boolean
   password_reset_enabled: boolean
@@ -228,8 +244,6 @@ export interface PublicSettings {
   google_oauth_enabled: boolean
   backend_mode_enabled: boolean
   version: string
-  // 服务器全局时区（IANA 名称与当前 UTC 偏移），高峰时段等服务端本地时间窗口的展示标注用；
-  // 可选：注入的 __APP_CONFIG__ 旧缓存可能缺失
   server_timezone?: string
   server_utc_offset?: string
   balance_low_notify_enabled: boolean
@@ -240,6 +254,14 @@ export interface PublicSettings {
   available_channels_enabled: boolean
   service_quota_enabled: boolean
   affiliate_enabled: boolean
+  /**
+   * Opt-in toggle that switches accounts management surfaces to the new V2 UX
+   * (dashboard + onboarding wizard). Backend default is `false`; admins flip it
+   * from the settings page. Frontend code should consume this through
+   * `FeatureFlags.newAccountManagement` so the opt-in fallback (hidden when the
+   * settings payload omits the field) stays consistent.
+   */
+  use_new_account_management_ux: boolean
   allow_user_view_error_requests?: boolean
 }
 
@@ -516,11 +538,16 @@ export interface Group {
   daily_limit_usd: number | null
   weekly_limit_usd: number | null
   monthly_limit_usd: number | null
+  augment_gateway_entitled: boolean
   // 图片生成计费配置
   allow_image_generation: boolean
   allow_batch_image_generation: boolean
   image_rate_independent: boolean
   image_rate_multiplier: number
+  peak_rate_enabled?: boolean
+  peak_start?: string
+  peak_end?: string
+  peak_rate_multiplier?: number
   batch_image_discount_multiplier: number
   batch_image_hold_multiplier: number
   image_price_1k: number | null
@@ -531,17 +558,14 @@ export interface Group {
   video_price_480p: number | null
   video_price_720p: number | null
   video_price_1080p: number | null
-  // 高峰时段倍率配置
-  peak_rate_enabled: boolean
-  peak_start: string
-  peak_end: string
-  peak_rate_multiplier: number
   // Claude Code 客户端限制
   claude_code_only: boolean
   fallback_group_id: number | null
   fallback_group_id_on_invalid_request: number | null
   // OpenAI Messages 调度开关（用户侧需要此字段判断是否展示 Claude Code 教程）
   allow_messages_dispatch?: boolean
+  // Public model aliases used to select the correct user-facing API tutorial.
+  models_list_config?: ModelsListConfig
   default_mapped_model?: string
   messages_dispatch_model_config?: OpenAIMessagesDispatchModelConfig
   require_oauth_only: boolean
@@ -569,8 +593,6 @@ export interface AdminGroup extends Group {
   // OpenAI Messages 调度配置（仅 openai 平台使用）
   default_mapped_model?: string
   messages_dispatch_model_config?: OpenAIMessagesDispatchModelConfig
-  models_list_config?: ModelsListConfig
-
   // 分组排序
   sort_order: number
 }
@@ -586,6 +608,7 @@ export interface ApiKey {
   key: string
   name: string
   group_id: number | null
+  augment_only: boolean
   status: 'active' | 'inactive' | 'quota_exhausted' | 'expired'
   ip_whitelist: string[]
   ip_blacklist: string[]
@@ -612,9 +635,33 @@ export interface ApiKey {
   reset_7d_at: string | null
 }
 
+export interface CodexSetupGrantResponse {
+  code: string
+  expires_at: string
+  deeplink: string
+}
+
+export type CodexManagedDeviceStatus = 'active' | 'revoked' | 'reauthorization_required'
+
+export interface CodexManagedDevice {
+  id: number
+  user_id: number
+  api_key_id: number
+  name: string
+  platform: string
+  arch: string
+  manager_version: string
+  status: CodexManagedDeviceStatus
+  last_seen_at: string | null
+  revoked_at: string | null
+  created_at: string
+  updated_at: string
+}
+
 export interface CreateApiKeyRequest {
   name: string
   group_id?: number | null
+  augment_only?: boolean
   custom_key?: string // Optional custom API Key
   ip_whitelist?: string[]
   ip_blacklist?: string[]
@@ -628,6 +675,7 @@ export interface CreateApiKeyRequest {
 export interface UpdateApiKeyRequest {
   name?: string
   group_id?: number | null
+  augment_only?: boolean
   status?: 'active' | 'inactive'
   ip_whitelist?: string[]
   ip_blacklist?: string[]
@@ -650,6 +698,7 @@ export interface CreateGroupRequest {
   daily_limit_usd?: number | null
   weekly_limit_usd?: number | null
   monthly_limit_usd?: number | null
+  augment_gateway_entitled?: boolean
   allow_image_generation?: boolean
   allow_batch_image_generation?: boolean
   image_rate_independent?: boolean
@@ -664,10 +713,6 @@ export interface CreateGroupRequest {
   video_price_480p?: number | null
   video_price_720p?: number | null
   video_price_1080p?: number | null
-  peak_rate_enabled?: boolean
-  peak_start?: string
-  peak_end?: string
-  peak_rate_multiplier?: number
   claude_code_only?: boolean
   fallback_group_id?: number | null
   fallback_group_id_on_invalid_request?: number | null
@@ -697,6 +742,7 @@ export interface UpdateGroupRequest {
   daily_limit_usd?: number | null
   weekly_limit_usd?: number | null
   monthly_limit_usd?: number | null
+  augment_gateway_entitled?: boolean
   allow_image_generation?: boolean
   allow_batch_image_generation?: boolean
   image_rate_independent?: boolean
@@ -711,10 +757,6 @@ export interface UpdateGroupRequest {
   video_price_480p?: number | null
   video_price_720p?: number | null
   video_price_1080p?: number | null
-  peak_rate_enabled?: boolean
-  peak_start?: string
-  peak_end?: string
-  peak_rate_multiplier?: number
   claude_code_only?: boolean
   fallback_group_id?: number | null
   fallback_group_id_on_invalid_request?: number | null
@@ -735,9 +777,183 @@ export interface UpdateGroupRequest {
 // ==================== Account & Proxy Types ====================
 
 export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok'
-export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock' | 'service_account'
+export type AccountType =
+  | 'oauth'
+  | 'setup-token'
+  | 'apikey'
+  | 'upstream'
+  | 'bedrock'
+  | 'service_account'
+  | 'claude-platform-aws'
 export type OAuthAddMethod = 'oauth' | 'setup-token'
 export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'
+
+export type FormalPoolStage =
+  | 'imported'
+  | 'refreshed'
+  | 'runtime_registered'
+  | 'healthcheck_passed'
+  | 'warming'
+  | 'production'
+  | 'quarantined'
+  | 'legacy_unknown'
+
+export type FormalPoolFailureOrigin =
+  | 'local_gate'
+  | 'cc_gateway_control_plane'
+  | 'upstream'
+  | 'proxy'
+  | 'token_exchange'
+  | 'unknown'
+
+export interface FormalPoolRecommendedAction {
+  key: string
+  label: string
+  severity?: 'info' | 'warning' | 'danger' | string
+}
+
+export interface FormalPoolOperationsDiagnostics {
+  account_id: number
+  account_ref?: string
+  is_formal_pool: boolean
+  onboarding_stage?: FormalPoolStage | string
+  schedulable: boolean
+  effective_schedulable: boolean
+  failure_origin: FormalPoolFailureOrigin
+  failure_code?: string
+  failure_source?: string
+  healthcheck_status?: string
+  status_code_bucket?: string
+  last_cc_gateway_error_code?: string
+  onboarding_last_error_code?: string
+  onboarding_last_error_bucket?: string
+  cc_gateway_runtime_registered?: boolean
+  cc_gateway_runtime_registered_at?: string
+  runtime_evidence_complete?: boolean
+  cc_gateway_seen?: boolean
+  raw_capture_present?: boolean
+  raw_capture_ref?: string
+  fallback_detected?: boolean
+  proxy_mismatch?: boolean
+  risk_text_detected?: boolean
+  healthcheck_safe_error_code?: string
+  healthcheck_safe_error_bucket?: string
+  formal_pool_rate_limit_error_class?: string
+  formal_pool_rate_limit_window?: string
+  formal_pool_rate_limit_action?: string
+  formal_pool_rate_limit_reset_bucket?: string
+  formal_pool_rate_limit_last_at?: string
+  healthcheck_evidence_persisted?: boolean
+  quarantine_reason?: string
+  risk_event_ref?: string
+  checks: Array<{ name: string; status: 'pass' | 'warn' | 'fail'; message?: string }>
+  recommended_actions?: FormalPoolRecommendedAction[]
+}
+
+
+export type FormalPoolDashboardState =
+  | 'normal'
+  | 'warming'
+  | 'production'
+  | 'rate_limited'
+  | 'manual_risk'
+  | 'error'
+  | 'quarantined'
+  | 'inactive'
+  | 'not_schedulable'
+  | 'evidence_missing'
+  | 'data_missing'
+  | string
+
+export type FormalPoolDashboardSeverity = 'success' | 'info' | 'warning' | 'danger' | 'muted' | string
+
+export interface FormalPoolStatusRuntime {
+  current: number
+  limit: number
+  utilization: number | null
+  available: boolean
+}
+
+export interface FormalPoolStatusWindow {
+  used: number
+  limit: number
+  remaining: number
+  utilization: number | null
+  reset_at: string | null
+  status: string
+  available: boolean
+}
+
+export interface FormalPoolPassiveUsage {
+  utilization: number | null
+  remaining_ratio: number | null
+  reset_at: string | null
+  sampled_at: string | null
+  available: boolean
+  status: string
+}
+
+export interface FormalPoolStatusRecommendation {
+  label: string
+  detail: string
+  action_kind: string
+}
+
+export interface FormalPoolStatusDashboardAccount {
+  account_id: number
+  account_label: string
+  platform: AccountPlatform | string
+  type: AccountType | string
+  stage: FormalPoolStage | string
+  state: FormalPoolDashboardState
+  state_label: string
+  state_severity: FormalPoolDashboardSeverity
+  schedulable: boolean
+  effective_schedulable: boolean
+  production_ready: boolean
+  five_hour_window: FormalPoolStatusWindow
+  passive_usage_5h?: FormalPoolPassiveUsage
+  passive_usage_7d?: FormalPoolPassiveUsage
+  rpm: FormalPoolStatusRuntime
+  concurrency: FormalPoolStatusRuntime
+  sessions: FormalPoolStatusRuntime
+  last_used_at: string | null
+  last_success_hint: string | null
+  last_failure_code: string
+  last_failure_bucket: string
+  recommendation: FormalPoolStatusRecommendation
+}
+
+export interface FormalPoolStatusSummary {
+  total: number
+  normal: number
+  warming: number
+  production: number
+  rate_limited: number
+  manual_risk: number
+  error: number
+  quarantined: number
+  inactive: number
+  not_schedulable: number
+  evidence_missing: number
+  data_missing: number
+  schedulable: number
+  total_current_rpm: number
+  total_rpm_limit: number
+  rpm_available: boolean
+  five_hour_remaining_ratio: number | null
+  five_hour_window_available: boolean
+  passive_usage_5h_remaining_ratio?: number | null
+  passive_usage_5h_available?: boolean
+  passive_usage_7d_remaining_ratio?: number | null
+  passive_usage_7d_available?: boolean
+  generated_at: string
+}
+
+export interface FormalPoolStatusDashboard {
+  summary: FormalPoolStatusSummary
+  accounts: FormalPoolStatusDashboardAccount[]
+}
 
 // Claude Model type (returned by /v1/models and account models API)
 export interface ClaudeModel {
@@ -884,13 +1100,6 @@ export interface Account {
   concurrency: number
   load_factor?: number | null
   current_concurrency?: number // Real-time concurrency count from Redis
-  scheduler_score?: {
-    base_score: number
-    sticky_score?: number
-    sticky_score_infinity?: boolean
-    sticky_weighted_enabled: boolean
-  } | null
-  scheduler_scores?: AccountSchedulerGroupScore[] | null
   priority: number
   rate_multiplier?: number // Account billing multiplier (>=0, 0 means free)
   status: 'active' | 'inactive' | 'error'
@@ -906,6 +1115,33 @@ export interface Account {
 
   // Rate limit & scheduling fields
   schedulable: boolean
+  effective_schedulable?: boolean
+  is_formal_pool?: boolean
+  onboarding_stage?: FormalPoolStage | string
+  pool_profile_requested?: 'normal' | 'aggressive' | string | null
+  pool_profile_effective?: 'normal' | 'aggressive' | string | null
+  pool_weight_mode?: 'low' | 'normal' | string | null
+  healthcheck_status?: string | null
+  healthcheck_last_status_code_bucket?: string | null
+  healthcheck_last_raw_ref?: string | null
+  formal_pool_last_failure_origin?: FormalPoolFailureOrigin | string | null
+  formal_pool_last_failure_code?: string | null
+  formal_pool_last_failure_source?: string | null
+  formal_pool_last_cc_gateway_error_code?: string | null
+  formal_pool_last_healthcheck_at?: string | null
+  formal_pool_last_healthcheck_result?: string | null
+  healthcheck_cc_gateway_seen?: boolean | string | null
+  healthcheck_fallback_detected?: boolean | string | null
+  healthcheck_proxy_mismatch?: boolean | string | null
+  healthcheck_risk_text_detected?: boolean | string | null
+  formal_pool_credential_generation?: number | null
+  formal_pool_repaired_at?: string | null
+  formal_pool_repaired_by?: string | null
+  cc_gateway_runtime_registered?: boolean | string | null
+  quarantine_reason?: string | null
+  risk_event_ref?: string | null
+  warming_until?: string | null
+  production_ready?: boolean
   rate_limited_at: string | null
   rate_limit_reset_at: string | null
   overload_until: string | null
@@ -981,16 +1217,6 @@ export interface Account {
   parent_chatgpt_account_id?: string
 }
 
-export interface AccountSchedulerGroupScore {
-  group_id?: number | null
-  group_name?: string
-  group_priority?: number | null
-  base_score: number
-  sticky_score?: number
-  sticky_score_infinity?: boolean
-  sticky_weighted_enabled: boolean
-}
-
 // Account Usage types
 export interface WindowStats {
   requests: number
@@ -1015,13 +1241,6 @@ export interface AntigravityModelQuota {
   reset_time: string  // 重置时间 ISO8601
 }
 
-export interface GrokQuotaWindow {
-  limit?: number
-  remaining?: number
-  reset_unix?: number
-  reset_at?: string
-}
-
 export interface AccountUsageInfo {
   source?: 'passive' | 'active'
   updated_at: string | null
@@ -1036,15 +1255,6 @@ export interface AccountUsageInfo {
   gemini_pro_minute?: UsageProgress | null
   gemini_flash_minute?: UsageProgress | null
   antigravity_quota?: Record<string, AntigravityModelQuota> | null
-  grok_request_quota?: GrokQuotaWindow | null
-  grok_token_quota?: GrokQuotaWindow | null
-  grok_retry_after_seconds?: number | null
-  grok_entitlement_status?: string
-  grok_quota_snapshot_state?: string
-  grok_last_quota_probe_at?: string
-  grok_last_headers_seen_at?: string
-  grok_last_status_code?: number
-  grok_local_usage?: WindowStats | null
   ai_credits?: Array<{
     credit_type?: string
     amount?: number
@@ -1094,7 +1304,7 @@ export interface CodexUsageSnapshot {
 
 export type OpenAICompactMode = 'auto' | 'force_on' | 'force_off'
 export type OpenAIResponsesMode = 'auto' | 'force_responses' | 'force_chat_completions'
-export type OpenAIEndpointCapability = 'chat_completions' | 'embeddings'
+export type OpenAIEndpointCapability = 'chat_completions' | 'embeddings' | 'rerank'
 
 export interface OpenAICompactState {
   openai_compact_mode?: OpenAICompactMode
@@ -1236,12 +1446,23 @@ export interface AdminDataImportError {
   message: string
 }
 
+export interface AdminDataImportAccountResult {
+  name: string
+  action: string
+  pool_role?: 'main' | 'quarantine'
+  token_source?: 'rt_managed' | 'at_only'
+  validation_outcome?: string
+  message?: string
+}
+
 export interface AdminDataImportResult {
   proxy_created: number
   proxy_reused: number
   proxy_failed: number
   account_created: number
+  account_updated?: number
   account_failed: number
+  account_results?: AdminDataImportAccountResult[]
   errors?: AdminDataImportError[]
 }
 
@@ -1364,7 +1585,6 @@ export interface UsageLog {
 
   // User-Agent
   user_agent: string | null
-  ip_address?: string | null
 
   // Cache TTL Override
   cache_ttl_overridden: boolean
@@ -1397,6 +1617,13 @@ export interface AdminUsageLog extends UsageLog {
   // 渠道 ID 和计费等级（仅管理员可见）
   channel_id?: number | null
   billing_tier?: string | null
+
+  // Provider-side prompt cache diagnostics（仅管理员可见）
+  provider_prompt_cache_status?: string | null
+  provider_prompt_cache_detail?: string | null
+
+  // 用户请求 IP（仅管理员可见）
+  ip_address?: string | null
 
   // 最小账号信息（仅管理员接口返回）
   account?: UsageLogAccountSummary
@@ -1540,9 +1767,6 @@ export interface UsageStatsResponse {
   total_actual_cost: number // 实际扣除
   average_duration_ms: number
   models?: Record<string, number>
-  endpoints?: EndpointStat[]
-  upstream_endpoints?: EndpointStat[]
-  endpoint_paths?: EndpointStat[]
 }
 
 // ==================== Trend & Chart Types ====================
@@ -1569,7 +1793,7 @@ export interface ModelStat {
   total_tokens: number
   cost: number // 标准计费
   actual_cost: number // 实际扣除
-  account_cost?: number // 账号成本（仅管理员接口返回）
+  account_cost: number // 账号成本
 }
 
 export interface EndpointStat {
@@ -1587,7 +1811,7 @@ export interface GroupStat {
   total_tokens: number
   cost: number // 标准计费
   actual_cost: number // 实际扣除
-  account_cost?: number // 账号成本（仅管理员接口返回）
+  account_cost: number // 账号成本
 }
 
 export interface UserBreakdownItem {
@@ -1769,15 +1993,15 @@ export interface UsageQueryParams {
   api_key_id?: number
   user_id?: number
   account_id?: number
+
+  billing_mode?: string | null
   group_id?: number
   model?: string
   request_type?: UsageRequestType
   stream?: boolean
   billing_type?: number | null
-  billing_mode?: string | null
   start_date?: string
   end_date?: string
-  timezone?: string
   sort_by?: string
   sort_order?: 'asc' | 'desc'
 }
@@ -2049,6 +2273,124 @@ export interface UpdateScheduledTestPlanRequest {
 
 // Payment types
 export type { SubscriptionPlan, PaymentOrder, CheckoutInfoResponse } from './payment'
+
+// ─── Codex Entry Center Types ───
+
+export type CodexPageState = 'onboarding_credential' | 'onboarding_attach' | 'onboarding_verify' | 'console'
+export type CodexWizardStep = 1 | 2 | 3 | null
+export type CodexDeviceState = 'healthy' | 'catalog_stale' | 'device_offline' | 'credential_revoked' | 'client_outdated'
+export type CodexAttachmentMode = 'independent_credential' | 'reused_key'
+export type CodexSetupSessionPresentation = 'wizard' | 'console_banner'
+export type CodexCatalogErrorKind = 'none' | 'timeout' | 'auth' | 'server' | 'unknown'
+
+export interface CodexSetupSessionDTO {
+  id: string
+  credential_label: string
+  attachment_mode: CodexAttachmentMode
+  reuse_api_key_id: number | null
+  launch_url: string | null
+  cli_command: string | null
+  expires_at: string
+  first_seen_at: string | null
+  first_catalog_synced_at: string | null
+}
+
+export interface CodexDeviceDTO {
+  device_id: number
+  device_name: string
+  attachment_mode: CodexAttachmentMode
+  device_state: CodexDeviceState
+  last_seen_at: string | null
+  client_version: string | null
+  min_supported_client_version: string | null
+  catalog_synced_at: string | null
+  catalog_last_error_kind: CodexCatalogErrorKind
+  revoked_at: string | null
+}
+
+export interface CodexEntryPricingInterval {
+  min_tokens: number
+  max_tokens: number | null
+  tier_label?: string
+  input_price: number | null
+  output_price: number | null
+  cache_write_price: number | null
+  cache_read_price: number | null
+  per_request_price: number | null
+}
+
+export interface CodexEntryModelPricing {
+  billing_mode: 'token' | 'per_request' | 'image'
+  input_price: number | null
+  output_price: number | null
+  cache_write_price: number | null
+  cache_read_price: number | null
+  image_output_price: number | null
+  per_request_price: number | null
+  intervals: CodexEntryPricingInterval[]
+  source: string
+}
+
+export interface CodexEntryModelSummary {
+  name: string
+  display_name: string
+  platform: string
+  pricing?: CodexEntryModelPricing | null
+}
+
+export interface CodexEntrySummary {
+  page_state: CodexPageState
+  wizard_step: CodexWizardStep
+  attachment_mode: CodexAttachmentMode | null
+  setup_session_presentation: CodexSetupSessionPresentation | null
+  setup_session: CodexSetupSessionDTO | null
+  focus_device_id: number | null
+  devices: CodexDeviceDTO[]
+  model_catalog: CodexEntryModelSummary[]
+}
+
+export interface CodexCreateSetupSessionRequest {
+  attachment_mode: CodexAttachmentMode
+  credential_label?: string
+  reuse_api_key_id?: number
+}
+
+export interface CodexCreateSetupSessionResponse {
+  setup_session: CodexSetupSessionDTO
+  page_state: CodexPageState
+  setup_session_presentation: CodexSetupSessionPresentation
+}
+
+export interface CodexRegenerateSetupSessionResponse {
+  setup_session: {
+    id: string
+    launch_url: string | null
+    cli_command: string | null
+    expires_at: string
+  }
+}
+
+export interface CodexDiagnoseRequest {
+  setup_session_id?: string
+  device_id?: number
+}
+
+export interface CodexDiagnoseCheck {
+  name: string
+  status: 'ok' | 'warn' | 'fail'
+  hint: string
+}
+
+export interface CodexDiagnoseReport {
+  ok: boolean
+  target_kind: 'setup_session' | 'device'
+  checks: CodexDiagnoseCheck[]
+}
+
+export interface CodexDeviceActionResponse {
+  device_id: number
+  accepted: boolean
+}
 
 export type {
   PlatformQuotaItem,

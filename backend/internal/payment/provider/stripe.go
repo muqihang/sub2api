@@ -347,6 +347,7 @@ func (s *Stripe) CancelPayment(ctx context.Context, tradeNo string) error {
 // Ensure interface compliance.
 var (
 	_ payment.Provider                 = (*Stripe)(nil)
+	_ payment.RefundQueryProvider      = (*Stripe)(nil)
 	_ payment.CancelableProvider       = (*Stripe)(nil)
 	_ payment.MerchantIdentityProvider = (*Stripe)(nil)
 )

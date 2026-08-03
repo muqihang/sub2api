@@ -10,12 +10,20 @@ import (
 
 type identityCacheStub struct {
 	maskedSessionID string
+	fingerprint     *Fingerprint
+	setFingerprint  *Fingerprint
+	fingerprintErr  error
 }
 
 func (s *identityCacheStub) GetFingerprint(_ context.Context, _ int64) (*Fingerprint, error) {
-	return nil, nil
+	return s.fingerprint, s.fingerprintErr
 }
-func (s *identityCacheStub) SetFingerprint(_ context.Context, _ int64, _ *Fingerprint) error {
+func (s *identityCacheStub) SetFingerprint(_ context.Context, _ int64, fp *Fingerprint) error {
+	if fp != nil {
+		cp := *fp
+		s.setFingerprint = &cp
+		s.fingerprint = &cp
+	}
 	return nil
 }
 func (s *identityCacheStub) GetMaskedSessionID(_ context.Context, _ int64) (string, error) {

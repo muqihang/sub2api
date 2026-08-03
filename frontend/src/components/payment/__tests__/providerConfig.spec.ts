@@ -58,6 +58,22 @@ describe('PROVIDER_CONFIG_FIELDS.stripe', () => {
   })
 })
 
+describe('built-in payment method matching', () => {
+  it('matches only built-in Alipay aliases exactly', () => {
+    expect(isBuiltInAlipayMethod('alipay')).toBe(true)
+    expect(isBuiltInAlipayMethod('alipay_direct')).toBe(true)
+    expect(isBuiltInAlipayMethod('card_alipay')).toBe(false)
+    expect(isBuiltInAlipayMethod('alipay_custom')).toBe(false)
+  })
+
+  it('matches only built-in WeChat Pay aliases exactly', () => {
+    expect(isBuiltInWxpayMethod('wxpay')).toBe(true)
+    expect(isBuiltInWxpayMethod('wxpay_direct')).toBe(true)
+    expect(isBuiltInWxpayMethod('card_wxpay')).toBe(false)
+    expect(isBuiltInWxpayMethod('wxpay_custom')).toBe(false)
+  })
+})
+
 describe('EasyPay custom methods config', () => {
   it('parses customMethods from the JSON string stored in provider config', () => {
     expect(parseEasyPayCustomMethods(
@@ -79,17 +95,5 @@ describe('EasyPay custom methods config', () => {
   it('returns an empty string for invalid or empty custom methods', () => {
     expect(parseEasyPayCustomMethods('not-json')).toEqual([])
     expect(serializeEasyPayCustomMethods([{ type: '', upstreamType: 'epay', displayName: 'LDC' }])).toBe('')
-  })
-})
-
-describe('built-in payment method helpers', () => {
-  it('only treats exact built-in aliases as Alipay or WeChat Pay', () => {
-    expect(isBuiltInAlipayMethod('alipay')).toBe(true)
-    expect(isBuiltInAlipayMethod('alipay_direct')).toBe(true)
-    expect(isBuiltInAlipayMethod('card_alipay')).toBe(false)
-
-    expect(isBuiltInWxpayMethod('wxpay')).toBe(true)
-    expect(isBuiltInWxpayMethod('wxpay_direct')).toBe(true)
-    expect(isBuiltInWxpayMethod('card_wxpay')).toBe(false)
   })
 })

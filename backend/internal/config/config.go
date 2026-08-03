@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
 	"github.com/spf13/viper"
 )
 
@@ -93,6 +94,7 @@ type Config struct {
 	Gemini                  GeminiConfig                  `mapstructure:"gemini"`
 	Update                  UpdateConfig                  `mapstructure:"update"`
 	Idempotency             IdempotencyConfig             `mapstructure:"idempotency"`
+	FormalPool              FormalPoolRuntimeConfig       `mapstructure:"formal_pool"`
 	BatchImage              BatchImageConfig              `mapstructure:"batch_image"`
 }
 
@@ -129,8 +131,15 @@ type LogSamplingConfig struct {
 }
 
 type GeminiConfig struct {
-	OAuth GeminiOAuthConfig `mapstructure:"oauth"`
-	Quota GeminiQuotaConfig `mapstructure:"quota"`
+	OAuth                                GeminiOAuthConfig `mapstructure:"oauth"`
+	Quota                                GeminiQuotaConfig `mapstructure:"quota"`
+	ProductionMode                       bool              `mapstructure:"production_mode"`
+	RequireSafeOAuthSessionStore         bool              `mapstructure:"require_safe_oauth_session_store"`
+	AllowProjectIDFallbackToAIStudio     bool              `mapstructure:"allow_project_id_fallback_to_ai_studio"`
+	AllowUnauthorizedClientRetryFallback bool              `mapstructure:"allow_unauthorized_client_retry_fallback"`
+	AllowGoogleOneDefaultTierFallback    bool              `mapstructure:"allow_google_one_default_tier_fallback"`
+	TokenCacheMode                       string            `mapstructure:"token_cache_mode"`
+	RequireThoughtSignatureSessionSafety bool              `mapstructure:"require_thought_signature_session_safety"`
 }
 
 type GeminiOAuthConfig struct {
@@ -155,6 +164,23 @@ type UpdateConfig struct {
 	// 支持 http/https/socks5/socks5h 协议
 	// 例如: "http://127.0.0.1:7890", "socks5://127.0.0.1:1080"
 	ProxyURL string `mapstructure:"proxy_url"`
+}
+
+type FormalPoolRuntimeConfig struct {
+	AuthorityTenantID           string        `mapstructure:"authority_tenant_id"`
+	PublicOrigin                string        `mapstructure:"public_origin"`
+	NonceTTL                    time.Duration `mapstructure:"nonce_ttl"`
+	EgressMatchCIDRWhitelist    []string      `mapstructure:"egress_match_cidr_whitelist"`
+	ProxyEgressCacheSuccessTTL  time.Duration `mapstructure:"proxy_egress_cache_success_ttl"`
+	ProxyEgressCacheFailureTTL  time.Duration `mapstructure:"proxy_egress_cache_failure_ttl"`
+	ProxyEgressProbeTimeout     time.Duration `mapstructure:"proxy_egress_probe_timeout"`
+	PublicRouteRatePerNonce     int           `mapstructure:"public_route_rate_per_nonce"`
+	PublicRouteRatePerIP        int           `mapstructure:"public_route_rate_per_ip"`
+	PublicRouteTotalPerNonce    int           `mapstructure:"public_route_total_per_nonce"`
+	PublicRouteFallbackPerIP    int           `mapstructure:"public_route_fallback_per_ip"`
+	PublicRouteConstantDelayMin time.Duration `mapstructure:"public_route_constant_delay_min"`
+	PublicRouteConstantDelayMax time.Duration `mapstructure:"public_route_constant_delay_max"`
+	RateLimitHMACSecret         string        `mapstructure:"rate_limit_hmac_secret"`
 }
 
 type IdempotencyConfig struct {
@@ -694,9 +720,8 @@ type ProxyProbeConfig struct {
 
 type BillingConfig struct {
 	CircuitBreaker CircuitBreakerConfig `mapstructure:"circuit_breaker"`
-	// MinimumBalanceReserve is the conservative preflight floor for balance billing.
-	// Requests in balance mode are rejected when the cached balance is below this
-	// amount, even if it is still positive. Set to 0 to keep the legacy balance > 0 gate.
+	// MinimumBalanceReserve is a conservative preflight floor for balance billing.
+	// Set to 0 to keep the legacy balance > 0 gate.
 	MinimumBalanceReserve float64 `mapstructure:"minimum_balance_reserve"`
 	// UserPlatformQuotaCacheTTLSeconds 用户 × 平台 quota 缓存 TTL（秒），默认 86400=1天，覆盖典型 daily 窗口。
 	// 消费点：
@@ -772,11 +797,16 @@ type GatewayConfig struct {
 	// OpenAIPassthroughAllowTimeoutHeaders: OpenAI 透传模式是否放行客户端超时头
 	// 关闭（默认）可避免 x-stainless-timeout 等头导致上游提前断流。
 	OpenAIPassthroughAllowTimeoutHeaders bool `mapstructure:"openai_passthrough_allow_timeout_headers"`
-	// OpenAICompactModel: /responses/compact 上游使用的模型。
-	// compact 端点支持模型滞后于普通 /responses 时，可用该配置降级规避上游错误。
-	OpenAICompactModel string `mapstructure:"openai_compact_model"`
 	// OpenAIWS: OpenAI Responses WebSocket 配置（默认开启，可按需回滚到 HTTP）
 	OpenAIWS GatewayOpenAIWSConfig `mapstructure:"openai_ws"`
+	// OpenAICore: OpenAI Gateway Core 配置
+	OpenAICore GatewayOpenAICoreConfig `mapstructure:"openai_core"`
+	// Augment: 逐梦 Augment Code 专用模型池配置
+	Augment GatewayAugmentConfig `mapstructure:"augment"`
+	// Codex: Codex Gateway 专用模型池配置
+	Codex GatewayCodexConfig `mapstructure:"codex"`
+	// CCGateway: cc-gateway 透明身份改写适配配置（默认关闭）
+	CCGateway GatewayCCGatewayConfig `mapstructure:"cc_gateway"`
 	// OpenAIScheduler: OpenAI 高级调度器粘性逃逸配置
 	OpenAIScheduler GatewayOpenAISchedulerConfig `mapstructure:"openai_scheduler"`
 	// OpenAIHTTP2: OpenAI HTTP 上游协议策略（默认启用 HTTP/2，可按代理能力回退 HTTP/1.1）
@@ -843,6 +873,11 @@ type GatewayConfig struct {
 	// Scheduling: 账号调度相关配置
 	Scheduling GatewaySchedulingConfig `mapstructure:"scheduling"`
 
+	// OpenAI mini 长上下文自动升档配置
+	OpenAIMiniAutoUpgradeEnabled        bool   `mapstructure:"openai_mini_auto_upgrade_enabled"`
+	OpenAIMiniAutoUpgradeMinInputTokens int    `mapstructure:"openai_mini_auto_upgrade_min_input_tokens"`
+	OpenAIMiniAutoUpgradeTargetModel    string `mapstructure:"openai_mini_auto_upgrade_target_model"`
+
 	// TLSFingerprint: TLS指纹伪装配置
 	TLSFingerprint TLSFingerprintConfig `mapstructure:"tls_fingerprint"`
 
@@ -857,6 +892,65 @@ type GatewayConfig struct {
 	// UserMessageQueue: 用户消息串行队列配置
 	// 对 role:"user" 的真实用户消息实施账号级串行化 + RPM 自适应延迟
 	UserMessageQueue UserMessageQueueConfig `mapstructure:"user_message_queue"`
+}
+
+type GatewayAugmentConfig struct {
+	Enabled        bool                               `mapstructure:"enabled"`
+	EnabledModels  []string                           `mapstructure:"enabled_models"`
+	ProviderGroups GatewayAugmentProviderGroupsConfig `mapstructure:"provider_groups"`
+}
+
+type GatewayAugmentProviderGroupsConfig struct {
+	OpenAI    int64 `mapstructure:"openai"`
+	DeepSeek  int64 `mapstructure:"deepseek"`
+	Anthropic int64 `mapstructure:"anthropic"`
+	Gemini    int64 `mapstructure:"gemini"`
+}
+
+type GatewayCodexConfig struct {
+	Enabled              bool                             `mapstructure:"enabled"`
+	ExposeV1Alias        bool                             `mapstructure:"expose_v1_alias"`
+	ModelCatalogPath     string                           `mapstructure:"model_catalog_path"`
+	SupportsWebSockets   bool                             `mapstructure:"supports_websockets"`
+	StateStoreTTLSeconds int                              `mapstructure:"state_store_ttl_seconds"`
+	MaxStateItems        int                              `mapstructure:"max_state_items"`
+	StreamMaxLineSize    int64                            `mapstructure:"stream_max_line_size"`
+	EnabledModels        []string                         `mapstructure:"enabled_models"`
+	ProviderGroups       GatewayCodexProviderGroupsConfig `mapstructure:"provider_groups"`
+	Capture              GatewayCodexCaptureConfig        `mapstructure:"capture"`
+}
+
+type GatewayCodexProviderGroupsConfig struct {
+	OpenAI    int64 `mapstructure:"openai"`
+	DeepSeek  int64 `mapstructure:"deepseek"`
+	Anthropic int64 `mapstructure:"anthropic"`
+	Agnes     int64 `mapstructure:"agnes"`
+}
+
+type GatewayCodexCaptureConfig struct {
+	Enabled                     bool                            `mapstructure:"enabled"`
+	Level                       string                          `mapstructure:"level"`
+	RawPayloads                 bool                            `mapstructure:"raw_payloads"`
+	BaseDir                     string                          `mapstructure:"base_dir"`
+	RetentionDays               int                             `mapstructure:"retention_days"`
+	MaxTraceBytes               int64                           `mapstructure:"max_trace_bytes"`
+	MaxBodyBytes                int64                           `mapstructure:"max_body_bytes"`
+	MaxEventBytes               int64                           `mapstructure:"max_event_bytes"`
+	CaptureErrorsAlways         bool                            `mapstructure:"capture_errors_always"`
+	CaptureSuccessSampleRate    float64                         `mapstructure:"capture_success_sample_rate"`
+	IncludeResponseHeader       bool                            `mapstructure:"include_response_header"`
+	AsyncQueueSize              int                             `mapstructure:"async_queue_size"`
+	HashMode                    string                          `mapstructure:"hash_mode"`
+	HashKeyFile                 string                          `mapstructure:"hash_key_file"`
+	CorrelationHashKeyFile      string                          `mapstructure:"correlation_hash_key_file"`
+	RequireRawPayloadsUnlockEnv string                          `mapstructure:"require_raw_payloads_unlock_env"`
+	Redact                      GatewayCodexCaptureRedactConfig `mapstructure:"redact"`
+}
+
+type GatewayCodexCaptureRedactConfig struct {
+	Enabled     bool     `mapstructure:"enabled"`
+	HeaderNames []string `mapstructure:"header_names"`
+	JSONKeys    []string `mapstructure:"json_keys"`
 }
 
 // GatewayOpenAIHTTP2Config OpenAI HTTP 上游协议配置。
@@ -965,12 +1059,14 @@ type GatewayOpenAIWSConfig struct {
 	// OAuthMaxConnsFactor: OAuth 账号连接池系数（effective=ceil(concurrency*factor)）
 	OAuthMaxConnsFactor float64 `mapstructure:"oauth_max_conns_factor"`
 	// APIKeyMaxConnsFactor: API Key 账号连接池系数（effective=ceil(concurrency*factor)）
-	APIKeyMaxConnsFactor  float64 `mapstructure:"apikey_max_conns_factor"`
-	DialTimeoutSeconds    int     `mapstructure:"dial_timeout_seconds"`
-	ReadTimeoutSeconds    int     `mapstructure:"read_timeout_seconds"`
-	WriteTimeoutSeconds   int     `mapstructure:"write_timeout_seconds"`
-	PoolTargetUtilization float64 `mapstructure:"pool_target_utilization"`
-	QueueLimitPerConn     int     `mapstructure:"queue_limit_per_conn"`
+	APIKeyMaxConnsFactor float64 `mapstructure:"apikey_max_conns_factor"`
+	DialTimeoutSeconds   int     `mapstructure:"dial_timeout_seconds"`
+	// FirstMessageTimeoutSeconds: ingress 客户端升级成功后等待首条 response.create 的超时（秒）
+	FirstMessageTimeoutSeconds int     `mapstructure:"first_message_timeout_seconds"`
+	ReadTimeoutSeconds         int     `mapstructure:"read_timeout_seconds"`
+	WriteTimeoutSeconds        int     `mapstructure:"write_timeout_seconds"`
+	PoolTargetUtilization      float64 `mapstructure:"pool_target_utilization"`
+	QueueLimitPerConn          int     `mapstructure:"queue_limit_per_conn"`
 	// EventFlushBatchSize: WS 流式写出批量 flush 阈值（事件条数）
 	EventFlushBatchSize int `mapstructure:"event_flush_batch_size"`
 	// EventFlushIntervalMS: WS 流式写出最大等待时间（毫秒）；0 表示仅按 batch 触发
@@ -1008,6 +1104,107 @@ type GatewayOpenAIWSConfig struct {
 	SchedulerScoreWeights GatewayOpenAIWSSchedulerScoreWeights `mapstructure:"scheduler_score_weights"`
 }
 
+// GatewayOpenAICoreConfig OpenAI Gateway Core 配置。
+// 第一版用于统一 OpenAI OAuth 号池的 canonical profile、egress bucket、health/verify 与 client token。
+type GatewayOpenAICoreConfig struct {
+	// Enabled: 是否启用 OpenAI Gateway Core（默认 true）
+	Enabled bool `mapstructure:"enabled"`
+	// TLSBinding: OpenAI 上游 TLS 指纹绑定灰度门禁（默认关闭）
+	TLSBinding OpenAIGatewayFeatureFlagConfig `mapstructure:"tls_binding"`
+	// EntityOrchestration: OpenAI 多实体编排灰度门禁（默认关闭）
+	EntityOrchestration OpenAIGatewayFeatureFlagConfig `mapstructure:"entity_orchestration"`
+	// EntityProfileOverride: OpenAI 实体 profile override 灰度门禁（默认关闭）
+	EntityProfileOverride OpenAIGatewayFeatureFlagConfig `mapstructure:"entity_profile_override"`
+	// ProductionMode: 生产安全模式，启用后要求出口与凭证相关门禁 fail-closed
+	ProductionMode bool `mapstructure:"production_mode"`
+	// DefaultProfileMode: 默认 profile 模式（fixed/observe/frozen）
+	DefaultProfileMode string `mapstructure:"default_profile_mode"`
+	// DefaultEgressBucket: 默认出口桶名称
+	DefaultEgressBucket string `mapstructure:"default_egress_bucket"`
+	// EgressFailClosed: 出口桶异常时是否拒绝而非回退
+	EgressFailClosed bool `mapstructure:"egress_fail_closed"`
+	// AllowAccountProxyFallback: 是否允许出口桶异常时回退到账户代理
+	AllowAccountProxyFallback bool `mapstructure:"allow_account_proxy_fallback"`
+	// AllowDirectFallback: 是否允许出口桶异常时回退直连
+	AllowDirectFallback bool `mapstructure:"allow_direct_fallback"`
+	// RequireEncryptedCredentials: 生产模式是否要求 OpenAI 上游凭证加密/受保护
+	RequireEncryptedCredentials bool `mapstructure:"require_encrypted_credentials"`
+	// CredentialEncryptionKey: OpenAI 上游凭证加密密钥（后续 secret gate 使用）
+	CredentialEncryptionKey string `mapstructure:"credential_encryption_key"`
+	// OAuthSessionStore: OpenAI OAuth callback session 存储模式（memory/redis）
+	OAuthSessionStore string `mapstructure:"oauth_session_store"`
+	// OAuthCallbackStickySingleInstance: memory session 模式下是否已强制 sticky 单实例 callback
+	OAuthCallbackStickySingleInstance bool `mapstructure:"oauth_callback_sticky_single_instance"`
+	// ExposeRawProxyInDebug: 显式 debug/operator 模式下是否允许暴露明文 proxy URL
+	ExposeRawProxyInDebug bool `mapstructure:"expose_raw_proxy_in_debug"`
+	// BucketWarnAccountThreshold: 单 bucket 账号数超过该阈值时发出集中度告警
+	BucketWarnAccountThreshold int `mapstructure:"bucket_warn_account_threshold"`
+	// ProbeRequireClientToken: /openai/_health 和 /openai/_verify 是否要求 client token
+	ProbeRequireClientToken bool `mapstructure:"probe_require_client_token"`
+	// CanonicalUserAgent: 固定模式下默认 User-Agent
+	CanonicalUserAgent string `mapstructure:"canonical_user_agent"`
+	// CanonicalStainlessLang: 固定模式下默认 X-Stainless-Lang
+	CanonicalStainlessLang string `mapstructure:"canonical_stainless_lang"`
+	// CanonicalStainlessPackageVersion: 固定模式下默认 X-Stainless-Package-Version
+	CanonicalStainlessPackageVersion string `mapstructure:"canonical_stainless_package_version"`
+	// CanonicalStainlessOS: 固定模式下默认 X-Stainless-OS
+	CanonicalStainlessOS string `mapstructure:"canonical_stainless_os"`
+	// CanonicalStainlessArch: 固定模式下默认 X-Stainless-Arch
+	CanonicalStainlessArch string `mapstructure:"canonical_stainless_arch"`
+	// CanonicalStainlessRuntime: 固定模式下默认 X-Stainless-Runtime
+	CanonicalStainlessRuntime string `mapstructure:"canonical_stainless_runtime"`
+	// CanonicalStainlessRuntimeVersion: 固定模式下默认 X-Stainless-Runtime-Version
+	CanonicalStainlessRuntimeVersion string `mapstructure:"canonical_stainless_runtime_version"`
+	// EgressBuckets: OpenAI Gateway 出口桶配置
+	EgressBuckets []OpenAIGatewayEgressBucketConfig `mapstructure:"egress_buckets"`
+	// ClientTokens: OpenAI Gateway probe/client tokens
+	ClientTokens []OpenAIGatewayClientTokenConfig `mapstructure:"client_tokens"`
+}
+
+type OpenAIGatewayClientTokenConfig struct {
+	Name  string `mapstructure:"name"`
+	Token string `mapstructure:"token"`
+}
+
+type OpenAIGatewayFeatureFlagConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+}
+
+type OpenAIGatewayEgressBucketConfig struct {
+	Name     string                       `mapstructure:"name"`
+	Enabled  bool                         `mapstructure:"enabled"`
+	ProxyURL string                       `mapstructure:"proxy_url"`
+	TLS      OpenAIGatewayBucketTLSConfig `mapstructure:"tls"`
+}
+
+type OpenAIGatewayBucketTLSConfig struct {
+	Enabled              bool  `mapstructure:"enabled"`
+	ProfileID            int64 `mapstructure:"profile_id"`
+	AllowDefaultFallback bool  `mapstructure:"allow_default_fallback"`
+	AllowPlainFallback   bool  `mapstructure:"allow_plain_fallback"`
+	AllowAccountOverride bool  `mapstructure:"allow_account_override"`
+}
+
+// GatewayCCGatewayConfig controls forwarding selected Anthropic/Antigravity
+// account credentials through cc-gateway for identity rewriting.
+type GatewayCCGatewayConfig struct {
+	Enabled                                  bool                            `mapstructure:"enabled"`
+	BaseURL                                  string                          `mapstructure:"base_url"`
+	Token                                    string                          `mapstructure:"token"`
+	InternalControlToken                     string                          `mapstructure:"internal_control_token"`
+	ContextAttestationSecret                 string                          `mapstructure:"context_attestation_secret"`
+	StickySessionHMACKey                     string                          `mapstructure:"sticky_session_hmac_key"`
+	ClaudePlatformAWSWorkspaceBindingHMACKey string                          `mapstructure:"claude_platform_aws_workspace_binding_hmac_key"`
+	TimeoutSeconds                           int                             `mapstructure:"timeout_seconds"`
+	DefaultEgressBucket                      string                          `mapstructure:"default_egress_bucket"`
+	Providers                                GatewayCCGatewayProvidersConfig `mapstructure:"providers"`
+}
+
+type GatewayCCGatewayProvidersConfig struct {
+	Anthropic   bool `mapstructure:"anthropic"`
+	Antigravity bool `mapstructure:"antigravity"`
+}
+
 // GatewayOpenAIWSSchedulerScoreWeights 账号调度打分权重。
 type GatewayOpenAIWSSchedulerScoreWeights struct {
 	Priority  float64 `mapstructure:"priority"`
@@ -1016,13 +1213,10 @@ type GatewayOpenAIWSSchedulerScoreWeights struct {
 	ErrorRate float64 `mapstructure:"error_rate"`
 	TTFT      float64 `mapstructure:"ttft"`
 	// Reset 倾向「会话窗口最早重置」的账号（use-it-or-lose-it）。
-	// >0 时，剩余重置时间越短的账号得分越高，从而被优先用尽。默认 0（关闭，不改变原有行为）。
+	// >0 时，剩余重置时间越短的账号得分越高。默认 0（关闭）。
 	Reset float64 `mapstructure:"reset"`
-	// QuotaHeadroom 倾向 7d 剩余额度更健康的账号；默认 0（关闭，不改变原有行为）。
+	// QuotaHeadroom 倾向 7d 剩余额度更健康的账号。默认 0（关闭）。
 	QuotaHeadroom float64 `mapstructure:"quota_headroom"`
-	// PreviousResponse/SessionSticky 仅在开启 OpenAI 高级调度的粘性加权时生效。
-	PreviousResponse float64 `mapstructure:"previous_response"`
-	SessionSticky    float64 `mapstructure:"session_sticky"`
 }
 
 // GatewayOpenAISchedulerConfig OpenAI 高级调度器配置。
@@ -1121,9 +1315,8 @@ type GatewaySchedulingConfig struct {
 	// 兜底层账户选择策略: "last_used"(按最后使用时间排序，默认) 或 "random"(随机)
 	FallbackSelectionMode string `mapstructure:"fallback_selection_mode"`
 
-	// PreferSoonestReset 开启后，负载感知选择会优先选用「会话窗口最早重置」的账号
-	// （use-it-or-lose-it：先用尽即将重置的账号，保留重置时间还很久的账号）。
-	// 默认 false，保持原有「优先级 → 负载率 → LRU」行为不变。
+	// PreferSoonestReset 开启后，负载感知选择优先选用会话窗口最早重置的账号。
+	// 默认 false，保持原有「优先级 -> 负载率 -> LRU」行为不变。
 	PreferSoonestReset bool `mapstructure:"prefer_soonest_reset"`
 
 	// 负载计算
@@ -1133,6 +1326,12 @@ type GatewaySchedulingConfig struct {
 	SnapshotMGetChunkSize int `mapstructure:"snapshot_mget_chunk_size"`
 	// 快照重建时的缓存写入分块大小
 	SnapshotWriteChunkSize int `mapstructure:"snapshot_write_chunk_size"`
+
+	// OpenAI cache-aware 调度配置（Balanced）
+	OpenAICacheAwareEnabled        bool    `mapstructure:"openai_cache_aware_enabled"`
+	OpenAICacheAwareMinSamples     int     `mapstructure:"openai_cache_aware_min_samples"`
+	OpenAICacheAwareWeight         float64 `mapstructure:"openai_cache_aware_weight"`
+	OpenAICacheAwareMinInputTokens int     `mapstructure:"openai_cache_aware_min_input_tokens"`
 
 	// 过期槽位清理周期（0 表示禁用）
 	SlotCleanupInterval time.Duration `mapstructure:"slot_cleanup_interval"`
@@ -1530,6 +1729,14 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	cfg.Log.Environment = strings.TrimSpace(cfg.Log.Environment)
 	cfg.Log.StacktraceLevel = strings.ToLower(strings.TrimSpace(cfg.Log.StacktraceLevel))
 	cfg.Log.Output.FilePath = strings.TrimSpace(cfg.Log.Output.FilePath)
+	cfg.Gateway.Augment.EnabledModels = normalizeStringSlice(cfg.Gateway.Augment.EnabledModels)
+	cfg.Gateway.Codex.ModelCatalogPath = strings.TrimSpace(cfg.Gateway.Codex.ModelCatalogPath)
+	cfg.Gateway.Codex.EnabledModels = normalizeStringSlice(cfg.Gateway.Codex.EnabledModels)
+	cfg.Gateway.Codex.Capture.Level = strings.ToLower(strings.TrimSpace(cfg.Gateway.Codex.Capture.Level))
+	cfg.Gateway.Codex.Capture.BaseDir = strings.TrimSpace(cfg.Gateway.Codex.Capture.BaseDir)
+	cfg.Gateway.Codex.Capture.HashMode = strings.ToLower(strings.TrimSpace(cfg.Gateway.Codex.Capture.HashMode))
+	cfg.Gateway.Codex.Capture.HashKeyFile = strings.TrimSpace(cfg.Gateway.Codex.Capture.HashKeyFile)
+	cfg.Gateway.Codex.Capture.RequireRawPayloadsUnlockEnv = strings.TrimSpace(cfg.Gateway.Codex.Capture.RequireRawPayloadsUnlockEnv)
 	cfg.Gateway.ForcedCodexInstructionsTemplateFile = strings.TrimSpace(cfg.Gateway.ForcedCodexInstructionsTemplateFile)
 	if cfg.Gateway.ForcedCodexInstructionsTemplateFile != "" {
 		content, err := os.ReadFile(cfg.Gateway.ForcedCodexInstructionsTemplateFile)
@@ -1597,8 +1804,28 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 			"force_remove", cfg.Security.ResponseHeaders.ForceRemove,
 		)
 	}
+	if err := validateCodexCaptureRuntimeConfig(cfg.Gateway.Codex.Capture, cfg.Server.Mode); err != nil {
+		return nil, err
+	}
 
 	return &cfg, nil
+}
+
+func validateCodexCaptureRuntimeConfig(capture GatewayCodexCaptureConfig, serverMode string) error {
+	if !capture.Enabled || !capture.RawPayloads {
+		return nil
+	}
+	if strings.EqualFold(strings.TrimSpace(serverMode), "production") {
+		return fmt.Errorf("gateway.codex.capture.raw_payloads is not allowed in production server mode")
+	}
+	name, value, ok := strings.Cut(strings.TrimSpace(capture.RequireRawPayloadsUnlockEnv), "=")
+	if !ok || strings.TrimSpace(name) == "" || strings.TrimSpace(value) == "" {
+		return fmt.Errorf("gateway.codex.capture.require_raw_payloads_unlock_env must be NAME=VALUE")
+	}
+	if os.Getenv(strings.TrimSpace(name)) != strings.TrimSpace(value) {
+		return fmt.Errorf("gateway.codex.capture.raw_payloads requires %s", capture.RequireRawPayloadsUnlockEnv)
+	}
+	return nil
 }
 
 func setDefaults() {
@@ -1928,6 +2155,20 @@ func setDefaults() {
 	viper.SetDefault("idempotency.cleanup_interval_seconds", 60)
 	viper.SetDefault("idempotency.cleanup_batch_size", 500)
 
+	// Formal pool
+	viper.SetDefault("formal_pool.nonce_ttl", 5*time.Minute)
+	viper.SetDefault("formal_pool.egress_match_cidr_whitelist", []string{})
+	viper.SetDefault("formal_pool.proxy_egress_cache_success_ttl", 60*time.Second)
+	viper.SetDefault("formal_pool.proxy_egress_cache_failure_ttl", 15*time.Second)
+	viper.SetDefault("formal_pool.proxy_egress_probe_timeout", 3*time.Second)
+	viper.SetDefault("formal_pool.public_route_rate_per_nonce", 10)
+	viper.SetDefault("formal_pool.public_route_rate_per_ip", 30)
+	viper.SetDefault("formal_pool.public_route_total_per_nonce", 20)
+	viper.SetDefault("formal_pool.public_route_fallback_per_ip", 3)
+	viper.SetDefault("formal_pool.public_route_constant_delay_min", 80*time.Millisecond)
+	viper.SetDefault("formal_pool.public_route_constant_delay_max", 150*time.Millisecond)
+	viper.SetDefault("formal_pool.rate_limit_hmac_secret", "")
+
 	// Gateway
 	viper.SetDefault("gateway.response_header_timeout", 600) // 600秒(10分钟)等待上游响应头，LLM高负载时可能排队较久
 	viper.SetDefault("gateway.openai_response_header_timeout", 0)
@@ -1940,7 +2181,124 @@ func setDefaults() {
 	viper.SetDefault("gateway.force_codex_cli", false)
 	viper.SetDefault("gateway.codex_image_generation_bridge_enabled", false)
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
-	viper.SetDefault("gateway.openai_compact_model", "gpt-5.4")
+	viper.SetDefault("gateway.openai_core.enabled", true)
+	viper.SetDefault("gateway.openai_core.tls_binding.enabled", false)
+	viper.SetDefault("gateway.openai_core.entity_orchestration.enabled", false)
+	viper.SetDefault("gateway.openai_core.entity_profile_override.enabled", false)
+	viper.SetDefault("gateway.openai_core.production_mode", false)
+	viper.SetDefault("gateway.openai_core.default_profile_mode", "fixed")
+	viper.SetDefault("gateway.openai_core.default_egress_bucket", "default")
+	viper.SetDefault("gateway.openai_core.egress_fail_closed", false)
+	viper.SetDefault("gateway.openai_core.allow_account_proxy_fallback", true)
+	viper.SetDefault("gateway.openai_core.allow_direct_fallback", true)
+	viper.SetDefault("gateway.openai_core.require_encrypted_credentials", false)
+	viper.SetDefault("gateway.openai_core.credential_encryption_key", "")
+	viper.SetDefault("gateway.openai_core.oauth_session_store", "memory")
+	viper.SetDefault("gateway.openai_core.oauth_callback_sticky_single_instance", false)
+	viper.SetDefault("gateway.openai_core.expose_raw_proxy_in_debug", false)
+	viper.SetDefault("gateway.openai_core.bucket_warn_account_threshold", 2)
+	viper.SetDefault("gateway.openai_core.probe_require_client_token", true)
+	viper.SetDefault("gateway.openai_core.canonical_user_agent", "codex_cli_rs/0.104.0")
+	viper.SetDefault("gateway.openai_core.canonical_stainless_lang", "js")
+	viper.SetDefault("gateway.openai_core.canonical_stainless_package_version", "0.70.0")
+	viper.SetDefault("gateway.openai_core.canonical_stainless_os", "Linux")
+	viper.SetDefault("gateway.openai_core.canonical_stainless_arch", "arm64")
+	viper.SetDefault("gateway.openai_core.canonical_stainless_runtime", "node")
+	viper.SetDefault("gateway.openai_core.canonical_stainless_runtime_version", "v24.13.0")
+	viper.SetDefault("gateway.openai_core.egress_buckets", []map[string]any{
+		{
+			"name":      "default",
+			"enabled":   true,
+			"proxy_url": "",
+		},
+	})
+	viper.SetDefault("gateway.augment.enabled", true)
+	viper.SetDefault("gateway.augment.enabled_models", []string{
+		"gpt-5.4",
+		"gpt-5.5",
+		"gpt-5.4-mini",
+		"deepseek-v4-pro",
+		"deepseek-v4-flash",
+	})
+	viper.SetDefault("gateway.augment.provider_groups.openai", int64(0))
+	viper.SetDefault("gateway.augment.provider_groups.deepseek", int64(0))
+	viper.SetDefault("gateway.augment.provider_groups.anthropic", int64(0))
+	viper.SetDefault("gateway.augment.provider_groups.gemini", int64(0))
+	viper.SetDefault("gateway.codex.enabled", false)
+	viper.SetDefault("gateway.codex.expose_v1_alias", false)
+	viper.SetDefault("gateway.codex.model_catalog_path", "")
+	viper.SetDefault("gateway.codex.supports_websockets", false)
+	viper.SetDefault("gateway.codex.state_store_ttl_seconds", 86400)
+	viper.SetDefault("gateway.codex.max_state_items", 200)
+	viper.SetDefault("gateway.codex.stream_max_line_size", int64(1<<20))
+	viper.SetDefault("gateway.codex.enabled_models", []string{
+		"gpt-5.5",
+		"gpt-5.4",
+		"gpt-5.4-mini",
+		"gpt-5.3-codex",
+		"deepseek-v4-pro",
+		"deepseek-v4-flash",
+		"claude-opus-4-8",
+		"claude-sonnet-4-6",
+		"claude-haiku-4-5-20251001",
+		"agnes-2.0-flash",
+		"agnes-1.5-flash",
+	})
+	viper.SetDefault("gateway.codex.provider_groups.openai", int64(0))
+	viper.SetDefault("gateway.codex.provider_groups.deepseek", int64(0))
+	viper.SetDefault("gateway.codex.provider_groups.anthropic", int64(0))
+	viper.SetDefault("gateway.codex.provider_groups.agnes", int64(0))
+	viper.SetDefault("gateway.codex.capture.enabled", false)
+	viper.SetDefault("gateway.codex.capture.level", "summary")
+	viper.SetDefault("gateway.codex.capture.raw_payloads", false)
+	viper.SetDefault("gateway.codex.capture.base_dir", "data/codex-gateway-captures")
+	viper.SetDefault("gateway.codex.capture.retention_days", 7)
+	viper.SetDefault("gateway.codex.capture.max_trace_bytes", int64(64*1024*1024))
+	viper.SetDefault("gateway.codex.capture.max_body_bytes", int64(2*1024*1024))
+	viper.SetDefault("gateway.codex.capture.max_event_bytes", int64(128*1024))
+	viper.SetDefault("gateway.codex.capture.capture_errors_always", true)
+	viper.SetDefault("gateway.codex.capture.capture_success_sample_rate", 0.0)
+	viper.SetDefault("gateway.codex.capture.include_response_header", true)
+	viper.SetDefault("gateway.codex.capture.async_queue_size", 4096)
+	viper.SetDefault("gateway.codex.capture.hash_mode", "hmac-sha256")
+	viper.SetDefault("gateway.codex.capture.hash_key_file", "data/codex-gateway-captures/.capture-hmac-key")
+	viper.SetDefault("gateway.codex.capture.correlation_hash_key_file", "")
+	viper.SetDefault("gateway.codex.capture.require_raw_payloads_unlock_env", "SUB2API_CODEX_CAPTURE_RAW_UNLOCK=I_UNDERSTAND_THIS_WRITES_LOCAL_RAW_PROTOCOL_PAYLOADS")
+	viper.SetDefault("gateway.codex.capture.redact.enabled", true)
+	viper.SetDefault("gateway.codex.capture.redact.header_names", []string{
+		"Authorization",
+		"Cookie",
+		"Set-Cookie",
+		"X-Api-Key",
+		"Api-Key",
+		"X-OpenAI-Api-Key",
+		"Anthropic-Api-Key",
+	})
+	viper.SetDefault("gateway.codex.capture.redact.json_keys", []string{
+		"authorization",
+		"cookie",
+		"set-cookie",
+		"x-api-key",
+		"api-key",
+		"api_key",
+		"apikey",
+		"token",
+		"access_token",
+		"refresh_token",
+		"password",
+		"secret",
+	})
+	viper.SetDefault("gateway.cc_gateway.enabled", false)
+	viper.SetDefault("gateway.cc_gateway.base_url", "")
+	viper.SetDefault("gateway.cc_gateway.token", "")
+	viper.SetDefault("gateway.cc_gateway.internal_control_token", "")
+	viper.SetDefault("gateway.cc_gateway.context_attestation_secret", "")
+	viper.SetDefault("gateway.cc_gateway.sticky_session_hmac_key", "")
+	viper.SetDefault("gateway.cc_gateway.claude_platform_aws_workspace_binding_hmac_key", "")
+	viper.SetDefault("gateway.cc_gateway.timeout_seconds", 600)
+	viper.SetDefault("gateway.cc_gateway.default_egress_bucket", "default")
+	viper.SetDefault("gateway.cc_gateway.providers.anthropic", false)
+	viper.SetDefault("gateway.cc_gateway.providers.antigravity", false)
 	// OpenAI Responses WebSocket（默认开启；可通过 force_http 紧急回滚）
 	viper.SetDefault("gateway.openai_ws.enabled", true)
 	viper.SetDefault("gateway.openai_ws.mode_router_v2_enabled", false)
@@ -1965,6 +2323,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.oauth_max_conns_factor", 1.0)
 	viper.SetDefault("gateway.openai_ws.apikey_max_conns_factor", 1.0)
 	viper.SetDefault("gateway.openai_ws.dial_timeout_seconds", 10)
+	viper.SetDefault("gateway.openai_ws.first_message_timeout_seconds", 90)
 	viper.SetDefault("gateway.openai_ws.read_timeout_seconds", 900)
 	viper.SetDefault("gateway.openai_ws.write_timeout_seconds", 120)
 	viper.SetDefault("gateway.openai_ws.pool_target_utilization", 0.7)
@@ -1992,8 +2351,6 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.ttft", 0.5)
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.reset", 0.0)
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.quota_headroom", 0.0)
-	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.previous_response", 5.0)
-	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.session_sticky", 3.0)
 	// OpenAI HTTP upstream protocol strategy
 	viper.SetDefault("gateway.openai_http2.enabled", true)
 	viper.SetDefault("gateway.openai_http2.allow_proxy_fallback_to_http1", true)
@@ -2032,6 +2389,10 @@ func setDefaults() {
 	viper.SetDefault("gateway.scheduling.fallback_selection_mode", "last_used")
 	viper.SetDefault("gateway.scheduling.prefer_soonest_reset", false)
 	viper.SetDefault("gateway.scheduling.load_batch_enabled", true)
+	viper.SetDefault("gateway.scheduling.openai_cache_aware_enabled", true)
+	viper.SetDefault("gateway.scheduling.openai_cache_aware_min_samples", 6)
+	viper.SetDefault("gateway.scheduling.openai_cache_aware_weight", 25.0)
+	viper.SetDefault("gateway.scheduling.openai_cache_aware_min_input_tokens", 12000)
 	viper.SetDefault("gateway.scheduling.load_batch_cache_ttl_ms", 200)
 	viper.SetDefault("gateway.scheduling.snapshot_mget_chunk_size", 128)
 	viper.SetDefault("gateway.scheduling.snapshot_write_chunk_size", 256)
@@ -2048,9 +2409,6 @@ func setDefaults() {
 	viper.SetDefault("gateway.usage_record.worker_count", 128)
 	viper.SetDefault("gateway.usage_record.queue_size", 16384)
 	viper.SetDefault("gateway.usage_record.task_timeout_seconds", 5)
-	// 默认 sync：队列满时由提交方内联执行（提交点在响应写出之后，不阻塞客户端）。
-	// sample/drop 会在溢出时静默丢弃计费任务，造成扣费与 usage_logs 对账缺口（issue #3656），
-	// 仅供显式配置的运维场景使用。
 	viper.SetDefault("gateway.usage_record.overflow_policy", UsageRecordOverflowPolicySync)
 	viper.SetDefault("gateway.usage_record.overflow_sample_percent", 10)
 	viper.SetDefault("gateway.usage_record.auto_scale_enabled", true)
@@ -2064,6 +2422,9 @@ func setDefaults() {
 	viper.SetDefault("gateway.usage_record.auto_scale_cooldown_seconds", 10)
 	viper.SetDefault("gateway.user_group_rate_cache_ttl_seconds", 30)
 	viper.SetDefault("gateway.models_list_cache_ttl_seconds", 15)
+	viper.SetDefault("gateway.openai_mini_auto_upgrade_enabled", true)
+	viper.SetDefault("gateway.openai_mini_auto_upgrade_min_input_tokens", 18000)
+	viper.SetDefault("gateway.openai_mini_auto_upgrade_target_model", "gpt-5.3-codex")
 	// TLS指纹伪装配置（默认关闭，需要账号级别单独启用）
 	// 用户消息串行队列默认值
 	viper.SetDefault("gateway.user_message_queue.enabled", false)
@@ -2090,6 +2451,13 @@ func setDefaults() {
 	viper.SetDefault("gemini.oauth.client_secret", "")
 	viper.SetDefault("gemini.oauth.scopes", "")
 	viper.SetDefault("gemini.quota.policy", "")
+	viper.SetDefault("gemini.production_mode", false)
+	viper.SetDefault("gemini.require_safe_oauth_session_store", false)
+	viper.SetDefault("gemini.allow_project_id_fallback_to_ai_studio", true)
+	viper.SetDefault("gemini.allow_unauthorized_client_retry_fallback", true)
+	viper.SetDefault("gemini.allow_google_one_default_tier_fallback", true)
+	viper.SetDefault("gemini.token_cache_mode", "plaintext")
+	viper.SetDefault("gemini.require_thought_signature_session_safety", false)
 
 	// Subscription Maintenance (bounded queue + worker pool)
 	viper.SetDefault("subscription_maintenance.worker_count", 2)
@@ -2169,6 +2537,30 @@ func (c *Config) Validate() error {
 	geminiClientSecret := strings.TrimSpace(c.Gemini.OAuth.ClientSecret)
 	if (geminiClientID == "") != (geminiClientSecret == "") {
 		return fmt.Errorf("gemini.oauth.client_id and gemini.oauth.client_secret must be both set or both empty")
+	}
+	geminiTokenCacheMode := strings.ToLower(strings.TrimSpace(c.Gemini.TokenCacheMode))
+	geminiCredentialKey := strings.TrimSpace(c.Gateway.OpenAICore.CredentialEncryptionKey)
+	switch geminiTokenCacheMode {
+	case "plaintext", "disabled", "encrypted":
+	default:
+		return fmt.Errorf("gemini.token_cache_mode must be one of: plaintext/disabled/encrypted")
+	}
+	if c.Gemini.ProductionMode {
+		if geminiTokenCacheMode == "plaintext" {
+			return fmt.Errorf("gemini.production_mode rejects token_cache_mode=plaintext")
+		}
+		if geminiCredentialKey == "" {
+			return fmt.Errorf("gemini.production_mode requires gateway.openai_core.credential_encryption_key to be configured")
+		}
+		if !c.Gemini.RequireSafeOAuthSessionStore || !c.Gemini.RequireThoughtSignatureSessionSafety {
+			return fmt.Errorf("gemini.production_mode requires safe OAuth session topology")
+		}
+		if c.Gemini.AllowProjectIDFallbackToAIStudio {
+			return fmt.Errorf("gemini.production_mode requires allow_project_id_fallback_to_ai_studio=false")
+		}
+		if c.Gemini.AllowUnauthorizedClientRetryFallback {
+			return fmt.Errorf("gemini.production_mode requires allow_unauthorized_client_retry_fallback=false")
+		}
 	}
 
 	if strings.TrimSpace(c.Server.FrontendURL) != "" {
@@ -2714,6 +3106,158 @@ func (c *Config) Validate() error {
 	if c.Gateway.OpenAIWS.StickyResponseIDTTLSeconds <= 0 && c.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds > 0 {
 		c.Gateway.OpenAIWS.StickyResponseIDTTLSeconds = c.Gateway.OpenAIWS.StickyPreviousResponseTTLSeconds
 	}
+	if mode := strings.ToLower(strings.TrimSpace(c.Gateway.OpenAICore.DefaultProfileMode)); mode != "" {
+		switch mode {
+		case "fixed", "observe", "frozen":
+		default:
+			return fmt.Errorf("gateway.openai_core.default_profile_mode must be one of: fixed/observe/frozen")
+		}
+	}
+	if strings.TrimSpace(c.Gateway.OpenAICore.DefaultEgressBucket) == "" {
+		return fmt.Errorf("gateway.openai_core.default_egress_bucket is required")
+	}
+	defaultBucket := strings.TrimSpace(c.Gateway.OpenAICore.DefaultEgressBucket)
+	bucketNames := make(map[string]bool, len(c.Gateway.OpenAICore.EgressBuckets))
+	defaultBucketEnabled := false
+	for i := range c.Gateway.OpenAICore.EgressBuckets {
+		bucket := &c.Gateway.OpenAICore.EgressBuckets[i]
+		name := strings.TrimSpace(bucket.Name)
+		if name == "" {
+			return fmt.Errorf("gateway.openai_core.egress_buckets[].name is required")
+		}
+		if bucketNames[name] {
+			return fmt.Errorf("gateway.openai_core.egress_buckets[].name duplicate: %s", name)
+		}
+		bucketNames[name] = true
+		if normalizedProxyURL, _, err := proxyurl.Parse(bucket.ProxyURL); err != nil {
+			return fmt.Errorf("gateway.openai_core.egress_buckets[%s].proxy_url is invalid: %w", name, err)
+		} else {
+			bucket.ProxyURL = normalizedProxyURL
+		}
+		if bucket.Enabled && c.Gateway.OpenAICore.TLSBinding.Enabled {
+			if err := validateOpenAIGatewayBucketTLSConfig(name, bucket.TLS, c.Gateway.OpenAICore.ProductionMode); err != nil {
+				return err
+			}
+		}
+		if name == defaultBucket {
+			defaultBucketEnabled = bucket.Enabled
+		}
+	}
+	if !bucketNames[defaultBucket] {
+		return fmt.Errorf("gateway.openai_core.default_egress_bucket must reference an existing egress bucket")
+	}
+	if c.Gateway.OpenAICore.EgressFailClosed && !defaultBucketEnabled {
+		return fmt.Errorf("gateway.openai_core.default_egress_bucket cannot reference a disabled bucket when egress_fail_closed=true")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Gateway.OpenAICore.OAuthSessionStore)) {
+	case "memory", "redis":
+	case "":
+		return fmt.Errorf("gateway.openai_core.oauth_session_store is required")
+	default:
+		return fmt.Errorf("gateway.openai_core.oauth_session_store must be one of: memory/redis")
+	}
+	if c.Gateway.OpenAICore.BucketWarnAccountThreshold < 0 {
+		return fmt.Errorf("gateway.openai_core.bucket_warn_account_threshold must be non-negative")
+	}
+	keyHex := strings.TrimSpace(c.Gateway.OpenAICore.CredentialEncryptionKey)
+	if keyHex != "" {
+		key, err := hex.DecodeString(keyHex)
+		if err != nil {
+			return fmt.Errorf("gateway.openai_core.credential_encryption_key must be valid hex")
+		}
+		if len(key) != 32 {
+			return fmt.Errorf("gateway.openai_core.credential_encryption_key must decode to 32 bytes")
+		}
+	}
+	if c.Gateway.OpenAICore.ProductionMode {
+		if !c.Gateway.OpenAICore.EgressFailClosed {
+			return fmt.Errorf("gateway.openai_core.production_mode requires egress_fail_closed=true")
+		}
+		if c.Gateway.OpenAICore.AllowAccountProxyFallback {
+			return fmt.Errorf("gateway.openai_core.production_mode requires allow_account_proxy_fallback=false")
+		}
+		if c.Gateway.OpenAICore.AllowDirectFallback {
+			return fmt.Errorf("gateway.openai_core.production_mode requires allow_direct_fallback=false")
+		}
+		if !c.Gateway.OpenAICore.RequireEncryptedCredentials {
+			return fmt.Errorf("gateway.openai_core.production_mode requires require_encrypted_credentials=true")
+		}
+		if keyHex == "" {
+			return fmt.Errorf("gateway.openai_core.production_mode requires credential_encryption_key to be configured")
+		}
+		if strings.EqualFold(strings.TrimSpace(c.Gateway.OpenAICore.OAuthSessionStore), "memory") &&
+			!c.Gateway.OpenAICore.OAuthCallbackStickySingleInstance {
+			return fmt.Errorf("gateway.openai_core.production_mode requires oauth_session_store!=memory or oauth_callback_sticky_single_instance=true")
+		}
+	}
+	for _, item := range c.Gateway.OpenAICore.ClientTokens {
+		if strings.TrimSpace(item.Name) == "" {
+			return fmt.Errorf("gateway.openai_core.client_tokens[].name is required")
+		}
+		if strings.TrimSpace(item.Token) == "" {
+			return fmt.Errorf("gateway.openai_core.client_tokens[].token is required")
+		}
+	}
+	if c.Gateway.CCGateway.Enabled {
+		if strings.TrimSpace(c.Gateway.CCGateway.BaseURL) == "" {
+			return fmt.Errorf("gateway.cc_gateway.base_url is required when gateway.cc_gateway.enabled=true")
+		}
+		parsedBaseURL, err := url.ParseRequestURI(strings.TrimSpace(c.Gateway.CCGateway.BaseURL))
+		if err != nil {
+			return fmt.Errorf("gateway.cc_gateway.base_url is invalid: %w", err)
+		}
+		if parsedBaseURL.Scheme != "http" && parsedBaseURL.Scheme != "https" {
+			return fmt.Errorf("gateway.cc_gateway.base_url scheme must be http or https")
+		}
+		if strings.TrimSpace(c.Gateway.CCGateway.Token) == "" {
+			return fmt.Errorf("gateway.cc_gateway.token is required when gateway.cc_gateway.enabled=true")
+		}
+		internalControlToken := strings.TrimSpace(c.Gateway.CCGateway.InternalControlToken)
+		if internalControlToken == "" {
+			return fmt.Errorf("gateway.cc_gateway.internal_control_token is required when gateway.cc_gateway.enabled=true")
+		}
+		contextAttestationSecret := strings.TrimSpace(c.Gateway.CCGateway.ContextAttestationSecret)
+		if contextAttestationSecret == "" {
+			return fmt.Errorf("gateway.cc_gateway.context_attestation_secret is required when gateway.cc_gateway.enabled=true")
+		}
+		if internalControlToken == strings.TrimSpace(c.Gateway.CCGateway.Token) {
+			return fmt.Errorf("gateway.cc_gateway.internal_control_token must be independent from gateway.cc_gateway.token")
+		}
+		if contextAttestationSecret == strings.TrimSpace(c.Gateway.CCGateway.Token) {
+			return fmt.Errorf("gateway.cc_gateway.context_attestation_secret must be independent from gateway.cc_gateway.token")
+		}
+		if contextAttestationSecret == internalControlToken {
+			return fmt.Errorf("gateway.cc_gateway.context_attestation_secret must be independent from gateway.cc_gateway.internal_control_token")
+		}
+		stickySessionHMACKey := strings.TrimSpace(c.Gateway.CCGateway.StickySessionHMACKey)
+		if stickySessionHMACKey == "" {
+			return fmt.Errorf("gateway.cc_gateway.sticky_session_hmac_key is required when gateway.cc_gateway.enabled=true")
+		}
+		claudePlatformAWSWorkspaceBindingHMACKey := strings.TrimSpace(c.Gateway.CCGateway.ClaudePlatformAWSWorkspaceBindingHMACKey)
+		if claudePlatformAWSWorkspaceBindingHMACKey == "" {
+			return fmt.Errorf("gateway.cc_gateway.claude_platform_aws_workspace_binding_hmac_key is required when gateway.cc_gateway.enabled=true")
+		}
+		for name, value := range map[string]string{
+			"sticky_session_hmac_key":                        stickySessionHMACKey,
+			"claude_platform_aws_workspace_binding_hmac_key": claudePlatformAWSWorkspaceBindingHMACKey,
+		} {
+			if value == strings.TrimSpace(c.Gateway.CCGateway.Token) || value == internalControlToken || value == contextAttestationSecret {
+				return fmt.Errorf("gateway.cc_gateway.%s must be independent from other cc gateway secrets", name)
+			}
+			if value == "sub2api-claude-platform-aws-binding-v1" || value == "sub2api-gateway-sticky-session-dev-key" {
+				return fmt.Errorf("gateway.cc_gateway.%s must not use known development authority material", name)
+			}
+		}
+		if claudePlatformAWSWorkspaceBindingHMACKey == stickySessionHMACKey {
+			return fmt.Errorf("gateway.cc_gateway.claude_platform_aws_workspace_binding_hmac_key must be independent from gateway.cc_gateway.sticky_session_hmac_key")
+		}
+		if c.Gateway.CCGateway.TimeoutSeconds <= 0 {
+			return fmt.Errorf("gateway.cc_gateway.timeout_seconds must be positive")
+		}
+		if strings.TrimSpace(c.Gateway.CCGateway.DefaultEgressBucket) == "" {
+			return fmt.Errorf("gateway.cc_gateway.default_egress_bucket is required")
+		}
+	}
 	if c.Gateway.OpenAIWS.MaxConnsPerAccount <= 0 {
 		return fmt.Errorf("gateway.openai_ws.max_conns_per_account must be positive")
 	}
@@ -2737,6 +3281,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.OpenAIWS.DialTimeoutSeconds <= 0 {
 		return fmt.Errorf("gateway.openai_ws.dial_timeout_seconds must be positive")
+	}
+	if c.Gateway.OpenAIWS.FirstMessageTimeoutSeconds <= 0 {
+		return fmt.Errorf("gateway.openai_ws.first_message_timeout_seconds must be positive")
 	}
 	if c.Gateway.OpenAIWS.ReadTimeoutSeconds <= 0 {
 		return fmt.Errorf("gateway.openai_ws.read_timeout_seconds must be positive")
@@ -2832,9 +3379,8 @@ func (c *Config) Validate() error {
 		c.Gateway.OpenAIWS.SchedulerScoreWeights.Queue < 0 ||
 		c.Gateway.OpenAIWS.SchedulerScoreWeights.ErrorRate < 0 ||
 		c.Gateway.OpenAIWS.SchedulerScoreWeights.TTFT < 0 ||
-		c.Gateway.OpenAIWS.SchedulerScoreWeights.QuotaHeadroom < 0 ||
-		c.Gateway.OpenAIWS.SchedulerScoreWeights.PreviousResponse < 0 ||
-		c.Gateway.OpenAIWS.SchedulerScoreWeights.SessionSticky < 0 {
+		c.Gateway.OpenAIWS.SchedulerScoreWeights.Reset < 0 ||
+		c.Gateway.OpenAIWS.SchedulerScoreWeights.QuotaHeadroom < 0 {
 		return fmt.Errorf("gateway.openai_ws.scheduler_score_weights.* must be non-negative")
 	}
 	weightSum := c.Gateway.OpenAIWS.SchedulerScoreWeights.Priority +
@@ -2842,6 +3388,7 @@ func (c *Config) Validate() error {
 		c.Gateway.OpenAIWS.SchedulerScoreWeights.Queue +
 		c.Gateway.OpenAIWS.SchedulerScoreWeights.ErrorRate +
 		c.Gateway.OpenAIWS.SchedulerScoreWeights.TTFT +
+		c.Gateway.OpenAIWS.SchedulerScoreWeights.Reset +
 		c.Gateway.OpenAIWS.SchedulerScoreWeights.QuotaHeadroom
 	if weightSum <= 0 {
 		return fmt.Errorf("gateway.openai_ws.scheduler_score_weights must not all be zero")
@@ -2934,6 +3481,15 @@ func (c *Config) Validate() error {
 	if c.Gateway.Scheduling.FallbackMaxWaiting <= 0 {
 		return fmt.Errorf("gateway.scheduling.fallback_max_waiting must be positive")
 	}
+	if c.Gateway.Scheduling.OpenAICacheAwareMinSamples < 1 {
+		return fmt.Errorf("gateway.scheduling.openai_cache_aware_min_samples must be >= 1")
+	}
+	if c.Gateway.Scheduling.OpenAICacheAwareWeight < 0 {
+		return fmt.Errorf("gateway.scheduling.openai_cache_aware_weight must be non-negative")
+	}
+	if c.Gateway.Scheduling.OpenAICacheAwareMinInputTokens < 0 {
+		return fmt.Errorf("gateway.scheduling.openai_cache_aware_min_input_tokens must be non-negative")
+	}
 	if c.Gateway.Scheduling.LoadBatchCacheTTLMS < 0 {
 		return fmt.Errorf("gateway.scheduling.load_batch_cache_ttl_ms must be non-negative")
 	}
@@ -2975,6 +3531,67 @@ func (c *Config) Validate() error {
 		c.Gateway.Scheduling.OutboxLagRebuildSeconds < c.Gateway.Scheduling.OutboxLagWarnSeconds {
 		return fmt.Errorf("gateway.scheduling.outbox_lag_rebuild_seconds must be >= outbox_lag_warn_seconds")
 	}
+	if c.Gateway.OpenAIMiniAutoUpgradeMinInputTokens < 0 {
+		return fmt.Errorf("gateway.openai_mini_auto_upgrade_min_input_tokens must be non-negative")
+	}
+	if c.Gateway.OpenAIMiniAutoUpgradeEnabled && strings.TrimSpace(c.Gateway.OpenAIMiniAutoUpgradeTargetModel) == "" {
+		return fmt.Errorf("gateway.openai_mini_auto_upgrade_target_model is required when gateway.openai_mini_auto_upgrade_enabled=true")
+	}
+	if c.Gateway.Augment.ProviderGroups.OpenAI < 0 {
+		return fmt.Errorf("gateway.augment.provider_groups.openai must be non-negative")
+	}
+	if c.Gateway.Augment.ProviderGroups.DeepSeek < 0 {
+		return fmt.Errorf("gateway.augment.provider_groups.deepseek must be non-negative")
+	}
+	if c.Gateway.Augment.ProviderGroups.Anthropic < 0 {
+		return fmt.Errorf("gateway.augment.provider_groups.anthropic must be non-negative")
+	}
+	if c.Gateway.Augment.ProviderGroups.Gemini < 0 {
+		return fmt.Errorf("gateway.augment.provider_groups.gemini must be non-negative")
+	}
+	if c.Gateway.Codex.ProviderGroups.OpenAI < 0 {
+		return fmt.Errorf("gateway.codex.provider_groups.openai must be non-negative")
+	}
+	if c.Gateway.Codex.ProviderGroups.DeepSeek < 0 {
+		return fmt.Errorf("gateway.codex.provider_groups.deepseek must be non-negative")
+	}
+	if c.Gateway.Codex.ProviderGroups.Anthropic < 0 {
+		return fmt.Errorf("gateway.codex.provider_groups.anthropic must be non-negative")
+	}
+	if c.Gateway.Codex.ProviderGroups.Agnes < 0 {
+		return fmt.Errorf("gateway.codex.provider_groups.agnes must be non-negative")
+	}
+	if c.Gateway.Codex.StateStoreTTLSeconds <= 0 {
+		return fmt.Errorf("gateway.codex.state_store_ttl_seconds must be positive")
+	}
+	if c.Gateway.Codex.MaxStateItems <= 0 {
+		return fmt.Errorf("gateway.codex.max_state_items must be positive")
+	}
+	if c.Gateway.Codex.StreamMaxLineSize <= 0 {
+		return fmt.Errorf("gateway.codex.stream_max_line_size must be positive")
+	}
+	captureLevel := strings.ToLower(strings.TrimSpace(c.Gateway.Codex.Capture.Level))
+	if captureLevel != "" && captureLevel != "summary" && captureLevel != "headers" && captureLevel != "full" {
+		return fmt.Errorf("gateway.codex.capture.level must be one of summary, headers, full")
+	}
+	if c.Gateway.Codex.Capture.RetentionDays < 0 {
+		return fmt.Errorf("gateway.codex.capture.retention_days must be non-negative")
+	}
+	if c.Gateway.Codex.Capture.MaxTraceBytes < 0 {
+		return fmt.Errorf("gateway.codex.capture.max_trace_bytes must be non-negative")
+	}
+	if c.Gateway.Codex.Capture.MaxBodyBytes < 0 {
+		return fmt.Errorf("gateway.codex.capture.max_body_bytes must be non-negative")
+	}
+	if c.Gateway.Codex.Capture.MaxEventBytes < 0 {
+		return fmt.Errorf("gateway.codex.capture.max_event_bytes must be non-negative")
+	}
+	if c.Gateway.Codex.Capture.AsyncQueueSize < 0 {
+		return fmt.Errorf("gateway.codex.capture.async_queue_size must be non-negative")
+	}
+	if c.Gateway.Codex.Capture.CaptureSuccessSampleRate < 0 || c.Gateway.Codex.Capture.CaptureSuccessSampleRate > 1 {
+		return fmt.Errorf("gateway.codex.capture.capture_success_sample_rate must be between 0 and 1")
+	}
 	if c.Ops.MetricsCollectorCache.TTL < 0 {
 		return fmt.Errorf("ops.metrics_collector_cache.ttl must be non-negative")
 	}
@@ -2995,6 +3612,25 @@ func (c *Config) Validate() error {
 	}
 	if err := ValidateDingTalkConfig(c.DingTalk); err != nil {
 		return fmt.Errorf("dingtalk_connect: %w", err)
+	}
+	return nil
+}
+
+func validateOpenAIGatewayBucketTLSConfig(bucketName string, tls OpenAIGatewayBucketTLSConfig, productionMode bool) error {
+	if !tls.Enabled {
+		if productionMode {
+			return fmt.Errorf("gateway.openai_core.production_mode requires tls policy for egress bucket %s when tls_binding.enabled=true", bucketName)
+		}
+		return nil
+	}
+	if tls.ProfileID < 0 {
+		return fmt.Errorf("gateway.openai_core.egress_buckets[%s].tls.profile_id must be positive", bucketName)
+	}
+	if tls.ProfileID == 0 && !tls.AllowDefaultFallback && !tls.AllowPlainFallback {
+		return fmt.Errorf("gateway.openai_core.egress_buckets[%s].tls requires profile_id or allow_default_fallback or allow_plain_fallback", bucketName)
+	}
+	if productionMode && tls.AllowPlainFallback {
+		return fmt.Errorf("gateway.openai_core.production_mode rejects tls.allow_plain_fallback for egress bucket %s", bucketName)
 	}
 	return nil
 }

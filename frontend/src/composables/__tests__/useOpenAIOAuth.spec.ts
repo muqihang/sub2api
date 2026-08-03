@@ -60,6 +60,7 @@ describe('useOpenAIOAuth.buildCredentials', () => {
     expect(creds.refresh_token).toBe('rt')
   })
 
+
   it('should keep ChatGPT subscription expiration from token response', () => {
     const oauth = useOpenAIOAuth()
     const creds = oauth.buildCredentials({
@@ -90,5 +91,22 @@ describe('useOpenAIOAuth.exchangeAuthCode', () => {
     expect(oauth.error.value).toBe(
       '未设置代理，当前服务器无法直连 OpenAI，导致 OpenAI OAuth 请求失败。请先选择可访问 OpenAI 的代理后重试；如果授权码已失效，请重新生成授权链接。'
     )
+  })
+})
+
+describe('useOpenAIOAuth.buildExtraInfo', () => {
+  it('persists resolved OpenAI Gateway egress bucket into account extra', () => {
+    const oauth = useOpenAIOAuth()
+
+    const extra = oauth.buildExtraInfo({
+      email: 'user@example.com',
+      egress_bucket: 'bucket-a',
+      proxy_label: 'http://127.0.0.1:8080'
+    })
+
+    expect(extra).toEqual({
+      email: 'user@example.com',
+      openai_gateway_egress_bucket: 'bucket-a'
+    })
   })
 })

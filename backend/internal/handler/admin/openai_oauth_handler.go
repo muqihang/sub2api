@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -15,9 +16,11 @@ import (
 
 // OpenAIOAuthHandler handles OpenAI OAuth-related operations
 type OpenAIOAuthHandler struct {
-	openaiOAuthService *service.OpenAIOAuthService
-	adminService       service.AdminService
-	quotaService       *service.OpenAIQuotaService
+	openaiOAuthService   *service.OpenAIOAuthService
+	gatewayCoreService   *service.OpenAIGatewayCoreService
+	openaiGatewayService *service.OpenAIGatewayService
+	adminService         service.AdminService
+	quotaService         *service.OpenAIQuotaService
 }
 
 func oauthPlatformFromPath(c *gin.Context) string {
@@ -25,22 +28,26 @@ func oauthPlatformFromPath(c *gin.Context) string {
 }
 
 // NewOpenAIOAuthHandler creates a new OpenAI OAuth handler
-func NewOpenAIOAuthHandler(
-	openaiOAuthService *service.OpenAIOAuthService,
-	adminService service.AdminService,
-	quotaService *service.OpenAIQuotaService,
-) *OpenAIOAuthHandler {
+func NewOpenAIOAuthHandler(openaiOAuthService *service.OpenAIOAuthService, openaiGatewayService *service.OpenAIGatewayService, adminService service.AdminService, quotaService *service.OpenAIQuotaService) *OpenAIOAuthHandler {
 	return &OpenAIOAuthHandler{
 		openaiOAuthService: openaiOAuthService,
-		adminService:       adminService,
-		quotaService:       quotaService,
+		gatewayCoreService: func() *service.OpenAIGatewayCoreService {
+			if openaiGatewayService == nil {
+				return nil
+			}
+			return openaiGatewayService.GatewayCoreService()
+		}(),
+		openaiGatewayService: openaiGatewayService,
+		adminService:         adminService,
+		quotaService:         quotaService,
 	}
 }
 
 // OpenAIGenerateAuthURLRequest represents the request for generating OpenAI auth URL
 type OpenAIGenerateAuthURLRequest struct {
-	ProxyID     *int64 `json:"proxy_id"`
-	RedirectURI string `json:"redirect_uri"`
+	ProxyID      *int64 `json:"proxy_id"`
+	RedirectURI  string `json:"redirect_uri"`
+	EgressBucket string `json:"egress_bucket"`
 }
 
 // GenerateAuthURL generates OpenAI OAuth authorization URL
@@ -52,11 +59,12 @@ func (h *OpenAIOAuthHandler) GenerateAuthURL(c *gin.Context) {
 		req = OpenAIGenerateAuthURLRequest{}
 	}
 
-	result, err := h.openaiOAuthService.GenerateAuthURL(
+	result, err := h.openaiOAuthService.GenerateAuthURLWithEgress(
 		c.Request.Context(),
 		req.ProxyID,
 		req.RedirectURI,
 		oauthPlatformFromPath(c),
+		req.EgressBucket,
 	)
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -68,11 +76,12 @@ func (h *OpenAIOAuthHandler) GenerateAuthURL(c *gin.Context) {
 
 // OpenAIExchangeCodeRequest represents the request for exchanging OpenAI auth code
 type OpenAIExchangeCodeRequest struct {
-	SessionID   string `json:"session_id" binding:"required"`
-	Code        string `json:"code" binding:"required"`
-	State       string `json:"state" binding:"required"`
-	RedirectURI string `json:"redirect_uri"`
-	ProxyID     *int64 `json:"proxy_id"`
+	SessionID    string `json:"session_id" binding:"required"`
+	Code         string `json:"code" binding:"required"`
+	State        string `json:"state" binding:"required"`
+	RedirectURI  string `json:"redirect_uri"`
+	ProxyID      *int64 `json:"proxy_id"`
+	EgressBucket string `json:"egress_bucket"`
 }
 
 // ExchangeCode exchanges OpenAI authorization code for tokens
@@ -85,11 +94,12 @@ func (h *OpenAIOAuthHandler) ExchangeCode(c *gin.Context) {
 	}
 
 	tokenInfo, err := h.openaiOAuthService.ExchangeCode(c.Request.Context(), &service.OpenAIExchangeCodeInput{
-		SessionID:   req.SessionID,
-		Code:        req.Code,
-		State:       req.State,
-		RedirectURI: req.RedirectURI,
-		ProxyID:     req.ProxyID,
+		SessionID:    req.SessionID,
+		Code:         req.Code,
+		State:        req.State,
+		RedirectURI:  req.RedirectURI,
+		ProxyID:      req.ProxyID,
+		EgressBucket: req.EgressBucket,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)
@@ -105,6 +115,7 @@ type OpenAIRefreshTokenRequest struct {
 	RT           string `json:"rt"`
 	ClientID     string `json:"client_id"`
 	ProxyID      *int64 `json:"proxy_id"`
+	EgressBucket string `json:"egress_bucket"`
 }
 
 type OpenAICodexPATCreateRequest struct {
@@ -157,7 +168,7 @@ func (h *OpenAIOAuthHandler) RefreshToken(c *gin.Context) {
 		clientID, _ = openai.OAuthClientConfigByPlatform(platform)
 	}
 
-	tokenInfo, err := h.openaiOAuthService.RefreshTokenWithClientID(c.Request.Context(), refreshToken, proxyURL, clientID)
+	tokenInfo, err := h.openaiOAuthService.RefreshTokenWithClientIDAndEgress(c.Request.Context(), refreshToken, proxyURL, clientID, req.EgressBucket)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -209,13 +220,15 @@ func (h *OpenAIOAuthHandler) RefreshAccountToken(c *gin.Context) {
 	}
 
 	// Build new credentials from token info
-	newCredentials := h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
-
-	// Preserve non-token settings from existing credentials
-	for k, v := range account.Credentials {
-		if _, exists := newCredentials[k]; !exists {
-			newCredentials[k] = v
-		}
+	newCredentials, err := h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "failed to build openai credentials")
+		return
+	}
+	newCredentials, err = service.MergeProtectedOpenAICredentials(account.Credentials, newCredentials, h.openaiOAuthService.CredentialAccessor())
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "failed to protect openai credentials")
+		return
 	}
 	newCredentials = service.NormalizeOpenAIPersonalAccessTokenCredentials(account, tokenInfo, newCredentials)
 
@@ -228,72 +241,6 @@ func (h *OpenAIOAuthHandler) RefreshAccountToken(c *gin.Context) {
 	}
 
 	response.Success(c, dto.AccountFromService(updatedAccount))
-}
-
-// CreateAccountFromOAuth creates a new OpenAI OAuth account from token info
-// POST /api/v1/admin/openai/create-from-oauth
-func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
-	var req struct {
-		SessionID   string  `json:"session_id" binding:"required"`
-		Code        string  `json:"code" binding:"required"`
-		State       string  `json:"state" binding:"required"`
-		RedirectURI string  `json:"redirect_uri"`
-		ProxyID     *int64  `json:"proxy_id"`
-		Name        string  `json:"name"`
-		Concurrency int     `json:"concurrency"`
-		Priority    int     `json:"priority"`
-		GroupIDs    []int64 `json:"group_ids"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "Invalid request: "+err.Error())
-		return
-	}
-
-	// Exchange code for tokens
-	tokenInfo, err := h.openaiOAuthService.ExchangeCode(c.Request.Context(), &service.OpenAIExchangeCodeInput{
-		SessionID:   req.SessionID,
-		Code:        req.Code,
-		State:       req.State,
-		RedirectURI: req.RedirectURI,
-		ProxyID:     req.ProxyID,
-	})
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-
-	// Build credentials from token info
-	credentials := h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
-
-	platform := oauthPlatformFromPath(c)
-
-	// Use email as default name if not provided
-	name := req.Name
-	if name == "" && tokenInfo.Email != "" {
-		name = tokenInfo.Email
-	}
-	if name == "" {
-		name = "OpenAI OAuth Account"
-	}
-
-	// Create account
-	account, err := h.adminService.CreateAccount(c.Request.Context(), &service.CreateAccountInput{
-		Name:        name,
-		Platform:    platform,
-		Type:        "oauth",
-		Credentials: credentials,
-		Extra:       nil,
-		ProxyID:     req.ProxyID,
-		Concurrency: req.Concurrency,
-		Priority:    req.Priority,
-		GroupIDs:    req.GroupIDs,
-	})
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
-
-	response.Success(c, dto.AccountFromService(account))
 }
 
 // CreateAccountFromCodexPAT creates an OpenAI OAuth account from a Codex at-* personal access token.
@@ -339,10 +286,13 @@ func (h *OpenAIOAuthHandler) CreateAccountFromCodexPAT(c *gin.Context) {
 		return
 	}
 
-	credentials := mergeCodexImportMap(
-		h.openaiOAuthService.BuildAccountCredentials(tokenInfo),
-		sanitizeCodexImportCredentialExtras(req.CredentialExtras),
-	)
+	credentials, err := h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "failed to build openai credentials")
+		return
+	}
+	credentials = mergeCodexImportMap(credentials, sanitizeCodexImportCredentialExtras(req.CredentialExtras))
+	credentials = service.NormalizeOpenAIPersonalAccessTokenCredentials(nil, tokenInfo, credentials)
 	extra := mergeCodexImportMap(req.Extra, map[string]any{
 		"import_source":       "codex_personal_access_token",
 		"auth_provider":       "codex_personal_access_token",
@@ -404,16 +354,16 @@ func buildOpenAICodexPATAccountName(name string, tokenInfo *service.OpenAITokenI
 	return "Codex PAT Account"
 }
 
-// QueryQuota queries the rate-limit / quota usage for an OpenAI account.
+// QueryQuota queries reset-credit and rate-limit metadata for an OpenAI OAuth account.
 // GET /api/v1/admin/openai/accounts/:id/quota
 func (h *OpenAIOAuthHandler) QueryQuota(c *gin.Context) {
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil {
+	if err != nil || accountID <= 0 {
 		response.BadRequest(c, "Invalid account ID")
 		return
 	}
 	if h.quotaService == nil {
-		response.BadRequest(c, "openai quota service is not enabled")
+		response.Error(c, http.StatusInternalServerError, "openai quota service is not configured")
 		return
 	}
 	usage, err := h.quotaService.QueryUsage(c.Request.Context(), accountID)
@@ -461,16 +411,16 @@ func (h *OpenAIOAuthHandler) CreateShadow(c *gin.Context) {
 	response.Success(c, dto.AccountFromServiceShallow(shadow))
 }
 
-// ResetQuota consumes one rate-limit reset credit for an OpenAI account.
+// ResetQuota consumes one upstream OpenAI reset credit for an OAuth account.
 // POST /api/v1/admin/openai/accounts/:id/reset-quota
 func (h *OpenAIOAuthHandler) ResetQuota(c *gin.Context) {
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil {
+	if err != nil || accountID <= 0 {
 		response.BadRequest(c, "Invalid account ID")
 		return
 	}
 	if h.quotaService == nil {
-		response.BadRequest(c, "openai quota service is not enabled")
+		response.Error(c, http.StatusInternalServerError, "openai quota service is not configured")
 		return
 	}
 	result, err := h.quotaService.ResetCredit(c.Request.Context(), accountID)
@@ -479,4 +429,281 @@ func (h *OpenAIOAuthHandler) ResetQuota(c *gin.Context) {
 		return
 	}
 	response.Success(c, result)
+}
+
+// CreateAccountFromOAuth creates a new OpenAI OAuth account from token info
+// POST /api/v1/admin/openai/create-from-oauth
+func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
+	var req struct {
+		SessionID    string  `json:"session_id" binding:"required"`
+		Code         string  `json:"code" binding:"required"`
+		State        string  `json:"state" binding:"required"`
+		RedirectURI  string  `json:"redirect_uri"`
+		ProxyID      *int64  `json:"proxy_id"`
+		EgressBucket string  `json:"egress_bucket"`
+		Name         string  `json:"name"`
+		Concurrency  int     `json:"concurrency"`
+		Priority     int     `json:"priority"`
+		GroupIDs     []int64 `json:"group_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	// Exchange code for tokens
+	tokenInfo, err := h.openaiOAuthService.ExchangeCode(c.Request.Context(), &service.OpenAIExchangeCodeInput{
+		SessionID:    req.SessionID,
+		Code:         req.Code,
+		State:        req.State,
+		RedirectURI:  req.RedirectURI,
+		ProxyID:      req.ProxyID,
+		EgressBucket: req.EgressBucket,
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	// Build credentials from token info
+	credentials, err := h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "failed to build openai credentials")
+		return
+	}
+	extra := map[string]any{
+		"openai_pool_role":                         service.OpenAIPoolRoleMain,
+		"openai_auth_state":                        service.OpenAIAuthStateHealthy,
+		"openai_token_source":                      service.OpenAITokenSourceRTManaged,
+		"openai_validation_outcome":                service.OpenAIValidationOutcomeRTValidated,
+		"openai_last_refresh_error_code":           "",
+		"openai_last_validated_at":                 time.Now().UTC().Format(time.RFC3339),
+		"openai_runtime_guard_content_safety_mode": "disabled",
+	}
+	if bucket := strings.TrimSpace(tokenInfo.EgressBucket); bucket != "" {
+		extra["openai_gateway_egress_bucket"] = bucket
+	}
+
+	platform := oauthPlatformFromPath(c)
+
+	// Use email as default name if not provided
+	name := req.Name
+	if name == "" && tokenInfo.Email != "" {
+		name = tokenInfo.Email
+	}
+	if name == "" {
+		name = "OpenAI OAuth Account"
+	}
+
+	// Create account
+	account, err := h.adminService.CreateAccount(c.Request.Context(), &service.CreateAccountInput{
+		Name:        name,
+		Platform:    platform,
+		Type:        "oauth",
+		Credentials: credentials,
+		Extra:       extra,
+		ProxyID:     req.ProxyID,
+		Concurrency: req.Concurrency,
+		Priority:    req.Priority,
+		GroupIDs:    req.GroupIDs,
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, dto.AccountFromService(account))
+}
+
+// GatewayTemplates returns OpenAI Gateway client templates for SDKs and Codex CLI.
+// GET /api/v1/admin/openai/gateway/templates
+func (h *OpenAIOAuthHandler) GatewayTemplates(c *gin.Context) {
+	baseURL := strings.TrimSpace(c.Query("base_url"))
+	if baseURL == "" && c.Request != nil {
+		scheme := "http"
+		if forwarded := strings.TrimSpace(c.GetHeader("X-Forwarded-Proto")); forwarded != "" {
+			scheme = forwarded
+		} else if c.Request.TLS != nil {
+			scheme = "https"
+		}
+		if host := strings.TrimSpace(c.Request.Host); host != "" {
+			baseURL = scheme + "://" + host
+		}
+	}
+	if baseURL == "" {
+		response.Error(c, http.StatusBadRequest, "base_url is required")
+		return
+	}
+
+	templates := service.BuildOpenAIGatewayClientTemplates(
+		baseURL,
+		strings.TrimSpace(c.Query("api_key")),
+		strings.TrimSpace(c.Query("gateway_token")),
+	)
+	response.Success(c, templates)
+}
+
+// DownloadGatewayTemplate returns a plain-text downloadable OpenAI Gateway template.
+// GET /api/v1/admin/openai/gateway/templates/download
+func (h *OpenAIOAuthHandler) DownloadGatewayTemplate(c *gin.Context) {
+	baseURL := strings.TrimSpace(c.Query("base_url"))
+	if baseURL == "" && c.Request != nil {
+		scheme := "http"
+		if forwarded := strings.TrimSpace(c.GetHeader("X-Forwarded-Proto")); forwarded != "" {
+			scheme = forwarded
+		} else if c.Request.TLS != nil {
+			scheme = "https"
+		}
+		if host := strings.TrimSpace(c.Request.Host); host != "" {
+			baseURL = scheme + "://" + host
+		}
+	}
+	if baseURL == "" {
+		response.Error(c, http.StatusBadRequest, "base_url is required")
+		return
+	}
+
+	templates := service.BuildOpenAIGatewayClientTemplates(
+		baseURL,
+		strings.TrimSpace(c.Query("api_key")),
+		strings.TrimSpace(c.Query("gateway_token")),
+	)
+	format := strings.TrimSpace(c.Query("format"))
+	filename := "openai-gateway-template.txt"
+	content := templates.CurlExample
+	switch format {
+	case "curl":
+		filename = "curl.txt"
+		content = templates.CurlExample
+	case "python":
+		filename = "python-sdk.py"
+		content = templates.PythonSDK
+	case "node":
+		filename = "node-sdk.mjs"
+		content = templates.NodeSDK
+	case "codex-config.toml":
+		filename = "config.toml"
+		content = templates.CodexConfigTOML
+	case "codex-auth.json":
+		filename = "auth.json"
+		content = templates.CodexAuthJSON
+	case "codex-wrapper.sh":
+		filename = "codex-wrapper.sh"
+		content = templates.CodexWrapperSH
+	case "", "bundle.txt":
+		filename = "openai-gateway-bundle.txt"
+		content = strings.Join([]string{
+			"[curl]",
+			templates.CurlExample,
+			"",
+			"[python]",
+			templates.PythonSDK,
+			"",
+			"[node]",
+			templates.NodeSDK,
+			"",
+			"[codex config.toml]",
+			templates.CodexConfigTOML,
+			"",
+			"[codex auth.json]",
+			templates.CodexAuthJSON,
+			"",
+			"[codex wrapper.sh]",
+			templates.CodexWrapperSH,
+		}, "\n")
+	default:
+		response.Error(c, http.StatusBadRequest, "invalid format")
+		return
+	}
+
+	c.Header("Content-Disposition", "attachment; filename="+filename)
+	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(content))
+}
+
+// GatewayStatus returns the admin OpenAI Gateway status snapshot.
+// GET /api/v1/admin/openai/gateway/status
+func (h *OpenAIOAuthHandler) GatewayStatus(c *gin.Context) {
+	if h.gatewayCoreService == nil || h.openaiGatewayService == nil || !h.gatewayCoreService.IsEnabled() {
+		response.Error(c, http.StatusServiceUnavailable, "openai gateway core disabled")
+		return
+	}
+	snapshot, err := h.gatewayCoreService.BuildAdminStatusSnapshot(c.Request.Context(), h.openaiGatewayService.SnapshotOpenAIWSPerformanceMetrics())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, snapshot)
+}
+
+// UpdateGatewayRuntime updates per-account OpenAI gateway runtime settings.
+// POST /api/v1/admin/openai/gateway/accounts/:id/runtime
+func (h *OpenAIOAuthHandler) UpdateGatewayRuntime(c *gin.Context) {
+	if h.gatewayCoreService == nil || !h.gatewayCoreService.IsEnabled() {
+		response.Error(c, http.StatusServiceUnavailable, "openai gateway core disabled")
+		return
+	}
+	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || accountID <= 0 {
+		response.BadRequest(c, "Invalid account ID")
+		return
+	}
+	account, err := h.adminService.GetAccount(c.Request.Context(), accountID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if account.Platform != service.PlatformOpenAI || account.Type != service.AccountTypeOAuth {
+		response.BadRequest(c, "Account must be an OpenAI OAuth account")
+		return
+	}
+
+	var req struct {
+		EgressBucket     *string                                `json:"egress_bucket"`
+		ProfileMode      *string                                `json:"profile_mode"`
+		OpenAIGatewayTLS *service.OpenAIGatewayAccountTLSPolicy `json:"openai_gateway_tls"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if req.EgressBucket != nil && strings.TrimSpace(*req.EgressBucket) != "" && !h.gatewayCoreService.HasEgressBucket(*req.EgressBucket) {
+		response.BadRequest(c, "Unknown egress bucket")
+		return
+	}
+	if req.ProfileMode != nil {
+		mode := strings.TrimSpace(*req.ProfileMode)
+		if mode != "" &&
+			mode != service.OpenAIGatewayProfileModeFixed &&
+			mode != service.OpenAIGatewayProfileModeObserve &&
+			mode != service.OpenAIGatewayProfileModeFrozen {
+			response.BadRequest(c, "Invalid profile_mode")
+			return
+		}
+	}
+
+	extra := cloneAccountExtraForAdminUpdate(account.Extra)
+	if req.EgressBucket != nil {
+		extra["openai_gateway_egress_bucket"] = strings.TrimSpace(*req.EgressBucket)
+	}
+	if req.ProfileMode != nil {
+		extra["openai_gateway_profile_mode"] = strings.TrimSpace(*req.ProfileMode)
+	}
+	if req.OpenAIGatewayTLS != nil {
+		if err := h.gatewayCoreService.ValidateAccountTLSPolicyUpdate(c.Request.Context(), account, extra, req.OpenAIGatewayTLS); err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		extra["openai_gateway_tls"] = req.OpenAIGatewayTLS.ExtraMap()
+	}
+
+	updated, err := h.adminService.UpdateAccount(c.Request.Context(), accountID, &service.UpdateAccountInput{
+		Name:             account.Name,
+		Extra:            extra,
+		OpenAIGatewayTLS: req.OpenAIGatewayTLS,
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, dto.AccountFromService(updated))
 }

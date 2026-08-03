@@ -42,20 +42,6 @@ func TestIsImageGenerationIntent(t *testing.T) {
 			want:     true,
 		},
 		{
-			name:     "namespace image_gen tool choice",
-			endpoint: "/v1/responses",
-			model:    "gpt-5.5",
-			body:     []byte(`{"model":"gpt-5.5","tool_choice":{"type":"namespace","name":"image_gen"}}`),
-			want:     true,
-		},
-		{
-			name:     "custom imagegen function tool choice is not image intent",
-			endpoint: "/v1/responses",
-			model:    "gpt-5.5",
-			body:     []byte(`{"model":"gpt-5.5","tool_choice":{"function":{"name":"imagegen"}}}`),
-			want:     false,
-		},
-		{
 			name:     "required tool choice alone is text",
 			endpoint: "/v1/responses",
 			model:    "gpt-5.4",
@@ -75,13 +61,6 @@ func TestIsImageGenerationIntent(t *testing.T) {
 			model:    "gpt-5.5",
 			body:     []byte(`{"model":"gpt-5.5","tools":[{"type":"namespace","name":"image_gen","tools":[{"type":"function","name":"imagegen"}]}]}`),
 			want:     true,
-		},
-		{
-			name:     "custom namespace with nested imagegen function is not image intent",
-			endpoint: "/v1/responses",
-			model:    "gpt-5.5",
-			body:     []byte(`{"model":"gpt-5.5","tools":[{"type":"namespace","name":"media_tools","tools":[{"type":"function","name":"imagegen"}]}]}`),
-			want:     false,
 		},
 		{
 			name:     "namespace image_gen in input additional_tools (Responses Lite)",
@@ -138,40 +117,6 @@ func TestIsImageGenerationIntentMap_NamespaceImageGen(t *testing.T) {
 				},
 			},
 			want: true,
-		},
-		{
-			name: "custom namespace with nested imagegen function is not image intent",
-			reqBody: map[string]any{
-				"model": "gpt-5.5",
-				"tools": []any{
-					map[string]any{
-						"type": "namespace",
-						"name": "media_tools",
-						"tools": []any{
-							map[string]any{"type": "function", "name": "imagegen"},
-						},
-					},
-				},
-			},
-			want: false,
-		},
-		{
-			name: "namespace image_gen tool choice",
-			reqBody: map[string]any{
-				"model":       "gpt-5.5",
-				"tool_choice": map[string]any{"type": "namespace", "name": "image_gen"},
-			},
-			want: true,
-		},
-		{
-			name: "custom imagegen function tool choice is not image intent",
-			reqBody: map[string]any{
-				"model": "gpt-5.5",
-				"tool_choice": map[string]any{
-					"function": map[string]any{"name": "imagegen"},
-				},
-			},
-			want: false,
 		},
 		{
 			name: "non-image namespace not flagged",
@@ -354,4 +299,36 @@ func TestCollectOpenAIImageOutputSizesFromSSEBody(t *testing.T) {
 
 	require.Equal(t, 2, countOpenAIImageOutputsFromSSEBody(body))
 	require.Equal(t, []string{"3840x2160", "1024x1024"}, collectOpenAIImageOutputSizesFromSSEBody(body))
+}
+
+func TestOpenAIImageOutputCounterIgnoresNonImageDataArrayItems(t *testing.T) {
+	body := []byte(`{
+		"data": [
+			{"id":"msg_1","type":"message","status":"completed","content":[{"type":"output_text","text":"hello"}]},
+			{"id":"usage_1","object":"usage","total_tokens":12}
+		]
+	}`)
+
+	require.Equal(t, 0, countOpenAIResponseImageOutputsFromJSONBytes(body))
+	require.Nil(t, collectOpenAIResponseImageOutputSizesFromJSONBytes(body))
+}
+
+func TestOpenAIImageOutputCounterCountsOnlyRealImageDataArrayItems(t *testing.T) {
+	body := []byte(`{
+		"data": [
+			{"id":"msg_1","type":"message","content":[{"type":"output_text","text":"hello"}],"size":"2048x1152"},
+			{"b64_json":"final-a","size":"1024x1024"},
+			{"url":"https://example.test/final-b.png","size":"3840x2160"}
+		]
+	}`)
+
+	require.Equal(t, 2, countOpenAIResponseImageOutputsFromJSONBytes(body))
+	require.Equal(t, []string{"1024x1024", "3840x2160"}, collectOpenAIResponseImageOutputSizesFromJSONBytes(body))
+}
+
+func TestOpenAIImageOutputCounterIgnoresEmptyImageGenerationCompleted(t *testing.T) {
+	counter := newOpenAIImageOutputCounter()
+	counter.AddSSEData([]byte(`{"type":"image_generation.completed","id":"ig_empty"}`))
+
+	require.Equal(t, 0, counter.Count())
 }

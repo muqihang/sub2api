@@ -1189,11 +1189,8 @@
                   </div>
                 </div>
 
-                <!-- User Scope -->
                 <div class="mt-3">
-                  <label
-                    class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400"
-                  >
+                  <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
                     {{ t("admin.settings.openaiFastPolicy.userIds") }}
                   </label>
                   <p class="mb-2 text-xs text-gray-400 dark:text-gray-500">
@@ -1214,43 +1211,17 @@
                     />
                     <button
                       type="button"
+                      class="btn btn-ghost btn-sm"
                       @click="removeOpenAIFastPolicyUserID(rule, userIDIndex)"
-                      class="shrink-0 rounded p-1 text-red-400 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20"
-                      :title="t('admin.settings.openaiFastPolicy.removeUserId')"
                     >
-                      <svg
-                        class="h-4 w-4"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                        stroke-width="2"
-                      >
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          d="M6 18L18 6M6 6l12 12"
-                        />
-                      </svg>
+                      {{ t("admin.settings.openaiFastPolicy.removeUserId") }}
                     </button>
                   </div>
                   <button
                     type="button"
+                    class="btn btn-ghost btn-sm"
                     @click="addOpenAIFastPolicyUserID(rule)"
-                    class="mb-2 inline-flex items-center gap-1 text-xs text-primary-600 transition-colors hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
                   >
-                    <svg
-                      class="h-3.5 w-3.5"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      stroke-width="2"
-                    >
-                      <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        d="M12 4v16m8-8H4"
-                      />
-                    </svg>
                     {{ t("admin.settings.openaiFastPolicy.addUserId") }}
                   </button>
                 </div>
@@ -1465,6 +1436,83 @@
                   </p>
                 </div>
                 <Toggle v-model="form.email_verify_enabled" />
+              </div>
+
+              <!-- Authentication Agreement -->
+              <div class="border-t border-gray-100 pt-4 dark:border-dark-700">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <label class="font-medium text-gray-900 dark:text-white">{{
+                      t("admin.settings.registration.authAgreement.enabled")
+                    }}</label>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      {{
+                        t("admin.settings.registration.authAgreement.enabledHint")
+                      }}
+                    </p>
+                  </div>
+                  <Toggle
+                    v-model="form.auth_agreement_enabled"
+                    data-testid="auth-agreement-enabled"
+                  />
+                </div>
+                <div
+                  v-if="form.auth_agreement_enabled"
+                  class="mt-4 space-y-4"
+                >
+                  <div>
+                    <label
+                      class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                    >
+                      {{
+                        t("admin.settings.registration.authAgreement.version")
+                      }}
+                    </label>
+                    <input
+                      v-model="form.auth_agreement_version"
+                      data-testid="auth-agreement-version"
+                      type="text"
+                      class="input font-mono text-sm"
+                      :placeholder="
+                        t(
+                          'admin.settings.registration.authAgreement.versionPlaceholder',
+                        )
+                      "
+                    />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{
+                        t("admin.settings.registration.authAgreement.versionHint")
+                      }}
+                    </p>
+                  </div>
+
+                  <div
+                    class="flex items-center justify-between border-t border-gray-100 pt-4 dark:border-dark-700"
+                  >
+                    <div>
+                      <label
+                        class="font-medium text-gray-900 dark:text-white"
+                      >
+                        {{
+                          t(
+                            "admin.settings.registration.authAgreement.promptOnFirstVisit",
+                          )
+                        }}
+                      </label>
+                      <p class="text-sm text-gray-500 dark:text-gray-400">
+                        {{
+                          t(
+                            "admin.settings.registration.authAgreement.promptOnFirstVisitHint",
+                          )
+                        }}
+                      </p>
+                    </div>
+                    <Toggle
+                      v-model="form.auth_agreement_prompt_on_first_visit"
+                      data-testid="auth-agreement-prompt-on-first-visit"
+                    />
+                  </div>
+                </div>
               </div>
 
               <!-- Email Suffix Whitelist -->
@@ -3795,254 +3843,6 @@
             </div>
           </div>
 
-          <!-- Codex Settings -->
-          <div class="card">
-            <div
-              class="border-b border-gray-100 px-6 py-4 dark:border-dark-700"
-            >
-              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
-                {{ t("admin.settings.gatewayForwarding.codexHardeningTitle") }}
-              </h2>
-            </div>
-            <div class="p-6 space-y-4">
-                <div>
-                  <h3 class="text-base font-semibold text-gray-900 dark:text-white">
-                    {{ t("admin.settings.gatewayForwarding.codexClientRestrictionTitle") }}
-                  </h3>
-                  <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                    {{ t("admin.settings.gatewayForwarding.codexHardeningDesc") }}
-                  </p>
-                </div>
-                <div class="grid gap-4 sm:grid-cols-2">
-                  <div>
-                    <label
-                      class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
-                    >
-                      {{ t("admin.settings.gatewayForwarding.minCodexVersion") }}
-                    </label>
-                    <input
-                      v-model="form.min_codex_version"
-                      type="text"
-                      class="input w-full font-mono text-sm"
-                      :placeholder="
-                        t(
-                          'admin.settings.gatewayForwarding.minCodexVersionPlaceholder',
-                        )
-                      "
-                    />
-                  </div>
-                  <div>
-                    <label
-                      class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
-                    >
-                      {{ t("admin.settings.gatewayForwarding.maxCodexVersion") }}
-                    </label>
-                    <input
-                      v-model="form.max_codex_version"
-                      type="text"
-                      class="input w-full font-mono text-sm"
-                      :placeholder="
-                        t(
-                          'admin.settings.gatewayForwarding.maxCodexVersionPlaceholder',
-                        )
-                      "
-                    />
-                  </div>
-                </div>
-                <p class="text-xs text-gray-500 dark:text-gray-400">
-                  {{ t("admin.settings.gatewayForwarding.codexVersionHint") }}
-                </p>
-
-                <div>
-                  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                    {{ t("admin.settings.gatewayForwarding.codexFingerprintSignals") }}
-                  </label>
-                  <p class="mb-2 mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    {{ t("admin.settings.gatewayForwarding.codexFingerprintSignalsDesc") }}
-                  </p>
-                  <div
-                    v-for="(row, i) in codexFingerprintRows"
-                    :key="`codex-fp-${i}`"
-                    class="mb-2 flex items-center gap-2"
-                  >
-                    <select v-model="row.type" class="input w-32 text-sm">
-                      <option value="header_exact">{{ t("admin.settings.gatewayForwarding.codexFpTypeHeaderExact") }}</option>
-                      <option value="header_prefix">{{ t("admin.settings.gatewayForwarding.codexFpTypeHeaderPrefix") }}</option>
-                      <option value="body_path">{{ t("admin.settings.gatewayForwarding.codexFpTypeBodyPath") }}</option>
-                    </select>
-                    <input
-                      v-model="row.match"
-                      type="text"
-                      class="input flex-1 font-mono text-sm"
-                      :placeholder="t('admin.settings.gatewayForwarding.codexFpMatchPlaceholder')"
-                    />
-                    <label class="flex shrink-0 items-center gap-1 text-xs text-gray-600 dark:text-gray-400">
-                      <input v-model="row.required" type="checkbox" />
-                      {{ t("admin.settings.gatewayForwarding.codexFpRequired") }}
-                    </label>
-                    <button
-                      type="button"
-                      class="btn btn-secondary btn-sm shrink-0 text-red-600 hover:text-red-700 dark:text-red-400"
-                      @click="removeCodexFingerprintRow(i)"
-                    >
-                      {{ t("admin.settings.gatewayForwarding.codexRemoveRow") }}
-                    </button>
-                  </div>
-                  <button type="button" class="btn btn-secondary btn-sm" @click="addCodexFingerprintRow">
-                    {{ t("admin.settings.gatewayForwarding.codexAddRow") }}
-                  </button>
-                  <p
-                    v-if="codexFingerprintNoRequired"
-                    class="mt-2 text-xs text-amber-600 dark:text-amber-500"
-                  >
-                    {{ t("admin.settings.gatewayForwarding.codexFingerprintNoRequiredWarn") }}
-                  </p>
-                </div>
-
-                <div class="flex items-center justify-between">
-                  <div class="pr-4">
-                    <label
-                      class="block text-sm font-medium text-gray-700 dark:text-gray-300"
-                    >
-                      {{
-                        t("admin.settings.gatewayForwarding.codexAllowAppServer")
-                      }}
-                    </label>
-                    <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                      {{
-                        t(
-                          "admin.settings.gatewayForwarding.codexAllowAppServerDesc",
-                        )
-                      }}
-                    </p>
-                  </div>
-                  <Toggle
-                    v-model="form.codex_cli_only_allow_app_server_clients"
-                  />
-                </div>
-
-                <div>
-                  <label
-                    class="block text-sm font-medium text-gray-700 dark:text-gray-300"
-                  >
-                    {{ t("admin.settings.gatewayForwarding.codexBlacklist") }}
-                  </label>
-                  <p class="mb-2 mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    {{ t("admin.settings.gatewayForwarding.codexBlacklistDesc") }}
-                  </p>
-                  <div
-                    v-for="(row, i) in codexBlacklistRows"
-                    :key="`codex-bl-${i}`"
-                    class="mb-2 flex gap-2"
-                  >
-                    <input
-                      v-model="row.originator"
-                      type="text"
-                      class="input w-1/3 font-mono text-sm"
-                      :placeholder="
-                        t(
-                          'admin.settings.gatewayForwarding.codexOriginatorPlaceholder',
-                        )
-                      "
-                    />
-                    <input
-                      v-model="row.uaContains"
-                      type="text"
-                      class="input flex-1 font-mono text-sm"
-                      :placeholder="
-                        t(
-                          'admin.settings.gatewayForwarding.codexUaContainsPlaceholder',
-                        )
-                      "
-                    />
-                    <button
-                      type="button"
-                      class="btn btn-secondary btn-sm shrink-0 text-red-600 hover:text-red-700 dark:text-red-400"
-                      @click="removeCodexBlacklistRow(i)"
-                    >
-                      {{ t("admin.settings.gatewayForwarding.codexRemoveRow") }}
-                    </button>
-                  </div>
-                  <button
-                    type="button"
-                    class="btn btn-secondary btn-sm"
-                    @click="addCodexBlacklistRow"
-                  >
-                    {{ t("admin.settings.gatewayForwarding.codexAddRow") }}
-                  </button>
-                </div>
-
-                <div>
-                  <label
-                    class="block text-sm font-medium text-gray-700 dark:text-gray-300"
-                  >
-                    {{ t("admin.settings.gatewayForwarding.codexWhitelist") }}
-                  </label>
-                  <p class="mb-2 mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    {{ t("admin.settings.gatewayForwarding.codexWhitelistDesc") }}
-                  </p>
-                  <div
-                    v-for="(row, i) in codexWhitelistRows"
-                    :key="`codex-wl-${i}`"
-                    class="mb-2 flex gap-2"
-                  >
-                    <input
-                      v-model="row.originator"
-                      type="text"
-                      class="input w-1/3 font-mono text-sm"
-                      :placeholder="
-                        t(
-                          'admin.settings.gatewayForwarding.codexOriginatorPlaceholder',
-                        )
-                      "
-                    />
-                    <input
-                      v-model="row.uaContains"
-                      type="text"
-                      class="input flex-1 font-mono text-sm"
-                      :placeholder="
-                        t(
-                          'admin.settings.gatewayForwarding.codexUaContainsPlaceholder',
-                        )
-                      "
-                    />
-                    <label
-                      class="flex shrink-0 items-center gap-1 text-xs text-gray-600 dark:text-gray-400"
-                      :title="
-                        t(
-                          'admin.settings.gatewayForwarding.codexWhitelistSkipFingerprintTooltip',
-                        )
-                      "
-                    >
-                      <input
-                        v-model="row.skipEngineFingerprint"
-                        type="checkbox"
-                      />
-                      {{
-                        t(
-                          'admin.settings.gatewayForwarding.codexWhitelistSkipFingerprint',
-                        )
-                      }}
-                    </label>
-                    <button
-                      type="button"
-                      class="btn btn-secondary btn-sm shrink-0 text-red-600 hover:text-red-700 dark:text-red-400"
-                      @click="removeCodexWhitelistRow(i)"
-                    >
-                      {{ t("admin.settings.gatewayForwarding.codexRemoveRow") }}
-                    </button>
-                  </div>
-                  <button
-                    type="button"
-                    class="btn btn-secondary btn-sm"
-                    @click="addCodexWhitelistRow"
-                  >
-                    {{ t("admin.settings.gatewayForwarding.codexAddRow") }}
-                  </button>
-                </div>
-            </div>
-          </div>
-
           <!-- Gateway Scheduling Settings -->
           <div class="card">
             <div
@@ -4084,81 +3884,6 @@
                   </p>
                 </div>
                 <Toggle v-model="form.openai_advanced_scheduler_enabled" />
-              </div>
-
-              <div
-                v-if="form.openai_advanced_scheduler_enabled"
-                class="flex items-center justify-between border-t border-gray-100 pt-5 dark:border-dark-700"
-              >
-                <div>
-                  <label
-                    class="text-sm font-medium text-gray-700 dark:text-gray-300"
-                  >
-                    {{ t("admin.settings.openaiExperimentalScheduler.stickyWeightedTitle") }}
-                  </label>
-                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-                    {{
-                      t("admin.settings.openaiExperimentalScheduler.stickyWeightedDescription")
-                    }}
-                  </p>
-                </div>
-                <Toggle v-model="form.openai_advanced_scheduler_sticky_weighted_enabled" />
-              </div>
-
-              <div
-                v-if="form.openai_advanced_scheduler_enabled"
-                class="flex items-center justify-between border-t border-gray-100 pt-5 dark:border-dark-700"
-              >
-                <div>
-                  <label
-                    class="text-sm font-medium text-gray-700 dark:text-gray-300"
-                  >
-                    {{ t("admin.settings.openaiExperimentalScheduler.subscriptionPriorityTitle") }}
-                  </label>
-                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-                    {{
-                      t("admin.settings.openaiExperimentalScheduler.subscriptionPriorityDescription")
-                    }}
-                  </p>
-                </div>
-                <Toggle v-model="form.openai_advanced_scheduler_subscription_priority_enabled" />
-              </div>
-
-              <div
-                v-if="form.openai_advanced_scheduler_enabled"
-                class="border-t border-gray-100 pt-5 dark:border-dark-700"
-              >
-                <div>
-                  <label
-                    class="text-sm font-medium text-gray-700 dark:text-gray-300"
-                  >
-                    {{ t("admin.settings.openaiExperimentalScheduler.weightsTitle") }}
-                  </label>
-                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-                    {{
-                      t("admin.settings.openaiExperimentalScheduler.weightsDescription")
-                    }}
-                  </p>
-                </div>
-
-                <div class="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
-                  <label
-                    v-for="field in openAIAdvancedSchedulerWeightFields"
-                    :key="field.key"
-                    class="block"
-                  >
-                    <span class="text-xs font-medium text-gray-600 dark:text-gray-400">
-                      {{ field.label }}
-                    </span>
-                    <input
-                      v-model="form[field.key]"
-                      class="input mt-1"
-                      inputmode="decimal"
-                      :placeholder="field.placeholder"
-                      type="text"
-                    />
-                  </label>
-                </div>
               </div>
             </div>
           </div>
@@ -4233,237 +3958,6 @@
                   </p>
                 </div>
                 <Toggle v-model="form.enable_cch_signing" />
-              </div>
-
-              <!-- Claude OAuth System Prompt Injection -->
-              <div class="flex items-center justify-between">
-                <div>
-                  <label
-                    class="text-sm font-medium text-gray-700 dark:text-gray-300"
-                  >
-                    {{
-                      t(
-                        "admin.settings.gatewayForwarding.claudeOAuthSystemPromptInjection",
-                      )
-                    }}
-                  </label>
-                  <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-                    {{
-                      t(
-                        "admin.settings.gatewayForwarding.claudeOAuthSystemPromptInjectionHint",
-                      )
-                    }}
-                  </p>
-                </div>
-                <Toggle
-                  v-model="form.enable_claude_oauth_system_prompt_injection"
-                />
-              </div>
-
-              <div>
-                <label
-                  class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
-                >
-                  {{
-                    t(
-                      "admin.settings.gatewayForwarding.claudeOAuthSystemPromptBlocks",
-                    )
-                  }}
-                </label>
-                <div class="space-y-3">
-                  <div
-                    v-for="(block, index) in claudeOAuthSystemPromptBlocks"
-                    :key="block.id"
-                    class="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-800/60"
-                  >
-                    <div
-                      :class="[
-                        'flex flex-wrap items-center justify-between gap-3',
-                        block.expanded && 'mb-3',
-                      ]"
-                    >
-                      <div class="min-w-0">
-                        <div
-                          class="text-sm font-medium text-gray-900 dark:text-white"
-                        >
-                          {{
-                            t(
-                              "admin.settings.gatewayForwarding.systemBlockTitle",
-                              { index: index + 1 },
-                            )
-                          }}
-                        </div>
-                        <div
-                          class="mt-0.5 text-xs text-gray-500 dark:text-gray-400"
-                        >
-                          {{ getClaudeOAuthPresetLabel(block.preset) }}
-                        </div>
-                      </div>
-                      <div class="flex items-center gap-2">
-                        <button
-                          type="button"
-                          class="btn btn-secondary btn-sm px-2"
-                          :title="
-                            block.expanded
-                              ? t(
-                                  'admin.settings.gatewayForwarding.systemBlockHide',
-                                )
-                              : t(
-                                  'admin.settings.gatewayForwarding.systemBlockShow',
-                                )
-                          "
-                          :aria-label="
-                            block.expanded
-                              ? t(
-                                  'admin.settings.gatewayForwarding.systemBlockHide',
-                                )
-                              : t(
-                                  'admin.settings.gatewayForwarding.systemBlockShow',
-                                )
-                          "
-                          @click="toggleClaudeOAuthSystemPromptBlock(index)"
-                        >
-                          <Icon
-                            :name="block.expanded ? 'eyeOff' : 'eye'"
-                            size="xs"
-                          />
-                        </button>
-                        <button
-                          type="button"
-                          class="btn btn-secondary btn-sm px-2"
-                          :disabled="index === 0"
-                          @click="moveClaudeOAuthSystemPromptBlock(index, -1)"
-                        >
-                          <Icon name="arrowUp" size="xs" />
-                        </button>
-                        <button
-                          type="button"
-                          class="btn btn-secondary btn-sm px-2"
-                          :disabled="
-                            index === claudeOAuthSystemPromptBlocks.length - 1
-                          "
-                          @click="moveClaudeOAuthSystemPromptBlock(index, 1)"
-                        >
-                          <Icon name="arrowDown" size="xs" />
-                        </button>
-                        <Toggle v-model="block.enabled" />
-                        <button
-                          type="button"
-                          class="btn btn-secondary btn-sm px-2 text-red-600 hover:text-red-700 dark:text-red-400"
-                          @click="removeClaudeOAuthSystemPromptBlock(index)"
-                        >
-                          <Icon name="trash" size="xs" />
-                        </button>
-                      </div>
-                    </div>
-
-                    <div v-show="block.expanded">
-                      <div class="grid gap-3 md:grid-cols-2">
-                        <div>
-                          <label
-                            class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-300"
-                          >
-                            {{
-                              t(
-                                "admin.settings.gatewayForwarding.systemBlockPreset",
-                              )
-                            }}
-                          </label>
-                          <Select
-                            v-model="block.preset"
-                            :options="claudeOAuthSystemPromptPresetOptions"
-                            @change="
-                              (value) =>
-                                applyClaudeOAuthSystemPromptPreset(index, value)
-                            "
-                          />
-                        </div>
-                        <div>
-                          <label
-                            class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-300"
-                          >
-                            {{
-                              t(
-                                "admin.settings.gatewayForwarding.systemBlockType",
-                              )
-                            }}
-                          </label>
-                          <Select
-                            v-model="block.type"
-                            :options="claudeOAuthSystemPromptBlockTypeOptions"
-                          />
-                        </div>
-                      </div>
-
-                      <div class="mt-3">
-                        <label
-                          class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-300"
-                        >
-                          {{ t("admin.settings.gatewayForwarding.systemBlockText") }}
-                        </label>
-                        <textarea
-                          v-model="block.text"
-                          rows="6"
-                          class="input w-full resize-y font-mono text-xs leading-5"
-                          @input="markClaudeOAuthSystemPromptBlockCustom(block)"
-                        />
-                      </div>
-
-                      <div
-                        class="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_160px]"
-                      >
-                        <div class="flex items-center justify-between gap-4">
-                          <div>
-                            <label
-                              class="text-xs font-medium text-gray-600 dark:text-gray-300"
-                            >
-                              {{
-                                t(
-                                  "admin.settings.gatewayForwarding.systemBlockCacheControl",
-                                )
-                              }}
-                            </label>
-                          </div>
-                          <Toggle v-model="block.cacheControlEnabled" />
-                        </div>
-                        <div v-if="block.cacheControlEnabled">
-                          <Select
-                            v-model="block.cacheControlTTL"
-                            :options="claudeOAuthSystemPromptCacheTTLOptions"
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="mt-3 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    class="btn btn-secondary btn-sm"
-                    @click="addClaudeOAuthSystemPromptBlock"
-                  >
-                    <Icon name="plus" size="xs" />
-                    {{ t("admin.settings.gatewayForwarding.addSystemBlock") }}
-                  </button>
-                  <button
-                    type="button"
-                    class="btn btn-secondary btn-sm"
-                    @click="resetClaudeOAuthSystemPromptBlocks"
-                  >
-                    <Icon name="refresh" size="xs" />
-                    {{
-                      t("admin.settings.gatewayForwarding.resetSystemBlocks")
-                    }}
-                  </button>
-                </div>
-                <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-                  {{
-                    t(
-                      "admin.settings.gatewayForwarding.claudeOAuthSystemPromptBlocksHint",
-                    )
-                  }}
-                </p>
               </div>
 
               <!-- Anthropic Cache TTL 1h Injection -->
@@ -4599,9 +4093,20 @@
                 </p>
               </div>
 
+              <!-- 是否允许在 Claude Code 中使用 Codex 插件（全局开关） -->
+              <div class="flex items-center justify-between">
+                <div class="pr-4">
+                  <label class="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t("admin.settings.gatewayForwarding.openaiAllowClaudeCodeCodexPlugin") }}
+                  </label>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.gatewayForwarding.openaiAllowClaudeCodeCodexPluginDesc") }}
+                  </p>
+                </div>
+                <Toggle v-model="form.openai_allow_claude_code_codex_plugin" />
+              </div>
             </div>
           </div>
-
           <!-- Web Search Emulation -->
           <div class="card">
             <div
@@ -5752,7 +5257,10 @@
                         </span>
                         <div class="min-w-0">
                           <p class="truncate text-sm font-semibold text-gray-900 dark:text-white">
-                            {{ doc.title || localText("未命名文档", "Untitled document") }}
+                            {{
+                              localText(doc.title, doc.title_en || doc.title) ||
+                              localText("未命名文档", "Untitled document")
+                            }}
                           </p>
                           <p class="truncate text-xs text-gray-500 dark:text-gray-400">
                             {{ loginAgreementRoutePath(doc, index) }}
@@ -5772,16 +5280,27 @@
                       </button>
                     </div>
 
-                    <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                    <div class="grid grid-cols-1 gap-3 lg:grid-cols-3">
                       <div>
                         <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
-                          {{ localText("文档名称", "Document title") }}
+                          {{ localText("中文标题", "Chinese title") }}
                         </label>
                         <input
                           v-model="doc.title"
                           type="text"
                           class="input text-sm"
-                          :placeholder="localText('例如：服务条款', 'Example: Terms of Service')"
+                          placeholder="例如：服务条款"
+                        />
+                      </div>
+                      <div>
+                        <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
+                          {{ localText("英文标题", "English title") }}
+                        </label>
+                        <input
+                          v-model="doc.title_en"
+                          type="text"
+                          class="input text-sm"
+                          placeholder="Example: Terms of Service"
                         />
                       </div>
                       <div>
@@ -5801,16 +5320,29 @@
                         </div>
                       </div>
                     </div>
-                    <div class="mt-3">
+                    <div class="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-2">
+                      <div>
                       <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
-                        {{ localText("Markdown 内容", "Markdown content") }}
+                        {{ localText("中文 Markdown 内容", "Chinese Markdown content") }}
                       </label>
                         <textarea
                           v-model="doc.content_md"
-                          rows="8"
+                          rows="10"
                           class="input font-mono text-sm"
-                          :placeholder="localText('在这里填写正式 Markdown 内容。', 'Write the final Markdown content here.')"
+                          placeholder="在这里填写中文正式内容。"
                         ></textarea>
+                      </div>
+                      <div>
+                        <label class="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
+                          {{ localText("英文 Markdown 内容", "English Markdown content") }}
+                        </label>
+                        <textarea
+                          v-model="doc.content_md_en"
+                          rows="10"
+                          class="input font-mono text-sm"
+                          placeholder="Write the final English content here."
+                        ></textarea>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -5988,7 +5520,7 @@
             </div>
 
             <div v-if="form.affiliate_enabled" class="space-y-6">
-              <div>
+              <div v-if="form.affiliate_growth_mode === 'legacy'">
                 <label class="input-label">
                   {{ t('admin.settings.features.affiliate.rebateRate') }}
                 </label>
@@ -6009,6 +5541,66 @@
                 </p>
               </div>
 
+              <div class="rounded-lg border border-primary-200 bg-primary-50/60 p-4 dark:border-primary-900/50 dark:bg-primary-900/10">
+                <label class="input-label">
+                  {{ t('admin.settings.features.affiliate.growthMode') }}
+                </label>
+                <select v-model="form.affiliate_growth_mode" class="input" @change="handleAffiliateGrowthModeChange">
+                  <option value="legacy">{{ t('admin.settings.features.affiliate.growthModeLegacy') }}</option>
+                  <option value="tiered_v1">{{ t('admin.settings.features.affiliate.growthModeTiered') }}</option>
+                </select>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.features.affiliate.growthModeHint') }}
+                </p>
+              </div>
+
+              <div v-if="form.affiliate_growth_mode === 'tiered_v1'" class="space-y-4 rounded-lg border border-gray-200 p-4 dark:border-dark-700">
+                <div>
+                  <label class="input-label">{{ t('admin.settings.features.affiliate.tierWindowDays') }}</label>
+                  <input v-model.number="form.affiliate_tier_window_days" type="number" min="1" max="3650" step="1" class="input" />
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.features.affiliate.tierWindowDaysHint') }}</p>
+                </div>
+                <div>
+                  <label class="input-label">{{ t('admin.settings.features.affiliate.tierRules') }}</label>
+                  <div class="space-y-2">
+                    <div v-for="(rule, index) in form.affiliate_tier_rules" :key="index" class="grid grid-cols-[1fr_1fr_auto] items-center gap-2">
+                      <input v-model.number="rule.min_effective_invitees" type="number" min="0" step="1" class="input" :placeholder="t('admin.settings.features.affiliate.tierInviteeThreshold')" />
+                      <div class="relative">
+                        <input v-model.number="rule.rate_percent" type="number" min="0" max="100" step="0.01" class="input pr-8" :placeholder="t('admin.settings.features.affiliate.tierRate')" />
+                        <span class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">%</span>
+                      </div>
+                      <button
+                        type="button"
+                        class="btn btn-secondary btn-sm h-9 w-9 p-0"
+                        :disabled="form.affiliate_tier_rules.length <= 1"
+                        :title="t('common.delete')"
+                        :aria-label="t('common.delete')"
+                        @click="form.affiliate_tier_rules.splice(index, 1)"
+                      >
+                        <Icon name="trash" size="sm" />
+                      </button>
+                    </div>
+                  </div>
+                  <button type="button" class="btn btn-secondary btn-sm mt-2" @click="form.affiliate_tier_rules.push({ min_effective_invitees: 0, rate_percent: 0 })">
+                    {{ t('admin.settings.features.affiliate.addTier') }}
+                  </button>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.features.affiliate.tierRulesHint') }}</p>
+                </div>
+                <div>
+                  <label class="input-label">{{ t('admin.settings.features.affiliate.inviteeBonusRate') }}</label>
+                  <div class="relative">
+                    <input v-model.number="form.affiliate_invitee_first_payment_bonus_rate" type="number" min="0" max="100" step="0.01" class="input pr-8" />
+                    <span class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">%</span>
+                  </div>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.features.affiliate.inviteeBonusRateHint') }}</p>
+                </div>
+                <div>
+                  <label class="input-label">{{ t('admin.settings.features.affiliate.effectivePaymentMin') }}</label>
+                  <input v-model.number="form.affiliate_effective_payment_min_amount" type="number" min="0" step="0.01" class="input" />
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.settings.features.affiliate.effectivePaymentMinHint') }}</p>
+                </div>
+              </div>
+
               <div>
                 <label class="input-label">
                   {{ t('admin.settings.features.affiliate.freezeHours') }}
@@ -6026,7 +5618,7 @@
                 </p>
               </div>
 
-              <div>
+              <div v-if="form.affiliate_growth_mode === 'legacy'">
                 <label class="input-label">
                   {{ t('admin.settings.features.affiliate.durationDays') }}
                 </label>
@@ -6360,6 +5952,34 @@
               >
                 {{ affiliateBatchModal.saving ? t('common.saving') : t('common.save') }}
               </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Account Management V2 UX rollout feature card -->
+        <div class="card">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              {{ t('admin.settings.features.newAccountManagement.title') }}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.settings.features.newAccountManagement.description') }}
+            </p>
+          </div>
+          <div class="space-y-5 p-6">
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.features.newAccountManagement.enabled') }}
+                </label>
+                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.features.newAccountManagement.enabledHint') }}
+                </p>
+              </div>
+              <Toggle
+                v-model="form.use_new_account_management_ux"
+                data-testid="use-new-account-management-ux-toggle"
+              />
             </div>
           </div>
         </div>
@@ -7443,12 +7063,6 @@ import {
   normalizeRegistrationEmailSuffixDomains,
   parseRegistrationEmailSuffixWhitelistInput,
 } from "@/utils/registrationEmailPolicy";
-import {
-  parseFingerprintSignalsToRows,
-  serializeFingerprintRowsToJSON,
-  defaultFingerprintSignalRows,
-  type FingerprintSignalRow,
-} from "./codexFingerprintSignals";
 
 const { t, locale } = useI18n();
 const appStore = useAppStore();
@@ -7634,23 +7248,31 @@ function defaultLoginAgreementDocuments(): LoginAgreementDocument[] {
   return [
     {
       id: "terms",
-      title: localText("服务条款", "Terms of Service"),
+      title: "服务条款",
       content_md: "",
+      title_en: "Terms of Service",
+      content_md_en: "",
     },
     {
       id: "usage-policy",
-      title: localText("使用政策", "Usage Policy"),
+      title: "使用政策",
       content_md: "",
+      title_en: "Usage Policy",
+      content_md_en: "",
     },
     {
       id: "supported-regions",
-      title: localText("支持的国家和地区", "Supported Countries and Regions"),
+      title: "支持的国家和地区",
       content_md: "",
+      title_en: "Supported Countries and Regions",
+      content_md_en: "",
     },
     {
       id: "service-specific-terms",
-      title: localText("服务特定条款", "Service-Specific Terms"),
+      title: "服务特定条款",
       content_md: "",
+      title_en: "Service-Specific Terms",
+      content_md_en: "",
     },
   ];
 }
@@ -7673,378 +7295,6 @@ function loginAgreementRoutePath(
   return `/legal/${id}`;
 }
 
-type ClaudeOAuthSystemPromptPreset =
-  | "billing"
-  | "system"
-  | "expansion"
-  | "custom";
-
-interface ClaudeOAuthSystemPromptBlock {
-  id: string;
-  enabled: boolean;
-  expanded: boolean;
-  type: "text";
-  preset: ClaudeOAuthSystemPromptPreset;
-  text: string;
-  cacheControlEnabled: boolean;
-  cacheControlTTL: string;
-}
-
-interface ClaudeOAuthSystemPromptRawBlock {
-  enabled?: boolean;
-  type?: string;
-  text?: string;
-  cache_control?: unknown;
-}
-
-const defaultClaudeCodeSystemPrompt =
-  "You are Claude Code, Anthropic's official CLI for Claude.";
-
-const defaultClaudeCodeExpansionPrompt = `You are an interactive agent that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
-
-IMPORTANT: Assist with authorized security testing, defensive security, CTF challenges, and educational contexts. Refuse requests for destructive techniques, DoS attacks, mass targeting, supply chain compromise, or detection evasion for malicious purposes. Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases.
-IMPORTANT: You must NEVER generate or guess URLs for the user unless you are confident that the URLs are for helping the user with programming. You may use URLs provided by the user in their messages or local files.
-
-# Tone and style
- - Only use emojis if the user explicitly requests it. Avoid using emojis in all communication unless asked.
- - Your responses should be short and concise.
- - When referencing specific functions or pieces of code include the pattern file_path:line_number to allow the user to easily navigate to the source code location.
- - When referencing GitHub issues or pull requests, use the owner/repo#123 format (e.g. anthropics/claude-code#100) so they render as clickable links.
- - Do not use a colon before tool calls. Your tool calls may not be shown directly in the output, so text like "Let me read the file:" followed by a read tool call should just be "Let me read the file." with a period.`;
-
-let claudeOAuthSystemPromptBlockID = 0;
-
-function nextClaudeOAuthSystemPromptBlockID(): string {
-  claudeOAuthSystemPromptBlockID += 1;
-  return `claude-oauth-system-prompt-block-${claudeOAuthSystemPromptBlockID}`;
-}
-
-function normalizeClaudeOAuthSystemPromptCacheTTL(value: unknown): string {
-  return typeof value === "string" && value.trim() ? value.trim() : "5m";
-}
-
-function detectClaudeOAuthSystemPromptPreset(
-  text: string,
-): ClaudeOAuthSystemPromptPreset {
-  const trimmed = text.trim();
-  if (trimmed === "{billing_header}") {
-    return "billing";
-  }
-  if (
-    trimmed === "{claude_code_system_prompt}" ||
-    trimmed === defaultClaudeCodeSystemPrompt
-  ) {
-    return "system";
-  }
-  if (
-    trimmed === "{claude_code_expansion_prompt}" ||
-    trimmed === defaultClaudeCodeExpansionPrompt
-  ) {
-    return "expansion";
-  }
-  return "custom";
-}
-
-function normalizeClaudeOAuthSystemPromptBlockText(
-  text: string,
-  expansionPrompt = "",
-): string {
-  const trimmed = text.trim();
-  if (trimmed === "{claude_code_system_prompt}") {
-    return defaultClaudeCodeSystemPrompt;
-  }
-  if (trimmed === "{claude_code_expansion_prompt}") {
-    return expansionPrompt.trim() || defaultClaudeCodeExpansionPrompt;
-  }
-  return text;
-}
-
-function createClaudeOAuthSystemPromptBlock(
-  overrides: Partial<ClaudeOAuthSystemPromptBlock> = {},
-): ClaudeOAuthSystemPromptBlock {
-  const text = overrides.text ?? "";
-  return {
-    id: nextClaudeOAuthSystemPromptBlockID(),
-    enabled: overrides.enabled ?? true,
-    expanded: overrides.expanded ?? true,
-    type: "text",
-    preset: overrides.preset ?? detectClaudeOAuthSystemPromptPreset(text),
-    text,
-    cacheControlEnabled: overrides.cacheControlEnabled ?? false,
-    cacheControlTTL: overrides.cacheControlTTL ?? "5m",
-  };
-}
-
-function createDefaultClaudeOAuthSystemPromptBlocks(
-  expansionPrompt = "",
-): ClaudeOAuthSystemPromptBlock[] {
-  const normalizedExpansionPrompt = expansionPrompt.trim();
-  const expansionText =
-    normalizedExpansionPrompt || defaultClaudeCodeExpansionPrompt;
-
-  return [
-    createClaudeOAuthSystemPromptBlock({
-      preset: "billing",
-      text: "{billing_header}",
-    }),
-    createClaudeOAuthSystemPromptBlock({
-      preset: "system",
-      text: defaultClaudeCodeSystemPrompt,
-    }),
-    createClaudeOAuthSystemPromptBlock({
-      preset:
-        expansionText === defaultClaudeCodeExpansionPrompt
-          ? "expansion"
-          : "custom",
-      text: expansionText,
-      cacheControlEnabled: true,
-      cacheControlTTL: "5m",
-    }),
-  ];
-}
-
-function parseClaudeOAuthSystemPromptCacheControl(cacheControl: unknown): {
-  enabled: boolean;
-  ttl: string;
-} {
-  if (cacheControl === true) {
-    return { enabled: true, ttl: "5m" };
-  }
-  if (
-    cacheControl &&
-    typeof cacheControl === "object" &&
-    !Array.isArray(cacheControl)
-  ) {
-    return {
-      enabled: true,
-      ttl: normalizeClaudeOAuthSystemPromptCacheTTL(
-        (cacheControl as Record<string, unknown>).ttl,
-      ),
-    };
-  }
-  return { enabled: false, ttl: "5m" };
-}
-
-function parseClaudeOAuthSystemPromptBlocks(
-  raw: string,
-  expansionPrompt = "",
-): ClaudeOAuthSystemPromptBlock[] {
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return createDefaultClaudeOAuthSystemPromptBlocks(expansionPrompt);
-  }
-
-  try {
-    const parsed = JSON.parse(trimmed) as
-      | ClaudeOAuthSystemPromptRawBlock[]
-      | { blocks?: ClaudeOAuthSystemPromptRawBlock[] };
-    const rawBlocks = Array.isArray(parsed)
-      ? parsed
-      : Array.isArray(parsed.blocks)
-        ? parsed.blocks
-        : [];
-
-    if (rawBlocks.length === 0) {
-      return createDefaultClaudeOAuthSystemPromptBlocks(expansionPrompt);
-    }
-
-    return rawBlocks.map((block) => {
-      const cacheControl = parseClaudeOAuthSystemPromptCacheControl(
-        block.cache_control,
-      );
-      const text = normalizeClaudeOAuthSystemPromptBlockText(
-        typeof block.text === "string" ? block.text : "",
-        expansionPrompt,
-      );
-      return createClaudeOAuthSystemPromptBlock({
-        enabled: block.enabled !== false,
-        type: "text",
-        text,
-        preset: detectClaudeOAuthSystemPromptPreset(text),
-        cacheControlEnabled: cacheControl.enabled,
-        cacheControlTTL: cacheControl.ttl,
-      });
-    });
-  } catch (_error) {
-    return createDefaultClaudeOAuthSystemPromptBlocks(expansionPrompt);
-  }
-}
-
-function serializeClaudeOAuthSystemPromptBlocksToJSON(
-  blocks: ClaudeOAuthSystemPromptBlock[],
-): string {
-  const source =
-    blocks.length > 0
-      ? blocks
-      : [
-          createClaudeOAuthSystemPromptBlock({
-            enabled: false,
-            preset: "custom",
-            text: "",
-          }),
-        ];
-
-  const rawBlocks = source.map((block) => {
-    const raw: ClaudeOAuthSystemPromptRawBlock = {
-      enabled: block.enabled,
-      type: block.type || "text",
-      text: block.text,
-    };
-    if (block.cacheControlEnabled) {
-      raw.cache_control = {
-        type: "ephemeral",
-        ttl: normalizeClaudeOAuthSystemPromptCacheTTL(block.cacheControlTTL),
-      };
-    }
-    return raw;
-  });
-
-  return JSON.stringify(rawBlocks, null, 2);
-}
-
-const defaultClaudeOAuthSystemPromptBlocks =
-  serializeClaudeOAuthSystemPromptBlocksToJSON(
-    createDefaultClaudeOAuthSystemPromptBlocks(),
-  );
-
-const claudeOAuthSystemPromptBlocks = ref<ClaudeOAuthSystemPromptBlock[]>(
-  createDefaultClaudeOAuthSystemPromptBlocks(),
-);
-
-const claudeOAuthSystemPromptPresetOptions = computed(() => [
-  {
-    value: "billing",
-    label: t("admin.settings.gatewayForwarding.systemBlockPresetBilling"),
-  },
-  {
-    value: "system",
-    label: t("admin.settings.gatewayForwarding.systemBlockPresetIdentity"),
-  },
-  {
-    value: "expansion",
-    label: t("admin.settings.gatewayForwarding.systemBlockPresetExpansion"),
-  },
-  {
-    value: "custom",
-    label: t("admin.settings.gatewayForwarding.systemBlockPresetCustom"),
-  },
-]);
-
-const claudeOAuthSystemPromptBlockTypeOptions = computed(() => [
-  {
-    value: "text",
-    label: t("admin.settings.gatewayForwarding.systemBlockTypeText"),
-  },
-]);
-
-const claudeOAuthSystemPromptCacheTTLOptions = computed(() => [
-  { value: "5m", label: t("admin.settings.gatewayForwarding.cacheTTL5m") },
-  { value: "1h", label: t("admin.settings.gatewayForwarding.cacheTTL1h") },
-]);
-
-function getClaudeOAuthPresetLabel(
-  preset: ClaudeOAuthSystemPromptPreset,
-): string {
-  return (
-    claudeOAuthSystemPromptPresetOptions.value.find(
-      (option) => option.value === preset,
-    )?.label || t("admin.settings.gatewayForwarding.systemBlockPresetCustom")
-  );
-}
-
-function syncClaudeOAuthSystemPromptBlocksFormField(): void {
-  form.claude_oauth_system_prompt_blocks =
-    serializeClaudeOAuthSystemPromptBlocksToJSON(
-      claudeOAuthSystemPromptBlocks.value,
-    );
-}
-
-function addClaudeOAuthSystemPromptBlock(): void {
-  claudeOAuthSystemPromptBlocks.value.push(
-    createClaudeOAuthSystemPromptBlock({
-      expanded: true,
-      preset: "custom",
-      text: "",
-    }),
-  );
-  syncClaudeOAuthSystemPromptBlocksFormField();
-}
-
-function toggleClaudeOAuthSystemPromptBlock(index: number): void {
-  const block = claudeOAuthSystemPromptBlocks.value[index];
-  if (!block) {
-    return;
-  }
-  block.expanded = !block.expanded;
-}
-
-function removeClaudeOAuthSystemPromptBlock(index: number): void {
-  claudeOAuthSystemPromptBlocks.value.splice(index, 1);
-  syncClaudeOAuthSystemPromptBlocksFormField();
-}
-
-function moveClaudeOAuthSystemPromptBlock(
-  index: number,
-  direction: -1 | 1,
-): void {
-  const targetIndex = index + direction;
-  if (
-    targetIndex < 0 ||
-    targetIndex >= claudeOAuthSystemPromptBlocks.value.length
-  ) {
-    return;
-  }
-  const blocks = claudeOAuthSystemPromptBlocks.value;
-  const current = blocks[index];
-  blocks[index] = blocks[targetIndex];
-  blocks[targetIndex] = current;
-  syncClaudeOAuthSystemPromptBlocksFormField();
-}
-
-function applyClaudeOAuthSystemPromptPreset(
-  index: number,
-  value: string | number | boolean | null,
-): void {
-  const block = claudeOAuthSystemPromptBlocks.value[index];
-  if (!block) {
-    return;
-  }
-  const preset = String(value || "custom") as ClaudeOAuthSystemPromptPreset;
-  block.preset = preset;
-  block.type = "text";
-  if (preset === "billing") {
-    block.text = "{billing_header}";
-    block.cacheControlEnabled = false;
-    block.cacheControlTTL = "5m";
-  } else if (preset === "system") {
-    block.text = defaultClaudeCodeSystemPrompt;
-    block.cacheControlEnabled = false;
-    block.cacheControlTTL = "5m";
-  } else if (preset === "expansion") {
-    block.text =
-      form.claude_oauth_system_prompt.trim() ||
-      defaultClaudeCodeExpansionPrompt;
-    block.cacheControlEnabled = true;
-    block.cacheControlTTL = "5m";
-  }
-  syncClaudeOAuthSystemPromptBlocksFormField();
-}
-
-function markClaudeOAuthSystemPromptBlockCustom(
-  block: ClaudeOAuthSystemPromptBlock,
-): void {
-  block.preset = detectClaudeOAuthSystemPromptPreset(block.text);
-  syncClaudeOAuthSystemPromptBlocksFormField();
-}
-
-function resetClaudeOAuthSystemPromptBlocks(): void {
-  claudeOAuthSystemPromptBlocks.value = createDefaultClaudeOAuthSystemPromptBlocks(
-    form.claude_oauth_system_prompt,
-  );
-  syncClaudeOAuthSystemPromptBlocksFormField();
-}
-
-
 interface DefaultSubscriptionGroupOption {
   value: number;
   label: string;
@@ -8061,6 +7311,9 @@ type SettingsForm = Omit<
   | "wechat_connect_mp_enabled"
   | "wechat_connect_mobile_enabled"
 > & {
+  auth_agreement_enabled: boolean;
+  auth_agreement_version: string;
+  auth_agreement_prompt_on_first_visit: boolean;
   smtp_password: string;
   turnstile_secret_key: string;
   linuxdo_connect_client_secret: string;
@@ -8077,19 +7330,7 @@ type SettingsForm = Omit<
   google_oauth_client_secret: string;
   force_email_on_third_party_signup: boolean;
   openai_advanced_scheduler_enabled: boolean;
-  openai_advanced_scheduler_sticky_weighted_enabled: boolean;
-  openai_advanced_scheduler_subscription_priority_enabled: boolean;
-  openai_advanced_scheduler_lb_top_k: string;
-  openai_advanced_scheduler_weight_priority: string;
-  openai_advanced_scheduler_weight_load: string;
-  openai_advanced_scheduler_weight_queue: string;
-  openai_advanced_scheduler_weight_error_rate: string;
-  openai_advanced_scheduler_weight_ttft: string;
-  openai_advanced_scheduler_weight_reset: string;
-  openai_advanced_scheduler_weight_quota_headroom: string;
-  openai_advanced_scheduler_weight_previous_response: string;
-  openai_advanced_scheduler_weight_session_sticky: string;
-  // 系统全局平台限额 map；form 内始终归一化为全 4 平台对象（模板非空绑定依赖此不变量）
+  // 系统全局平台限额 map；form 内始终归一化为全部允许平台对象（模板非空绑定依赖此不变量）
   default_platform_quotas: DefaultPlatformQuotasMap;
 };
 
@@ -8099,6 +7340,9 @@ const form = reactive<SettingsForm>({
   registration_email_suffix_whitelist: [],
   promo_code_enabled: true,
   invitation_code_enabled: false,
+  auth_agreement_enabled: false,
+  auth_agreement_version: "",
+  auth_agreement_prompt_on_first_visit: false,
   password_reset_enabled: false,
   totp_enabled: false,
   totp_encryption_key_configured: false,
@@ -8112,6 +7356,16 @@ const form = reactive<SettingsForm>({
   affiliate_rebate_freeze_hours: 0,
   affiliate_rebate_duration_days: 0,
   affiliate_rebate_per_invitee_cap: 0,
+  affiliate_growth_mode: "legacy",
+  affiliate_tier_window_days: 90,
+  affiliate_tier_rules: [
+    { min_effective_invitees: 0, rate_percent: 8 },
+    { min_effective_invitees: 3, rate_percent: 10 },
+    { min_effective_invitees: 10, rate_percent: 12 },
+    { min_effective_invitees: 25, rate_percent: 15 },
+  ],
+  affiliate_invitee_first_payment_bonus_rate: 5,
+  affiliate_effective_payment_min_amount: 0,
   default_concurrency: 1,
   default_subscriptions: [],
   force_email_on_third_party_signup: false,
@@ -8281,37 +7535,16 @@ const form = reactive<SettingsForm>({
   // 分组隔离
   allow_ungrouped_key_scheduling: false,
   openai_advanced_scheduler_enabled: false,
-  openai_advanced_scheduler_sticky_weighted_enabled: false,
-  openai_advanced_scheduler_subscription_priority_enabled: false,
-  openai_advanced_scheduler_lb_top_k: "",
-  openai_advanced_scheduler_weight_priority: "",
-  openai_advanced_scheduler_weight_load: "",
-  openai_advanced_scheduler_weight_queue: "",
-  openai_advanced_scheduler_weight_error_rate: "",
-  openai_advanced_scheduler_weight_ttft: "",
-  openai_advanced_scheduler_weight_reset: "",
-  openai_advanced_scheduler_weight_quota_headroom: "",
-  openai_advanced_scheduler_weight_previous_response: "",
-  openai_advanced_scheduler_weight_session_sticky: "",
   // Gateway forwarding behavior
   enable_fingerprint_unification: true,
   enable_metadata_passthrough: false,
   enable_cch_signing: false,
-  enable_claude_oauth_system_prompt_injection: true,
-  claude_oauth_system_prompt: "",
-  claude_oauth_system_prompt_blocks: defaultClaudeOAuthSystemPromptBlocks,
   enable_anthropic_cache_ttl_1h_injection: false,
-  rewrite_message_cache_control: false,
   enable_client_dateline_normalization: true,
+  rewrite_message_cache_control: false,
   antigravity_user_agent_version: "",
   openai_codex_user_agent: "",
-  // codex_cli_only 加固
-  min_codex_version: "",
-  max_codex_version: "",
-  codex_cli_only_blacklist: "",
-  codex_cli_only_whitelist: "",
-  codex_cli_only_allow_app_server_clients: false,
-  codex_cli_only_engine_fingerprint_signals: "",
+  openai_allow_claude_code_codex_plugin: false,
   // 余额、订阅到期与账号限额通知
   balance_low_notify_enabled: false,
   balance_low_notify_threshold: 0,
@@ -8326,105 +7559,10 @@ const form = reactive<SettingsForm>({
   available_channels_enabled: false,
   // Affiliate (邀请返利) feature switch
   affiliate_enabled: false,
+  // Account Management V2 UX rollout flag (opt-in)
+  use_new_account_management_ux: false,
   // Allow user view error requests
   allow_user_view_error_requests: false,
-});
-
-type OpenAIAdvancedSchedulerOverrideKey =
-  | "openai_advanced_scheduler_lb_top_k"
-  | "openai_advanced_scheduler_weight_priority"
-  | "openai_advanced_scheduler_weight_load"
-  | "openai_advanced_scheduler_weight_queue"
-  | "openai_advanced_scheduler_weight_error_rate"
-  | "openai_advanced_scheduler_weight_ttft"
-  | "openai_advanced_scheduler_weight_reset"
-  | "openai_advanced_scheduler_weight_quota_headroom"
-  | "openai_advanced_scheduler_weight_previous_response"
-  | "openai_advanced_scheduler_weight_session_sticky";
-
-type OpenAIAdvancedSchedulerEffectiveKey =
-  | "openai_advanced_scheduler_effective_lb_top_k"
-  | "openai_advanced_scheduler_effective_weight_priority"
-  | "openai_advanced_scheduler_effective_weight_load"
-  | "openai_advanced_scheduler_effective_weight_queue"
-  | "openai_advanced_scheduler_effective_weight_error_rate"
-  | "openai_advanced_scheduler_effective_weight_ttft"
-  | "openai_advanced_scheduler_effective_weight_reset"
-  | "openai_advanced_scheduler_effective_weight_quota_headroom"
-  | "openai_advanced_scheduler_effective_weight_previous_response"
-  | "openai_advanced_scheduler_effective_weight_session_sticky";
-
-const openAIAdvancedSchedulerWeightFields = computed<
-  Array<{
-    key: OpenAIAdvancedSchedulerOverrideKey;
-    label: string;
-    placeholder: string;
-  }>
->(() => {
-  const placeholder = (
-    effectiveKey: OpenAIAdvancedSchedulerEffectiveKey,
-    fallbackValue: string,
-  ) => {
-    const effectiveValue = String(
-      (form as Record<string, unknown>)[effectiveKey] ?? "",
-    ).trim();
-    return t("admin.settings.openaiExperimentalScheduler.defaultPlaceholder", {
-      value: effectiveValue || fallbackValue,
-    });
-  };
-
-  return [
-    {
-      key: "openai_advanced_scheduler_lb_top_k",
-      label: t("admin.settings.openaiExperimentalScheduler.topKLabel"),
-      placeholder: placeholder("openai_advanced_scheduler_effective_lb_top_k", "7"),
-    },
-    {
-      key: "openai_advanced_scheduler_weight_priority",
-      label: t("admin.settings.openaiExperimentalScheduler.priorityWeight"),
-      placeholder: placeholder("openai_advanced_scheduler_effective_weight_priority", "1"),
-    },
-    {
-      key: "openai_advanced_scheduler_weight_load",
-      label: t("admin.settings.openaiExperimentalScheduler.loadWeight"),
-      placeholder: placeholder("openai_advanced_scheduler_effective_weight_load", "1"),
-    },
-    {
-      key: "openai_advanced_scheduler_weight_queue",
-      label: t("admin.settings.openaiExperimentalScheduler.queueWeight"),
-      placeholder: placeholder("openai_advanced_scheduler_effective_weight_queue", "0.7"),
-    },
-    {
-      key: "openai_advanced_scheduler_weight_error_rate",
-      label: t("admin.settings.openaiExperimentalScheduler.errorRateWeight"),
-      placeholder: placeholder("openai_advanced_scheduler_effective_weight_error_rate", "0.8"),
-    },
-    {
-      key: "openai_advanced_scheduler_weight_ttft",
-      label: t("admin.settings.openaiExperimentalScheduler.ttftWeight"),
-      placeholder: placeholder("openai_advanced_scheduler_effective_weight_ttft", "0.5"),
-    },
-    {
-      key: "openai_advanced_scheduler_weight_reset",
-      label: t("admin.settings.openaiExperimentalScheduler.resetWeight"),
-      placeholder: placeholder("openai_advanced_scheduler_effective_weight_reset", "0"),
-    },
-    {
-      key: "openai_advanced_scheduler_weight_quota_headroom",
-      label: t("admin.settings.openaiExperimentalScheduler.quotaHeadroomWeight"),
-      placeholder: placeholder("openai_advanced_scheduler_effective_weight_quota_headroom", "0"),
-    },
-    {
-      key: "openai_advanced_scheduler_weight_previous_response",
-      label: t("admin.settings.openaiExperimentalScheduler.previousResponseWeight"),
-      placeholder: placeholder("openai_advanced_scheduler_effective_weight_previous_response", "5"),
-    },
-    {
-      key: "openai_advanced_scheduler_weight_session_sticky",
-      label: t("admin.settings.openaiExperimentalScheduler.sessionStickyWeight"),
-      placeholder: placeholder("openai_advanced_scheduler_effective_weight_session_sticky", "3"),
-    },
-  ];
 });
 
 const authSourceDefaults = reactive<AuthSourceDefaultsState>(
@@ -8937,6 +8075,8 @@ function addLoginAgreementDocument() {
     id: `custom-${Date.now().toString(36)}`,
     title: "",
     content_md: "",
+    title_en: "",
+    content_md_en: "",
   });
 }
 
@@ -8952,8 +8092,13 @@ function normalizeLoginAgreementDocumentsForSave(): LoginAgreementDocument[] {
         `doc-${index + 1}`,
       title: doc.title.trim(),
       content_md: doc.content_md.trim(),
+      title_en: doc.title_en?.trim() || "",
+      content_md_en: doc.content_md_en?.trim() || "",
     }))
-    .filter((doc) => doc.title || doc.content_md);
+    .filter(
+      (doc) =>
+        doc.title || doc.content_md || doc.title_en || doc.content_md_en,
+    );
 }
 
 function findDuplicateLoginAgreementDocumentId(
@@ -9000,82 +8145,6 @@ function parseTablePageSizeOptionsInput(raw: string): number[] | null {
   return deduped;
 }
 
-// ── codex_cli_only 黑/白名单结构化编辑（行 ↔ JSON）──
-interface CodexClientRow {
-  originator: string;
-  uaContains: string; // 逗号分隔，序列化时拆成 ua_contains 数组
-  skipEngineFingerprint?: boolean; // 仅白名单：命中即跳过引擎指纹门
-}
-const codexBlacklistRows = ref<CodexClientRow[]>([]);
-const codexWhitelistRows = ref<CodexClientRow[]>([]);
-const codexFingerprintRows = ref<FingerprintSignalRow[]>([]);
-const codexFingerprintNoRequired = computed(
-  () => !codexFingerprintRows.value.some((r) => r.required),
-);
-function addCodexFingerprintRow(): void {
-  codexFingerprintRows.value.push({ type: "header_exact", match: "", required: false });
-}
-function removeCodexFingerprintRow(i: number): void {
-  codexFingerprintRows.value.splice(i, 1);
-}
-
-function parseCodexEntriesToRows(raw: string): CodexClientRow[] {
-  if (!raw || !raw.trim()) return [];
-  try {
-    const arr = JSON.parse(raw);
-    if (!Array.isArray(arr)) return [];
-    return arr.map((e) => ({
-      originator: typeof e?.originator === "string" ? e.originator : "",
-      uaContains: Array.isArray(e?.ua_contains)
-        ? e.ua_contains
-            .filter((x: unknown) => typeof x === "string")
-            .join(", ")
-        : "",
-      skipEngineFingerprint: e?.skip_engine_fingerprint === true,
-    }));
-  } catch {
-    return [];
-  }
-}
-
-function serializeCodexRowsToJSON(rows: CodexClientRow[]): string {
-  const entries = rows
-    .map((r) => {
-      const entry: {
-        originator: string;
-        ua_contains: string[];
-        skip_engine_fingerprint?: boolean;
-      } = {
-        originator: r.originator.trim(),
-        ua_contains: r.uaContains
-          .split(",")
-          .map((s) => s.trim())
-          .filter((s) => s.length > 0),
-      };
-      if (r.skipEngineFingerprint) entry.skip_engine_fingerprint = true;
-      return entry;
-    })
-    .filter((e) => e.originator !== "" || e.ua_contains.length > 0);
-  return entries.length > 0 ? JSON.stringify(entries) : "";
-}
-
-function addCodexBlacklistRow(): void {
-  codexBlacklistRows.value.push({ originator: "", uaContains: "" });
-}
-function removeCodexBlacklistRow(i: number): void {
-  codexBlacklistRows.value.splice(i, 1);
-}
-function addCodexWhitelistRow(): void {
-  codexWhitelistRows.value.push({
-    originator: "",
-    uaContains: "",
-    skipEngineFingerprint: false,
-  });
-}
-function removeCodexWhitelistRow(i: number): void {
-  codexWhitelistRows.value.splice(i, 1);
-}
-
 async function loadSettings() {
   loading.value = true;
   loadFailed.value = false;
@@ -9089,24 +8158,6 @@ async function loadSettings() {
         (form as Record<string, unknown>)[key] = value;
       }
     }
-    if (!form.claude_oauth_system_prompt_blocks?.trim()) {
-      form.claude_oauth_system_prompt_blocks =
-        defaultClaudeOAuthSystemPromptBlocks;
-    }
-    claudeOAuthSystemPromptBlocks.value = parseClaudeOAuthSystemPromptBlocks(
-      form.claude_oauth_system_prompt_blocks,
-      form.claude_oauth_system_prompt,
-    );
-    syncClaudeOAuthSystemPromptBlocksFormField();
-    codexBlacklistRows.value = parseCodexEntriesToRows(
-      form.codex_cli_only_blacklist,
-    );
-    codexWhitelistRows.value = parseCodexEntriesToRows(
-      form.codex_cli_only_whitelist,
-    );
-    codexFingerprintRows.value = form.codex_cli_only_engine_fingerprint_signals
-      ? parseFingerprintSignalsToRows(form.codex_cli_only_engine_fingerprint_signals)
-      : defaultFingerprintSignalRows();
     form.login_agreement_mode =
       settings.login_agreement_mode === "checkbox" ? "checkbox" : "modal";
     form.login_agreement_updated_at =
@@ -9118,6 +8169,8 @@ async function loadSettings() {
             id: doc.id || "",
             title: doc.title || "",
             content_md: doc.content_md || "",
+            title_en: doc.title_en || "",
+            content_md_en: doc.content_md_en || "",
           }))
         : defaultLoginAgreementDocuments();
     Object.assign(authSourceDefaults, buildAuthSourceDefaultsState(settings));
@@ -9130,6 +8183,10 @@ async function loadSettings() {
       normalizeRegistrationEmailSuffixDomains(
         settings.registration_email_suffix_whitelist,
       );
+    form.auth_agreement_enabled = settings.auth_agreement_enabled ?? false;
+    form.auth_agreement_version = settings.auth_agreement_version ?? "";
+    form.auth_agreement_prompt_on_first_visit =
+      settings.auth_agreement_prompt_on_first_visit ?? false;
     tablePageSizeOptionsInput.value = formatTablePageSizeOptions(
       Array.isArray(settings.table_page_size_options)
         ? settings.table_page_size_options
@@ -9298,6 +8355,15 @@ function findDuplicateDefaultSubscription(
   });
 }
 
+function handleAffiliateGrowthModeChange() {
+  if (
+    form.affiliate_growth_mode === "tiered_v1" &&
+    Number(form.affiliate_rebate_freeze_hours) === 0
+  ) {
+    form.affiliate_rebate_freeze_hours = 24;
+  }
+}
+
 async function saveSettings() {
   saving.value = true;
   try {
@@ -9437,16 +8503,14 @@ async function saveSettings() {
       form.wechat_connect_mobile_enabled,
       form.wechat_connect_mode,
     );
-    const claudeOAuthSystemPromptBlocksJSON =
-      serializeClaudeOAuthSystemPromptBlocksToJSON(
-        claudeOAuthSystemPromptBlocks.value,
-      );
-    form.claude_oauth_system_prompt_blocks =
-      claudeOAuthSystemPromptBlocksJSON;
 
     const payload: UpdateSettingsRequest = {
       registration_enabled: form.registration_enabled,
       email_verify_enabled: form.email_verify_enabled,
+      auth_agreement_enabled: form.auth_agreement_enabled,
+      auth_agreement_version: form.auth_agreement_version,
+      auth_agreement_prompt_on_first_visit:
+        form.auth_agreement_prompt_on_first_visit,
       registration_email_suffix_whitelist:
         registrationEmailSuffixWhitelistTags.value.map((suffix) =>
           suffix.startsWith("*.") ? suffix : `@${suffix}`,
@@ -9467,6 +8531,14 @@ async function saveSettings() {
       affiliate_rebate_freeze_hours: Math.max(0, Math.min(720, Number(form.affiliate_rebate_freeze_hours) || 0)),
       affiliate_rebate_duration_days: Math.max(0, Math.min(3650, Math.floor(Number(form.affiliate_rebate_duration_days) || 0))),
       affiliate_rebate_per_invitee_cap: Math.max(0, Number(form.affiliate_rebate_per_invitee_cap) || 0),
+      affiliate_growth_mode: form.affiliate_growth_mode,
+      affiliate_tier_window_days: Math.max(1, Math.min(3650, Math.floor(Number(form.affiliate_tier_window_days) || 90))),
+      affiliate_tier_rules: form.affiliate_tier_rules.map((rule) => ({
+        min_effective_invitees: Math.max(0, Math.floor(Number(rule.min_effective_invitees) || 0)),
+        rate_percent: Math.min(100, Math.max(0, Number(rule.rate_percent) || 0)),
+      })),
+      affiliate_invitee_first_payment_bonus_rate: Math.min(100, Math.max(0, Number(form.affiliate_invitee_first_payment_bonus_rate) || 0)),
+      affiliate_effective_payment_min_amount: Math.max(0, Number(form.affiliate_effective_payment_min_amount) || 0),
       default_concurrency: form.default_concurrency,
       default_subscriptions: normalizedDefaultSubscriptions,
       force_email_on_third_party_signup: form.force_email_on_third_party_signup,
@@ -9596,34 +8668,16 @@ async function saveSettings() {
       enable_fingerprint_unification: form.enable_fingerprint_unification,
       enable_metadata_passthrough: form.enable_metadata_passthrough,
       enable_cch_signing: form.enable_cch_signing,
-      enable_claude_oauth_system_prompt_injection:
-        form.enable_claude_oauth_system_prompt_injection,
-      claude_oauth_system_prompt: form.claude_oauth_system_prompt?.trim()
-        ? form.claude_oauth_system_prompt
-        : "",
-      claude_oauth_system_prompt_blocks: claudeOAuthSystemPromptBlocksJSON,
       enable_anthropic_cache_ttl_1h_injection:
         form.enable_anthropic_cache_ttl_1h_injection,
-      rewrite_message_cache_control: form.rewrite_message_cache_control,
       enable_client_dateline_normalization:
         form.enable_client_dateline_normalization,
+      rewrite_message_cache_control: form.rewrite_message_cache_control,
       antigravity_user_agent_version:
         form.antigravity_user_agent_version?.trim() || "",
       openai_codex_user_agent:
         form.openai_codex_user_agent?.trim() || "",
-      min_codex_version: form.min_codex_version?.trim() || "",
-      max_codex_version: form.max_codex_version?.trim() || "",
-      codex_cli_only_allow_app_server_clients:
-        form.codex_cli_only_allow_app_server_clients,
-      codex_cli_only_engine_fingerprint_signals: serializeFingerprintRowsToJSON(
-        codexFingerprintRows.value,
-      ),
-      codex_cli_only_blacklist: serializeCodexRowsToJSON(
-        codexBlacklistRows.value,
-      ),
-      codex_cli_only_whitelist: serializeCodexRowsToJSON(
-        codexWhitelistRows.value,
-      ),
+      openai_allow_claude_code_codex_plugin: form.openai_allow_claude_code_codex_plugin,
       // Payment configuration
       payment_enabled: form.payment_enabled,
       risk_control_enabled: form.risk_control_enabled,
@@ -9658,30 +8712,6 @@ async function saveSettings() {
         form.payment_cancel_rate_limit_window_mode,
       payment_alipay_force_qrcode: form.payment_alipay_force_qrcode,
       openai_advanced_scheduler_enabled: form.openai_advanced_scheduler_enabled,
-      openai_advanced_scheduler_sticky_weighted_enabled:
-        form.openai_advanced_scheduler_sticky_weighted_enabled,
-      openai_advanced_scheduler_subscription_priority_enabled:
-        form.openai_advanced_scheduler_subscription_priority_enabled,
-      openai_advanced_scheduler_lb_top_k:
-        form.openai_advanced_scheduler_lb_top_k.trim(),
-      openai_advanced_scheduler_weight_priority:
-        form.openai_advanced_scheduler_weight_priority.trim(),
-      openai_advanced_scheduler_weight_load:
-        form.openai_advanced_scheduler_weight_load.trim(),
-      openai_advanced_scheduler_weight_queue:
-        form.openai_advanced_scheduler_weight_queue.trim(),
-      openai_advanced_scheduler_weight_error_rate:
-        form.openai_advanced_scheduler_weight_error_rate.trim(),
-      openai_advanced_scheduler_weight_ttft:
-        form.openai_advanced_scheduler_weight_ttft.trim(),
-      openai_advanced_scheduler_weight_reset:
-        form.openai_advanced_scheduler_weight_reset.trim(),
-      openai_advanced_scheduler_weight_quota_headroom:
-        form.openai_advanced_scheduler_weight_quota_headroom.trim(),
-      openai_advanced_scheduler_weight_previous_response:
-        form.openai_advanced_scheduler_weight_previous_response.trim(),
-      openai_advanced_scheduler_weight_session_sticky:
-        form.openai_advanced_scheduler_weight_session_sticky.trim(),
       // 余额、订阅到期与账号限额通知
       balance_low_notify_enabled: form.balance_low_notify_enabled,
       balance_low_notify_threshold:
@@ -9702,6 +8732,8 @@ async function saveSettings() {
       available_channels_enabled: form.available_channels_enabled,
       // Affiliate (邀请返利) feature switch
       affiliate_enabled: form.affiliate_enabled,
+      // Account Management V2 UX rollout flag (opt-in)
+      use_new_account_management_ux: form.use_new_account_management_ux,
       allow_user_view_error_requests: form.allow_user_view_error_requests,
     };
 
@@ -10233,9 +9265,9 @@ function addOpenAIFastPolicyUserID(rule: OpenAIFastPolicyRule) {
 
 function removeOpenAIFastPolicyUserID(
   rule: OpenAIFastPolicyRule,
-  idx: number,
+  index: number,
 ) {
-  rule.user_ids?.splice(idx, 1);
+  rule.user_ids?.splice(index, 1);
 }
 
 function addOpenAIFastPolicyModelPattern(rule: OpenAIFastPolicyRule) {
@@ -10482,13 +9514,10 @@ async function loadProviders() {
   providersLoading.value = true;
   try {
     const res = await adminAPI.payment.getProviders();
-    // Normalize supported_types: backend returns null when the list is empty
-    // (Go nil slice → JSON null). Without this, ProviderCard's isSelected()
-    // throws TypeError on null.includes(), causing the card to vanish.
-    providers.value = (res.data || []).map((p) => ({
-      ...p,
-      supported_types: Array.isArray(p.supported_types)
-        ? p.supported_types
+    providers.value = (res.data || []).map((provider) => ({
+      ...provider,
+      supported_types: Array.isArray(provider.supported_types)
+        ? provider.supported_types
         : [],
     }));
   } catch (err: unknown) {
@@ -10584,12 +9613,9 @@ async function handleToggleField(
 }
 
 async function handleToggleType(provider: ProviderInstance, type: string) {
-  const currentTypes = Array.isArray(provider.supported_types)
-    ? provider.supported_types
-    : [];
-  const updated = currentTypes.includes(type)
-    ? currentTypes.filter((t) => t !== type)
-    : [...currentTypes, type];
+  const updated = provider.supported_types.includes(type)
+    ? provider.supported_types.filter((t) => t !== type)
+    : [...provider.supported_types, type];
   const conflict = findProviderEnablementConflict({
     id: provider.id,
     provider_key: provider.provider_key,

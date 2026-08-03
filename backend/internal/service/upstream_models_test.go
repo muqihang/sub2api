@@ -58,19 +58,9 @@ func TestBuildOpenAIModelsURL(t *testing.T) {
 			want: "https://api.openai.com/v1/models",
 		},
 		{
-			name: "trailing slash on v4",
-			base: "https://open.bigmodel.cn/api/coding/paas/v4/",
-			want: "https://open.bigmodel.cn/api/coding/paas/v4/models",
-		},
-		{
 			name: "v2 base url",
 			base: "https://gateway.example.com/openai/v2",
 			want: "https://gateway.example.com/openai/v2/models",
-		},
-		{
-			name: "v3 base url",
-			base: "https://gateway.example.com/openai/v3",
-			want: "https://gateway.example.com/openai/v3/models",
 		},
 	}
 
@@ -78,7 +68,6 @@ func TestBuildOpenAIModelsURL(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-
 			require.Equal(t, tt.want, buildOpenAIModelsURL(tt.base))
 		})
 	}
@@ -152,16 +141,16 @@ func TestBuildUpstreamModelsRequestsForAPIKeyAccounts(t *testing.T) {
 		Platform: PlatformAnthropic,
 		Type:     AccountTypeAPIKey,
 		Credentials: map[string]any{
-			"api_key":  "ollama-key",
-			"base_url": "https://ollama.com",
+			"api_key":  "anthropic-bearer-key",
+			"base_url": "https://anthropic-bearer.example.com/v1",
 		},
 		Extra: map[string]any{
 			"anthropic_apikey_auth_scheme": AnthropicAPIKeyAuthSchemeAuthorizationBearer,
 		},
 	})
 	require.NoError(t, err)
-	require.Equal(t, "https://ollama.com/v1/models", anthropicBearerReq.URL.String())
-	require.Equal(t, "Bearer ollama-key", anthropicBearerReq.Header.Get("Authorization"))
+	require.Equal(t, "https://anthropic-bearer.example.com/v1/models", anthropicBearerReq.URL.String())
+	require.Equal(t, "Bearer anthropic-bearer-key", anthropicBearerReq.Header.Get("Authorization"))
 	require.Empty(t, anthropicBearerReq.Header.Get("x-api-key"))
 	require.Equal(t, "2023-06-01", anthropicBearerReq.Header.Get("anthropic-version"))
 

@@ -1,0 +1,9 @@
+{
+  "connection_count": 2,
+  "potential_guard_bypass_count": 0,
+  "official_or_public_bypass_count": 0,
+  "loopback_guard_connection_count": 2,
+  "remote_host_buckets": {"loopback": 2},
+  "stores_payload": false,
+  "stores_headers": false
+}

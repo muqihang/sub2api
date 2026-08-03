@@ -1,0 +1,492 @@
+{
+  "generated_at": "2026-06-25T16:28:19.334Z",
+  "matrix_degraded_scope": [
+    "claude_code_2_1_179_custom_base:non_streaming_messages_not_observed",
+    "claude_code_2_1_179_first_party_assumed:non_streaming_messages_not_observed"
+  ],
+  "mode": "real-cli",
+  "profiles": [
+    {
+      "cli_version_bucket": "2.1.179",
+      "command_kind": "pinned-temp-runtime",
+      "degraded_scope": [
+        "non_streaming_messages_not_observed"
+      ],
+      "invocation_mode": "custom-base",
+      "observed_version": "2.1.179 (Claude Code)",
+      "profile_ref": "claude_code_2_1_179_custom_base",
+      "samples": [
+        {
+          "anthropic_beta_tokens": [
+            "claude-code-20250219",
+            "context-management-2025-06-27",
+            "effort-2025-11-24",
+            "interleaved-thinking-2025-05-14",
+            "prompt-caching-scope-2026-01-05"
+          ],
+          "billing_block_count": 1,
+          "billing_shape": "cch_present",
+          "cache_control_summary": {
+            "in_messages": true,
+            "in_system": true,
+            "in_tools": false,
+            "top_level": false,
+            "total_occurrences": 3
+          },
+          "cc_entrypoint_bucket": "sdk-cli",
+          "cch_verifier_ok": true,
+          "messages_summary": {
+            "content_block_types": [
+              "text"
+            ],
+            "message_count": 1,
+            "role_counts": {
+              "user": 1
+            }
+          },
+          "method": "POST",
+          "observed_streaming": true,
+          "request_id_header_family_presence": {
+            "anthropic_request_id": false,
+            "request_id": false,
+            "x_request_id": false
+          },
+          "response_cache_counter_summary": {
+            "available": false
+          },
+          "route": "/v1/messages?<query>",
+          "route_class": "messages",
+          "shape_presence": {
+            "context_management": true,
+            "diagnostics": false,
+            "output_config": true,
+            "thinking": true
+          },
+          "system_summary": {
+            "block_count": 3,
+            "block_type_counts": {
+              "text": 3
+            },
+            "cache_control_block_count": 2
+          },
+          "tool_summary": {
+            "feature_flags": {
+              "defer_loading": false,
+              "eager_input_streaming": false,
+              "tool_reference": false
+            },
+            "tool_count": 3
+          },
+          "top_level_body_keys": [
+            "context_management",
+            "max_tokens",
+            "messages",
+            "metadata",
+            "model",
+            "output_config",
+            "stream",
+            "system",
+            "thinking",
+            "tools"
+          ],
+          "variant": "messages_non_streaming"
+        },
+        {
+          "anthropic_beta_tokens": [
+            "claude-code-20250219",
+            "context-management-2025-06-27",
+            "effort-2025-11-24",
+            "interleaved-thinking-2025-05-14",
+            "prompt-caching-scope-2026-01-05"
+          ],
+          "billing_block_count": 1,
+          "billing_shape": "cch_present",
+          "cache_control_summary": {
+            "in_messages": true,
+            "in_system": true,
+            "in_tools": false,
+            "top_level": false,
+            "total_occurrences": 3
+          },
+          "cc_entrypoint_bucket": "sdk-cli",
+          "cch_verifier_ok": true,
+          "messages_summary": {
+            "content_block_types": [
+              "text"
+            ],
+            "message_count": 1,
+            "role_counts": {
+              "user": 1
+            }
+          },
+          "method": "POST",
+          "observed_streaming": true,
+          "request_id_header_family_presence": {
+            "anthropic_request_id": false,
+            "request_id": false,
+            "x_request_id": false
+          },
+          "response_cache_counter_summary": {
+            "available": false
+          },
+          "route": "/v1/messages?<query>",
+          "route_class": "messages",
+          "shape_presence": {
+            "context_management": true,
+            "diagnostics": false,
+            "output_config": true,
+            "thinking": true
+          },
+          "system_summary": {
+            "block_count": 3,
+            "block_type_counts": {
+              "text": 3
+            },
+            "cache_control_block_count": 2
+          },
+          "tool_summary": {
+            "feature_flags": {
+              "defer_loading": false,
+              "eager_input_streaming": false,
+              "tool_reference": false
+            },
+            "tool_count": 3
+          },
+          "top_level_body_keys": [
+            "context_management",
+            "max_tokens",
+            "messages",
+            "metadata",
+            "model",
+            "output_config",
+            "stream",
+            "system",
+            "thinking",
+            "tools"
+          ],
+          "variant": "messages_streaming"
+        },
+        {
+          "anthropic_beta_tokens": [
+            "claude-code-20250219",
+            "context-management-2025-06-27",
+            "effort-2025-11-24",
+            "interleaved-thinking-2025-05-14",
+            "prompt-caching-scope-2026-01-05"
+          ],
+          "billing_block_count": 1,
+          "billing_shape": "cch_present",
+          "cache_control_summary": {
+            "in_messages": true,
+            "in_system": true,
+            "in_tools": false,
+            "top_level": false,
+            "total_occurrences": 3
+          },
+          "cc_entrypoint_bucket": "sdk-cli",
+          "cch_verifier_ok": true,
+          "messages_summary": {
+            "content_block_types": [
+              "text"
+            ],
+            "message_count": 1,
+            "role_counts": {
+              "user": 1
+            }
+          },
+          "method": "POST",
+          "observed_streaming": true,
+          "request_id_header_family_presence": {
+            "anthropic_request_id": false,
+            "request_id": false,
+            "x_request_id": false
+          },
+          "response_cache_counter_summary": {
+            "available": false
+          },
+          "route": "/v1/messages?<query>",
+          "route_class": "messages",
+          "shape_presence": {
+            "context_management": true,
+            "diagnostics": false,
+            "output_config": true,
+            "thinking": true
+          },
+          "system_summary": {
+            "block_count": 3,
+            "block_type_counts": {
+              "text": 3
+            },
+            "cache_control_block_count": 2
+          },
+          "tool_summary": {
+            "feature_flags": {
+              "defer_loading": false,
+              "eager_input_streaming": false,
+              "tool_reference": false
+            },
+            "tool_count": 3
+          },
+          "top_level_body_keys": [
+            "context_management",
+            "max_tokens",
+            "messages",
+            "metadata",
+            "model",
+            "output_config",
+            "stream",
+            "system",
+            "thinking",
+            "tools"
+          ],
+          "variant": "messages_with_tools"
+        }
+      ]
+    },
+    {
+      "cli_version_bucket": "2.1.179",
+      "command_kind": "pinned-temp-runtime",
+      "degraded_scope": [
+        "non_streaming_messages_not_observed"
+      ],
+      "invocation_mode": "first-party-assumed",
+      "observed_version": "2.1.179 (Claude Code)",
+      "profile_ref": "claude_code_2_1_179_first_party_assumed",
+      "samples": [
+        {
+          "anthropic_beta_tokens": [
+            "claude-code-20250219",
+            "context-management-2025-06-27",
+            "effort-2025-11-24",
+            "interleaved-thinking-2025-05-14",
+            "prompt-caching-scope-2026-01-05"
+          ],
+          "billing_block_count": 1,
+          "billing_shape": "cch_present",
+          "cache_control_summary": {
+            "in_messages": true,
+            "in_system": true,
+            "in_tools": false,
+            "top_level": false,
+            "total_occurrences": 3
+          },
+          "cc_entrypoint_bucket": "sdk-cli",
+          "cch_verifier_ok": true,
+          "messages_summary": {
+            "content_block_types": [
+              "text"
+            ],
+            "message_count": 1,
+            "role_counts": {
+              "user": 1
+            }
+          },
+          "method": "POST",
+          "observed_streaming": true,
+          "request_id_header_family_presence": {
+            "anthropic_request_id": false,
+            "request_id": false,
+            "x_request_id": false
+          },
+          "response_cache_counter_summary": {
+            "available": false
+          },
+          "route": "/v1/messages?<query>",
+          "route_class": "messages",
+          "shape_presence": {
+            "context_management": true,
+            "diagnostics": false,
+            "output_config": true,
+            "thinking": true
+          },
+          "system_summary": {
+            "block_count": 3,
+            "block_type_counts": {
+              "text": 3
+            },
+            "cache_control_block_count": 2
+          },
+          "tool_summary": {
+            "feature_flags": {
+              "defer_loading": false,
+              "eager_input_streaming": false,
+              "tool_reference": false
+            },
+            "tool_count": 3
+          },
+          "top_level_body_keys": [
+            "context_management",
+            "max_tokens",
+            "messages",
+            "metadata",
+            "model",
+            "output_config",
+            "stream",
+            "system",
+            "thinking",
+            "tools"
+          ],
+          "variant": "messages_non_streaming"
+        },
+        {
+          "anthropic_beta_tokens": [
+            "claude-code-20250219",
+            "context-management-2025-06-27",
+            "effort-2025-11-24",
+            "interleaved-thinking-2025-05-14",
+            "prompt-caching-scope-2026-01-05"
+          ],
+          "billing_block_count": 1,
+          "billing_shape": "cch_present",
+          "cache_control_summary": {
+            "in_messages": true,
+            "in_system": true,
+            "in_tools": false,
+            "top_level": false,
+            "total_occurrences": 3
+          },
+          "cc_entrypoint_bucket": "sdk-cli",
+          "cch_verifier_ok": true,
+          "messages_summary": {
+            "content_block_types": [
+              "text"
+            ],
+            "message_count": 1,
+            "role_counts": {
+              "user": 1
+            }
+          },
+          "method": "POST",
+          "observed_streaming": true,
+          "request_id_header_family_presence": {
+            "anthropic_request_id": false,
+            "request_id": false,
+            "x_request_id": false
+          },
+          "response_cache_counter_summary": {
+            "available": false
+          },
+          "route": "/v1/messages?<query>",
+          "route_class": "messages",
+          "shape_presence": {
+            "context_management": true,
+            "diagnostics": false,
+            "output_config": true,
+            "thinking": true
+          },
+          "system_summary": {
+            "block_count": 3,
+            "block_type_counts": {
+              "text": 3
+            },
+            "cache_control_block_count": 2
+          },
+          "tool_summary": {
+            "feature_flags": {
+              "defer_loading": false,
+              "eager_input_streaming": false,
+              "tool_reference": false
+            },
+            "tool_count": 3
+          },
+          "top_level_body_keys": [
+            "context_management",
+            "max_tokens",
+            "messages",
+            "metadata",
+            "model",
+            "output_config",
+            "stream",
+            "system",
+            "thinking",
+            "tools"
+          ],
+          "variant": "messages_streaming"
+        },
+        {
+          "anthropic_beta_tokens": [
+            "claude-code-20250219",
+            "context-management-2025-06-27",
+            "effort-2025-11-24",
+            "interleaved-thinking-2025-05-14",
+            "prompt-caching-scope-2026-01-05"
+          ],
+          "billing_block_count": 1,
+          "billing_shape": "cch_present",
+          "cache_control_summary": {
+            "in_messages": true,
+            "in_system": true,
+            "in_tools": false,
+            "top_level": false,
+            "total_occurrences": 3
+          },
+          "cc_entrypoint_bucket": "sdk-cli",
+          "cch_verifier_ok": true,
+          "messages_summary": {
+            "content_block_types": [
+              "text"
+            ],
+            "message_count": 1,
+            "role_counts": {
+              "user": 1
+            }
+          },
+          "method": "POST",
+          "observed_streaming": true,
+          "request_id_header_family_presence": {
+            "anthropic_request_id": false,
+            "request_id": false,
+            "x_request_id": false
+          },
+          "response_cache_counter_summary": {
+            "available": false
+          },
+          "route": "/v1/messages?<query>",
+          "route_class": "messages",
+          "shape_presence": {
+            "context_management": true,
+            "diagnostics": false,
+            "output_config": true,
+            "thinking": true
+          },
+          "system_summary": {
+            "block_count": 3,
+            "block_type_counts": {
+              "text": 3
+            },
+            "cache_control_block_count": 2
+          },
+          "tool_summary": {
+            "feature_flags": {
+              "defer_loading": false,
+              "eager_input_streaming": false,
+              "tool_reference": false
+            },
+            "tool_count": 3
+          },
+          "top_level_body_keys": [
+            "context_management",
+            "max_tokens",
+            "messages",
+            "metadata",
+            "model",
+            "output_config",
+            "stream",
+            "system",
+            "thinking",
+            "tools"
+          ],
+          "variant": "messages_with_tools"
+        }
+      ]
+    }
+  ],
+  "raw_body_persisted": false,
+  "raw_cch_persisted": false,
+  "raw_prompt_persisted": false,
+  "raw_response_persisted": false,
+  "real_anthropic_upstream": false,
+  "schema_version": "claude_native_oracle_matrix.v1",
+  "target_cli_version": "2.1.179",
+  "upstream": "127.0.0.1-stub-only"
+}

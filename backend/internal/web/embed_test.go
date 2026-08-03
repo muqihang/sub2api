@@ -451,10 +451,15 @@ func TestFrontendServer_Middleware(t *testing.T) {
 
 		apiPaths := []string{
 			"/api/v1/users",
+			"/alpha",
+			"/alpha/",
+			"/alpha/search",
 			"/v1/models",
 			"/v1beta/chat",
 			"/backend-api/codex/responses",
 			"/backend-api/codex/responses/compact",
+			"/codex/v1/models",
+			"/codex/v1/responses",
 			"/antigravity/test",
 			"/setup/init",
 			"/health",
@@ -477,6 +482,47 @@ func TestFrontendServer_Middleware(t *testing.T) {
 				router.ServeHTTP(w, req)
 
 				assert.True(t, nextCalled, "next handler should be called for API route")
+			})
+		}
+	})
+
+	t.Run("skips_augment_legacy_routes", func(t *testing.T) {
+		provider := &mockSettingsProvider{
+			settings: map[string]string{"test": "value"},
+		}
+
+		server, err := NewFrontendServer(provider)
+		require.NoError(t, err)
+
+		tests := []struct {
+			method string
+			path   string
+		}{
+			{method: http.MethodPost, path: "/get-models"},
+			{method: http.MethodGet, path: "/usage/api/get-models"},
+			{method: http.MethodGet, path: "/usage/api/balance"},
+			{method: http.MethodGet, path: "/usage/api/getLoginToken"},
+			{method: http.MethodPost, path: "/batch-upload"},
+			{method: http.MethodPost, path: "/checkpoint-blobs"},
+			{method: http.MethodPost, path: "/find-missing"},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+				router := gin.New()
+				router.Use(server.Middleware())
+				nextCalled := false
+				router.Handle(tc.method, tc.path, func(c *gin.Context) {
+					nextCalled = true
+					c.JSON(http.StatusOK, gin.H{"ok": true})
+				})
+
+				w := httptest.NewRecorder()
+				req := httptest.NewRequest(tc.method, tc.path, bytes.NewReader([]byte(`{}`)))
+				router.ServeHTTP(w, req)
+
+				assert.True(t, nextCalled, "next handler should be called for Augment legacy route")
+				assert.Contains(t, w.Header().Get("Content-Type"), "application/json")
 			})
 		}
 	})
@@ -659,6 +705,8 @@ func TestServeEmbeddedFrontend(t *testing.T) {
 			"/v1beta/chat",
 			"/backend-api/codex/responses",
 			"/backend-api/codex/responses/compact",
+			"/codex/v1/models",
+			"/codex/v1/responses",
 			"/antigravity/test",
 			"/setup/init",
 			"/health",
@@ -681,6 +729,42 @@ func TestServeEmbeddedFrontend(t *testing.T) {
 				router.ServeHTTP(w, req)
 
 				assert.True(t, nextCalled, "next handler should be called for API route")
+			})
+		}
+	})
+
+	t.Run("skips_augment_legacy_routes", func(t *testing.T) {
+		middleware := ServeEmbeddedFrontend()
+
+		tests := []struct {
+			method string
+			path   string
+		}{
+			{method: http.MethodPost, path: "/get-models"},
+			{method: http.MethodGet, path: "/usage/api/get-models"},
+			{method: http.MethodGet, path: "/usage/api/balance"},
+			{method: http.MethodGet, path: "/usage/api/getLoginToken"},
+			{method: http.MethodPost, path: "/batch-upload"},
+			{method: http.MethodPost, path: "/checkpoint-blobs"},
+			{method: http.MethodPost, path: "/find-missing"},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+				nextCalled := false
+				router := gin.New()
+				router.Use(middleware)
+				router.Handle(tc.method, tc.path, func(c *gin.Context) {
+					nextCalled = true
+					c.JSON(http.StatusOK, gin.H{"ok": true})
+				})
+
+				w := httptest.NewRecorder()
+				req := httptest.NewRequest(tc.method, tc.path, bytes.NewReader([]byte(`{}`)))
+				router.ServeHTTP(w, req)
+
+				assert.True(t, nextCalled, "next handler should be called for Augment legacy route")
+				assert.Contains(t, w.Header().Get("Content-Type"), "application/json")
 			})
 		}
 	})

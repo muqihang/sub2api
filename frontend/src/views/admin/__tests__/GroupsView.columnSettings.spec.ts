@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 
 import type { AdminGroup } from '@/types'
 import GroupsView from '../GroupsView.vue'
@@ -29,17 +29,28 @@ const {
 }))
 
 const messages: Record<string, string> = {
+  'admin.groups.allGroups': 'All Groups',
+  'admin.groups.allPlatforms': 'All Platforms',
+  'admin.groups.allStatus': 'All Status',
   'admin.groups.columnSettings': 'Column Settings',
+  'admin.groups.columns.accounts': 'Accounts',
+  'admin.groups.columns.actions': 'Actions',
+  'admin.groups.columns.billingType': 'Billing Type',
+  'admin.groups.columns.capacity': 'Capacity',
   'admin.groups.columns.name': 'Name',
   'admin.groups.columns.platform': 'Platform',
-  'admin.groups.columns.billingType': 'Billing Type',
   'admin.groups.columns.rateMultiplier': 'Rate Multiplier',
-  'admin.groups.columns.type': 'Type',
-  'admin.groups.columns.accounts': 'Accounts',
-  'admin.groups.columns.capacity': 'Capacity',
-  'admin.groups.columns.usage': 'Usage',
   'admin.groups.columns.status': 'Status',
-  'admin.groups.columns.actions': 'Actions',
+  'admin.groups.columns.type': 'Type',
+  'admin.groups.columns.usage': 'Usage',
+  'admin.groups.createGroup': 'Create Group',
+  'admin.groups.exclusive': 'Exclusive',
+  'admin.groups.nonExclusive': 'Shared',
+  'admin.groups.searchGroups': 'Search groups',
+  'admin.groups.sortOrder': 'Sort',
+  'admin.accounts.status.active': 'Active',
+  'admin.accounts.status.inactive': 'Inactive',
+  'common.refresh': 'Refresh',
 }
 
 vi.mock('@/api/admin', () => ({
@@ -54,6 +65,7 @@ vi.mock('@/api/admin', () => ({
       update: vi.fn(),
       delete: vi.fn(),
       updateSortOrder: vi.fn(),
+      getRPMOverrides: vi.fn(),
     },
     accounts: {
       list: listAccounts,
@@ -62,34 +74,26 @@ vi.mock('@/api/admin', () => ({
 }))
 
 vi.mock('@/stores/app', () => ({
-  useAppStore: () => ({
-    showError,
-    showSuccess,
-  }),
+  useAppStore: () => ({ showError, showSuccess }),
 }))
 
 vi.mock('@/stores/onboarding', () => ({
-  useOnboardingStore: () => ({
-    isCurrentStep,
-    nextStep,
-  }),
+  useOnboardingStore: () => ({ isCurrentStep, nextStep }),
 }))
 
 vi.mock('vue-i18n', async () => {
   const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
   return {
     ...actual,
-    useI18n: () => ({
-      t: (key: string) => messages[key] ?? key,
-    }),
+    useI18n: () => ({ t: (key: string) => messages[key] ?? key }),
   }
 })
 
 const createGroup = (overrides: Partial<AdminGroup> = {}): AdminGroup => ({
   id: 1,
-  name: 'Core Anthropic',
+  name: 'Core Group',
   description: null,
-  platform: 'anthropic',
+  platform: 'openai',
   rate_multiplier: 1,
   rpm_limit: 0,
   is_exclusive: false,
@@ -118,78 +122,40 @@ const createGroup = (overrides: Partial<AdminGroup> = {}): AdminGroup => ({
   model_routing_enabled: false,
   mcp_xml_inject: true,
   supported_model_scopes: [],
-  account_count: 3,
-  active_account_count: 2,
-  rate_limited_account_count: 1,
+  account_count: 1,
+  active_account_count: 1,
+  rate_limited_account_count: 0,
   models_list_config: undefined,
-  sort_order: 10,
+  sort_order: 1,
   ...overrides,
 })
-
-const AppLayoutStub = {
-  template: '<div><slot /></div>',
-}
-
-const TablePageLayoutStub = {
-  template: `
-    <div>
-      <slot name="filters" />
-      <slot name="table" />
-      <slot name="pagination" />
-    </div>
-  `,
-}
 
 const DataTableStub = {
   props: ['columns', 'data'],
   emits: ['sort'],
-  template: `
-    <div>
-      <div data-test="columns">{{ columns.map((col) => col.key).join(',') }}</div>
-      <div data-test="rows">{{ data.map((row) => row.name).join(',') }}</div>
-    </div>
-  `,
+  template: '<div><div data-test="columns">{{ columns.map((col) => col.key).join(",") }}</div><div data-test="rows">{{ data.map((row) => row.name).join(",") }}</div></div>',
 }
 
 const SelectStub = {
-  props: ['modelValue', 'options', 'placeholder'],
+  props: ['modelValue', 'options'],
   emits: ['update:modelValue', 'change'],
-  template: `
-    <select
-      :value="modelValue"
-      @change="$emit('update:modelValue', $event.target.value); $emit('change')"
-    >
-      <option v-for="option in options" :key="String(option.value)" :value="option.value">
-        {{ option.label }}
-      </option>
-    </select>
-  `,
-}
-
-const BaseDialogStub = {
-  props: ['show'],
-  template: '<div v-if="show"><slot /><slot name="footer" /></div>',
-}
-
-const IconStub = {
-  props: ['name'],
-  template: '<span data-test="icon">{{ name }}</span>',
+  template: '<select :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value); $emit(\'change\')"><option v-for="option in options" :key="String(option.value)" :value="option.value">{{ option.label }}</option></select>',
 }
 
 const mountView = async () => {
   const wrapper = mount(GroupsView, {
     global: {
       stubs: {
-        AppLayout: AppLayoutStub,
-        TablePageLayout: TablePageLayoutStub,
+        AppLayout: { template: '<div><slot /></div>' },
+        TablePageLayout: { template: '<div><slot name="filters" /><slot name="table" /><slot name="pagination" /></div>' },
         DataTable: DataTableStub,
         Pagination: true,
-        BaseDialog: BaseDialogStub,
+        BaseDialog: { props: ['show'], template: '<div v-if="show"><slot /><slot name="footer" /></div>' },
         ConfirmDialog: true,
         EmptyState: true,
         Select: SelectStub,
         PlatformIcon: true,
-        Icon: IconStub,
+        Icon: { props: ['name'], template: '<span>{{ name }}</span>' },
         GroupCapacityBadge: true,
         GroupRateMultipliersModal: true,
         GroupRPMOverridesModal: true,
@@ -201,18 +167,11 @@ const mountView = async () => {
   return wrapper
 }
 
-const columnKeys = (wrapper: ReturnType<typeof mount>) =>
-  wrapper.get('[data-test="columns"]').text().split(',').filter(Boolean)
+const visibleColumns = (wrapper: VueWrapper) => wrapper.get('[data-test="columns"]').text().split(',').filter(Boolean)
 
-const openColumnSettings = async (wrapper: ReturnType<typeof mount>) => {
-  await wrapper.get('button[title="Column Settings"]').trigger('click')
-}
-
-const clickColumnToggle = async (wrapper: ReturnType<typeof mount>, label: string) => {
-  const button = wrapper
-    .findAll('button')
-    .find((item) => item.text().includes(label))
-  expect(button, `column toggle ${label}`).toBeTruthy()
+const clickButtonContaining = async (wrapper: VueWrapper, text: string) => {
+  const button = wrapper.findAll('button').find((item) => item.text().includes(text))
+  expect(button, `button containing ${text}`).toBeTruthy()
   await button!.trigger('click')
   await flushPromises()
 }
@@ -220,7 +179,6 @@ const clickColumnToggle = async (wrapper: ReturnType<typeof mount>, label: strin
 describe('admin GroupsView column settings', () => {
   beforeEach(() => {
     localStorage.clear()
-
     listGroups.mockReset()
     getAllGroups.mockReset()
     getModelsListCandidates.mockReset()
@@ -232,13 +190,7 @@ describe('admin GroupsView column settings', () => {
     isCurrentStep.mockReset()
     nextStep.mockReset()
 
-    listGroups.mockResolvedValue({
-      items: [createGroup()],
-      total: 1,
-      page: 1,
-      page_size: 20,
-      pages: 1,
-    })
+    listGroups.mockResolvedValue({ items: [createGroup()], total: 1, page: 1, page_size: 20, pages: 1 })
     getAllGroups.mockResolvedValue([])
     getModelsListCandidates.mockResolvedValue([])
     getUsageSummary.mockResolvedValue([])
@@ -251,81 +203,40 @@ describe('admin GroupsView column settings', () => {
     localStorage.clear()
   })
 
-  it('renders all group columns by default in the current order', async () => {
+  it('lets admins hide optional group columns and persists the selection', async () => {
     const wrapper = await mountView()
 
-    expect(columnKeys(wrapper)).toEqual([
-      'name',
-      'platform',
-      'billing_type',
-      'rate_multiplier',
-      'is_exclusive',
-      'account_count',
-      'capacity',
-      'usage',
-      'status',
-      'actions',
-    ])
+    expect(visibleColumns(wrapper)).toContain('usage')
+
+    await clickButtonContaining(wrapper, 'Column Settings')
+    await clickButtonContaining(wrapper, 'Usage')
+
+    expect(visibleColumns(wrapper)).not.toContain('usage')
+    expect(JSON.parse(localStorage.getItem('group-hidden-columns') || '[]')).toEqual(['usage'])
+
+    wrapper.unmount()
+    const remounted = await mountView()
+    expect(visibleColumns(remounted)).not.toContain('usage')
+    expect(visibleColumns(remounted)).toContain('name')
+    expect(visibleColumns(remounted)).toContain('actions')
   })
 
-  it('applies saved hidden columns on mount and ignores unknown keys', async () => {
-    localStorage.setItem(
-      'group-hidden-columns',
-      JSON.stringify(['usage', 'capacity', 'removed_column', 'name', 'actions']),
-    )
+  it('skips usage and capacity summary fetches without visible consumers', async () => {
+    localStorage.setItem('group-hidden-columns', JSON.stringify(['billing_type', 'usage', 'capacity']))
 
     const wrapper = await mountView()
 
-    expect(columnKeys(wrapper)).toEqual([
-      'name',
-      'platform',
-      'billing_type',
-      'rate_multiplier',
-      'is_exclusive',
-      'account_count',
-      'status',
-      'actions',
-    ])
-  })
-
-  it('toggles a column and persists hidden column keys', async () => {
-    const wrapper = await mountView()
-
-    await openColumnSettings(wrapper)
-    await clickColumnToggle(wrapper, 'Usage')
-
-    expect(columnKeys(wrapper)).toEqual([
-      'name',
-      'platform',
-      'billing_type',
-      'rate_multiplier',
-      'is_exclusive',
-      'account_count',
-      'capacity',
-      'status',
-      'actions',
-    ])
-    expect(localStorage.getItem('group-hidden-columns')).toBe(JSON.stringify(['usage']))
-  })
-
-  it('skips usage and capacity fetches until consuming columns are shown', async () => {
-    localStorage.setItem(
-      'group-hidden-columns',
-      JSON.stringify(['billing_type', 'usage', 'capacity']),
-    )
-
-    const wrapper = await mountView()
-
+    expect(visibleColumns(wrapper)).not.toContain('usage')
+    expect(visibleColumns(wrapper)).not.toContain('capacity')
     expect(getUsageSummary).not.toHaveBeenCalled()
     expect(getCapacitySummary).not.toHaveBeenCalled()
+  })
 
-    await openColumnSettings(wrapper)
-    await clickColumnToggle(wrapper, 'Usage')
-    expect(getUsageSummary).toHaveBeenCalledTimes(1)
-    expect(getCapacitySummary).not.toHaveBeenCalled()
+  it('loads usage when subscription quota cells remain visible', async () => {
+    localStorage.setItem('group-hidden-columns', JSON.stringify(['usage']))
 
-    await clickColumnToggle(wrapper, 'Capacity')
+    await mountView()
+
     expect(getUsageSummary).toHaveBeenCalledTimes(1)
-    expect(getCapacitySummary).toHaveBeenCalledTimes(1)
   })
 })

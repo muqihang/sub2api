@@ -51,6 +51,15 @@ export const useAppStore = defineStore('app', () => {
 
   const hasActiveToasts = computed(() => toasts.value.length > 0)
   const backendModeEnabled = computed(() => cachedPublicSettings.value?.backend_mode_enabled ?? false)
+  // V2 account management UX rollout flag. Read directly from the cached
+  // public settings; the canonical resolver (with dev override) lives in
+  // `@/utils/featureFlags` — this computed exists for places that want a
+  // reactive boolean without importing the flag registry (e.g. sidebar items
+  // that don't go through `makeSidebarFlag`). Default is `false` so first
+  // render before settings hydrate keeps the legacy UI visible.
+  const useNewAccountManagementUx = computed(
+    () => cachedPublicSettings.value?.use_new_account_management_ux ?? false,
+  )
 
   const loadingCount = ref<number>(0)
 
@@ -329,6 +338,9 @@ export const useAppStore = defineStore('app', () => {
         registration_enabled: false,
         email_verify_enabled: false,
         force_email_on_third_party_signup: false,
+        auth_agreement_enabled: false,
+        auth_agreement_version: '',
+        auth_agreement_prompt_on_first_visit: false,
         registration_email_suffix_whitelist: [],
         promo_code_enabled: true,
         password_reset_enabled: false,
@@ -368,6 +380,7 @@ export const useAppStore = defineStore('app', () => {
         risk_control_enabled: false,
         service_quota_enabled: false,
         affiliate_enabled: false,
+        use_new_account_management_ux: false,
         allow_user_view_error_requests: false,
       })
     }
@@ -387,8 +400,8 @@ export const useAppStore = defineStore('app', () => {
         applySettings(data)
         return data
       })
-      .catch((error) => {
-        console.error('Failed to fetch public settings:', error)
+      .catch(() => {
+        console.error('Failed to fetch public settings')
         return null
       })
       .finally(() => {
@@ -455,6 +468,7 @@ export const useAppStore = defineStore('app', () => {
     // Computed
     hasActiveToasts,
     backendModeEnabled,
+    useNewAccountManagementUx,
 
     // Actions
     toggleSidebar,

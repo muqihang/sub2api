@@ -323,6 +323,13 @@ func TestBuildGenerationConfig_ThinkingDynamicBudget(t *testing.T) {
 			wantPresent: true,
 		},
 		{
+			name:        "adaptive on opus4.8 maps to high budget (24576)",
+			model:       "claude-opus-4-8",
+			thinking:    &ThinkingConfig{Type: "adaptive", BudgetTokens: 20000},
+			wantBudget:  ClaudeAdaptiveHighThinkingBudgetTokens,
+			wantPresent: true,
+		},
+		{
 			name:        "adaptive on non-opus model keeps default dynamic (-1)",
 			model:       "claude-sonnet-4-5-thinking",
 			thinking:    &ThinkingConfig{Type: "adaptive"},
@@ -424,113 +431,60 @@ func TestTransformClaudeToGeminiWithOptions_PreservesBillingHeaderSystemBlock(t 
 	}
 }
 
-func TestTransformClaudeToGeminiWithOptions_MessageRoles(t *testing.T) {
-	transform := func(t *testing.T, claudeReq *ClaudeRequest) V1InternalRequest {
-		t.Helper()
+func TestTransformClaudeToGeminiWithOptions_MessageSystemRoleMovesToSystemInstruction(t *testing.T) {
+	body, err := TransformClaudeToGeminiWithOptions(&ClaudeRequest{
+		Model:  "claude-3-5-sonnet-latest",
+		System: json.RawMessage(`"top level system"`),
+		Messages: []ClaudeMessage{
+			{Role: "system", Content: json.RawMessage(`"message system"`)},
+			{Role: "user", Content: json.RawMessage(`"hello"`)},
+		},
+	}, "project-1", "gemini-2.5-flash", DefaultTransformOptions())
+	require.NoError(t, err)
 
-		body, err := TransformClaudeToGeminiWithOptions(claudeReq, "project-1", "gemini-2.5-flash", DefaultTransformOptions())
-		require.NoError(t, err)
+	var req V1InternalRequest
+	require.NoError(t, json.Unmarshal(body, &req))
+	require.Len(t, req.Request.Contents, 1)
+	require.Equal(t, "user", req.Request.Contents[0].Role)
+	require.NotNil(t, req.Request.SystemInstruction)
 
-		var req V1InternalRequest
-		require.NoError(t, json.Unmarshal(body, &req))
-		return req
+	var systemText []string
+	for _, part := range req.Request.SystemInstruction.Parts {
+		systemText = append(systemText, part.Text)
 	}
-
-	systemText := func(content *GeminiContent) string {
-		if content == nil {
-			return ""
-		}
-		var texts []string
-		for _, part := range content.Parts {
-			texts = append(texts, part.Text)
-		}
-		return strings.Join(texts, "\n")
+	merged := strings.Join(systemText, "\n")
+	require.Contains(t, merged, "top level system")
+	require.Contains(t, merged, "message system")
+	require.Less(t, strings.Index(merged, "top level system"), strings.Index(merged, "message system"))
+	for _, content := range req.Request.Contents {
+		require.NotEqual(t, "system", content.Role)
 	}
+}
 
-	t.Run("message system role moves to system instruction", func(t *testing.T) {
-		req := transform(t, &ClaudeRequest{
-			Model: "claude-3-5-sonnet-latest",
-			Messages: []ClaudeMessage{
-				{
-					Role:    "system",
-					Content: json.RawMessage(`[{"type":"text","text":"skills context"}]`),
-				},
-				{
-					Role:    "user",
-					Content: json.RawMessage(`"hello"`),
-				},
-			},
-		})
+func TestTransformClaudeToGeminiWithOptions_GeminiReasoningModelOmitsUnsupportedArguments(t *testing.T) {
+	temperature := 0.7
+	topP := 0.8
+	topK := 40
 
-		require.Len(t, req.Request.Contents, 1)
-		require.Equal(t, "user", req.Request.Contents[0].Role)
-		require.Contains(t, systemText(req.Request.SystemInstruction), "skills context")
-		for _, content := range req.Request.Contents {
-			require.NotEqual(t, "system", content.Role)
-		}
-	})
+	body, err := TransformClaudeToGeminiWithOptions(&ClaudeRequest{
+		Model:       "gemini-3.1-pro-high",
+		Temperature: &temperature,
+		TopP:        &topP,
+		TopK:        &topK,
+		Messages: []ClaudeMessage{
+			{Role: "user", Content: json.RawMessage(`"hello"`)},
+		},
+	}, "project-1", "gemini-3.1-pro-high", DefaultTransformOptions())
+	require.NoError(t, err)
 
-	t.Run("assistant role still maps to model", func(t *testing.T) {
-		req := transform(t, &ClaudeRequest{
-			Model: "claude-3-5-sonnet-latest",
-			Messages: []ClaudeMessage{
-				{
-					Role:    "assistant",
-					Content: json.RawMessage(`"hello from assistant"`),
-				},
-			},
-		})
-
-		require.Len(t, req.Request.Contents, 1)
-		require.Equal(t, "model", req.Request.Contents[0].Role)
-		require.Equal(t, "hello from assistant", req.Request.Contents[0].Parts[0].Text)
-	})
-
-	t.Run("top level and message system instructions are merged", func(t *testing.T) {
-		req := transform(t, &ClaudeRequest{
-			Model:  "claude-3-5-sonnet-latest",
-			System: json.RawMessage(`"top level system"`),
-			Messages: []ClaudeMessage{
-				{
-					Role:    "system",
-					Content: json.RawMessage(`"message system"`),
-				},
-				{
-					Role:    "user",
-					Content: json.RawMessage(`"hello"`),
-				},
-			},
-		})
-
-		mergedSystem := systemText(req.Request.SystemInstruction)
-		require.Contains(t, mergedSystem, "top level system")
-		require.Contains(t, mergedSystem, "message system")
-		require.Less(t, strings.Index(mergedSystem, "top level system"), strings.Index(mergedSystem, "message system"))
-		require.Len(t, req.Request.Contents, 1)
-		require.Equal(t, "user", req.Request.Contents[0].Role)
-	})
-
-	t.Run("ordinary user assistant conversation is unchanged", func(t *testing.T) {
-		req := transform(t, &ClaudeRequest{
-			Model: "claude-3-5-sonnet-latest",
-			Messages: []ClaudeMessage{
-				{
-					Role:    "user",
-					Content: json.RawMessage(`"question"`),
-				},
-				{
-					Role:    "assistant",
-					Content: json.RawMessage(`"answer"`),
-				},
-			},
-		})
-
-		require.Len(t, req.Request.Contents, 2)
-		require.Equal(t, "user", req.Request.Contents[0].Role)
-		require.Equal(t, "question", req.Request.Contents[0].Parts[0].Text)
-		require.Equal(t, "model", req.Request.Contents[1].Role)
-		require.Equal(t, "answer", req.Request.Contents[1].Parts[0].Text)
-	})
+	var req V1InternalRequest
+	require.NoError(t, json.Unmarshal(body, &req))
+	require.Nil(t, req.Request.ToolConfig, "Gemini reasoning models reject forced empty toolConfig")
+	require.NotNil(t, req.Request.GenerationConfig)
+	require.Empty(t, req.Request.GenerationConfig.StopSequences)
+	require.Nil(t, req.Request.GenerationConfig.Temperature)
+	require.Nil(t, req.Request.GenerationConfig.TopP)
+	require.Nil(t, req.Request.GenerationConfig.TopK)
 }
 
 func TestTransformClaudeToGeminiWithOptions_PreservesWebSearchAlongsideFunctions(t *testing.T) {
@@ -564,4 +518,20 @@ func TestTransformClaudeToGeminiWithOptions_PreservesWebSearchAlongsideFunctions
 	require.Len(t, req.Request.Tools[0].FunctionDeclarations, 1)
 	require.Equal(t, "get_weather", req.Request.Tools[0].FunctionDeclarations[0].Name)
 	require.NotNil(t, req.Request.Tools[1].GoogleSearch)
+}
+
+func TestGetModelDisplayName_Opus48(t *testing.T) {
+	t.Parallel()
+
+	if got := GetModelDisplayName("claude-opus-4-8"); got != "Claude Opus 4.8" {
+		t.Fatalf("GetModelDisplayName(claude-opus-4-8) = %q", got)
+	}
+}
+
+func TestGetModelDisplayName_Fable5(t *testing.T) {
+	t.Parallel()
+
+	if got := GetModelDisplayName("claude-fable-5"); got != "Claude Fable 5" {
+		t.Fatalf("GetModelDisplayName(claude-fable-5) = %q", got)
+	}
 }

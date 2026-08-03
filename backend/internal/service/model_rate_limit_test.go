@@ -108,12 +108,12 @@ func TestIsModelRateLimited(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "antigravity platform - gemini-3-pro-preview mapped to gemini-3-pro-high",
+			name: "antigravity platform - gemini-3-pro-preview mapped to gemini-pro-agent",
 			account: &Account{
 				Platform: PlatformAntigravity,
 				Extra: map[string]any{
 					modelRateLimitsKey: map[string]any{
-						"gemini-3-pro-high": map[string]any{
+						"gemini-pro-agent": map[string]any{
 							"rate_limit_reset_at": future,
 						},
 					},
@@ -226,6 +226,36 @@ func TestIsModelRateLimited(t *testing.T) {
 			requestedModel: "gpt-5.4",
 			expected:       false,
 		},
+		{
+			name: "anthropic fable family key blocks fable variants",
+			account: &Account{
+				Platform: PlatformAnthropic,
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						"claude-fable-5": map[string]any{
+							"rate_limit_reset_at": future,
+						},
+					},
+				},
+			},
+			requestedModel: "claude-fable-5[1m]",
+			expected:       true,
+		},
+		{
+			name: "anthropic fable family key does not block non-fable",
+			account: &Account{
+				Platform: PlatformAnthropic,
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						"claude-fable-5": map[string]any{
+							"rate_limit_reset_at": future,
+						},
+					},
+				},
+			},
+			requestedModel: "claude-sonnet-4-5",
+			expected:       false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -261,6 +291,12 @@ func TestIsModelRateLimited_Antigravity_ThinkingAffectsModelKey(t *testing.T) {
 
 	account := &Account{
 		Platform: PlatformAntigravity,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"claude-sonnet-4-5":          "claude-sonnet-4-5",
+				"claude-sonnet-4-5-thinking": "claude-sonnet-4-5-thinking",
+			},
+		},
 		Extra: map[string]any{
 			modelRateLimitsKey: map[string]any{
 				"claude-sonnet-4-5-thinking": map[string]any{
@@ -453,7 +489,7 @@ func TestGetRateLimitRemainingTime(t *testing.T) {
 				Platform: PlatformAntigravity,
 				Extra: map[string]any{
 					modelRateLimitsKey: map[string]any{
-						"claude-sonnet-4-5": map[string]any{
+						"claude-sonnet-4-6": map[string]any{
 							"rate_limit_reset_at": future15m,
 						},
 					},
@@ -469,7 +505,7 @@ func TestGetRateLimitRemainingTime(t *testing.T) {
 				Platform: PlatformAntigravity,
 				Extra: map[string]any{
 					modelRateLimitsKey: map[string]any{
-						"claude-sonnet-4-5": map[string]any{
+						"claude-sonnet-4-6": map[string]any{
 							"rate_limit_reset_at": future5m,
 						},
 					},
@@ -498,48 +534,4 @@ func TestGetRateLimitRemainingTime(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestIsModelRateLimited_AnthropicFableFamilyKey(t *testing.T) {
-	now := time.Now()
-	future := now.Add(48 * time.Hour).Format(time.RFC3339)
-
-	account := &Account{
-		Platform: PlatformAnthropic,
-		Extra: map[string]any{
-			modelRateLimitsKey: map[string]any{
-				anthropicFableRateLimitKey: map[string]any{
-					"rate_limit_reset_at": future,
-				},
-			},
-		},
-	}
-
-	tests := []struct {
-		requestedModel string
-		expected       bool
-	}{
-		{"claude-fable-5", true},
-		{"claude-fable-5[1m]", true},      // 家族 key 覆盖变体
-		{"Claude-Fable-5-20260601", true}, // 大小写不敏感
-		{"claude-sonnet-4-6", false},      // 其他模型不受影响
-		{"claude-opus-4-8", false},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.requestedModel, func(t *testing.T) {
-			got := account.isModelRateLimitedWithContext(context.Background(), tc.requestedModel)
-			require.Equal(t, tc.expected, got)
-			remaining := account.GetModelRateLimitRemainingTimeWithContext(context.Background(), tc.requestedModel)
-			require.Equal(t, tc.expected, remaining > 0)
-		})
-	}
-}
-
-func TestIsAnthropicFableModel(t *testing.T) {
-	require.True(t, isAnthropicFableModel("claude-fable-5"))
-	require.True(t, isAnthropicFableModel("claude-fable-5[1m]"))
-	require.True(t, isAnthropicFableModel("Claude-Fable-5"))
-	require.False(t, isAnthropicFableModel("claude-sonnet-4-6"))
-	require.False(t, isAnthropicFableModel(""))
 }

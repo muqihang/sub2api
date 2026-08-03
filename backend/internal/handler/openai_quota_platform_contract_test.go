@@ -36,7 +36,7 @@ func TestOpenAIRecordUsageInputsCarryQuotaPlatform(t *testing.T) {
 				return true
 			})
 
-			require.Empty(t, missing, "OpenAI usage post-billing must receive request-time QuotaPlatform")
+			require.Empty(t, missing, "OpenAI async usage billing must receive request-time QuotaPlatform")
 		})
 	}
 }

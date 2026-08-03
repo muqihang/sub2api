@@ -1,0 +1,671 @@
+import hashlib
+import json
+from types import SimpleNamespace
+
+import pytest
+from pathlib import Path
+
+import zhumeng_agent.cli as cli
+from zhumeng_agent.cli import main
+
+
+@pytest.fixture(autouse=True)
+def restore_cli_defaults():
+    originals = {
+        name: getattr(cli, name)
+        for name in (
+            "default_state_store",
+            "default_http_client",
+            "default_config_manager",
+            "generate_loopback_secret",
+            "choose_local_proxy_port",
+            "ensure_proxy_running",
+            "default_codex_app_path",
+            "build_codex_launch_command",
+            "select_cdp_port",
+            "launch_codex_process",
+            "launch_claude_code_process",
+            "inspect_codex_enhancements",
+            "patch_codex_enhancements",
+            "restore_codex_enhancements",
+            "resolve_codex_home",
+            "codex_doctor_report",
+            "codex_app_is_running",
+            "run_managed_claude_code",
+            "state_dir",
+        )
+        if hasattr(cli, name)
+    }
+    yield
+    for name, value in originals.items():
+        setattr(cli, name, value)
+
+
+def parse_output(capsys):
+    out = capsys.readouterr().out.strip()
+    assert out
+    return json.loads(out)
+
+
+
+def write_fake_claude_runtime(runtime_root: Path, executable: Path, *, payload: bytes = b"managed-claude-code") -> tuple[Path, str, str]:
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.write_bytes(payload)
+    runtime_hash = "sha256:" + hashlib.sha256(payload).hexdigest()
+    overlay_hash = "sha256:" + "2" * 64
+    manifest_dir = runtime_root / "claude-code" / "2.1.175"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = manifest_dir / "manifest.json"
+    manifest = {
+        "runtime": "claude-code",
+        "upstream_version": "2.1.175",
+        "zhumeng_runtime_version": "0.1.0",
+        "source": "npm:@anthropic-ai/claude-code@2.1.175",
+        "upstream_hash": runtime_hash,
+        "overlay_hash": overlay_hash,
+        "patch_points": ["runtime_manifest", "hash_lock", "isolated_config", "guard_env"],
+        "cch_profile": "claude_code_2_1_175",
+        "status": "ready",
+        "executable_path": str(executable.resolve(strict=False)),
+    }
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    patches_path = manifest_dir / "patches.json"
+    patches_path.write_text(json.dumps({"runtime": "claude-code", "upstream_version": "2.1.175", "patch_points": ["runtime_manifest", "hash_lock", "isolated_config", "guard_env"], "live_bridge_models_enabled": False}, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    manifest_hash = "sha256:" + hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    patches_hash = "sha256:" + hashlib.sha256(patches_path.read_bytes()).hexdigest()
+    (manifest_dir / "hash.lock").write_text(
+        json.dumps({
+            "runtime": "claude-code",
+            "upstream_version": "2.1.175",
+            "manifest_hash": manifest_hash,
+            "locked_files": {"manifest.json": manifest_hash, "patches.json": patches_hash},
+        }, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    (runtime_root / "claude-code" / "active").write_text(
+        json.dumps({"runtime": "claude-code", "status": "enabled", "active_version": "2.1.175", "manifest_path": str(manifest_path)}, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    return executable.resolve(strict=False), runtime_hash, overlay_hash
+
+class MemoryStore:
+    def __init__(self, payload=None):
+        self.payload = payload or {}
+        self.updated = []
+
+    def read(self):
+        return dict(self.payload)
+
+    def write(self, payload):
+        self.payload = dict(payload)
+
+    def update(self, patch):
+        self.payload.update(patch)
+        self.updated.append(dict(patch))
+        return dict(self.payload)
+
+
+def test_desktop_status_outputs_envelope_and_redacts_secrets(capsys):
+    cli.default_state_store = lambda: MemoryStore({
+        "status": "configured",
+        "client": "codex",
+        "access_token": "access-token-secret",
+        "refresh_token": "refresh-token-secret",
+        "loopback_secret": "loopback-secret-secret",
+        "server_base_url": "https://example.com",
+        "proxy_port": 18081,
+        "user_email": "alice@example.com",
+    })
+
+    exit_code = main(["desktop", "status", "--json"])
+
+    assert exit_code == 0
+    payload = parse_output(capsys)
+    assert payload["schema_version"] == 1
+    assert payload["ok"] is True
+    assert payload["command"] == "desktop status"
+    assert payload["status"] == "configured"
+    dumped = json.dumps(payload)
+    assert "access-token-secret" not in dumped
+    assert "refresh-token-secret" not in dumped
+    assert "loopback-secret-secret" not in dumped
+    assert "alice@example.com" not in dumped
+    assert payload["data"]["state"]["access_token"] == "<redacted>"
+
+
+def test_desktop_setup_returns_json_envelope_without_tokens(capsys, tmp_path: Path):
+    class FakeClient:
+        def exchange_setup_grant(self, **kwargs):
+            return {
+                "access_token": "access-token-secret",
+                "refresh_token": "refresh-token-secret",
+                "managed_session_id": "sess-1",
+                "expires_at": "2026-05-11T12:00:00Z",
+                "device_id": 9,
+                "server_base_url": "https://example.com",
+                "gateway_base_url": "https://example.com",
+                "config_profile": {"model_provider": "zhumeng-codex"},
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
+            }
+
+        def list_codex_models(self, **kwargs):
+            return {"models": [{"slug": "deepseek-v4-pro", "display_name": "DeepSeek V4 Pro"}]}
+
+    store = MemoryStore()
+    cli.default_http_client = lambda server: FakeClient()
+    cli.default_state_store = lambda: store
+    cli.default_config_manager = lambda: cli.CodexConfigManager(tmp_path / ".codex")
+    cli.generate_loopback_secret = lambda: "loopback-secret-secret"
+    cli.choose_local_proxy_port = lambda preferred=None: 18081
+    cli.ensure_proxy_running = lambda store: 123
+
+    exit_code = main([
+        "desktop", "setup", "--client", "codex", "--code", "one-time-code", "--server", "https://example.com", "--json"
+    ])
+
+    assert exit_code == 0
+    payload = parse_output(capsys)
+    assert payload["ok"] is True
+    assert payload["command"] == "desktop setup"
+    assert payload["status"] == "configured"
+    dumped = json.dumps(payload)
+    assert "access-token-secret" not in dumped
+    assert "refresh-token-secret" not in dumped
+    assert "loopback-secret-secret" not in dumped
+    assert "one-time-code" not in dumped
+    assert payload["data"]["proxy_port"] == 18081
+    assert store.payload["access_token"] == "access-token-secret"
+    assert store.payload["config_hash_after"]
+    assert store.payload["auth_hash_after"]
+    assert store.payload["catalog_hash_after"]
+
+
+def test_desktop_setup_marks_restart_required_when_codex_is_running(capsys, tmp_path: Path):
+    class FakeClient:
+        def exchange_setup_grant(self, **kwargs):
+            return {
+                "access_token": "access-token-secret",
+                "refresh_token": "refresh-token-secret",
+                "managed_session_id": "sess-1",
+                "expires_at": "2026-05-11T12:00:00Z",
+                "device_id": 9,
+                "server_base_url": "https://example.com",
+                "gateway_base_url": "https://example.com",
+                "config_profile": {"model_provider": "zhumeng-codex"},
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
+            }
+
+        def list_codex_models(self, **kwargs):
+            return {"models": [{"slug": "deepseek-v4-pro", "display_name": "DeepSeek V4 Pro"}]}
+
+    manager = cli.CodexConfigManager(tmp_path / ".codex")
+    manager.config_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.config_path.write_text("model_provider = \"old\"\n", encoding="utf-8")
+    store = MemoryStore()
+    cli.default_http_client = lambda server: FakeClient()
+    cli.default_state_store = lambda: store
+    cli.default_config_manager = lambda: manager
+    cli.generate_loopback_secret = lambda: "loopback-secret-secret"
+    cli.choose_local_proxy_port = lambda preferred=None: 18081
+    cli.ensure_proxy_running = lambda store: 123
+    cli.default_codex_app_path = lambda: Path("/Applications/Codex.app")
+    cli.codex_app_is_running = lambda app_path: True
+
+    exit_code = main([
+        "desktop", "setup", "--client", "codex", "--code", "one-time-code", "--server", "https://example.com", "--json"
+    ])
+
+    assert exit_code == 0
+    payload = parse_output(capsys)
+    assert payload["data"]["adapters"]["codex"]["restart_required"] is True
+    assert store.payload["restart_required"] is True
+
+
+def test_desktop_setup_failure_is_json_without_traceback(capsys):
+    class FakeClient:
+        def exchange_setup_grant(self, **kwargs):
+            raise RuntimeError("backend unavailable access-token-secret")
+
+    cli.default_http_client = lambda server: FakeClient()
+
+    exit_code = main([
+        "desktop", "setup", "--client", "codex", "--code", "secret-code", "--server", "https://example.com", "--json"
+    ])
+
+    assert exit_code == 1
+    payload = parse_output(capsys)
+    assert payload["ok"] is False
+    assert payload["command"] == "desktop setup"
+    assert payload["status"] == "error"
+    dumped = json.dumps(payload)
+    assert "Traceback" not in dumped
+    assert "secret-code" not in dumped
+    assert "access-token-secret" not in dumped
+
+
+def test_desktop_open_codex_uses_adapter_launch(capsys):
+    cli.default_codex_app_path = lambda: Path("/Applications/Codex.app")
+    cli.build_codex_launch_command = lambda app_path, cdp_port: ["open", str(app_path)]
+    cli.select_cdp_port = lambda: 9222
+    launched = {}
+    cli.launch_codex_process = lambda command: launched.setdefault("command", command)
+
+    exit_code = main(["desktop", "open", "--app", "codex", "--json"])
+
+    assert exit_code == 0
+    payload = parse_output(capsys)
+    assert payload["command"] == "desktop open"
+    assert payload["status"] == "launched"
+    assert launched["command"] == ["open", "/Applications/Codex.app"]
+
+
+def test_desktop_open_claude_code_starts_managed_guard(capsys, tmp_path: Path, monkeypatch):
+    store = MemoryStore({
+        "status": "configured",
+        "client": "claude_code_native",
+        "gateway_base_url": "http://127.0.0.1:18080",
+        "access_token": "sub2api-entry-secret",
+        "managed_session_id": "managed-session",
+        "device_id": 9,
+        "loopback_secret": "loopback-secret",
+        "claude_code_native_attestation_secret": "server-native-attestation-secret",
+        "claude_code_native_attestation_secret_source": "server",
+        "claude_code_route_hint_secret": "server-route-hint-secret",
+        "claude_code_route_hint_secret_source": "server",
+    })
+    calls = []
+
+    def fake_run_managed_claude_code(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            returncode=0,
+            guard_ready={"listen": "http://127.0.0.1:43117"},
+            launch_plan=SimpleNamespace(env={
+                "ANTHROPIC_BASE_URL": "http://127.0.0.1:43117",
+                "CLAUDE_CODE_API_BASE_URL": "http://127.0.0.1:43117",
+            }),
+            guard_plan=SimpleNamespace(
+                command=["python", "tools/cli_control_plane_guard.py", "--native-attestation", "--route-hint-secret-env"],
+                config=SimpleNamespace(summary_path=tmp_path / "summary.jsonl"),
+            ),
+        )
+
+    state_root = tmp_path / "zhumeng-state"
+    managed_executable, runtime_hash, overlay_hash = write_fake_claude_runtime(
+        state_root / "runtimes",
+        tmp_path / "managed-runtime" / "claude",
+    )
+    cli.default_state_store = lambda: store
+    cli.state_dir = lambda: state_root
+    cli.choose_local_proxy_port = lambda preferred=None: 43117
+    monkeypatch.setattr(cli, "run_managed_claude_code", fake_run_managed_claude_code)
+
+    exit_code = main(["desktop", "open", "--app", "claude-code", "--json"])
+
+    assert exit_code == 0
+    payload = parse_output(capsys)
+    assert payload["command"] == "desktop open"
+    assert payload["status"] == "exited"
+    assert payload["data"]["guard"]["listen"] == "http://127.0.0.1:43117"
+    assert payload["data"]["claude_base_url"] == "http://127.0.0.1:43117"
+    assert calls[0]["executable"] == managed_executable
+    assert calls[0]["runtime_hash"] == runtime_hash
+    assert calls[0]["overlay_hash"] == overlay_hash
+    assert payload["data"]["runtime"]["executable"] == str(managed_executable)
+    assert payload["data"]["runtime"]["runtime_hash"] == runtime_hash
+    assert calls[0]["upstream_base"] == "http://127.0.0.1:18080"
+    assert calls[0]["sub2api_auth"] == "sub2api-entry-secret"
+    assert calls[0]["managed_session_id"] == "managed-session"
+    assert calls[0]["device_id"] == 9
+    assert calls[0]["route_hint_secret"] == "server-route-hint-secret"
+    assert calls[0]["guard_listen_port"] == 43117
+    dumped = json.dumps(payload)
+    assert "sub2api-entry-secret" not in dumped
+    assert "loopback-secret" not in dumped
+
+
+def test_desktop_open_zhumeng_claude_alias_starts_nonblocking_managed_runtime(capsys, tmp_path: Path):
+    launched = {}
+    cli.launch_claude_code_process = lambda command, env=None, cwd=None, detach_stdio=False: launched.update({
+        "command": command,
+        "env": env,
+        "cwd": cwd,
+        "detach_stdio": detach_stdio,
+    }) or SimpleNamespace(pid=4242)
+
+    exit_code = main(["desktop", "open", "--app", "zhumeng-claude", "--json"])
+
+    assert exit_code == 0
+    payload = parse_output(capsys)
+    assert payload["command"] == "desktop open"
+    assert payload["status"] == "started"
+    assert payload["data"]["app"] == "zhumeng-claude"
+    assert payload["data"]["pid"] == 4242
+    assert payload["data"]["stdio_detached"] is True
+    assert launched["detach_stdio"] is True
+    assert launched["command"][:4] == [cli.sys.executable, "-m", "zhumeng_agent", "claude-code"]
+    assert launched["command"][4] == "start"
+    dumped = json.dumps(payload)
+    assert "access-token" not in dumped
+    assert "loopback-secret" not in dumped
+
+
+def test_desktop_codex_enhancements_status_envelope(capsys, tmp_path: Path):
+    app = tmp_path / "Codex.app"
+    cli.inspect_codex_enhancements = lambda app_path: {
+        "status": "ok",
+        "app_path": str(app_path),
+        "items": {"model-picker": {"status": "patched"}},
+    }
+
+    exit_code = main(["desktop", "codex-enhancements", "status", "--app", str(app), "--json"])
+
+    assert exit_code == 0
+    payload = parse_output(capsys)
+    assert payload["ok"] is True
+    assert payload["command"] == "desktop codex-enhancements status"
+    assert payload["data"]["items"]["model-picker"]["status"] == "patched"
+
+
+def test_desktop_codex_enhancements_patch_refuses_running_app(capsys, tmp_path: Path):
+    app = tmp_path / "Codex.app"
+    cli.default_state_store = lambda: MemoryStore()
+    cli.patch_codex_enhancements = lambda app_path, item="all": {
+        "status": "app_running_blocking_change",
+        "app_path": str(app_path),
+        "message": "Codex App is running",
+    }
+
+    exit_code = main(["desktop", "codex-enhancements", "patch", "--app", str(app), "--item", "all", "--json"])
+
+    assert exit_code == 1
+    payload = parse_output(capsys)
+    assert payload["ok"] is False
+    assert payload["status"] == "app_running_blocking_change"
+    assert payload["error"]["code"] == "app_running_blocking_change"
+
+
+def test_desktop_reauth_preserves_restore_baseline_and_proxy(capsys, tmp_path: Path):
+    class FakeClient:
+        def exchange_setup_grant(self, **kwargs):
+            return {
+                "access_token": "fresh-access-token",
+                "refresh_token": "fresh-refresh-token",
+                "managed_session_id": "sess-fresh",
+                "device_id": 9,
+                "server_base_url": "https://example.com",
+                "gateway_base_url": "https://example.com",
+                "config_profile": {"model_provider": "zhumeng-codex"},
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
+            }
+        def list_codex_models(self, **kwargs):
+            return {"models": []}
+
+    store = MemoryStore({
+        "status": "configured",
+        "client": "codex",
+        "proxy_port": 18081,
+        "loopback_secret": "existing-loopback-secret",
+        "prior_auth_json": "original-auth",
+        "prior_catalog_json": "original-catalog",
+        "catalog_preexisting": True,
+        "config_profile": {"model_provider": "zhumeng-codex"},
+        "claude_code_native_attestation_secret": "existing-native-secret",
+        "claude_code_native_attestation_secret_source": "server",
+    })
+    cli.default_state_store = lambda: store
+    cli.default_http_client = lambda server: FakeClient()
+    cli.default_config_manager = lambda: cli.CodexConfigManager(tmp_path / ".codex")
+    cli.ensure_proxy_running = lambda store: 123
+
+    exit_code = main(["desktop", "reauth", "--client", "codex", "--code", "new-code", "--server", "https://example.com", "--json"])
+
+    assert exit_code == 0
+    payload = parse_output(capsys)
+    assert payload["status"] == "reauthorized"
+    assert store.payload["proxy_port"] == 18081
+    assert store.payload["loopback_secret"] == "existing-loopback-secret"
+    assert store.payload["prior_auth_json"] == "original-auth"
+    assert store.payload["prior_catalog_json"] == "original-catalog"
+
+
+def test_desktop_reauth_marks_restart_required_when_codex_is_running(capsys, tmp_path: Path):
+    class FakeClient:
+        def exchange_setup_grant(self, **kwargs):
+            return {
+                "access_token": "fresh-access-token",
+                "refresh_token": "fresh-refresh-token",
+                "managed_session_id": "sess-fresh",
+                "device_id": 9,
+                "server_base_url": "https://example.com",
+                "gateway_base_url": "https://example.com",
+                "config_profile": {"model_provider": "zhumeng-codex"},
+                "claude_code_native_attestation_secret": "server-native-attestation-secret",
+            }
+
+        def list_codex_models(self, **kwargs):
+            return {"models": []}
+
+    manager = cli.CodexConfigManager(tmp_path / ".codex")
+    manager.config_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.config_path.write_text("model_provider = \"old\"\n", encoding="utf-8")
+    store = MemoryStore({
+        "status": "configured",
+        "client": "codex",
+        "proxy_port": 18081,
+        "loopback_secret": "existing-loopback-secret",
+        "config_profile": {"model_provider": "zhumeng-codex"},
+        "claude_code_native_attestation_secret": "existing-native-secret",
+        "claude_code_native_attestation_secret_source": "server",
+    })
+    cli.default_state_store = lambda: store
+    cli.default_http_client = lambda server: FakeClient()
+    cli.default_config_manager = lambda: manager
+    cli.ensure_proxy_running = lambda store: 123
+    cli.default_codex_app_path = lambda: Path("/Applications/Codex.app")
+    cli.codex_app_is_running = lambda app_path: True
+
+    exit_code = main(["desktop", "reauth", "--client", "codex", "--code", "new-code", "--server", "https://example.com", "--json"])
+
+    assert exit_code == 0
+    payload = parse_output(capsys)
+    assert payload["data"]["adapters"]["codex"]["restart_required"] is True
+    assert store.payload["restart_required"] is True
+
+
+def test_desktop_invalid_args_stdout_json_and_no_stderr(capsys):
+    exit_code = main(["desktop", "setup", "--client", "codex", "--code", "secret-code", "--server"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.err == ""
+    payload = json.loads(captured.out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "invalid_arguments"
+    assert "secret-code" not in captured.out
+
+
+def test_desktop_status_keeps_authorization_object(capsys):
+    cli.default_state_store = lambda: MemoryStore({
+        "status": "configured",
+        "client": "codex",
+        "device_id": 9,
+        "managed_session_id": "managed-session-id-abcdef123456",
+        "proxy_port": 18081,
+    })
+
+    exit_code = main(["desktop", "status", "--json"])
+
+    assert exit_code == 0
+    payload = parse_output(capsys)
+    assert isinstance(payload["data"]["authorization"], dict)
+    assert payload["data"]["authorization"]["managed_session_id_redacted"] == "...3456"
+    assert "managed-session-id-abcdef123456" not in json.dumps(payload)
+
+
+def test_desktop_status_uses_live_codex_enhancement_status(capsys):
+    store = MemoryStore({
+        "status": "configured",
+        "client": "codex",
+        "proxy_port": 18081,
+        "desktop_enhancements": {
+            "status": "app_running_blocking_change",
+            "items": {
+                "model-picker": {"status": "unknown"},
+                "plugin-auth-gate": {"status": "unknown"},
+                "plugin-mention-marketplace": {"status": "unknown"},
+            },
+        },
+    })
+    cli.default_state_store = lambda: store
+    cli.default_codex_app_path = lambda: Path("/Applications/Codex.app")
+    cli.inspect_codex_enhancements = lambda app_path: {
+        "status": "ok",
+        "app_path": str(app_path),
+        "items": {
+            "model-picker": {"status": "patched", "integrity_ok": True},
+            "plugin-auth-gate": {"status": "patched", "integrity_ok": True},
+            "plugin-mention-marketplace": {"status": "patched", "integrity_ok": True},
+        },
+        "running_app_detected": True,
+    }
+
+    exit_code = main(["desktop", "status", "--json"])
+
+    assert exit_code == 0
+    payload = parse_output(capsys)
+    enhancements = payload["data"]["adapters"]["codex"]["enhancements"]
+    assert enhancements["status"] == "ok"
+    assert payload["data"]["model_picker"]["status"] == "patched"
+    assert payload["data"]["plugin_auth_gate"]["status"] == "patched"
+    assert payload["data"]["plugin_mention_marketplace"]["status"] == "patched"
+    assert store.payload["desktop_enhancements"]["items"]["model-picker"]["status"] == "patched"
+
+
+def test_desktop_repair_enhancement_failure_is_not_ok(capsys):
+    class FakeManager:
+        def repair(self, *args, **kwargs):
+            return None
+        def read_existing_model_catalog(self, *args, **kwargs):
+            return {"models": []}
+
+    store = MemoryStore({
+        "status": "configured",
+        "client": "codex",
+        "proxy_port": 18081,
+        "loopback_secret": "loopback-secret",
+        "config_profile": {"model_provider": "zhumeng-codex"},
+        "claude_code_native_attestation_secret": "existing-native-secret",
+        "claude_code_native_attestation_secret_source": "server",
+    })
+    cli.default_state_store = lambda: store
+    cli.default_config_manager = lambda: FakeManager()
+    cli.ensure_proxy_running = lambda store: 123
+    cli.default_codex_app_path = lambda: Path("/Applications/Codex.app")
+    cli.patch_codex_enhancements = lambda app_path, item="all": {"status": "app_running_blocking_change", "restart_required": False}
+
+    exit_code = main(["desktop", "repair", "--client", "codex", "--json"])
+
+    payload = parse_output(capsys)
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["status"] == "app_running_blocking_change"
+
+def test_desktop_models_status_summarizes_local_catalog(capsys, tmp_path: Path):
+    manager = cli.CodexConfigManager(tmp_path / ".codex")
+    manager.write_model_catalog({"model_provider": "zhumeng-codex"}, {
+        "models": [
+            {
+                "slug": "main-model",
+                "display_name": "Main Model",
+                "visibility": "list",
+                "supported_in_api": True,
+                "origin": "zhumeng",
+                "provider_id": "zhumeng",
+                "capabilities": {"responses": True, "streaming": True, "tool_calls": True, "context_continuation": True},
+                "pricing": {"input_price": "1.00", "output_price": "2.00", "currency": "USD", "unit": "per_1m_tokens", "source": "database_model_pricing"},
+            },
+            {
+                "slug": "incompatible-model",
+                "display_name": "Incompatible Model",
+                "visibility": "list",
+                "supported_in_api": True,
+                "origin": "zhumeng",
+                "provider_id": "zhumeng",
+                "capabilities": {"responses": True, "streaming": True, "tool_calls": False, "context_continuation": True},
+                "pricing": None,
+            },
+            {
+                "slug": "restricted-model",
+                "display_name": "Restricted Model",
+                "visibility": "hide",
+                "supported_in_api": False,
+                "origin": "zhumeng",
+                "provider_id": "zhumeng",
+                "capabilities": {"responses": True, "streaming": True, "tool_calls": True, "context_continuation": True},
+                "pricing": None,
+            },
+        ]
+    })
+    cli.default_config_manager = lambda: manager
+    cli.default_state_store = lambda: MemoryStore({
+        "status": "configured",
+        "client": "codex",
+        "config_profile": {"model_provider": "zhumeng-codex"},
+        "model_catalog_synced_at": "2026-05-21T00:00:00Z",
+    })
+
+    exit_code = main(["desktop", "models", "status", "--client", "codex", "--json"])
+
+    assert exit_code == 0
+    payload = parse_output(capsys)
+    assert payload["ok"] is True
+    assert payload["command"] == "desktop models status"
+    assert payload["data"]["model_count"] == 3
+    assert payload["data"]["main_list_count"] == 1
+    assert payload["data"]["restricted_count"] == 1
+    assert payload["data"]["incompatible_count"] == 1
+    assert payload["data"]["missing_pricing_count"] == 2
+    assert payload["data"]["last_synced_at"] == "2026-05-21T00:00:00Z"
+    assert [model["slug"] for model in payload["data"]["models"]] == ["main-model", "incompatible-model", "restricted-model"]
+    assert payload["data"]["models"][0]["pricing"]["source"] == "database_model_pricing"
+
+
+def test_desktop_models_sync_fetches_and_writes_catalog(capsys, tmp_path: Path):
+    class FakeClient:
+        def list_codex_models(self, **kwargs):
+            return {"models": [{
+                "slug": "gpt-5.5",
+                "display_name": "GPT-5.5",
+                "origin": "zhumeng",
+                "provider_id": "zhumeng",
+                "capabilities": {"responses": True, "streaming": True, "tool_calls": True, "context_continuation": True},
+                "pricing": {"input_price": "2.50", "output_price": "15.00", "currency": "USD", "unit": "per_1m_tokens", "source": "database_model_pricing"},
+            }]}
+
+    manager = cli.CodexConfigManager(tmp_path / ".codex")
+    store = MemoryStore({
+        "status": "configured",
+        "client": "codex",
+        "gateway_base_url": "https://gateway.example.com",
+        "server_base_url": "https://example.com",
+        "access_token": "access-token-secret",
+        "managed_session_id": "sess-1",
+        "device_id": 9,
+        "config_profile": {"model_provider": "zhumeng-codex"},
+    })
+    cli.default_config_manager = lambda: manager
+    cli.default_state_store = lambda: store
+    cli.default_http_client = lambda server: FakeClient()
+
+    exit_code = main(["desktop", "models", "sync", "--client", "codex", "--json"])
+
+    assert exit_code == 0
+    payload = parse_output(capsys)
+    assert payload["ok"] is True
+    assert payload["command"] == "desktop models sync"
+    assert payload["data"]["model_count"] == 1
+    saved = json.loads((tmp_path / ".codex" / "zhumeng-codex-models.json").read_text(encoding="utf-8"))
+    assert saved["models"][0]["capabilities"]["tool_calls"] is True
+    assert saved["models"][0]["pricing"]["source"] == "database_model_pricing"
+    assert store.payload["model_catalog_synced_at"]

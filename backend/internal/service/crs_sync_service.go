@@ -45,6 +45,14 @@ func NewCRSSyncService(
 	}
 }
 
+func (s *CRSSyncService) geminiCredentialAccessor() *GeminiCredentialsAccessor {
+	return NewGeminiCredentialsAccessor(s.cfg, nil)
+}
+
+func (s *CRSSyncService) protectGeminiCredentials(credentials map[string]any) (map[string]any, error) {
+	return s.geminiCredentialAccessor().ProtectCredentials(credentials)
+}
+
 // guardCRSShadowParentInvariant 守住「有 spark 影子的母账号」不变量(与 AdminService.UpdateAccount 一致):
 // 影子读透母账号凭据,母账号必须**始终是 OpenAI OAuth**。CRS 同步按全局 crs_account_id 匹配既有账号
 // (GetByCRSAccountID 已排除影子、但能命中母账号),各平台分支会重写 Platform/Type;若 CRS ID 跨 kind/平台
@@ -60,7 +68,7 @@ func guardCRSShadowParentInvariant(ctx context.Context, repo AccountRepository, 
 	if newPlatform == PlatformOpenAI && newType == AccountTypeOAuth {
 		return nil
 	}
-	shadows, err := repo.ListShadowsByParent(ctx, existing.ID)
+	shadows, err := listAccountShadowsByParent(ctx, repo, existing.ID)
 	if err != nil {
 		return fmt.Errorf("check spark shadows for crs update: %w", err)
 	}
@@ -79,11 +87,14 @@ type SyncFromCRSInput struct {
 }
 
 type SyncFromCRSItemResult struct {
-	CRSAccountID string `json:"crs_account_id"`
-	Kind         string `json:"kind"`
-	Name         string `json:"name"`
-	Action       string `json:"action"` // created/updated/failed/skipped
-	Error        string `json:"error,omitempty"`
+	CRSAccountID      string `json:"crs_account_id"`
+	Kind              string `json:"kind"`
+	Name              string `json:"name"`
+	Action            string `json:"action"` // created/updated/failed/skipped
+	Error             string `json:"error,omitempty"`
+	PoolRole          string `json:"pool_role,omitempty"`
+	TokenSource       string `json:"token_source,omitempty"`
+	ValidationOutcome string `json:"validation_outcome,omitempty"`
 }
 
 type SyncFromCRSResult struct {
@@ -562,6 +573,8 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		result.Items = append(result.Items, item)
 	}
 
+	openAIOAuthAccounts, _ := s.accountRepo.ListByPlatform(ctx, PlatformOpenAI)
+
 	// OpenAI OAuth -> sub2api openai oauth
 	for _, src := range exported.Data.OpenAIOAuthAccounts {
 		item := SyncFromCRSItemResult{
@@ -607,7 +620,6 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		}
 		priority := clampPriority(src.Priority)
 		concurrency := 3
-		status := mapCRSStatus(src.IsActive, src.Status)
 
 		// 🔧 Preserve all CRS extra fields and add sync metadata
 		extra := make(map[string]any)
@@ -624,6 +636,26 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 			extra["email"] = crsEmail
 		}
 
+		proxyURL := ""
+		if proxyID != nil {
+			if proxy, proxyErr := s.proxyRepo.GetByID(ctx, *proxyID); proxyErr == nil && proxy != nil {
+				proxyURL = proxy.URL()
+			}
+		}
+		decision, decisionErr := EvaluateOpenAIImportLifecycleWithExtra(ctx, s.openaiOAuthService, proxyURL, credentials, extra)
+		if decisionErr != nil {
+			item.Action = "failed"
+			item.Error = decisionErr.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
+		}
+		item.PoolRole = decision.PoolRole
+		item.TokenSource = decision.TokenSource
+		item.ValidationOutcome = decision.ValidationOutcome
+		credentials = decision.Credentials
+		extra = mergeMap(extra, decision.Extra)
+
 		existing, err := s.accountRepo.GetByCRSAccountID(ctx, src.ID)
 		if err != nil {
 			item.Action = "failed"
@@ -631,6 +663,18 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 			result.Failed++
 			result.Items = append(result.Items, item)
 			continue
+		}
+		if existing == nil {
+			if matched, matchKey := FindMatchingOpenAIOAuthAccountWithAccessor(openAIOAuthAccounts, credentials, s.openaiOAuthService.CredentialAccessor()); matched != nil {
+				if !ShouldOverwriteMatchedOpenAIAccount(matched, matchKey, decision) {
+					item.Action = "failed"
+					item.Error = "sync rejected: newer RT-managed account already exists"
+					result.Failed++
+					result.Items = append(result.Items, item)
+					continue
+				}
+				existing = matched
+			}
 		}
 
 		if existing == nil {
@@ -650,8 +694,8 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 				ProxyID:     proxyID,
 				Concurrency: concurrency,
 				Priority:    priority,
-				Status:      status,
-				Schedulable: src.Schedulable,
+				Status:      decision.Status,
+				Schedulable: decision.Schedulable,
 			}
 			if err := s.accountRepo.Create(ctx, account); err != nil {
 				item.Action = "failed"
@@ -660,12 +704,37 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 				result.Items = append(result.Items, item)
 				continue
 			}
-			// 🔄 Refresh OAuth token after creation
-			if refreshedCreds := s.refreshOAuthToken(ctx, account); refreshedCreds != nil {
-				_ = persistAccountCredentials(ctx, s.accountRepo, account, refreshedCreds)
-			}
+			openAIOAuthAccounts = replaceOpenAIAccountInSlice(openAIOAuthAccounts, *account)
 			item.Action = "created"
 			result.Created++
+			result.Items = append(result.Items, item)
+			continue
+		}
+
+		existingRefreshToken := existing.GetOpenAIRefreshToken()
+		incomingRefreshToken := stringValue(credentials["refresh_token"])
+		var accessor *OpenAIGatewayCredentials
+		if s.openaiOAuthService != nil {
+			accessor = s.openaiOAuthService.CredentialAccessor()
+		}
+		if accessor != nil {
+			if existing.IsOpenAIRTManaged() && existingRefreshToken != "" {
+				if resolved, resolveErr := accessor.OpenAIRefreshToken(existing); resolveErr == nil {
+					existingRefreshToken = resolved
+				}
+			}
+			if incomingRefreshToken != "" {
+				if resolved, resolveErr := accessor.resolveValue(incomingRefreshToken, "refresh_token"); resolveErr == nil {
+					incomingRefreshToken = resolved
+				}
+			}
+		}
+		if !ShouldOverwriteMatchedOpenAIAccount(existing, "crs_account_id", decision) &&
+			existingRefreshToken != incomingRefreshToken &&
+			existing.IsOpenAIRTManaged() {
+			item.Action = "failed"
+			item.Error = "sync rejected: stale RT cannot overwrite newer local RT"
+			result.Failed++
 			result.Items = append(result.Items, item)
 			continue
 		}
@@ -674,14 +743,22 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		existing.Name = defaultName(src.Name, src.ID)
 		existing.Platform = PlatformOpenAI
 		existing.Type = AccountTypeOAuth
-		existing.Credentials = mergeMap(existing.Credentials, credentials)
+		protectedMerged, protectErr := NewOpenAIGatewayCredentials(s.cfg, nil).ProtectCredentials(mergeMap(existing.Credentials, credentials))
+		if protectErr != nil {
+			item.Action = "failed"
+			item.Error = "credential protection failed: " + protectErr.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
+		}
+		existing.Credentials = protectedMerged
 		if proxyID != nil {
 			existing.ProxyID = proxyID
 		}
 		existing.Concurrency = concurrency
 		existing.Priority = priority
-		existing.Status = status
-		existing.Schedulable = src.Schedulable
+		existing.Status = decision.Status
+		existing.Schedulable = decision.Schedulable
 
 		if err := s.accountRepo.Update(ctx, existing); err != nil {
 			item.Action = "failed"
@@ -690,17 +767,13 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 			result.Items = append(result.Items, item)
 			continue
 		}
-
-		// 🔄 Refresh OAuth token after update
-		if refreshedCreds := s.refreshOAuthToken(ctx, existing); refreshedCreds != nil {
-			_ = persistAccountCredentials(ctx, s.accountRepo, existing, refreshedCreds)
-		}
+		openAIOAuthAccounts = replaceOpenAIAccountInSlice(openAIOAuthAccounts, *existing)
 
 		// 母账号 proxy 经 CRS 改动后同步到其 spark 影子,避免影子保留旧 proxy 出现出站漂移(外审第8轮)。
 		// 影子 proxy 恒继承母账号(创建即继承、AdminService 编辑也传播)。best-effort:母账号本身已成功
 		// 更新,影子传播失败仅记录告警,不回退该条目状态。
 		if perr := propagateAccountProxyToShadows(ctx, s.accountRepo, existing.ID, existing.ProxyID); perr != nil {
-			slog.Warn("crs_sync_propagate_proxy_to_shadows_failed", "account_id", existing.ID, "error", perr)
+			slog.Warn("crs_sync_propagate_proxy_to_shadows_failed", "error_class", fmt.Sprintf("%T", perr))
 		}
 
 		item.Action = "updated"
@@ -747,6 +820,14 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		}
 
 		credentials := sanitizeCredentialsMap(src.Credentials)
+		credentials, err = NewOpenAIGatewayCredentials(s.cfg, nil).ProtectCredentials(credentials)
+		if err != nil {
+			item.Action = "failed"
+			item.Error = "credential protection failed: " + err.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
+		}
 		priority := clampPriority(src.Priority)
 		concurrency := 3
 		status := mapCRSStatus(src.IsActive, src.Status)
@@ -813,7 +894,15 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		existing.Name = defaultName(src.Name, src.ID)
 		existing.Platform = PlatformOpenAI
 		existing.Type = AccountTypeAPIKey
-		existing.Credentials = mergeMap(existing.Credentials, credentials)
+		protectedMerged, protectErr := NewOpenAIGatewayCredentials(s.cfg, nil).ProtectCredentials(mergeMap(existing.Credentials, credentials))
+		if protectErr != nil {
+			item.Action = "failed"
+			item.Error = "credential protection failed: " + protectErr.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
+		}
+		existing.Credentials = protectedMerged
 		if proxyID != nil {
 			existing.ProxyID = proxyID
 		}
@@ -870,6 +959,14 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 			if t, err := time.Parse(time.RFC3339, expiresAtStr); err == nil {
 				credentials["expires_at"] = strconv.FormatInt(t.Unix(), 10)
 			}
+		}
+		credentials, err = s.protectGeminiCredentials(credentials)
+		if err != nil {
+			item.Action = "failed"
+			item.Error = "protect credentials failed: " + err.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
 		}
 
 		extra := make(map[string]any)
@@ -941,6 +1038,14 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		existing.Platform = PlatformGemini
 		existing.Type = AccountTypeOAuth
 		existing.Credentials = mergeMap(existing.Credentials, credentials)
+		existing.Credentials, err = s.protectGeminiCredentials(existing.Credentials)
+		if err != nil {
+			item.Action = "failed"
+			item.Error = "protect credentials failed: " + err.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
+		}
 		if proxyID != nil {
 			existing.ProxyID = proxyID
 		}
@@ -995,6 +1100,14 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		credentials := sanitizeCredentialsMap(src.Credentials)
 		if baseURL, ok := credentials["base_url"].(string); !ok || strings.TrimSpace(baseURL) == "" {
 			credentials["base_url"] = "https://generativelanguage.googleapis.com"
+		}
+		credentials, err = s.protectGeminiCredentials(credentials)
+		if err != nil {
+			item.Action = "failed"
+			item.Error = "protect credentials failed: " + err.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
 		}
 
 		extra := make(map[string]any)
@@ -1063,6 +1176,14 @@ func (s *CRSSyncService) SyncFromCRS(ctx context.Context, input SyncFromCRSInput
 		existing.Platform = PlatformGemini
 		existing.Type = AccountTypeAPIKey
 		existing.Credentials = mergeMap(existing.Credentials, credentials)
+		existing.Credentials, err = s.protectGeminiCredentials(existing.Credentials)
+		if err != nil {
+			item.Action = "failed"
+			item.Error = "protect credentials failed: " + err.Error()
+			result.Failed++
+			result.Items = append(result.Items, item)
+			continue
+		}
 		if proxyID != nil {
 			existing.ProxyID = proxyID
 		}
@@ -1165,6 +1286,16 @@ func defaultName(name, id string) string {
 		return strings.TrimSpace(name)
 	}
 	return "CRS " + id
+}
+
+func replaceOpenAIAccountInSlice(accounts []Account, updated Account) []Account {
+	for i := range accounts {
+		if accounts[i].ID == updated.ID {
+			accounts[i] = updated
+			return accounts
+		}
+	}
+	return append(accounts, updated)
 }
 
 func clampPriority(priority int) int {
@@ -1343,14 +1474,14 @@ func (s *CRSSyncService) refreshOAuthToken(ctx context.Context, account *Account
 		if refreshErr != nil {
 			err = refreshErr
 		} else {
-			newCredentials = s.openaiOAuthService.BuildAccountCredentials(tokenInfo)
-			// Preserve non-token settings from existing credentials
-			for k, v := range account.Credentials {
-				if _, exists := newCredentials[k]; !exists {
-					newCredentials[k] = v
-				}
+			newCredentials, err = s.openaiOAuthService.BuildAccountCredentials(tokenInfo)
+			if err != nil {
+				return nil
 			}
-			newCredentials = NormalizeOpenAIPersonalAccessTokenCredentials(account, tokenInfo, newCredentials)
+			newCredentials, err = MergeProtectedOpenAICredentials(account.Credentials, newCredentials, s.openaiOAuthService.CredentialAccessor())
+			if err != nil {
+				return nil
+			}
 		}
 	case PlatformGemini:
 		if s.geminiOAuthService == nil {
@@ -1360,11 +1491,13 @@ func (s *CRSSyncService) refreshOAuthToken(ctx context.Context, account *Account
 		if refreshErr != nil {
 			err = refreshErr
 		} else {
-			newCredentials = s.geminiOAuthService.BuildAccountCredentials(tokenInfo)
-			for k, v := range account.Credentials {
-				if _, exists := newCredentials[k]; !exists {
-					newCredentials[k] = v
-				}
+			newCredentials, err = s.geminiOAuthService.BuildProtectedAccountCredentials(tokenInfo)
+			if err != nil {
+				return nil
+			}
+			newCredentials, err = MergeProtectedGeminiCredentials(account.Credentials, newCredentials, s.geminiOAuthService.CredentialAccessor())
+			if err != nil {
+				return nil
 			}
 		}
 	default:

@@ -1,0 +1,46 @@
+{
+  "fixture_label": "native_tool_search_call_with_multi_agent_namespace",
+  "source_baseline": "successful_codex_native_deepseek_bridge",
+  "tool_search_call": {
+    "type": "tool_search_call",
+    "call_id": "call_fixture",
+    "status": "completed",
+    "execution": "client",
+    "arguments": {
+      "query": "sub-agent dispatch multi-agent DeepSeek V4 Flash model tool",
+      "limit": 10
+    }
+  },
+  "tool_search_output": {
+    "type": "tool_search_output",
+    "call_id": "call_fixture",
+    "status": "completed",
+    "execution": "client",
+    "tools": [
+      {
+        "type": "namespace",
+        "name": "multi_agent_v1",
+        "tools": [
+          {
+            "name": "spawn_agent",
+            "description": "sanitized spawn-agent tool description",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "task": {
+                  "type": "string"
+                },
+                "model": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task"
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

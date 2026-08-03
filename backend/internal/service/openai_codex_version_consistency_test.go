@@ -1,5 +1,3 @@
-//go:build unit
-
 package service
 
 import (
@@ -9,13 +7,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCodexVersionConstants_Consistency(t *testing.T) {
-	require.Equal(t, codexCLIVersion, openAICodexProbeVersion,
-		"codexCLIVersion and openAICodexProbeVersion must stay in sync")
+func TestCodexVersionConstantsConsistency(t *testing.T) {
+	const expectedVersion = "0.144.1"
 
-	require.True(t, strings.Contains(codexCLIUserAgent, "codex_cli_rs/"+codexCLIVersion),
-		"codexCLIUserAgent must embed codexCLIVersion")
-
-	require.True(t, strings.Contains(DefaultOpenAICodexUserAgent, codexCLIVersion),
-		"DefaultOpenAICodexUserAgent must embed codexCLIVersion")
+	require.Equal(t, expectedVersion, codexCLIVersion)
+	require.Equal(t, codexCLIVersion, openAICodexProbeVersion)
+	require.True(t, strings.Contains(codexCLIUserAgent, "codex_cli_rs/"+codexCLIVersion))
+	require.True(t, strings.Contains(DefaultOpenAICodexUserAgent, codexCLIVersion))
 }

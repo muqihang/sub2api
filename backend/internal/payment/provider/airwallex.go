@@ -653,6 +653,7 @@ func (e airwallexWebhookEvent) accountID() string {
 
 var (
 	_ payment.Provider                 = (*Airwallex)(nil)
+	_ payment.RefundQueryProvider      = (*Airwallex)(nil)
 	_ payment.CancelableProvider       = (*Airwallex)(nil)
 	_ payment.MerchantIdentityProvider = (*Airwallex)(nil)
 )

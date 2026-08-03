@@ -14,7 +14,8 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 14 // v14: include group video pricing fields
+const apiKeyAuthSnapshotVersion = 15 // v15: include group video pricing fields in auth snapshots
+const apiKeyAuthCacheRedisOpTimeout = 250 * time.Millisecond
 
 type apiKeyAuthCacheConfig struct {
 	l1Size        int
@@ -96,12 +97,14 @@ func (s *APIKeyService) StartAuthCacheInvalidationSubscriber(ctx context.Context
 	if s.cache == nil || s.authCacheL1 == nil {
 		return
 	}
-	if err := s.cache.SubscribeAuthCacheInvalidation(ctx, func(cacheKey string) {
-		s.authCacheL1.Del(cacheKey)
-	}); err != nil {
-		// Log but don't fail - L1 cache will still work, just without cross-instance invalidation
-		slog.Warn("failed to start auth cache invalidation subscriber", "error", err)
-	}
+	go func() {
+		if err := s.cache.SubscribeAuthCacheInvalidation(ctx, func(cacheKey string) {
+			s.authCacheL1.Del(cacheKey)
+		}); err != nil {
+			// Log but don't fail - L1 cache will still work, just without cross-instance invalidation
+			slog.Warn("failed to start auth cache invalidation subscriber", "error", err)
+		}
+	}()
 }
 
 func (s *APIKeyService) authCacheKey(key string) string {
@@ -120,7 +123,9 @@ func (s *APIKeyService) getAuthCacheEntry(ctx context.Context, cacheKey string) 
 	if s.cache == nil || !s.authCfg.l2Enabled() {
 		return nil, false
 	}
-	entry, err := s.cache.GetAuthCache(ctx, cacheKey)
+	cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), apiKeyAuthCacheRedisOpTimeout)
+	defer cancel()
+	entry, err := s.cache.GetAuthCache(cacheCtx, cacheKey)
 	if err != nil {
 		return nil, false
 	}
@@ -148,7 +153,9 @@ func (s *APIKeyService) setAuthCacheEntry(ctx context.Context, cacheKey string, 
 	if s.cache == nil || !s.authCfg.l2Enabled() {
 		return
 	}
-	_ = s.cache.SetAuthCache(ctx, cacheKey, entry, s.authCfg.jitterTTL(ttl))
+	cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), apiKeyAuthCacheRedisOpTimeout)
+	defer cancel()
+	_ = s.cache.SetAuthCache(cacheCtx, cacheKey, entry, s.authCfg.jitterTTL(ttl))
 }
 
 func (s *APIKeyService) deleteAuthCache(ctx context.Context, cacheKey string) {
@@ -158,9 +165,13 @@ func (s *APIKeyService) deleteAuthCache(ctx context.Context, cacheKey string) {
 	if s.cache == nil {
 		return
 	}
-	_ = s.cache.DeleteAuthCache(ctx, cacheKey)
+	cacheCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), apiKeyAuthCacheRedisOpTimeout)
+	defer cancel()
+	_ = s.cache.DeleteAuthCache(cacheCtx, cacheKey)
 	// Publish invalidation message to other instances
-	_ = s.cache.PublishAuthCacheInvalidation(ctx, cacheKey)
+	pubCtx, pubCancel := context.WithTimeout(context.WithoutCancel(ctx), apiKeyAuthCacheRedisOpTimeout)
+	defer pubCancel()
+	_ = s.cache.PublishAuthCacheInvalidation(pubCtx, cacheKey)
 }
 
 func (s *APIKeyService) loadAuthCacheEntry(ctx context.Context, key, cacheKey string) (*APIKeyAuthCacheEntry, error) {
@@ -206,20 +217,21 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 		return nil
 	}
 	snapshot := &APIKeyAuthSnapshot{
-		Version:     apiKeyAuthSnapshotVersion,
-		APIKeyID:    apiKey.ID,
-		UserID:      apiKey.UserID,
-		GroupID:     apiKey.GroupID,
-		Name:        apiKey.Name,
-		Status:      apiKey.Status,
-		IPWhitelist: apiKey.IPWhitelist,
-		IPBlacklist: apiKey.IPBlacklist,
-		Quota:       apiKey.Quota,
-		QuotaUsed:   apiKey.QuotaUsed,
-		ExpiresAt:   apiKey.ExpiresAt,
-		RateLimit5h: apiKey.RateLimit5h,
-		RateLimit1d: apiKey.RateLimit1d,
-		RateLimit7d: apiKey.RateLimit7d,
+		Version:                 apiKeyAuthSnapshotVersion,
+		APIKeyID:                apiKey.ID,
+		UserID:                  apiKey.UserID,
+		GroupID:                 apiKey.GroupID,
+		Name:                    apiKey.Name,
+		Status:                  apiKey.Status,
+		RestrictedClientProduct: apiKey.RestrictedClientProduct,
+		IPWhitelist:             apiKey.IPWhitelist,
+		IPBlacklist:             apiKey.IPBlacklist,
+		Quota:                   apiKey.Quota,
+		QuotaUsed:               apiKey.QuotaUsed,
+		ExpiresAt:               apiKey.ExpiresAt,
+		RateLimit5h:             apiKey.RateLimit5h,
+		RateLimit1d:             apiKey.RateLimit1d,
+		RateLimit7d:             apiKey.RateLimit7d,
 		User: APIKeyAuthUserSnapshot{
 			ID:                         apiKey.User.ID,
 			Status:                     apiKey.User.Status,
@@ -254,6 +266,8 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			IsExclusive:                     apiKey.Group.IsExclusive,
 			Status:                          apiKey.Group.Status,
 			SubscriptionType:                apiKey.Group.SubscriptionType,
+			AugmentGatewayEntitled:          apiKey.Group.AugmentGatewayEntitled,
+			CodexGatewayEntitled:            apiKey.Group.CodexGatewayEntitled,
 			RateMultiplier:                  apiKey.Group.RateMultiplier,
 			DailyLimitUSD:                   apiKey.Group.DailyLimitUSD,
 			WeeklyLimitUSD:                  apiKey.Group.WeeklyLimitUSD,
@@ -262,6 +276,10 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			AllowBatchImageGeneration:       apiKey.Group.AllowBatchImageGeneration,
 			ImageRateIndependent:            apiKey.Group.ImageRateIndependent,
 			ImageRateMultiplier:             apiKey.Group.ImageRateMultiplier,
+			PeakRateEnabled:                 apiKey.Group.PeakRateEnabled,
+			PeakStart:                       apiKey.Group.PeakStart,
+			PeakEnd:                         apiKey.Group.PeakEnd,
+			PeakRateMultiplier:              apiKey.Group.PeakRateMultiplier,
 			ImagePrice1K:                    apiKey.Group.ImagePrice1K,
 			ImagePrice2K:                    apiKey.Group.ImagePrice2K,
 			ImagePrice4K:                    apiKey.Group.ImagePrice4K,
@@ -282,10 +300,6 @@ func (s *APIKeyService) snapshotFromAPIKey(ctx context.Context, apiKey *APIKey) 
 			MessagesDispatchModelConfig:     apiKey.Group.MessagesDispatchModelConfig,
 			ModelsListConfig:                apiKey.Group.ModelsListConfig,
 			RPMLimit:                        apiKey.Group.RPMLimit,
-			PeakRateEnabled:                 apiKey.Group.PeakRateEnabled,
-			PeakStart:                       apiKey.Group.PeakStart,
-			PeakEnd:                         apiKey.Group.PeakEnd,
-			PeakRateMultiplier:              apiKey.Group.PeakRateMultiplier,
 		}
 	}
 	return snapshot
@@ -296,20 +310,21 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 		return nil
 	}
 	apiKey := &APIKey{
-		ID:          snapshot.APIKeyID,
-		UserID:      snapshot.UserID,
-		GroupID:     snapshot.GroupID,
-		Key:         key,
-		Name:        snapshot.Name,
-		Status:      snapshot.Status,
-		IPWhitelist: snapshot.IPWhitelist,
-		IPBlacklist: snapshot.IPBlacklist,
-		Quota:       snapshot.Quota,
-		QuotaUsed:   snapshot.QuotaUsed,
-		ExpiresAt:   snapshot.ExpiresAt,
-		RateLimit5h: snapshot.RateLimit5h,
-		RateLimit1d: snapshot.RateLimit1d,
-		RateLimit7d: snapshot.RateLimit7d,
+		ID:                      snapshot.APIKeyID,
+		UserID:                  snapshot.UserID,
+		GroupID:                 snapshot.GroupID,
+		Key:                     key,
+		Name:                    snapshot.Name,
+		Status:                  snapshot.Status,
+		RestrictedClientProduct: snapshot.RestrictedClientProduct,
+		IPWhitelist:             snapshot.IPWhitelist,
+		IPBlacklist:             snapshot.IPBlacklist,
+		Quota:                   snapshot.Quota,
+		QuotaUsed:               snapshot.QuotaUsed,
+		ExpiresAt:               snapshot.ExpiresAt,
+		RateLimit5h:             snapshot.RateLimit5h,
+		RateLimit1d:             snapshot.RateLimit1d,
+		RateLimit7d:             snapshot.RateLimit7d,
 		User: &User{
 			ID:                         snapshot.User.ID,
 			Status:                     snapshot.User.Status,
@@ -337,6 +352,8 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			Status:                          snapshot.Group.Status,
 			Hydrated:                        true,
 			SubscriptionType:                snapshot.Group.SubscriptionType,
+			AugmentGatewayEntitled:          snapshot.Group.AugmentGatewayEntitled,
+			CodexGatewayEntitled:            snapshot.Group.CodexGatewayEntitled,
 			RateMultiplier:                  snapshot.Group.RateMultiplier,
 			DailyLimitUSD:                   snapshot.Group.DailyLimitUSD,
 			WeeklyLimitUSD:                  snapshot.Group.WeeklyLimitUSD,
@@ -345,6 +362,10 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			AllowBatchImageGeneration:       snapshot.Group.AllowBatchImageGeneration,
 			ImageRateIndependent:            snapshot.Group.ImageRateIndependent,
 			ImageRateMultiplier:             snapshot.Group.ImageRateMultiplier,
+			PeakRateEnabled:                 snapshot.Group.PeakRateEnabled,
+			PeakStart:                       snapshot.Group.PeakStart,
+			PeakEnd:                         snapshot.Group.PeakEnd,
+			PeakRateMultiplier:              snapshot.Group.PeakRateMultiplier,
 			ImagePrice1K:                    snapshot.Group.ImagePrice1K,
 			ImagePrice2K:                    snapshot.Group.ImagePrice2K,
 			ImagePrice4K:                    snapshot.Group.ImagePrice4K,
@@ -365,10 +386,6 @@ func (s *APIKeyService) snapshotToAPIKey(key string, snapshot *APIKeyAuthSnapsho
 			MessagesDispatchModelConfig:     snapshot.Group.MessagesDispatchModelConfig,
 			ModelsListConfig:                snapshot.Group.ModelsListConfig,
 			RPMLimit:                        snapshot.Group.RPMLimit,
-			PeakRateEnabled:                 snapshot.Group.PeakRateEnabled,
-			PeakStart:                       snapshot.Group.PeakStart,
-			PeakEnd:                         snapshot.Group.PeakEnd,
-			PeakRateMultiplier:              snapshot.Group.PeakRateMultiplier,
 		}
 	}
 	s.compileAPIKeyIPRules(apiKey)

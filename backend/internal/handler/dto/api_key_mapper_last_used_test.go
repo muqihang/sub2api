@@ -45,3 +45,18 @@ func TestAPIKeyFromService_MapsNilLastUsedAt(t *testing.T) {
 	require.Nil(t, out.LastUsedAt)
 	require.Nil(t, out.LastUsedIP)
 }
+
+func TestAPIKeyFromService_MapsCurrentConcurrency(t *testing.T) {
+	src := &service.APIKey{
+		ID:                 1,
+		UserID:             2,
+		Key:                "sk-map-concurrency",
+		Name:               "MapperConcurrency",
+		Status:             service.StatusActive,
+		CurrentConcurrency: 4,
+	}
+
+	out := APIKeyFromService(src)
+	require.NotNil(t, out)
+	require.Equal(t, 4, out.CurrentConcurrency)
+}

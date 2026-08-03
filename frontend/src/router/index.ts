@@ -13,11 +13,12 @@ import { useRoutePrefetch } from '@/composables/useRoutePrefetch'
 import { getSetupStatus } from '@/api/setup'
 import { resolveCompletedSetupRedirectPath } from './setupRedirect'
 import { resolveRouteDocumentTitle } from './title'
+import { loadBatchImageAccess } from '@/composables/useBatchImageAccess'
 
 /**
  * Route definitions with lazy loading
  */
-const routes: RouteRecordRaw[] = [
+export const routes: RouteRecordRaw[] = [
   // ==================== Setup Routes ====================
   {
     path: '/setup',
@@ -33,10 +34,27 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/home',
     name: 'Home',
-    component: () => import('@/views/HomeView.vue'),
+    component: () => import('@/views/public/StaticMockupView.vue'),
+    props: {
+      src: '/brand/mockups/homepage-codex-premium-v6.html',
+      title: '逐梦 Agent 首页'
+    },
     meta: {
       requiresAuth: false,
       title: 'Home'
+    }
+  },
+  {
+    path: '/codex-gateway',
+    name: 'CodexGateway',
+    component: () => import('@/views/public/StaticMockupView.vue'),
+    props: {
+      src: '/brand/mockups/codex-gateway.html',
+      title: 'Codex Gateway'
+    },
+    meta: {
+      requiresAuth: false,
+      title: 'Codex Gateway'
     }
   },
   {
@@ -206,6 +224,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/codex',
+    name: 'CodexEntry',
+    component: () => import('@/views/plugin/zhumeng-codex/CodexEntryView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Codex',
+      titleKey: 'codex.title',
+      descriptionKey: 'codex.description'
+	}
+  },
+  {
     path: '/batch-image',
     name: 'BatchImageGuide',
     alias: '/docs/batch-image',
@@ -213,6 +243,7 @@ const routes: RouteRecordRaw[] = [
     meta: {
       requiresAuth: true,
       requiresAdmin: false,
+      requiresBatchImageAccess: true,
       title: 'Batch Image Guide',
       titleKey: 'batchImageGuide.title',
       descriptionKey: 'batchImageGuide.description'
@@ -385,6 +416,42 @@ const routes: RouteRecordRaw[] = [
       titleKey: 'customPage.title',
     }
   },
+  {
+    path: '/plugin/augment/quick-login',
+    name: 'PluginAugmentQuickLogin',
+    component: () => import('@/views/plugin/augment/QuickLoginView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      hideInMenu: true,
+      title: 'Augment Quick Login',
+      titleKey: 'plugin.augment.quickLogin.title'
+    }
+  },
+  {
+    path: '/plugin/augment/account',
+    name: 'PluginAugmentAccount',
+    component: () => import('@/views/plugin/augment/AccountView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      hideInMenu: true,
+      title: 'Augment Account',
+      titleKey: 'plugin.augment.accountTitle'
+    }
+  },
+  {
+    path: '/plugin/augment/billing',
+    name: 'PluginAugmentBilling',
+    component: () => import('@/views/plugin/augment/BillingView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      hideInMenu: true,
+      title: 'Augment Billing',
+      titleKey: 'plugin.augment.billingTitle'
+    }
+  },
 
   // ==================== Admin Routes ====================
   {
@@ -401,6 +468,18 @@ const routes: RouteRecordRaw[] = [
       title: 'Admin Dashboard',
       titleKey: 'admin.dashboard.title',
       descriptionKey: 'admin.dashboard.description'
+    }
+  },
+  {
+    path: '/admin/augment-gateway',
+    name: 'AdminAugmentGateway',
+    component: () => import('@/views/admin/AugmentGatewayView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Augment Gateway',
+      titleKey: 'admin.augmentGateway.title',
+      descriptionKey: 'admin.augmentGateway.description'
     }
   },
   {
@@ -500,6 +579,28 @@ const routes: RouteRecordRaw[] = [
       title: 'Account Management',
       titleKey: 'admin.accounts.title',
       descriptionKey: 'admin.accounts.description'
+    }
+  },
+  {
+    path: '/admin/claude-onboarding',
+    name: 'AdminClaudeOnboarding',
+    component: () => import('@/views/admin/ClaudeOnboardingWizardView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Claude Onboarding Wizard',
+      description: 'Formal pool Claude subscription account onboarding wizard'
+    }
+  },
+  {
+    path: '/admin/openai-rt-import',
+    name: 'AdminOpenAIRTImport',
+    component: () => import('@/views/admin/OpenAIRTImportView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'OpenAI Token Import',
+      hideInMenu: false
     }
   },
   {
@@ -703,7 +804,17 @@ let authInitialized = false
 const navigationLoading = useNavigationLoadingState()
 // 延迟初始化预加载，传入 router 实例
 let routePrefetch: ReturnType<typeof useRoutePrefetch> | null = null
-const BACKEND_MODE_ALLOWED_PATHS = ['/login', '/key-usage', '/setup', '/payment/result', '/payment/airwallex', '/legal']
+export const BACKEND_MODE_ALLOWED_PATHS = [
+  '/home',
+  '/codex-gateway',
+  '/login',
+  '/key-usage',
+  '/setup',
+  '/payment/result',
+  '/payment/airwallex',
+  '/legal',
+  '/plugin/augment/quick-login',
+]
 const BACKEND_MODE_CALLBACK_PATHS = [
   '/auth/callback',
   '/auth/linuxdo/callback',
@@ -811,6 +922,11 @@ router.beforeEach(async (to, _from, next) => {
     return
   }
 
+  if (to.meta.requiresBatchImageAccess && !(await loadBatchImageAccess())) {
+    next('/dashboard')
+    return
+  }
+
   if (requiresAdmin && authStore.isAdmin) {
     const adminComplianceStore = useAdminComplianceStore()
     if (!adminComplianceStore.initialized) {
@@ -825,15 +941,11 @@ router.beforeEach(async (to, _from, next) => {
     }
   }
 
-
-  // 公共设置可能尚未加载（App.vue 的 onMounted 异步拉取晚于首次导航，且纯静态部署
-  // 无 __APP_CONFIG__ 注入）。此时 cachedPublicSettings 为空会把 payment/risk_control
-  // 误判为“未启用”而错误拦截，故这里先确保设置加载完成。
   if ((to.meta.requiresPayment || to.meta.requiresRiskControl) && !appStore.publicSettingsLoaded) {
     try {
       await appStore.fetchPublicSettings()
-    } catch (error) {
-      console.warn('Failed to load public settings in route guard', error)
+    } catch {
+      console.warn('Failed to load public settings in route guard')
     }
   }
 

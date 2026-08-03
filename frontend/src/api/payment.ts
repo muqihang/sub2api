@@ -22,6 +22,8 @@ export interface PublicOrderVerifyResult {
   paid: boolean
   created_at: string
   expires_at: string
+  paid_at?: string
+  completed_at?: string
 }
 
 export const paymentAPI = {
@@ -82,7 +84,7 @@ export const paymentAPI = {
 
   /** Resolve an order from a signed resume token without auth */
   resolveOrderPublicByResumeToken(resumeToken: string) {
-    return apiClient.post<PublicOrderVerifyResult>('/payment/public/orders/resolve', { resume_token: resumeToken })
+    return apiClient.post<PaymentOrder>('/payment/public/orders/resolve', { resume_token: resumeToken })
   },
 
   /** Request a refund for a completed order */

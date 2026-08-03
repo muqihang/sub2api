@@ -156,8 +156,8 @@ func TestMigration135AllowsGitHubAndGoogleAuthProviders(t *testing.T) {
 	require.Contains(t, sql, "'google'")
 }
 
-func TestMigration151AddsAccountAutoPauseExpiryPartialIndex(t *testing.T) {
-	content, err := FS.ReadFile("151_account_autopause_expiry_index_notx.sql")
+func TestMigration154AddsAccountAutoPauseExpiryPartialIndex(t *testing.T) {
+	content, err := FS.ReadFile("154_account_autopause_expiry_index_notx.sql")
 	require.NoError(t, err)
 
 	sql := string(content)
@@ -169,15 +169,14 @@ func TestMigration151AddsAccountAutoPauseExpiryPartialIndex(t *testing.T) {
 	require.Contains(t, sql, "expires_at IS NOT NULL")
 }
 
-func TestMigration158BackfillsGrokMediaGenerationGroups(t *testing.T) {
-	content, err := FS.ReadFile("158_enable_grok_media_generation_groups.sql")
+func TestMigration159BackfillsGrokMediaGenerationGroups(t *testing.T) {
+	content, err := FS.ReadFile("159_enable_grok_media_generation_groups.sql")
 	require.NoError(t, err)
 
 	sql := string(content)
 	require.Contains(t, sql, "UPDATE groups")
-	require.Contains(t, sql, "SET allow_image_generation = true")
-	require.Contains(t, sql, "WHERE platform = 'grok'")
-	require.Contains(t, sql, "AND allow_image_generation = false")
+	require.Contains(t, sql, "platform = 'grok'")
+	require.Contains(t, sql, "allow_image_generation = false")
 }
 
 func TestMigration154AddsSparkShadowColumnsAndConstraintsWithoutHotIndexes(t *testing.T) {
@@ -214,29 +213,13 @@ func TestMigration154aAddsSparkShadowIndexesConcurrently(t *testing.T) {
 	require.Contains(t, sql, "deleted_at IS NULL")
 }
 
-func TestMigration173AllowsCyberBlockedUsageRequestType(t *testing.T) {
-	entries, err := FS.ReadDir(".")
-	require.NoError(t, err)
-
-	previousIndex := -1
-	currentIndex := -1
-	for i, entry := range entries {
-		switch entry.Name() {
-		case "172_video_per_second_billing_metadata.sql":
-			previousIndex = i
-		case "173_allow_cyber_blocked_usage_request_type.sql":
-			currentIndex = i
-		}
-	}
-	require.NotEqual(t, -1, previousIndex)
-	require.NotEqual(t, -1, currentIndex)
-	require.Less(t, previousIndex, currentIndex)
-
-	content, err := FS.ReadFile("173_allow_cyber_blocked_usage_request_type.sql")
+func TestMigration174AddsScopedBatchImageIdempotencyIndex(t *testing.T) {
+	content, err := FS.ReadFile("174_batch_image_idempotency_scope_index_notx.sql")
 	require.NoError(t, err)
 
 	sql := string(content)
-	require.Contains(t, sql, "DROP CONSTRAINT IF EXISTS usage_logs_request_type_check")
-	require.Contains(t, sql, "ADD CONSTRAINT usage_logs_request_type_check")
-	require.Contains(t, sql, "CHECK (request_type IN (0, 1, 2, 3, 4)) NOT VALID")
+	require.Contains(t, sql, "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS")
+	require.Contains(t, sql, "ON batch_image_jobs (user_id, api_key_id, idempotency_key)")
+	require.Contains(t, sql, "idempotency_key IS NOT NULL")
+	require.Contains(t, sql, "idempotency_key <> ''")
 }

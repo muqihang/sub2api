@@ -1,0 +1,63 @@
+{
+  "name": "hosted_web_search_visible_stream",
+  "mode": "stream",
+  "request": {
+    "model": "deepseek-v4-pro",
+    "input": [
+      {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "search current news"
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "type": "web_search"
+      },
+      {
+        "type": "function",
+        "name": "get_weather",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "upstream_sequence": [
+    {
+      "status_code": 200,
+      "headers": {
+        "Content-Type": "text/event-stream"
+      },
+      "body": "data: {\"id\":\"chatcmpl_stream_hosted_search\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_search\",\"type\":\"function\",\"function\":{\"name\":\"web_search\",\"arguments\":\"{\\\"query\\\":\\\"current news\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n"
+    },
+    {
+      "status_code": 200,
+      "headers": {
+        "Content-Type": "text/event-stream"
+      },
+      "body": "data: {\"id\":\"chatcmpl_stream_hosted_search_final\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Search result says Found from gateway search.\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+    }
+  ],
+  "hosted_web_search_output": "{\"results\":[{\"title\":\"Result\",\"url\":\"https://example.test\",\"snippet\":\"Found from gateway search\"}]}",
+  "expect": {
+    "terminal_event": "response.completed",
+    "response_status": "completed",
+    "output_text": "Search result says Found from gateway search.",
+    "output_types": [
+      "reasoning",
+      "web_search_call",
+      "message"
+    ]
+  }
+}

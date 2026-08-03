@@ -95,7 +95,8 @@ func TestUsageLogFromService_IncludesServiceTierForUserAndAdmin(t *testing.T) {
 	require.Equal(t, serviceTier, *userDTO.ServiceTier)
 	require.NotNil(t, userDTO.InboundEndpoint)
 	require.Equal(t, inboundEndpoint, *userDTO.InboundEndpoint)
-	require.Nil(t, userDTO.UpstreamEndpoint)
+	require.NotNil(t, userDTO.UpstreamEndpoint)
+	require.Equal(t, upstreamEndpoint, *userDTO.UpstreamEndpoint)
 	require.NotNil(t, adminDTO.ServiceTier)
 	require.Equal(t, serviceTier, *adminDTO.ServiceTier)
 	require.NotNil(t, adminDTO.InboundEndpoint)
@@ -132,45 +133,6 @@ func TestUsageLogFromService_UsesRequestedModelAndKeepsUpstreamAdminOnly(t *test
 	require.Contains(t, string(adminJSON), `"upstream_model":"claude-sonnet-4-20250514"`)
 }
 
-func TestUsageLogFromService_KeepsUserBillingAndIPWithoutAdminCostFields(t *testing.T) {
-	t.Parallel()
-
-	ipAddress := "203.0.113.10"
-	accountRateMultiplier := 1.5
-	accountStatsCost := 0.21
-	log := &service.UsageLog{
-		RequestID:             "req_user_visible_billing",
-		Model:                 "gpt-5.4",
-		InputCost:             0.01,
-		OutputCost:            0.02,
-		CacheCreationCost:     0.03,
-		CacheReadCost:         0.04,
-		TotalCost:             0.10,
-		ActualCost:            0.08,
-		RateMultiplier:        0.8,
-		IPAddress:             &ipAddress,
-		AccountRateMultiplier: &accountRateMultiplier,
-		AccountStatsCost:      &accountStatsCost,
-	}
-
-	userDTO := UsageLogFromService(log)
-	require.Equal(t, 0.01, userDTO.InputCost)
-	require.Equal(t, 0.02, userDTO.OutputCost)
-	require.Equal(t, 0.03, userDTO.CacheCreationCost)
-	require.Equal(t, 0.04, userDTO.CacheReadCost)
-	require.Equal(t, 0.10, userDTO.TotalCost)
-	require.Equal(t, 0.08, userDTO.ActualCost)
-	require.Equal(t, 0.8, userDTO.RateMultiplier)
-	require.NotNil(t, userDTO.IPAddress)
-	require.Equal(t, ipAddress, *userDTO.IPAddress)
-
-	userJSON, err := json.Marshal(userDTO)
-	require.NoError(t, err)
-	require.NotContains(t, string(userJSON), "account_rate_multiplier")
-	require.NotContains(t, string(userJSON), "account_stats_cost")
-	require.NotContains(t, string(userJSON), "account_cost")
-}
-
 func TestUsageLogFromService_FallsBackToLegacyModelWhenRequestedModelMissing(t *testing.T) {
 	t.Parallel()
 
@@ -184,6 +146,82 @@ func TestUsageLogFromService_FallsBackToLegacyModelWhenRequestedModelMissing(t *
 
 	require.Equal(t, "claude-3", userDTO.Model)
 	require.Equal(t, "claude-3", adminDTO.Model)
+}
+
+func TestUsageLogFromService_IncludesEntityAuditFields(t *testing.T) {
+	t.Parallel()
+
+	entityID := int64(123)
+	entityType := service.EntityTypeWorkspace
+	claimedEntityID := "workspace-alpha"
+	log := &service.UsageLog{
+		RequestID:       "req_entity",
+		Model:           "gpt-5",
+		EntityID:        &entityID,
+		EntityType:      &entityType,
+		ClaimedEntityID: &claimedEntityID,
+	}
+
+	userDTO := UsageLogFromService(log)
+	adminDTO := UsageLogFromServiceAdmin(log)
+
+	require.Equal(t, entityID, *userDTO.EntityID)
+	require.Equal(t, entityType, *userDTO.EntityType)
+	require.Equal(t, claimedEntityID, *userDTO.ClaimedEntityID)
+	require.Equal(t, entityID, *adminDTO.EntityID)
+	require.Equal(t, entityType, *adminDTO.EntityType)
+	require.Equal(t, claimedEntityID, *adminDTO.ClaimedEntityID)
+}
+
+func TestUsageLogFromServiceAdmin_MarksAgnesPromptCacheUnsupported(t *testing.T) {
+	t.Parallel()
+
+	clientProduct := service.CodexUsageClientProduct
+	featureScope := string(service.CodexGatewayProviderAgnes)
+	log := &service.UsageLog{
+		RequestID: "req_agnes_cache",
+		Model:     "agnes-2.0-flash",
+		AugmentUsageFields: service.AugmentUsageFields{
+			ClientProduct: &clientProduct,
+			FeatureScope:  &featureScope,
+		},
+	}
+
+	userDTO := UsageLogFromService(log)
+	adminDTO := UsageLogFromServiceAdmin(log)
+
+	userJSON, err := json.Marshal(userDTO)
+	require.NoError(t, err)
+	require.NotContains(t, string(userJSON), "provider_prompt_cache_status")
+
+	require.NotNil(t, adminDTO.ProviderPromptCacheStatus)
+	require.Equal(t, "unsupported", *adminDTO.ProviderPromptCacheStatus)
+	require.NotNil(t, adminDTO.ProviderPromptCacheDetail)
+	require.Contains(t, *adminDTO.ProviderPromptCacheDetail, "AGNES upstream")
+}
+
+func TestAccountFromService_ExposesOpenAIGatewayTLS(t *testing.T) {
+	t.Parallel()
+
+	account := &service.Account{
+		ID:       1,
+		Name:     "openai",
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeOAuth,
+		Extra: map[string]any{
+			"openai_gateway_tls": map[string]any{
+				"enabled":    true,
+				"profile_id": float64(7),
+			},
+		},
+	}
+
+	payload, err := json.Marshal(AccountFromService(account))
+	require.NoError(t, err)
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(payload, &decoded))
+	require.Equal(t, map[string]any{"enabled": true, "profile_id": float64(7)}, decoded["openai_gateway_tls"])
 }
 
 func TestUsageLogFromService_IncludesImageBillingMetadataForUserAndAdmin(t *testing.T) {
@@ -244,7 +282,6 @@ func TestUsageLogFromService_PreservesHistoricalMissingImageSize(t *testing.T) {
 	require.Contains(t, string(body), `"image_size":null`)
 	require.NotContains(t, string(body), `"image_size":"2K"`)
 }
-
 func f64Ptr(value float64) *float64 {
 	return &value
 }

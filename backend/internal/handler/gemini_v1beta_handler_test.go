@@ -3,10 +3,14 @@
 package handler
 
 import (
+	"context"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -166,4 +170,42 @@ func TestShouldFallbackGeminiModel_DelegatesScopeFallback(t *testing.T) {
 		Body:       []byte("insufficient authentication scopes"),
 	}
 	require.True(t, shouldFallbackGeminiModel("gemini-future-model", res))
+}
+
+func TestGeminiThoughtSignatureScrubOrBlock_ProductionFailsClosedWhenScrubDoesNotApply(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	handler := &GatewayHandler{cfg: &config.Config{}}
+	handler.cfg.Gemini.ProductionMode = true
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.5-pro:generateContent", nil)
+
+	_, err := handler.scrubGeminiThoughtSignaturesOrBlock(c, []byte(`{"contents":[invalid],"thoughtSignature":"sig_1"}`), service.GeminiSafetyReasonStickySessionBindingMissing)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "thoughtSignature")
+	require.Equal(t, service.GeminiSafetyStateThoughtSignature, rec.Header().Get(service.GeminiSafetyResponseStateHeader))
+	require.Contains(t, rec.Header().Get(service.GeminiSafetyResponseReasonHeader), service.GeminiSafetyReasonStickySessionBindingMissing)
+	require.Contains(t, rec.Header().Get(service.GeminiSafetyResponseReasonHeader), service.GeminiSafetyReasonThoughtSignatureScrubFailed)
+}
+
+func TestPersistPendingGeminiStickyRebind_PersistsAcrossSameAccountRetryUntilSuccess(t *testing.T) {
+	var bindCalls []int64
+	bind := func(ctx context.Context, groupID *int64, sessionHash string, accountID int64) error {
+		bindCalls = append(bindCalls, accountID)
+		return nil
+	}
+
+	var pending int64
+	noteGeminiStickyRebindTarget(&pending, "gemini:sticky", 22)
+	require.Equal(t, int64(22), pending)
+
+	require.NoError(t, persistPendingGeminiStickyRebind(context.Background(), nil, "gemini:sticky", 21, &pending, bind))
+	require.Equal(t, int64(22), pending)
+	require.Empty(t, bindCalls)
+
+	require.NoError(t, persistPendingGeminiStickyRebind(context.Background(), nil, "gemini:sticky", 22, &pending, bind))
+	require.Equal(t, []int64{22}, bindCalls)
+	require.Zero(t, pending)
 }

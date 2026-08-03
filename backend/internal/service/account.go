@@ -2,8 +2,10 @@
 package service
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"hash/fnv"
 	"log/slog"
 	"reflect"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 )
 
@@ -71,7 +74,7 @@ type Account struct {
 	modelMappingCacheRawLen         int
 	modelMappingCacheRawSig         uint64
 
-	// header_overrides 热路径缓存（非持久化字段，同 model_mapping 缓存先例）
+	// header_overrides hot-path cache (non-persistent; mirrors model_mapping cache).
 	headerOverrideCache               map[string]string
 	headerOverrideCacheReady          bool
 	headerOverrideCacheCredentialsPtr uintptr
@@ -83,8 +86,13 @@ type Account struct {
 type OpenAIEndpointCapability string
 
 const (
-	OpenAIEndpointCapabilityChatCompletions OpenAIEndpointCapability = "chat_completions"
-	OpenAIEndpointCapabilityEmbeddings      OpenAIEndpointCapability = "embeddings"
+	OpenAIEndpointCapabilityChatCompletions      OpenAIEndpointCapability = "chat_completions"
+	OpenAIEndpointCapabilityEmbeddings           OpenAIEndpointCapability = "embeddings"
+	OpenAIEndpointCapabilityRerank               OpenAIEndpointCapability = "rerank"
+	OpenAIEndpointCapabilitySearch               OpenAIEndpointCapability = "search"
+	OpenAIEndpointCapabilityWebSearch            OpenAIEndpointCapability = "web_search"
+	OpenAIEndpointCapabilityResponsesCustomTools OpenAIEndpointCapability = "responses_custom_tools"
+	OpenAIEndpointCapabilityWebSearchCustomTools OpenAIEndpointCapability = "web_search_custom_tools"
 )
 
 const openAIEndpointCapabilitiesCredentialKey = "openai_capabilities"
@@ -144,6 +152,17 @@ func (a *Account) EffectiveLoadFactor() int {
 
 func (a *Account) IsSchedulable() bool {
 	if !a.IsActive() || !a.Schedulable {
+		return false
+	}
+	if IsFormalPoolAccount(a) {
+		if !IsFormalPoolSchedulableStage(FormalPoolAccountStage(a)) {
+			return false
+		}
+		if !FormalPoolSchedulableEvidenceComplete(a) {
+			return false
+		}
+	}
+	if a.IsClaudePlatformAWS() && !IsClaudePlatformAWSFormalPoolAccount(a) {
 		return false
 	}
 	now := time.Now()
@@ -234,10 +253,6 @@ func (a *Account) IsGrok() bool {
 
 func (a *Account) IsGrokOAuth() bool {
 	return a.IsGrok() && a.Type == AccountTypeOAuth
-}
-
-func (a *Account) IsOpenAICompatible() bool {
-	return a != nil && (a.Platform == PlatformOpenAI || a.Platform == PlatformGrok)
 }
 
 func (a *Account) GeminiOAuthType() string {
@@ -476,6 +491,14 @@ const (
 	OpenAICompactModeForceOn = "force_on"
 	// OpenAICompactModeForceOff always treats the account as compact-unsupported.
 	OpenAICompactModeForceOff = "force_off"
+
+	// OpenAICompactEndpointModePath sends compact requests to /responses/compact.
+	OpenAICompactEndpointModePath = "path"
+	// OpenAICompactEndpointModeBodySignal keeps compact requests on /responses and
+	// relies on an input item with type=compaction_trigger.
+	OpenAICompactEndpointModeBodySignal = "body_signal"
+	// OpenAICompactEndpointModeAuto negotiates the supported upstream shape.
+	OpenAICompactEndpointModeAuto = "auto"
 )
 
 func normalizeOpenAICompactMode(mode string) string {
@@ -486,6 +509,17 @@ func normalizeOpenAICompactMode(mode string) string {
 		return OpenAICompactModeForceOff
 	default:
 		return OpenAICompactModeAuto
+	}
+}
+
+func normalizeOpenAICompactEndpointMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case OpenAICompactEndpointModePath:
+		return OpenAICompactEndpointModePath
+	case OpenAICompactEndpointModeBodySignal:
+		return OpenAICompactEndpointModeBodySignal
+	default:
+		return OpenAICompactEndpointModeAuto
 	}
 }
 
@@ -558,9 +592,6 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 		if a.Platform == domain.PlatformAntigravity {
 			return domain.DefaultAntigravityModelMapping
 		}
-		if a.Platform == domain.PlatformGrok {
-			return xai.DefaultModelMapping()
-		}
 		// Bedrock 默认映射由 forwardBedrock 统一处理（需配合 region prefix 调整）
 		return nil
 	}
@@ -568,9 +599,6 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 		// Antigravity 平台使用默认映射
 		if a.Platform == domain.PlatformAntigravity {
 			return domain.DefaultAntigravityModelMapping
-		}
-		if a.Platform == domain.PlatformGrok {
-			return xai.DefaultModelMapping()
 		}
 		return nil
 	}
@@ -584,7 +612,9 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 	if len(result) > 0 {
 		if a.Platform == domain.PlatformAntigravity {
 			ensureAntigravityDefaultPassthroughs(result, []string{
+				"claude-fable-5",
 				"gemini-3-flash",
+				domain.AntigravityGemini31ProAgentModel,
 				"gemini-3.1-pro-high",
 				"gemini-3.1-pro-low",
 			})
@@ -596,9 +626,6 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 	// Antigravity 平台使用默认映射
 	if a.Platform == domain.PlatformAntigravity {
 		return domain.DefaultAntigravityModelMapping
-	}
-	if a.Platform == domain.PlatformGrok {
-		return xai.DefaultModelMapping()
 	}
 	return nil
 }
@@ -703,7 +730,7 @@ func applyAntigravityGemini31ProAliases(mapping map[string]string) {
 
 func mappingHasWildcardForModel(mapping map[string]string, model string) bool {
 	for pattern := range mapping {
-		if matchWildcard(pattern, model) {
+		if strings.Contains(pattern, "*") && matchWildcard(pattern, model) {
 			return true
 		}
 	}
@@ -808,6 +835,31 @@ func (a *Account) GetOpenAICompactMode() string {
 	return normalizeOpenAICompactMode(mode)
 }
 
+// GetOpenAICompactEndpointMode returns the upstream compact protocol shape.
+// Auto negotiation remains the default.
+func (a *Account) GetOpenAICompactEndpointMode() string {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return OpenAICompactEndpointModeAuto
+	}
+	mode, _ := a.Extra["openai_compact_endpoint_mode"].(string)
+	return normalizeOpenAICompactEndpointMode(mode)
+}
+
+func (a *Account) UsesOpenAICompactBodySignal() bool {
+	if a == nil {
+		return false
+	}
+	return a.GetOpenAICompactEndpointMode() == OpenAICompactEndpointModeBodySignal
+}
+
+func (a *Account) IsOpenAICompactNegotiationEnabled() bool {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return false
+	}
+	enabled, _ := a.Extra["openai_compact_negotiation_enabled"].(bool)
+	return enabled
+}
+
 // OpenAICompactSupportKnown reports whether compact capability is known for this
 // account and, when known, whether it is supported.
 func (a *Account) OpenAICompactSupportKnown() (supported bool, known bool) {
@@ -819,6 +871,9 @@ func (a *Account) OpenAICompactSupportKnown() (supported bool, known bool) {
 	case OpenAICompactModeForceOn:
 		return true, true
 	case OpenAICompactModeForceOff:
+		if a.IsOpenAICompactNegotiationEnabled() {
+			return false, false
+		}
 		return false, true
 	}
 
@@ -830,6 +885,47 @@ func (a *Account) OpenAICompactSupportKnown() (supported bool, known bool) {
 		return false, false
 	}
 	return supported, true
+}
+
+// OpenAICompactSupportKnownForModel returns the capability state for the
+// compact upstream model that this account would actually receive. Once
+// model-scoped probe data exists, an unprobed target remains unknown instead
+// of inheriting a result from an unrelated model.
+func (a *Account) OpenAICompactSupportKnownForModel(requestedModel string) (supported bool, known bool) {
+	if a == nil || !a.IsOpenAI() {
+		return false, false
+	}
+	switch a.GetOpenAICompactMode() {
+	case OpenAICompactModeForceOn:
+		return true, true
+	case OpenAICompactModeForceOff:
+		if a.IsOpenAICompactNegotiationEnabled() {
+			return false, false
+		}
+		return false, true
+	}
+
+	rawSupport, exists := a.Extra["openai_compact_model_support"]
+	modelSupport, valid := rawSupport.(map[string]any)
+	if !exists || !valid || len(modelSupport) == 0 {
+		return a.OpenAICompactSupportKnown()
+	}
+
+	upstreamModel := resolveOpenAIAccountUpstreamModelForRequest(a, requestedModel, true)
+	entryRaw, exists := modelSupport[normalizeOpenAICompactSupportModel(upstreamModel)]
+	if !exists {
+		return false, false
+	}
+	entry, valid := entryRaw.(map[string]any)
+	if !valid {
+		return false, false
+	}
+	supported, known = entry["supported"].(bool)
+	return supported, known
+}
+
+func normalizeOpenAICompactSupportModel(model string) string {
+	return strings.ToLower(strings.TrimSpace(model))
 }
 
 // AllowsOpenAICompact reports whether the account may be considered for compact
@@ -901,6 +997,30 @@ func (a *Account) GetExtraString(key string) string {
 		return ""
 	}
 	if v, ok := a.Extra[key]; ok {
+		switch val := v.(type) {
+		case string:
+			return val
+		case bool:
+			if val {
+				return "true"
+			}
+			return "false"
+		case json.Number:
+			return val.String()
+		case float64:
+			return strconv.FormatFloat(val, 'f', -1, 64)
+		case int:
+			return strconv.Itoa(val)
+		case int64:
+			return strconv.FormatInt(val, 10)
+		case nil:
+			return ""
+		default:
+			s, ok := v.(fmt.Stringer)
+			if ok {
+				return s.String()
+			}
+		}
 		if s, ok := v.(string); ok {
 			return s
 		}
@@ -1199,20 +1319,8 @@ func (a *Account) IsOpenAIOAuth() bool {
 	return a.IsOpenAI() && a.Type == AccountTypeOAuth
 }
 
-func (a *Account) IsOpenAIChatGPTSubscription() bool {
-	if !a.IsOpenAIOAuth() {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(a.GetCredential("plan_type"))) {
-	case "", "free", "abnormal":
-		return false
-	default:
-		return true
-	}
-}
-
 func (a *Account) IsOpenAIPersonalAccessToken() bool {
-	if !a.IsOpenAIOAuth() {
+	if a == nil || !a.IsOpenAIOAuth() {
 		return false
 	}
 	return isOpenAIPersonalAccessTokenAuthMode(a.GetCredential(openAIAuthModeCredentialKey)) ||
@@ -1227,7 +1335,7 @@ func (a *Account) GetOpenAIBaseURL() string {
 	if !a.IsOpenAI() {
 		return ""
 	}
-	if a.Type == AccountTypeAPIKey {
+	if a.Type == AccountTypeAPIKey || a.Type == AccountTypeUpstream {
 		baseURL := a.GetCredential("base_url")
 		if baseURL != "" {
 			return baseURL
@@ -1283,7 +1391,10 @@ func (a *Account) GetOpenAIIDToken() string {
 }
 
 func (a *Account) GetOpenAIApiKey() string {
-	if !a.IsOpenAIApiKey() {
+	if !a.IsOpenAI() {
+		return ""
+	}
+	if a.Type != AccountTypeAPIKey && a.Type != AccountTypeUpstream {
 		return ""
 	}
 	return a.GetCredential("api_key")
@@ -1304,7 +1415,7 @@ func (a *Account) GetChatGPTAccountID() string {
 }
 
 func (a *Account) IsChatGPTAccountFedRAMP() bool {
-	if !a.IsOpenAIOAuth() || a.Credentials == nil {
+	if a == nil || !a.IsOpenAIOAuth() || a.Credentials == nil {
 		return false
 	}
 	v, ok := a.Credentials["chatgpt_account_is_fedramp"]
@@ -1352,15 +1463,47 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 	if capability == "" {
 		return true
 	}
-	if !a.IsOpenAICompatible() {
+	if !a.IsOpenAI() {
 		return false
 	}
-	if a.IsGrok() {
-		return capability == OpenAIEndpointCapabilityChatCompletions
+	if capability == OpenAIEndpointCapabilitySearch {
+		if a.Type == AccountTypeOAuth {
+			return true
+		}
+		if a.Type != AccountTypeAPIKey && a.Type != AccountTypeUpstream {
+			return false
+		}
+		configured, found := a.openAIEndpointCapabilitySet()
+		return found && configured[string(OpenAIEndpointCapabilitySearch)]
+	}
+	if capability == OpenAIEndpointCapabilityWebSearch {
+		supported, known := a.OpenAIWebSearchSupportKnown()
+		if !known {
+			return false
+		}
+		probeTarget := a.OpenAIWebSearchProbeTarget()
+		if probeTarget != "" && probeTarget != a.OpenAIWebSearchCurrentTarget() {
+			return false
+		}
+		return supported
+	}
+	if capability == OpenAIEndpointCapabilityResponsesCustomTools {
+		if a.Type == AccountTypeOAuth {
+			return true
+		}
+		supported, known := a.OpenAIResponsesCustomToolsSupportKnown()
+		if strings.TrimSpace(a.OpenAIResponsesCustomToolsProbeModel()) != "" {
+			return true
+		}
+		return !known || supported
+	}
+	if capability == OpenAIEndpointCapabilityWebSearchCustomTools {
+		return a.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityWebSearch) &&
+			a.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityResponsesCustomTools)
 	}
 	switch capability {
 	case OpenAIEndpointCapabilityChatCompletions:
-	case OpenAIEndpointCapabilityEmbeddings:
+	case OpenAIEndpointCapabilityEmbeddings, OpenAIEndpointCapabilityRerank:
 		if a.Type != AccountTypeAPIKey {
 			return false
 		}
@@ -1373,6 +1516,252 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 		return true
 	}
 	return configured[string(capability)]
+}
+
+// OpenAIWebSearchSupportKnown reports the semantic hosted web_search probe
+// result. Unknown accounts are excluded because HTTP 200 alone does not prove
+// that an upstream executed the hosted tool.
+func (a *Account) OpenAIWebSearchSupportKnown() (supported bool, known bool) {
+	return a.openAIExtraBoolKnown(openai_compat.ExtraKeyWebSearchSupported)
+}
+
+func (a *Account) OpenAIWebSearchProbeModel() string {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return ""
+	}
+	value, _ := a.Extra[openai_compat.ExtraKeyWebSearchProbeModel].(string)
+	return strings.TrimSpace(value)
+}
+
+func (a *Account) OpenAIWebSearchProbeTarget() string {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return ""
+	}
+	value, _ := a.Extra[openai_compat.ExtraKeyWebSearchProbeTarget].(string)
+	return strings.TrimSpace(value)
+}
+
+func (a *Account) OpenAIWebSearchCurrentTarget() string {
+	if a == nil || !a.IsOpenAI() {
+		return ""
+	}
+	if a.Extra != nil {
+		if value, ok := a.Extra[openai_compat.ExtraKeyWebSearchCurrentTarget].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return a.OpenAIWebSearchTargetFingerprint()
+}
+
+func (a *Account) OpenAIWebSearchTargetFingerprint() string {
+	// Hosted web_search is an endpoint capability in the same upstream target;
+	// keep the fingerprint independent of the probe's selected model so one
+	// successful model probe does not strand equivalent mapped models.
+	return a.OpenAIResponsesTargetFingerprint("")
+}
+
+func (a *Account) OpenAIResponsesCustomToolsSupportKnown() (supported bool, known bool) {
+	return a.openAIExtraBoolKnown(openai_compat.ExtraKeyResponsesCustomToolsSupported)
+}
+
+func (a *Account) OpenAIResponsesProbeModel() string {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return ""
+	}
+	value, _ := a.Extra[openai_compat.ExtraKeyResponsesProbeModel].(string)
+	return strings.TrimSpace(value)
+}
+
+func (a *Account) OpenAIResponsesProbeTarget() string {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return ""
+	}
+	value, _ := a.Extra[openai_compat.ExtraKeyResponsesProbeTarget].(string)
+	return strings.TrimSpace(value)
+}
+
+func (a *Account) OpenAIResponsesCurrentTarget() string {
+	if a == nil || !a.IsOpenAI() {
+		return ""
+	}
+	if a.Extra != nil {
+		if value, ok := a.Extra[openai_compat.ExtraKeyResponsesCurrentTarget].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return a.OpenAIResponsesTargetFingerprint(a.OpenAIResponsesProbeModel())
+}
+
+func (a *Account) OpenAIResponsesSupportKnownForModel(requestedModel string) (supported bool, known bool) {
+	if a == nil || !a.IsOpenAI() || a.Type != AccountTypeAPIKey {
+		return false, false
+	}
+	supported, known = a.openAIExtraBoolKnown(openai_compat.ExtraKeyResponsesSupported)
+	if !known {
+		return false, false
+	}
+	probeModel := a.OpenAIResponsesProbeModel()
+	mappedModel := strings.TrimSpace(a.GetMappedModel(strings.TrimSpace(requestedModel)))
+	if probeModel == "" || mappedModel == "" || !strings.EqualFold(mappedModel, probeModel) {
+		return false, false
+	}
+	probeTarget := a.OpenAIResponsesProbeTarget()
+	if probeTarget == "" || probeTarget != a.OpenAIResponsesCurrentTarget() {
+		return false, false
+	}
+	return supported, true
+}
+
+func (a *Account) ShouldUseOpenAIResponsesAPI(requestedModel string) bool {
+	return a.ResolveOpenAIResponsesSupportForModel(requestedModel) != openai_compat.ResponsesSupportNo
+}
+
+func (a *Account) ResolveOpenAIResponsesSupportForModel(requestedModel string) openai_compat.AccountResponsesSupport {
+	if a == nil || a.Type != AccountTypeAPIKey {
+		return openai_compat.ResponsesSupportYes
+	}
+	mode := ""
+	if a.Extra != nil {
+		mode, _ = a.Extra[openai_compat.ExtraKeyResponsesMode].(string)
+	}
+	switch openai_compat.NormalizeResponsesSupportMode(strings.TrimSpace(mode)) {
+	case openai_compat.ResponsesSupportModeForceResponses:
+		return openai_compat.ResponsesSupportYes
+	case openai_compat.ResponsesSupportModeForceChatCompletions:
+		return openai_compat.ResponsesSupportNo
+	}
+	supported, known := a.OpenAIResponsesSupportKnownForModel(requestedModel)
+	if !known {
+		return openai_compat.ResponsesSupportUnknown
+	}
+	if supported {
+		return openai_compat.ResponsesSupportYes
+	}
+	return openai_compat.ResponsesSupportNo
+}
+
+func (a *Account) OpenAIResponsesCustomToolsProbeModel() string {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return ""
+	}
+	value, _ := a.Extra[openai_compat.ExtraKeyResponsesCustomToolsProbeModel].(string)
+	return strings.TrimSpace(value)
+}
+
+func (a *Account) OpenAIResponsesCustomToolsProbeTarget() string {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return ""
+	}
+	value, _ := a.Extra[openai_compat.ExtraKeyResponsesCustomToolsProbeTarget].(string)
+	return strings.TrimSpace(value)
+}
+
+func (a *Account) OpenAIResponsesCustomToolsCurrentTarget() string {
+	if a == nil || !a.IsOpenAI() {
+		return ""
+	}
+	if a.Extra != nil {
+		if value, ok := a.Extra[openai_compat.ExtraKeyResponsesCustomToolsCurrentTarget].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return a.OpenAIResponsesCustomToolsTargetFingerprint(a.OpenAIResponsesCustomToolsProbeModel())
+}
+
+func (a *Account) OpenAIResponsesCustomToolsTargetFingerprint(probeModel string) string {
+	return a.OpenAIResponsesTargetFingerprint(probeModel)
+}
+
+func (a *Account) OpenAIResponsesTargetFingerprint(probeModel string) string {
+	if a == nil || !a.IsOpenAI() {
+		return ""
+	}
+	targetCredentials := make(map[string]any)
+	for _, key := range []string{"base_url", "model_mapping", "user_agent"} {
+		if value, ok := a.Credentials[key]; ok && value != nil {
+			targetCredentials[key] = value
+		}
+	}
+	routingExtra := make(map[string]any)
+	for _, key := range []string{"openai_gateway_egress_bucket", "openai_gateway_profile_id", "openai_gateway_profile_mode"} {
+		if value, ok := a.Extra[key]; ok && value != nil {
+			routingExtra[key] = value
+		}
+	}
+	payload, err := json.Marshal(struct {
+		Platform     string         `json:"platform"`
+		Type         string         `json:"type"`
+		Credentials  map[string]any `json:"credentials"`
+		ProxyID      *int64         `json:"proxy_id"`
+		RoutingExtra map[string]any `json:"routing_extra"`
+		ProbeModel   string         `json:"probe_model"`
+	}{
+		Platform:     a.Platform,
+		Type:         a.Type,
+		Credentials:  targetCredentials,
+		ProxyID:      a.ProxyID,
+		RoutingExtra: routingExtra,
+		ProbeModel:   strings.TrimSpace(probeModel),
+	})
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(payload)
+	return fmt.Sprintf("sha256:%x", sum[:])
+}
+
+func (a *Account) SupportsOpenAIResponsesCustomToolsForModel(requestedModel string) bool {
+	if a == nil || !a.IsOpenAI() {
+		return false
+	}
+	if a.Type == AccountTypeOAuth {
+		return true
+	}
+	supported, known := a.OpenAIResponsesCustomToolsSupportKnown()
+	if !known {
+		return true
+	}
+	probeModel := a.OpenAIResponsesCustomToolsProbeModel()
+	if probeModel == "" {
+		return supported
+	}
+	mappedModel := strings.TrimSpace(a.GetMappedModel(strings.TrimSpace(requestedModel)))
+	if mappedModel == "" || !strings.EqualFold(mappedModel, probeModel) {
+		return true
+	}
+	probeTarget := a.OpenAIResponsesCustomToolsProbeTarget()
+	if probeTarget == "" || probeTarget != a.OpenAIResponsesCustomToolsCurrentTarget() {
+		return true
+	}
+	return supported
+}
+
+func (a *Account) openAIExtraBoolKnown(key string) (supported bool, known bool) {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return false, false
+	}
+	raw, found := a.Extra[key]
+	if !found || raw == nil {
+		return false, false
+	}
+	switch value := raw.(type) {
+	case bool:
+		return value, true
+	case string:
+		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+		return parsed, err == nil
+	case json.Number:
+		parsed, err := strconv.ParseBool(value.String())
+		return parsed, err == nil
+	case float64:
+		return value != 0, true
+	case int:
+		return value != 0, true
+	case int64:
+		return value != 0, true
+	default:
+		return false, false
+	}
 }
 
 func (a *Account) openAIEndpointCapabilitySet() (map[string]bool, bool) {
@@ -1423,17 +1812,19 @@ func (a *Account) openAIEndpointCapabilitySet() (map[string]bool, bool) {
 }
 
 func (a *Account) SupportsOpenAIImageCapability(capability OpenAIImagesCapability) bool {
+	if a == nil || !a.IsOpenAI() {
+		return false
+	}
 	if capability == "" {
 		return true
 	}
-	if !a.IsOpenAI() {
-		return false
-	}
-	switch capability {
-	case OpenAIImagesCapabilityBasic, OpenAIImagesCapabilityNative:
-		return a.Type == AccountTypeOAuth || a.Type == AccountTypeAPIKey
+	switch a.Type {
+	case AccountTypeAPIKey:
+		return capability == OpenAIImagesCapabilityBasic || capability == OpenAIImagesCapabilityNative
+	case AccountTypeOAuth:
+		return openAIOAuthAccountSupportsImageCapability(a, capability)
 	default:
-		return true
+		return false
 	}
 }
 
@@ -1591,7 +1982,7 @@ func normalizeOpenAIWSIngressDefaultMode(mode string) string {
 	return OpenAIWSIngressModeCtxPool
 }
 
-// ResolveOpenAIResponsesWebSocketV2Mode 返回账号在 WSv2 ingress 下的有效模式（off/ctx_pool/passthrough）。
+// ResolveOpenAIResponsesWebSocketV2Mode 返回账号在 WSv2 ingress 下的有效模式。
 //
 // 优先级：
 // 1. 分类型 mode 新字段（string）
@@ -1748,15 +2139,36 @@ func (a *Account) IsCodexCLIOnlyEnabled() bool {
 	return ok && enabled
 }
 
-// IsCodexCLIOnlyAppServerAllowed 返回 codex_cli_only 账号是否额外放行 Codex app-server
-// 第三方客户端（运行时与全局 app_server 开关 OR）。字段：accounts.extra.codex_cli_only_allow_app_server。
-// 仅在 codex_cli_only 已启用时有意义；字段缺失或类型不符按 false（不放行）处理。
-func (a *Account) IsCodexCLIOnlyAppServerAllowed() bool {
-	if !a.IsCodexCLIOnlyEnabled() {
-		return false
+// GetCodexCLIOnlyAllowedClients 返回 codex_cli_only 之上额外放行的命名客户端预设 ID 列表。
+// 仅 OpenAI OAuth 账号生效；缺失或类型不符时返回空。预设 ID 的具体匹配规则由
+// openai 包的 registry 固化，配置只能引用预设键、不能自定义规则。
+func (a *Account) GetCodexCLIOnlyAllowedClients() []string {
+	if a == nil || !a.IsOpenAIOAuth() || a.Extra == nil {
+		return nil
 	}
-	v, ok := a.Extra["codex_cli_only_allow_app_server"].(bool)
-	return ok && v
+	raw, ok := a.Extra["codex_cli_only_allowed_clients"]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []string:
+		result := make([]string, 0, len(v))
+		for _, s := range v {
+			if strings.TrimSpace(s) != "" {
+				result = append(result, s)
+			}
+		}
+		return result
+	case []any:
+		result := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+				result = append(result, s)
+			}
+		}
+		return result
+	}
+	return nil
 }
 
 // WindowCostSchedulability 窗口费用调度状态
@@ -1815,6 +2227,78 @@ func (a *Account) GetTLSFingerprintProfileID() int64 {
 		return int64(id)
 	case json.Number:
 		if i, err := id.Int64(); err == nil {
+			return i
+		}
+	}
+	return 0
+}
+
+type OpenAIGatewayAccountTLSOverride struct {
+	Enabled   bool
+	ProfileID int64
+}
+
+type OpenAIGatewayAccountTLSPolicy struct {
+	Enabled   bool  `json:"enabled"`
+	ProfileID int64 `json:"profile_id"`
+}
+
+func (p OpenAIGatewayAccountTLSPolicy) ExtraMap() map[string]any {
+	return map[string]any{
+		"enabled":    p.Enabled,
+		"profile_id": p.ProfileID,
+	}
+}
+
+func (a *Account) GetOpenAIGatewayTLSOverride() OpenAIGatewayAccountTLSOverride {
+	if a == nil || a.Extra == nil {
+		return OpenAIGatewayAccountTLSOverride{}
+	}
+	raw, ok := a.Extra[OpenAIGatewayTLSExtraKey]
+	if !ok || raw == nil {
+		return OpenAIGatewayAccountTLSOverride{}
+	}
+	values, ok := raw.(map[string]any)
+	if !ok {
+		if nested, ok := raw.(map[string]interface{}); ok {
+			values = nested
+		} else {
+			return OpenAIGatewayAccountTLSOverride{}
+		}
+	}
+	return OpenAIGatewayAccountTLSOverride{
+		Enabled:   boolFromAny(values["enabled"]),
+		ProfileID: int64FromAny(values["profile_id"]),
+	}
+}
+
+func boolFromAny(v any) bool {
+	switch value := v.(type) {
+	case bool:
+		return value
+	case string:
+		return strings.EqualFold(strings.TrimSpace(value), "true")
+	default:
+		return false
+	}
+}
+
+func int64FromAny(v any) int64 {
+	switch value := v.(type) {
+	case int:
+		return int64(value)
+	case int64:
+		return value
+	case int32:
+		return int64(value)
+	case float64:
+		return int64(value)
+	case json.Number:
+		if i, err := value.Int64(); err == nil {
+			return i
+		}
+	case string:
+		if i, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil {
 			return i
 		}
 	}

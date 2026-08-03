@@ -98,10 +98,7 @@ func TestUpdateUserPlatformQuotas_Success(t *testing.T) {
 
 	body := `{"quotas":[
 		{"platform":"anthropic","daily_limit_usd":10.0,"weekly_limit_usd":null,"monthly_limit_usd":100.0},
-		{"platform":"openai","daily_limit_usd":80.0,"weekly_limit_usd":300.0,"monthly_limit_usd":null},
-		{"platform":"gemini","daily_limit_usd":null,"weekly_limit_usd":null,"monthly_limit_usd":null},
-		{"platform":"antigravity","daily_limit_usd":null,"weekly_limit_usd":null,"monthly_limit_usd":null},
-		{"platform":"grok","daily_limit_usd":null,"weekly_limit_usd":null,"monthly_limit_usd":null}
+		{"platform":"openai","daily_limit_usd":null,"weekly_limit_usd":null,"monthly_limit_usd":null}
 	]}`
 	c, w := putReq(t, body)
 	h.UpdateUserPlatformQuotas(c)
@@ -112,12 +109,47 @@ func TestUpdateUserPlatformQuotas_Success(t *testing.T) {
 	if len(repo.upsertCalls) != 1 {
 		t.Fatalf("UpsertForUser should be called once, got %d", len(repo.upsertCalls))
 	}
-	if repo.upsertCalls[0].userID != 42 || len(repo.upsertCalls[0].records) != len(service.AllowedQuotaPlatforms) {
+	if repo.upsertCalls[0].userID != 42 || len(repo.upsertCalls[0].records) != 2 {
 		t.Errorf("unexpected upsert call: %+v", repo.upsertCalls[0])
 	}
-	// 缓存失效：按全部允许平台统一失效。
-	if len(cache.deleteCalls) != 5 {
-		t.Errorf("expected 5 cache delete calls, got %d: %+v", len(cache.deleteCalls), cache.deleteCalls)
+	// 缓存失效：对全部允许平台统一失效，覆盖软删除场景。
+	if len(cache.deleteCalls) != len(service.AllowedQuotaPlatforms) {
+		t.Errorf("expected %d cache delete calls, got %d: %+v", len(service.AllowedQuotaPlatforms), len(cache.deleteCalls), cache.deleteCalls)
+	}
+}
+
+func TestUpdateUserPlatformQuotas_AllAllowedPlatformsIncludingGrok(t *testing.T) {
+	repo := &upsertCapturingQuotaRepo{}
+	cache := &billingCacheStub{}
+	h := buildTestHandler(repo, cache)
+
+	body := `{"quotas":[
+		{"platform":"anthropic","daily_limit_usd":1},
+		{"platform":"openai","daily_limit_usd":2},
+		{"platform":"gemini","daily_limit_usd":3},
+		{"platform":"antigravity","daily_limit_usd":4},
+		{"platform":"grok","daily_limit_usd":5}
+	]}`
+	c, w := putReq(t, body)
+	h.UpdateUserPlatformQuotas(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(repo.upsertCalls) != 1 {
+		t.Fatalf("UpsertForUser should be called once, got %d", len(repo.upsertCalls))
+	}
+	if got, want := len(repo.upsertCalls[0].records), len(service.AllowedQuotaPlatforms); got != want {
+		t.Fatalf("records length = %d, want %d", got, want)
+	}
+	foundGrok := false
+	for _, record := range repo.upsertCalls[0].records {
+		if record.Platform == "grok" {
+			foundGrok = true
+		}
+	}
+	if !foundGrok {
+		t.Fatalf("grok quota record not passed to repository: %+v", repo.upsertCalls[0].records)
 	}
 }
 

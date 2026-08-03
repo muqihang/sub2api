@@ -95,6 +95,11 @@ func Status(v string) predicate.APIKey {
 	return predicate.APIKey(sql.FieldEQ(FieldStatus, v))
 }
 
+// RestrictedClientProduct applies equality check predicate on the "restricted_client_product" field. It's identical to RestrictedClientProductEQ.
+func RestrictedClientProduct(v string) predicate.APIKey {
+	return predicate.APIKey(sql.FieldEQ(FieldRestrictedClientProduct, v))
+}
+
 // LastUsedAt applies equality check predicate on the "last_used_at" field. It's identical to LastUsedAtEQ.
 func LastUsedAt(v time.Time) predicate.APIKey {
 	return predicate.APIKey(sql.FieldEQ(FieldLastUsedAt, v))
@@ -533,6 +538,81 @@ func StatusEqualFold(v string) predicate.APIKey {
 // StatusContainsFold applies the ContainsFold predicate on the "status" field.
 func StatusContainsFold(v string) predicate.APIKey {
 	return predicate.APIKey(sql.FieldContainsFold(FieldStatus, v))
+}
+
+// RestrictedClientProductEQ applies the EQ predicate on the "restricted_client_product" field.
+func RestrictedClientProductEQ(v string) predicate.APIKey {
+	return predicate.APIKey(sql.FieldEQ(FieldRestrictedClientProduct, v))
+}
+
+// RestrictedClientProductNEQ applies the NEQ predicate on the "restricted_client_product" field.
+func RestrictedClientProductNEQ(v string) predicate.APIKey {
+	return predicate.APIKey(sql.FieldNEQ(FieldRestrictedClientProduct, v))
+}
+
+// RestrictedClientProductIn applies the In predicate on the "restricted_client_product" field.
+func RestrictedClientProductIn(vs ...string) predicate.APIKey {
+	return predicate.APIKey(sql.FieldIn(FieldRestrictedClientProduct, vs...))
+}
+
+// RestrictedClientProductNotIn applies the NotIn predicate on the "restricted_client_product" field.
+func RestrictedClientProductNotIn(vs ...string) predicate.APIKey {
+	return predicate.APIKey(sql.FieldNotIn(FieldRestrictedClientProduct, vs...))
+}
+
+// RestrictedClientProductGT applies the GT predicate on the "restricted_client_product" field.
+func RestrictedClientProductGT(v string) predicate.APIKey {
+	return predicate.APIKey(sql.FieldGT(FieldRestrictedClientProduct, v))
+}
+
+// RestrictedClientProductGTE applies the GTE predicate on the "restricted_client_product" field.
+func RestrictedClientProductGTE(v string) predicate.APIKey {
+	return predicate.APIKey(sql.FieldGTE(FieldRestrictedClientProduct, v))
+}
+
+// RestrictedClientProductLT applies the LT predicate on the "restricted_client_product" field.
+func RestrictedClientProductLT(v string) predicate.APIKey {
+	return predicate.APIKey(sql.FieldLT(FieldRestrictedClientProduct, v))
+}
+
+// RestrictedClientProductLTE applies the LTE predicate on the "restricted_client_product" field.
+func RestrictedClientProductLTE(v string) predicate.APIKey {
+	return predicate.APIKey(sql.FieldLTE(FieldRestrictedClientProduct, v))
+}
+
+// RestrictedClientProductContains applies the Contains predicate on the "restricted_client_product" field.
+func RestrictedClientProductContains(v string) predicate.APIKey {
+	return predicate.APIKey(sql.FieldContains(FieldRestrictedClientProduct, v))
+}
+
+// RestrictedClientProductHasPrefix applies the HasPrefix predicate on the "restricted_client_product" field.
+func RestrictedClientProductHasPrefix(v string) predicate.APIKey {
+	return predicate.APIKey(sql.FieldHasPrefix(FieldRestrictedClientProduct, v))
+}
+
+// RestrictedClientProductHasSuffix applies the HasSuffix predicate on the "restricted_client_product" field.
+func RestrictedClientProductHasSuffix(v string) predicate.APIKey {
+	return predicate.APIKey(sql.FieldHasSuffix(FieldRestrictedClientProduct, v))
+}
+
+// RestrictedClientProductIsNil applies the IsNil predicate on the "restricted_client_product" field.
+func RestrictedClientProductIsNil() predicate.APIKey {
+	return predicate.APIKey(sql.FieldIsNull(FieldRestrictedClientProduct))
+}
+
+// RestrictedClientProductNotNil applies the NotNil predicate on the "restricted_client_product" field.
+func RestrictedClientProductNotNil() predicate.APIKey {
+	return predicate.APIKey(sql.FieldNotNull(FieldRestrictedClientProduct))
+}
+
+// RestrictedClientProductEqualFold applies the EqualFold predicate on the "restricted_client_product" field.
+func RestrictedClientProductEqualFold(v string) predicate.APIKey {
+	return predicate.APIKey(sql.FieldEqualFold(FieldRestrictedClientProduct, v))
+}
+
+// RestrictedClientProductContainsFold applies the ContainsFold predicate on the "restricted_client_product" field.
+func RestrictedClientProductContainsFold(v string) predicate.APIKey {
+	return predicate.APIKey(sql.FieldContainsFold(FieldRestrictedClientProduct, v))
 }
 
 // LastUsedAtEQ applies the EQ predicate on the "last_used_at" field.

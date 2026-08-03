@@ -138,6 +138,24 @@ describe('OAuthCallbackView', () => {
     expect(wrapper.find('input[readonly]').exists()).toBe(false)
   })
 
+  it('uses normalized absolute API base when forwarding frontend provider callbacks', async () => {
+    vi.stubEnv('VITE_API_BASE_URL', 'https://api.example.com/api/v1/')
+    routeState.path = '/auth/oauth/callback'
+    routeState.query = {
+      code: 'provider-code',
+      state: 'provider-state',
+    }
+    window.sessionStorage.setItem('email_oauth_pending_provider', 'github')
+
+    mount(OAuthCallbackView)
+    await vi.dynamicImportSettled()
+
+    expect(locationState.current.href).toBe(
+      'https://api.example.com/api/v1/auth/oauth/github/callback?code=provider-code&state=provider-state'
+    )
+    vi.unstubAllEnvs()
+  })
+
   it('forwards frontend email oauth provider callbacks back to the backend callback endpoint', async () => {
     routeState.path = '/auth/oauth/callback'
     routeState.query = {

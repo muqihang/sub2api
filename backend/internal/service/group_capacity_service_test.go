@@ -139,32 +139,14 @@ func TestGetAllGroupCapacityBatchAggregatesRuntimeAndLimits(t *testing.T) {
 	require.Equal(t, 9*time.Minute, sessionCache.idleTimeouts[2])
 
 	require.Equal(t, []GroupCapacitySummary{
-		{
-			GroupID:         10,
-			ConcurrencyUsed: 1,
-			ConcurrencyMax:  2,
-			SessionsUsed:    2,
-			SessionsMax:     3,
-			RPMUsed:         5,
-			RPMMax:          11,
-		},
-		{
-			GroupID:         20,
-			ConcurrencyUsed: 3,
-			ConcurrencyMax:  6,
-			SessionsUsed:    3,
-			SessionsMax:     4,
-			RPMUsed:         12,
-			RPMMax:          24,
-		},
+		{GroupID: 10, ConcurrencyUsed: 1, ConcurrencyMax: 2, SessionsUsed: 2, SessionsMax: 3, RPMUsed: 5, RPMMax: 11},
+		{GroupID: 20, ConcurrencyUsed: 3, ConcurrencyMax: 6, SessionsUsed: 3, SessionsMax: 4, RPMUsed: 12, RPMMax: 24},
 	}, results)
 }
 
 func TestGetAllGroupCapacityBatchKeepsEmptyGroupRows(t *testing.T) {
 	accountRepo := &groupCapacityAccountRepoStub{
-		rows: []GroupAccountCapacityRow{
-			{GroupID: 20, AccountID: 2, Concurrency: 4},
-		},
+		rows: []GroupAccountCapacityRow{{GroupID: 20, AccountID: 2, Concurrency: 4}},
 	}
 	groupRepo := &groupCapacityGroupRepoStub{groupIDs: []int64{10, 20}}
 	svc := NewGroupCapacityService(accountRepo, groupRepo, nil, nil, nil)

@@ -13,8 +13,9 @@ import (
 
 // responsesFailedError 对齐 OpenAI Responses 协议 error 子对象。
 type responsesFailedError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code     string `json:"code"`
+	Category string `json:"category,omitempty"`
+	Message  string `json:"message"`
 }
 
 // responsesFailedBody 对齐 apicompat.makeResponsesCompletedEvent 输出的 response 子对象字段集。
@@ -53,6 +54,10 @@ type responsesFailedEvent struct {
 // 此时 caller 也无法回退到 JSON（HTTP 200 已固化），通常意味着连接已经损坏，
 // 应当让请求处理函数 return，由上层关闭连接。
 func writeResponsesFailedSSE(c *gin.Context, errType, message string) bool {
+	return writeResponsesFailedSSEWithCodeCategory(c, errType, mapResponsesErrorCode(errType), "", message)
+}
+
+func writeResponsesFailedSSEWithCodeCategory(c *gin.Context, errType, code, category, message string) bool {
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
 		return false
@@ -67,8 +72,9 @@ func writeResponsesFailedSSE(c *gin.Context, errType, message string) bool {
 			Status: "failed",
 			Output: []any{},
 			Error: responsesFailedError{
-				Code:    mapResponsesErrorCode(errType),
-				Message: message,
+				Code:     strings.TrimSpace(code),
+				Category: strings.TrimSpace(category),
+				Message:  message,
 			},
 		},
 	})
@@ -85,39 +91,35 @@ func writeResponsesFailedSSE(c *gin.Context, errType, message string) bool {
 	return true
 }
 
-// inboundIsResponses 判断当前请求是否落在任意 Responses 路由上
-// （不区分 root 还是 compact 变体）。
+// inboundIsResponses 判断当前请求是否落在任何 /responses 路由上。
 //
 // 不能直接用 GetInboundEndpoint(c) == EndpointResponses 比较，因为
-// GetInboundEndpoint/NormalizeInboundEndpoint 会把 compact 变体归一化为
-// 单独的 EndpointResponsesCompact（而不是 EndpointResponses），
-// 而本函数在这里只关心“是不是 Responses 家族的请求”，
-// 不需要区分 root/compact，所以不能用那个等值比较。
+// NormalizeInboundEndpoint 只识别包含 "/v1/responses" 子串的路径；
+// 项目里实际注册了多组路由（gateway_v1、top-level bare、codex direct），
+// 其中 r.POST("/responses", ...) 和 codexDirect.POST("/responses", ...)
+// 的 c.FullPath() 不含 "/v1/" 前缀，会被归一化为原始路径，
+// 导致协议合规终止事件没法发出去。
 //
-// 这里改用 FullPath 的后缀/子串判断，一次性覆盖 root 和 compact 的所有变体：
+// 这里用 FullPath 的后缀判断，覆盖所有变体：
 //   - /v1/responses
 //   - /v1/responses/compact
 //   - /responses
 //   - /responses/compact
 //   - /backend-api/codex/responses
 //   - /backend-api/codex/responses/compact
-//
-// 对于通配路由（如 "/v1/responses/*action"）注册的 FullPath 本身就带有
-// "/responses/" 子串（例如 "/v1/responses/*action"），所以下面的
-// strings.Contains(p, "/responses/") 分支同样能覆盖这些通配路由，
-// 不需要额外处理通配符本身。
 func inboundIsResponses(c *gin.Context) bool {
 	if c == nil {
 		return false
 	}
-	p := strings.TrimRight(c.FullPath(), "/")
-	if p == "" && c.Request != nil && c.Request.URL != nil {
-		p = strings.TrimRight(c.Request.URL.Path, "/")
+	path := ""
+	if c.Request != nil && c.Request.URL != nil {
+		path = c.Request.URL.Path
 	}
-	if p == "" {
-		return false
+	if path == "" {
+		path = c.FullPath()
 	}
-	return strings.HasSuffix(p, "/responses") || strings.Contains(p, "/responses/")
+	endpoint := NormalizeInboundEndpoint(path)
+	return endpoint == EndpointResponses || endpoint == EndpointResponsesCompact
 }
 
 // synthesizeResponseID 为合成的 response.failed 事件生成一个稳定的 id。

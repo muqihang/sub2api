@@ -24,7 +24,10 @@ vi.mock('@/composables/useClipboard', () => ({
 vi.mock('vue-i18n', async () => {
   const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
   const messages: Record<string, string> = {
-    'admin.accounts.imagePromptDefault': 'Generate a cute orange cat astronaut sticker on a clean pastel background.'
+    'admin.accounts.imagePromptDefault': 'Generate a cute orange cat astronaut sticker on a clean pastel background.',
+    'admin.accounts.openai.testModeDefault': 'Default probe',
+    'admin.accounts.openai.testModeCompact': 'Compact probe',
+    'admin.accounts.openai.testModeWebSearch': 'Web Search probe'
   }
   return {
     ...actual,
@@ -59,22 +62,27 @@ function createStreamResponse(lines: string[]) {
   } as Response
 }
 
-function mountModal(account: Record<string, unknown> = {
-  id: 42,
-  name: 'Gemini Image Test',
-  platform: 'gemini',
-  type: 'apikey',
-  status: 'active'
-}) {
+function mountModal(account: Record<string, unknown> = {}) {
   return mount(AccountTestModal, {
     props: {
       show: false,
-      account
+      account: {
+        id: 42,
+        name: 'Gemini Image Test',
+        platform: 'gemini',
+        type: 'apikey',
+        status: 'active',
+        ...account
+      }
     } as any,
     global: {
       stubs: {
         BaseDialog: { template: '<div><slot /><slot name="footer" /></div>' },
-        Select: { template: '<div class="select-stub"></div>' },
+        Select: {
+          props: ['modelValue', 'options', 'valueKey', 'labelKey'],
+          emits: ['update:modelValue'],
+          template: '<select class="select-stub" :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value)"><option v-for="option in options" :key="option[valueKey || \'value\']" :value="option[valueKey || \'value\']">{{ option[labelKey || \'label\'] }}</option></select>'
+        },
         TextArea: {
           props: ['modelValue'],
           emits: ['update:modelValue'],
@@ -145,75 +153,77 @@ describe('AccountTestModal', () => {
     expect(preview.attributes('src')).toBe('data:image/png;base64,QUJD')
   })
 
-  it('grok 账号测试默认选择 Grok 模型', async () => {
+  it('OpenAI account test can request compact probe mode', async () => {
     getAvailableModels.mockResolvedValue([
-      { id: 'grok-4.3', display_name: 'Grok 4.3' },
-      { id: 'grok-build-0.1', display_name: 'Grok Build 0.1' }
+      { id: 'gpt-5.5-codex', display_name: 'GPT-5.5 Codex' }
     ])
     global.fetch = vi.fn().mockResolvedValue(
       createStreamResponse([
-        'data: {"type":"test_start","model":"grok-4.3"}\n',
-        'data: {"type":"content","text":"ok"}\n',
+        'data: {"type":"test_start","model":"gpt-5.5-codex"}\n',
+        'data: {"type":"status","text":"compact probe"}\n',
         'data: {"type":"test_complete","success":true}\n'
       ])
     ) as any
 
     const wrapper = mountModal({
-      id: 13,
-      name: 'Grok Account',
-      platform: 'grok',
-      type: 'oauth',
-      status: 'active'
+      id: 77,
+      name: 'OpenAI Compact Probe',
+      platform: 'openai',
+      type: 'oauth'
     })
     await wrapper.setProps({ show: true })
     await flushPromises()
 
-    const buttons = wrapper.findAll('button')
-    const startButton = buttons.find((button) => button.text().includes('admin.accounts.startTest'))
-    expect(startButton).toBeTruthy()
+    const selects = wrapper.findAll('select.select-stub')
+    expect(selects.length).toBeGreaterThanOrEqual(2)
+    await selects[1].setValue('compact')
 
+    const startButton = wrapper.findAll('button').find((button) => button.text().includes('admin.accounts.startTest'))
+    expect(startButton).toBeTruthy()
     await startButton!.trigger('click')
     await flushPromises()
 
     expect(global.fetch).toHaveBeenCalledTimes(1)
     const [, request] = (global.fetch as any).mock.calls[0]
     expect(JSON.parse(request.body)).toEqual({
-      model_id: 'grok-4.3',
-      prompt: ''
+      model_id: 'gpt-5.5-codex',
+      prompt: '',
+      mode: 'compact'
     })
+    expect(wrapper.text()).toContain('compact probe')
   })
 
-  it('OpenAI Compact 探测会携带 compact 测试模式', async () => {
+  it('OpenAI account test can request hosted web search probe mode', async () => {
     getAvailableModels.mockResolvedValue([
-      { id: 'gpt-5.4', display_name: 'GPT-5.4' }
+      { id: 'gpt-5.6-sol', display_name: 'GPT-5.6 Sol' }
     ])
     global.fetch = vi.fn().mockResolvedValue(
       createStreamResponse([
+        'data: {"type":"status","text":"Hosted web_search probe succeeded"}\n',
         'data: {"type":"test_complete","success":true}\n'
       ])
     ) as any
 
     const wrapper = mountModal({
-      id: 42,
-      name: 'OpenAI OAuth',
+      id: 210,
+      name: 'OpenAI Web Search Probe',
       platform: 'openai',
-      type: 'oauth',
-      status: 'active'
+      type: 'apikey'
     })
     await wrapper.setProps({ show: true })
     await flushPromises()
 
-    ;(wrapper.vm as any).selectedModelId = 'gpt-5.4'
-    ;(wrapper.vm as any).testMode = 'compact'
-    await (wrapper.vm as any).startTest()
+    const selects = wrapper.findAll('select.select-stub')
+    await selects[1].setValue('web_search')
+    const startButton = wrapper.findAll('button').find((button) => button.text().includes('admin.accounts.startTest'))
+    await startButton!.trigger('click')
     await flushPromises()
 
-    expect(global.fetch).toHaveBeenCalledTimes(1)
     const [, request] = (global.fetch as any).mock.calls[0]
     expect(JSON.parse(request.body)).toMatchObject({
-      model_id: 'gpt-5.4',
-      prompt: '',
-      mode: 'compact'
+      model_id: 'gpt-5.6-sol',
+      mode: 'web_search'
     })
+    expect(wrapper.text()).toContain('Hosted web_search probe succeeded')
   })
 })

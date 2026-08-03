@@ -10,11 +10,17 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
 )
 
-// tokenRefreshTempUnschedDuration token 刷新重试耗尽后临时不可调度的持续时间
-const tokenRefreshTempUnschedDuration = 10 * time.Minute
+const (
+	// tokenRefreshTempUnschedDuration token 刷新重试耗尽后临时不可调度的持续时间
+	tokenRefreshTempUnschedDuration = 10 * time.Minute
+
+	// TokenRefreshRetryExhaustedReasonPrefix marks temp-unsched reasons owned by
+	// the background token refresh loop. Repository candidate filtering must not
+	// match request-path cooldown reasons.
+	TokenRefreshRetryExhaustedReasonPrefix = "token refresh retry exhausted:"
+)
 
 // TokenRefreshService OAuth token自动刷新服务
 // 定期检查并刷新即将过期的token
@@ -39,6 +45,10 @@ type TokenRefreshService struct {
 	wg       sync.WaitGroup
 }
 
+type tokenRefreshCandidateLister interface {
+	ListTokenRefreshCandidates(ctx context.Context) ([]Account, error)
+}
+
 // NewTokenRefreshService 创建token刷新服务
 func NewTokenRefreshService(
 	accountRepo AccountRepository,
@@ -50,7 +60,6 @@ func NewTokenRefreshService(
 	schedulerCache SchedulerCache,
 	cfg *config.Config,
 	tempUnschedCache TempUnschedCache,
-	grokOAuthServices ...*GrokOAuthService,
 ) *TokenRefreshService {
 	s := &TokenRefreshService{
 		accountRepo:      accountRepo,
@@ -67,11 +76,6 @@ func NewTokenRefreshService(
 	claudeRefresher := NewClaudeTokenRefresher(oauthService)
 	geminiRefresher := NewGeminiTokenRefresher(geminiOAuthService)
 	agRefresher := NewAntigravityTokenRefresher(antigravityOAuthService)
-	var grokOAuthService *GrokOAuthService
-	if len(grokOAuthServices) > 0 {
-		grokOAuthService = grokOAuthServices[0]
-	}
-	grokRefresher := NewGrokTokenRefresher(grokOAuthService)
 
 	// 注册平台特定的刷新器（TokenRefresher 接口）
 	s.refreshers = []TokenRefresher{
@@ -79,7 +83,6 @@ func NewTokenRefreshService(
 		openAIRefresher,
 		geminiRefresher,
 		agRefresher,
-		grokRefresher,
 	}
 
 	// 注册对应的 OAuthRefreshExecutor（带 CacheKey 方法）
@@ -88,7 +91,6 @@ func NewTokenRefreshService(
 		openAIRefresher,
 		geminiRefresher,
 		agRefresher,
-		grokRefresher,
 	}
 
 	return s
@@ -187,7 +189,7 @@ func (s *TokenRefreshService) processRefresh() {
 	refreshWindow := time.Duration(s.cfg.RefreshBeforeExpiryHours * float64(time.Hour))
 
 	// 获取所有active状态的账号
-	accounts, err := s.listActiveAccounts(ctx)
+	accounts, err := s.listManagedAccounts(ctx)
 	if err != nil {
 		slog.Error("token_refresh.list_accounts_failed", "error", err)
 		return
@@ -264,9 +266,53 @@ func (s *TokenRefreshService) processRefresh() {
 	}
 }
 
-// listActiveAccounts 获取后台 OAuth token 刷新候选账号。
-func (s *TokenRefreshService) listActiveAccounts(ctx context.Context) ([]Account, error) {
-	return s.accountRepo.ListOAuthRefreshCandidates(ctx)
+// listManagedAccounts 获取参与后台刷新闭环的账号。
+// 默认包含可刷新候选账号；额外补充 OpenAI managed-refresh 中仍可续期的 RT 账号。
+func (s *TokenRefreshService) listManagedAccounts(ctx context.Context) ([]Account, error) {
+	candidates, err := s.listTokenRefreshCandidates(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]Account, 0, len(candidates))
+	seen := make(map[int64]struct{}, len(candidates))
+	for _, account := range candidates {
+		out = append(out, account)
+		seen[account.ID] = struct{}{}
+	}
+
+	openAIAccounts, err := s.accountRepo.ListByPlatform(ctx, PlatformOpenAI)
+	if err != nil {
+		return out, nil
+	}
+	for _, account := range openAIAccounts {
+		if _, exists := seen[account.ID]; exists {
+			continue
+		}
+		if isTokenRefreshRetryExhaustedCooldown(account, time.Now()) {
+			continue
+		}
+		if account.ShouldParticipateInOpenAIManagedRefresh() {
+			out = append(out, account)
+			seen[account.ID] = struct{}{}
+		}
+	}
+
+	return out, nil
+}
+
+func (s *TokenRefreshService) listTokenRefreshCandidates(ctx context.Context) ([]Account, error) {
+	if lister, ok := s.accountRepo.(tokenRefreshCandidateLister); ok {
+		return lister.ListTokenRefreshCandidates(ctx)
+	}
+	return s.accountRepo.ListActive(ctx)
+}
+
+func isTokenRefreshRetryExhaustedCooldown(account Account, now time.Time) bool {
+	if account.TempUnschedulableUntil == nil || !account.TempUnschedulableUntil.After(now) {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(account.TempUnschedulableReason), TokenRefreshRetryExhaustedReasonPrefix)
 }
 
 // refreshWithRetry 带重试的刷新
@@ -310,7 +356,10 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 
 		// 不可重试错误（invalid_grant/invalid_client 等）直接标记 error 状态并返回
 		if isNonRetryableRefreshError(err) {
-			errorMsg := "Token refresh failed (non-retryable): " + logredact.RedactText(err.Error())
+			if account.Platform == PlatformOpenAI {
+				s.recordOpenAIAuthLifecycle(ctx, account, OpenAIAuthStateTerminal, OpenAIValidationOutcomeRTValidationTerminalFailure, classifyOpenAIRefreshError(err), "")
+			}
+			errorMsg := fmt.Sprintf("Token refresh failed (non-retryable): %v", err)
 			s.notifyAccountSchedulingBlocked(account, time.Time{}, "token_refresh_non_retryable")
 			s.clearAntigravityForceTokenRefresh(ctx, account, "non_retryable")
 			if setErr := s.accountRepo.SetError(ctx, account.ID, errorMsg); setErr != nil {
@@ -319,6 +368,9 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 					"error", setErr,
 				)
 			}
+			// 刷新失败但 access_token 可能仍有效，尝试设置隐私
+			s.ensureOpenAIPrivacy(ctx, account)
+			s.ensureAntigravityPrivacy(ctx, account)
 			return err
 		}
 
@@ -346,12 +398,16 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 		"error", lastErr,
 	)
 
+	// 刷新失败但 access_token 可能仍有效，尝试设置隐私
+	s.ensureOpenAIPrivacy(ctx, account)
+	s.ensureAntigravityPrivacy(ctx, account)
+	if account.Platform == PlatformOpenAI {
+		s.recordOpenAIAuthLifecycle(ctx, account, OpenAIAuthStateCooling, OpenAIValidationOutcomeRTValidationRetryableFailure, classifyOpenAIRefreshError(lastErr), "")
+	}
+
 	// 设置临时不可调度 10 分钟（不标记 error，保持 status=active 让下个刷新周期能继续尝试）
 	until := time.Now().Add(tokenRefreshTempUnschedDuration)
-	reason := "token refresh retry exhausted"
-	if lastErr != nil {
-		reason += ": " + logredact.RedactText(lastErr.Error())
-	}
+	reason := fmt.Sprintf("%s %v", TokenRefreshRetryExhaustedReasonPrefix, lastErr)
 	s.notifyAccountSchedulingBlocked(account, until, "token_refresh_retry_exhausted")
 	if setErr := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, reason); setErr != nil {
 		slog.Warn("token_refresh.set_temp_unschedulable_failed",
@@ -372,6 +428,9 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *Account) {
 	s.clearAntigravityForceTokenRefresh(ctx, account, "success")
 
+	if account.Platform == PlatformOpenAI {
+		s.recordOpenAIAuthLifecycle(ctx, account, OpenAIAuthStateHealthy, OpenAIValidationOutcomeRTValidated, "", time.Now().UTC().Format(time.RFC3339))
+	}
 	// Antigravity 账户：如果之前是因为缺少 project_id 而标记为 error，现在成功获取到了，清除错误状态
 	if account.Platform == PlatformAntigravity &&
 		account.Status == StatusError &&
@@ -407,8 +466,8 @@ func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *A
 			}
 		}
 	}
-	// 对所有 OAuth 账号调用缓存失效（InvalidateToken 内部根据平台判断是否需要处理）
-	if s.cacheInvalidator != nil && account.Type == AccountTypeOAuth {
+	// OAuth 与 Anthropic setup-token 刷新后都必须清 token cache，避免调度侧继续使用旧 access token。
+	if s.cacheInvalidator != nil && (account.Type == AccountTypeOAuth || account.Type == AccountTypeSetupToken) {
 		if err := s.cacheInvalidator.InvalidateToken(ctx, account); err != nil {
 			slog.Warn("token_refresh.invalidate_token_cache_failed",
 				"account_id", account.ID,
@@ -436,13 +495,12 @@ func (s *TokenRefreshService) postRefreshActions(ctx context.Context, account *A
 }
 
 func (s *TokenRefreshService) clearAntigravityForceTokenRefresh(ctx context.Context, account *Account, outcome string) {
-	if s == nil || account == nil || !accountNeedsAntigravityForceTokenRefresh(account) {
+	if s == nil || s.accountRepo == nil || account == nil || !accountNeedsAntigravityForceTokenRefresh(account) {
 		return
 	}
 	updates := clearAntigravityForceTokenRefreshExtra()
 	if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
 		slog.Warn("token_refresh.clear_antigravity_force_refresh_failed",
-			"account_id", account.ID,
 			"outcome", outcome,
 			"error", err,
 		)
@@ -454,9 +512,34 @@ func (s *TokenRefreshService) clearAntigravityForceTokenRefresh(ctx context.Cont
 		}
 	}
 	slog.Info("token_refresh.cleared_antigravity_force_refresh",
-		"account_id", account.ID,
 		"outcome", outcome,
 	)
+}
+
+func (s *TokenRefreshService) recordOpenAIAuthLifecycle(ctx context.Context, account *Account, authState, validationOutcome, refreshErrorCode, validatedAt string) {
+	if s == nil || s.accountRepo == nil || account == nil || !account.IsOpenAIOAuth() {
+		return
+	}
+	updates := map[string]any{
+		"openai_pool_role":               account.GetOpenAIPoolRole(),
+		"openai_auth_state":              authState,
+		"openai_token_source":            account.GetOpenAITokenSource(),
+		"openai_validation_outcome":      validationOutcome,
+		"openai_last_refresh_error_code": refreshErrorCode,
+	}
+	updates = mergeMap(updates, buildOpenAITokenCapabilityExtra(extractOpenAITokenCapabilityFromCredentials(account.Credentials)))
+	if updates["openai_pool_role"] == "" {
+		updates["openai_pool_role"] = OpenAIPoolRoleMain
+	}
+	if updates["openai_token_source"] == "" {
+		updates["openai_token_source"] = OpenAITokenSourceRTManaged
+	}
+	if validatedAt != "" {
+		updates["openai_last_validated_at"] = validatedAt
+	}
+	if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+		slog.Warn("token_refresh.openai_lifecycle_update_failed", "account_id", account.ID, "error", err)
+	}
 }
 
 // errRefreshSkipped 表示刷新被跳过（锁竞争或已被其他路径刷新），不计入 failed 或 refreshed
@@ -471,23 +554,21 @@ func isNonRetryableRefreshError(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	nonRetryable := []string{
-		"invalid_grant",             // refresh_token 已失效
-		"invalid_refresh_token",     // refresh_token 无效, team 账号工作区被删除会出现
-		"token_expired",             // OpenAI refresh_token 已过期，需要重新授权
-		"app_session_terminated",    // refresh_token team 账号工作区被删除
-		"refresh_token_reused",      // OpenAI refresh_token 已被使用，必须重新授权
-		"refresh_token_invalidated", // OpenAI session ended; refresh token invalidated
-		"invalid_client",            // 客户端配置错误
-		"unauthorized_client",       // 客户端未授权
-		"access_denied",             // 访问被拒绝
-		"missing_project_id",        // 缺少 project_id
+		"invalid_grant", // refresh_token 已失效
+		"invalid_refresh_token",
+		"app_session_terminated",
+		"invalid_client",      // 客户端配置错误
+		"unauthorized_client", // 客户端未授权
+		"access_denied",       // 访问被拒绝
+		"refresh_token_expired",
+		"refresh_token_reused", // OpenAI refresh_token 已被使用，必须重新授权
+		"refresh_token_invalidated",
+		"token_expired",
+		"token_invalidated",
+		"token_revoked",
+		"deactivated_workspace",
+		"missing_project_id", // 缺少 project_id
 		"no refresh token available",
-		"grok_oauth_entitlement_denied",
-		"entitlement_denied",
-		"invalid_scope",
-		"unknown scope",
-		"subscription required",
-		"no active grok subscription",
 	}
 	for _, needle := range nonRetryable {
 		if strings.Contains(msg, needle) {

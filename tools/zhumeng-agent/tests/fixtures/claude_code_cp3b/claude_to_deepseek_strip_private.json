@@ -1,0 +1,9 @@
+{
+  "name": "claude_to_deepseek_strip_private",
+  "replay_context": "normal",
+  "source_profile": {"provider": "claude", "route": "claude_native", "client_type": "claude_code_native", "model_id": "claude-sonnet-4-6", "native_replay_allowed": true},
+  "target_profile": {"provider": "deepseek", "route": "deepseek_bridge", "client_type": "claude_code_bridge_deepseek", "model_id": "deepseek-v4-pro", "native_replay_allowed": false},
+  "input_messages": [
+    {"role": "assistant", "content": "visible Claude answer", "thinking": {"text": "claude hidden thinking", "signature": "anthropic-signature"}, "signature": "anthropic-signature", "cch": "forbidden-cache-control"}
+  ]
+}

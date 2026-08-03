@@ -23,8 +23,8 @@ func TestSparkRoutingByModel(t *testing.T) {
 			cfg: &config.Config{},
 		}}
 	}
-	sparkReq := OpenAIAccountScheduleRequest{RequestedModel: sparkModel, Platform: PlatformOpenAI}
-	normalReq := OpenAIAccountScheduleRequest{RequestedModel: normalModel, Platform: PlatformOpenAI}
+	sparkReq := OpenAIAccountScheduleRequest{RequestedModel: sparkModel, TargetPlatform: PlatformOpenAI}
+	normalReq := OpenAIAccountScheduleRequest{RequestedModel: normalModel, TargetPlatform: PlatformOpenAI}
 
 	t.Run("normal_account_with_spark_mapping_accepts_spark", func(t *testing.T) {
 		acc := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Credentials: sparkCreds}
@@ -58,7 +58,7 @@ func TestSparkRoutingByModel(t *testing.T) {
 		parent := &Account{ID: 100, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true}
 		shadow := &Account{ID: 200, ParentAccountID: &pid, QuotaDimension: QuotaDimensionSpark,
 			Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 1, Credentials: sparkCreds}
-		emptyReq := OpenAIAccountScheduleRequest{RequestedModel: "", Platform: PlatformOpenAI}
+		emptyReq := OpenAIAccountScheduleRequest{RequestedModel: "", TargetPlatform: PlatformOpenAI}
 		s := newScheduler(map[int64]*Account{100: parent})
 		require.True(t, s.isAccountRequestCompatible(ctx, shadow, emptyReq),
 			"空 model 时影子可被选中（有意的纯 A2 行为：类型门移除后无 opt-in 排除）")
@@ -89,7 +89,7 @@ func TestParentHealthSchedulerIntegration(t *testing.T) {
 
 	req := OpenAIAccountScheduleRequest{
 		RequestedModel: sparkModel,
-		Platform:       PlatformOpenAI,
+		TargetPlatform: PlatformOpenAI,
 	}
 
 	makeScheduler := func(parent *Account) *defaultOpenAIAccountScheduler {
@@ -205,6 +205,6 @@ func TestParentHealthSchedulerFallsBackToRepoWhenSnapshotMissesParent(t *testing
 
 	require.True(t, scheduler.isAccountRequestCompatible(ctx, shadow, OpenAIAccountScheduleRequest{
 		RequestedModel: "gpt-5.3-codex-spark",
-		Platform:       PlatformOpenAI,
+		TargetPlatform: PlatformOpenAI,
 	}), "快照缺失母账号且调度快照 DB fallback 关闭时，应回退 repo 解析健康母账号")
 }

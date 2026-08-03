@@ -20,6 +20,20 @@ export { userChannelsAPI } from './channels'
 export * as batchImageAPI from './batchImage'
 export { totpAPI } from './totp'
 export { default as announcementsAPI } from './announcements'
+export {
+  requestAugmentQuickLoginGrant,
+  createAugmentOfficialSessionBindIntent,
+  bindAugmentOfficialSession,
+  getAugmentOfficialSession,
+  revokeAugmentOfficialSession,
+  type AugmentQuickLoginGrantRequest,
+  type AugmentQuickLoginGrantResponse,
+} from './augment'
+export {
+  getAugmentBillingSummary,
+  listAugmentBillingUsage,
+  listAugmentRecentErrors,
+} from './augmentBilling'
 export { channelMonitorUserAPI } from './channelMonitor'
 
 // Admin APIs

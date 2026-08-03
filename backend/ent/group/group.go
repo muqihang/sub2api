@@ -50,6 +50,10 @@ const (
 	FieldWeeklyLimitUsd = "weekly_limit_usd"
 	// FieldMonthlyLimitUsd holds the string denoting the monthly_limit_usd field in the database.
 	FieldMonthlyLimitUsd = "monthly_limit_usd"
+	// FieldAugmentGatewayEntitled holds the string denoting the augment_gateway_entitled field in the database.
+	FieldAugmentGatewayEntitled = "augment_gateway_entitled"
+	// FieldCodexGatewayEntitled holds the string denoting the codex_gateway_entitled field in the database.
+	FieldCodexGatewayEntitled = "codex_gateway_entitled"
 	// FieldDefaultValidityDays holds the string denoting the default_validity_days field in the database.
 	FieldDefaultValidityDays = "default_validity_days"
 	// FieldAllowImageGeneration holds the string denoting the allow_image_generation field in the database.
@@ -202,6 +206,8 @@ var Columns = []string{
 	FieldDailyLimitUsd,
 	FieldWeeklyLimitUsd,
 	FieldMonthlyLimitUsd,
+	FieldAugmentGatewayEntitled,
+	FieldCodexGatewayEntitled,
 	FieldDefaultValidityDays,
 	FieldAllowImageGeneration,
 	FieldAllowBatchImageGeneration,
@@ -297,6 +303,10 @@ var (
 	DefaultSubscriptionType string
 	// SubscriptionTypeValidator is a validator for the "subscription_type" field. It is called by the builders before save.
 	SubscriptionTypeValidator func(string) error
+	// DefaultAugmentGatewayEntitled holds the default value on creation for the "augment_gateway_entitled" field.
+	DefaultAugmentGatewayEntitled bool
+	// DefaultCodexGatewayEntitled holds the default value on creation for the "codex_gateway_entitled" field.
+	DefaultCodexGatewayEntitled bool
 	// DefaultDefaultValidityDays holds the default value on creation for the "default_validity_days" field.
 	DefaultDefaultValidityDays int
 	// DefaultAllowImageGeneration holds the default value on creation for the "allow_image_generation" field.
@@ -434,6 +444,16 @@ func ByWeeklyLimitUsd(opts ...sql.OrderTermOption) OrderOption {
 // ByMonthlyLimitUsd orders the results by the monthly_limit_usd field.
 func ByMonthlyLimitUsd(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldMonthlyLimitUsd, opts...).ToFunc()
+}
+
+// ByAugmentGatewayEntitled orders the results by the augment_gateway_entitled field.
+func ByAugmentGatewayEntitled(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldAugmentGatewayEntitled, opts...).ToFunc()
+}
+
+// ByCodexGatewayEntitled orders the results by the codex_gateway_entitled field.
+func ByCodexGatewayEntitled(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldCodexGatewayEntitled, opts...).ToFunc()
 }
 
 // ByDefaultValidityDays orders the results by the default_validity_days field.

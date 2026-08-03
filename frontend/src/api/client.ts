@@ -6,13 +6,16 @@
 import axios, { AxiosInstance, AxiosError, InternalAxiosRequestConfig, AxiosResponse } from 'axios'
 import type { ApiResponse } from '@/types'
 import { getLocale } from '@/i18n'
-import { getAPIBaseURL } from './url'
-export { buildApiUrl, buildGatewayUrl } from './url'
+import { buildApiUrl, buildGatewayUrl, getAPIBaseURL } from '@/api/url'
 
 // ==================== Axios Instance Configuration ====================
 
+const API_BASE_URL = getAPIBaseURL()
+
+export { buildApiUrl, buildGatewayUrl }
+
 export const apiClient: AxiosInstance = axios.create({
-  baseURL: getAPIBaseURL(),
+  baseURL: API_BASE_URL,
   withCredentials: true,
   timeout: 30000,
   headers: {
@@ -100,6 +103,8 @@ apiClient.interceptors.response.use(
           message: apiResponse.message || 'Unknown error',
           reason: resp.reason,
           metadata: resp.metadata,
+          account: resp.account,
+          diagnostics: resp.diagnostics,
         })
       }
     }
@@ -203,11 +208,9 @@ apiClient.interceptors.response.use(
           try {
             // Call refresh endpoint directly to avoid circular dependency
             const refreshResponse = await axios.post(
-              `${getAPIBaseURL()}/auth/refresh`,
+              `${API_BASE_URL}/auth/refresh`,
               { refresh_token: refreshToken },
-              // 显式设置超时：裸 axios 默认无限等待，若刷新请求挂起会导致 isRefreshing
-              // 永远为 true，所有排队的 401 重试请求永久卡死，页面 loading 无法恢复。
-              { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
+              { headers: { 'Content-Type': 'application/json' } }
             )
 
             const refreshData = refreshResponse.data as ApiResponse<{
@@ -289,11 +292,14 @@ apiClient.interceptors.response.use(
       // Return structured error
       return Promise.reject({
         status,
-        code: apiData.code,
+        code: apiData.code ?? apiData.error,
         reason: apiData.reason,
         error: apiData.error,
         message: apiData.message || apiData.detail || error.message,
         metadata: apiData.metadata,
+        // Preserve safe partial-operation payloads for Formal Pool recovery flows.
+        account: apiData.account,
+        diagnostics: apiData.diagnostics,
       })
     }
 

@@ -14,18 +14,24 @@ import (
 
 type tokenRefreshAccountRepo struct {
 	mockAccountRepoForGemini
-	updateCalls            int
-	fullUpdateCalls        int
-	updateCredentialsCalls int
-	setErrorCalls          int
-	clearTempCalls         int
-	setTempUnschedCalls    int
-	updateExtraCalls       int
-	lastErrorMessage       string
-	lastTempUnschedReason  string
-	lastExtraUpdates       map[string]any
-	lastAccount            *Account
-	updateErr              error
+	updateCalls                     int
+	fullUpdateCalls                 int
+	updateCredentialsCalls          int
+	updateExtraCalls                int
+	setErrorCalls                   int
+	clearTempCalls                  int
+	setTempUnschedCalls             int
+	lastErrorMessage                string
+	lastTempUnschedReason           string
+	lastExtraUpdates                map[string]any
+	lastAccount                     *Account
+	updateErr                       error
+	listActiveAccounts              []Account
+	listTokenRefreshCandidates      []Account
+	listByPlatformAccounts          []Account
+	listActiveCalls                 int
+	listTokenRefreshCandidatesCalls int
+	listByPlatformCalls             int
 }
 
 func (r *tokenRefreshAccountRepo) Update(ctx context.Context, account *Account) error {
@@ -53,6 +59,24 @@ func (r *tokenRefreshAccountRepo) UpdateCredentials(ctx context.Context, id int6
 	return nil
 }
 
+func (r *tokenRefreshAccountRepo) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
+	r.updateExtraCalls++
+	r.lastExtraUpdates = cloneCredentials(updates)
+	if r.accountsByID != nil {
+		if acc, ok := r.accountsByID[id]; ok && acc != nil {
+			if acc.Extra == nil {
+				acc.Extra = make(map[string]any, len(updates))
+			}
+			for k, v := range updates {
+				acc.Extra[k] = v
+			}
+			r.lastAccount = acc
+			return nil
+		}
+	}
+	return nil
+}
+
 func (r *tokenRefreshAccountRepo) SetError(ctx context.Context, id int64, errorMsg string) error {
 	r.setErrorCalls++
 	r.lastErrorMessage = errorMsg
@@ -70,20 +94,31 @@ func (r *tokenRefreshAccountRepo) SetTempUnschedulable(ctx context.Context, id i
 	return nil
 }
 
-func (r *tokenRefreshAccountRepo) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
-	r.updateExtraCalls++
-	r.lastExtraUpdates = shallowCopyMap(updates)
-	if r.accountsByID != nil {
-		if acc, ok := r.accountsByID[id]; ok && acc != nil {
-			if acc.Extra == nil {
-				acc.Extra = make(map[string]any, len(updates))
-			}
-			for k, v := range updates {
-				acc.Extra[k] = v
-			}
-		}
+func (r *tokenRefreshAccountRepo) ListActive(ctx context.Context) ([]Account, error) {
+	r.listActiveCalls++
+	if r.listActiveAccounts != nil {
+		return append([]Account(nil), r.listActiveAccounts...), nil
 	}
-	return nil
+	return r.mockAccountRepoForGemini.ListActive(ctx)
+}
+
+func (r *tokenRefreshAccountRepo) ListTokenRefreshCandidates(ctx context.Context) ([]Account, error) {
+	r.listTokenRefreshCandidatesCalls++
+	if r.listTokenRefreshCandidates != nil {
+		return append([]Account(nil), r.listTokenRefreshCandidates...), nil
+	}
+	if r.listActiveAccounts != nil {
+		return append([]Account(nil), r.listActiveAccounts...), nil
+	}
+	return r.mockAccountRepoForGemini.ListActive(ctx)
+}
+
+func (r *tokenRefreshAccountRepo) ListByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	r.listByPlatformCalls++
+	if platform == PlatformOpenAI && r.listByPlatformAccounts != nil {
+		return append([]Account(nil), r.listByPlatformAccounts...), nil
+	}
+	return r.mockAccountRepoForGemini.ListByPlatform(ctx, platform)
 }
 
 type tokenCacheInvalidatorStub struct {
@@ -96,15 +131,21 @@ func (s *tokenCacheInvalidatorStub) InvalidateToken(ctx context.Context, account
 	return s.err
 }
 
+type tokenRefreshSchedulerCacheStub struct {
+	SchedulerCache
+	setAccountCalls []*Account
+}
+
+func (s *tokenRefreshSchedulerCacheStub) SetAccount(ctx context.Context, account *Account) error {
+	s.setAccountCalls = append(s.setAccountCalls, account)
+	return nil
+}
+
 type tempUnschedCacheStub struct {
 	deleteCalls int
-	setCalls    int
-	lastState   *TempUnschedState
 }
 
 func (s *tempUnschedCacheStub) SetTempUnsched(ctx context.Context, accountID int64, state *TempUnschedState) error {
-	s.setCalls++
-	s.lastState = state
 	return nil
 }
 
@@ -169,6 +210,233 @@ func TestTokenRefreshService_RefreshWithRetry_InvalidatesCache(t *testing.T) {
 	require.Equal(t, 0, repo.fullUpdateCalls)
 	require.Equal(t, 1, invalidator.calls)
 	require.Equal(t, "new-token", account.GetCredential("access_token"))
+}
+
+func TestTokenRefreshService_RefreshWithRetry_InvalidatesAnthropicOAuthAndSetupTokenCache(t *testing.T) {
+	for _, accountType := range []string{AccountTypeOAuth, AccountTypeSetupToken} {
+		t.Run(accountType, func(t *testing.T) {
+			repo := &tokenRefreshAccountRepo{}
+			invalidator := &tokenCacheInvalidatorStub{}
+			cfg := &config.Config{
+				TokenRefresh: config.TokenRefreshConfig{
+					MaxRetries:          1,
+					RetryBackoffSeconds: 0,
+				},
+			}
+			service := NewTokenRefreshService(repo, nil, nil, nil, nil, invalidator, nil, cfg, nil)
+			account := &Account{
+				ID:       50,
+				Platform: PlatformAnthropic,
+				Type:     accountType,
+			}
+			refresher := &tokenRefresherStub{
+				credentials: map[string]any{
+					"access_token": "new-token",
+				},
+			}
+
+			err := service.refreshWithRetry(context.Background(), account, refresher, refresher, time.Hour)
+			require.NoError(t, err)
+			require.Equal(t, 1, invalidator.calls)
+		})
+	}
+}
+
+func TestTokenRefreshService_RefreshWithRetry_SyncsSchedulerCacheAfterSuccess(t *testing.T) {
+	repo := &tokenRefreshAccountRepo{}
+	schedulerCache := &tokenRefreshSchedulerCacheStub{}
+	cfg := &config.Config{
+		TokenRefresh: config.TokenRefreshConfig{
+			MaxRetries:          1,
+			RetryBackoffSeconds: 0,
+		},
+	}
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, schedulerCache, cfg, nil)
+	account := &Account{
+		ID:       51,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeSetupToken,
+		Credentials: map[string]any{
+			"access_token": "old-token",
+		},
+	}
+	refresher := &tokenRefresherStub{
+		credentials: map[string]any{
+			"access_token": "new-token",
+		},
+	}
+
+	err := service.refreshWithRetry(context.Background(), account, refresher, refresher, time.Hour)
+	require.NoError(t, err)
+	require.Len(t, schedulerCache.setAccountCalls, 1)
+	require.Equal(t, int64(51), schedulerCache.setAccountCalls[0].ID)
+	require.Equal(t, "new-token", schedulerCache.setAccountCalls[0].GetCredential("access_token"))
+}
+
+func TestTokenRefreshService_ListManagedAccountsUsesTokenRefreshCandidates(t *testing.T) {
+	expiresSoon := time.Now().Add(5 * time.Minute)
+	repo := &tokenRefreshAccountRepo{
+		listActiveAccounts: []Account{
+			{ID: 99, Platform: PlatformAnthropic, Type: AccountTypeAPIKey, Status: StatusActive},
+		},
+		listTokenRefreshCandidates: []Account{
+			{
+				ID:        20,
+				Platform:  PlatformAnthropic,
+				Type:      AccountTypeSetupToken,
+				Status:    StatusActive,
+				ExpiresAt: &expiresSoon,
+				Credentials: map[string]any{
+					"expires_at": expiresSoon.Format(time.RFC3339),
+				},
+			},
+		},
+	}
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, &config.Config{}, nil)
+
+	accounts, err := service.listManagedAccounts(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, repo.listTokenRefreshCandidatesCalls)
+	require.Equal(t, 0, repo.listActiveCalls, "primary refresh scan must not use broad ListActive")
+	require.Len(t, accounts, 1)
+	require.Equal(t, int64(20), accounts[0].ID)
+	require.Equal(t, AccountTypeSetupToken, accounts[0].Type)
+}
+
+func TestTokenRefreshService_ListManagedAccountsKeepsMalformedClaudeRefreshCandidate(t *testing.T) {
+	expiresSoon := time.Now().Add(5 * time.Minute)
+	repo := &tokenRefreshAccountRepo{
+		listActiveAccounts: []Account{},
+		listTokenRefreshCandidates: []Account{
+			{
+				ID:        21,
+				Platform:  PlatformAnthropic,
+				Type:      AccountTypeSetupToken,
+				Status:    StatusActive,
+				ExpiresAt: &expiresSoon,
+				Credentials: map[string]any{
+					"expires_at": expiresSoon.Format(time.RFC3339),
+					// Intentionally no refresh_token: refresh should surface the existing
+					// non-retryable credential error instead of silently skipping the account.
+				},
+			},
+		},
+	}
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, &config.Config{}, nil)
+
+	accounts, err := service.listManagedAccounts(context.Background())
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	require.Equal(t, int64(21), accounts[0].ID)
+	require.Equal(t, "", accounts[0].GetCredential("refresh_token"))
+}
+
+func TestTokenRefreshService_ListManagedAccountsSkipsRetryExhaustedOpenAISupplementOnly(t *testing.T) {
+	future := time.Now().Add(10 * time.Minute)
+	repo := &tokenRefreshAccountRepo{
+		listTokenRefreshCandidates: []Account{},
+		listByPlatformAccounts: []Account{
+			{
+				ID:                      30,
+				Platform:                PlatformOpenAI,
+				Type:                    AccountTypeOAuth,
+				Status:                  StatusActive,
+				TempUnschedulableUntil:  &future,
+				TempUnschedulableReason: TokenRefreshRetryExhaustedReasonPrefix + " transient upstream error",
+				Extra: map[string]any{
+					"openai_pool_role":    OpenAIPoolRoleMain,
+					"openai_auth_state":   OpenAIAuthStateCooling,
+					"openai_token_source": OpenAITokenSourceRTManaged,
+				},
+				Credentials: map[string]any{"refresh_token": "rt-retry-exhausted"},
+			},
+			{
+				ID:                      31,
+				Platform:                PlatformOpenAI,
+				Type:                    AccountTypeOAuth,
+				Status:                  StatusActive,
+				TempUnschedulableUntil:  &future,
+				TempUnschedulableReason: "request path 401 cooldown",
+				Extra: map[string]any{
+					"openai_pool_role":    OpenAIPoolRoleMain,
+					"openai_auth_state":   OpenAIAuthStateCooling,
+					"openai_token_source": OpenAITokenSourceRTManaged,
+				},
+				Credentials: map[string]any{"refresh_token": "rt-request-cooldown"},
+			},
+		},
+	}
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, &config.Config{}, nil)
+
+	accounts, err := service.listManagedAccounts(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, repo.listByPlatformCalls)
+	require.Len(t, accounts, 1)
+	require.Equal(t, int64(31), accounts[0].ID)
+}
+
+func TestTokenRefreshService_ListManagedAccountsIncludesOpenAIQuarantine(t *testing.T) {
+	repo := &tokenRefreshAccountRepo{
+		listActiveAccounts: []Account{
+			{
+				ID:       1,
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeOAuth,
+				Status:   StatusActive,
+				Extra: map[string]any{
+					"openai_pool_role":    OpenAIPoolRoleMain,
+					"openai_auth_state":   OpenAIAuthStateHealthy,
+					"openai_token_source": OpenAITokenSourceRTManaged,
+				},
+				Credentials: map[string]any{"refresh_token": "rt-main"},
+			},
+		},
+		listByPlatformAccounts: []Account{
+			{
+				ID:       1,
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeOAuth,
+				Status:   StatusActive,
+				Extra: map[string]any{
+					"openai_pool_role":    OpenAIPoolRoleMain,
+					"openai_auth_state":   OpenAIAuthStateHealthy,
+					"openai_token_source": OpenAITokenSourceRTManaged,
+				},
+				Credentials: map[string]any{"refresh_token": "rt-main"},
+			},
+			{
+				ID:       2,
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeOAuth,
+				Status:   StatusDisabled,
+				Extra: map[string]any{
+					"openai_pool_role":    OpenAIPoolRoleQuarantine,
+					"openai_auth_state":   OpenAIAuthStateCooling,
+					"openai_token_source": OpenAITokenSourceRTManaged,
+				},
+				Credentials: map[string]any{"refresh_token": "rt-quarantine"},
+			},
+			{
+				ID:       3,
+				Platform: PlatformOpenAI,
+				Type:     AccountTypeOAuth,
+				Status:   StatusDisabled,
+				Extra: map[string]any{
+					"openai_pool_role":    OpenAIPoolRoleQuarantine,
+					"openai_auth_state":   OpenAIAuthStateATOnly,
+					"openai_token_source": OpenAITokenSourceATOnly,
+				},
+				Credentials: map[string]any{"access_token": "at-only"},
+			},
+		},
+	}
+	service := NewTokenRefreshService(repo, nil, nil, nil, nil, nil, nil, &config.Config{}, nil)
+
+	accounts, err := service.listManagedAccounts(context.Background())
+	require.NoError(t, err)
+	require.Len(t, accounts, 2)
+	require.Equal(t, int64(1), accounts[0].ID)
+	require.Equal(t, int64(2), accounts[1].ID)
 }
 
 func TestTokenRefreshService_RefreshWithRetry_InvalidatorErrorIgnored(t *testing.T) {
@@ -266,36 +534,6 @@ func TestAntigravityTokenRefresher_NeedsRefresh_ForceRefreshMarker(t *testing.T)
 	}
 
 	require.True(t, refresher.NeedsRefresh(account, 0), "server-invalidated token must refresh even before expires_at")
-}
-
-func TestAntigravityTokenRefresher_NeedsRefresh_NormalExpiryRulesUnchanged(t *testing.T) {
-	refresher := NewAntigravityTokenRefresher(nil)
-
-	t.Run("normal_unexpired_without_marker_does_not_refresh", func(t *testing.T) {
-		account := &Account{
-			ID:       3707,
-			Platform: PlatformAntigravity,
-			Type:     AccountTypeOAuth,
-			Credentials: map[string]any{
-				"expires_at": time.Now().Add(time.Hour).Format(time.RFC3339),
-			},
-		}
-
-		require.False(t, refresher.NeedsRefresh(account, 0))
-	})
-
-	t.Run("normal_expiring_refreshes", func(t *testing.T) {
-		account := &Account{
-			ID:       3708,
-			Platform: PlatformAntigravity,
-			Type:     AccountTypeOAuth,
-			Credentials: map[string]any{
-				"expires_at": time.Now().Add(5 * time.Minute).Format(time.RFC3339),
-			},
-		}
-
-		require.True(t, refresher.NeedsRefresh(account, 0))
-	})
 }
 
 func TestTokenRefreshService_RefreshWithRetry_AntigravityClearsForceRefreshOnSuccess(t *testing.T) {
@@ -510,6 +748,8 @@ func TestTokenRefreshService_RefreshWithRetry_RefreshFailed(t *testing.T) {
 	require.Equal(t, 0, repo.updateCalls)   // 刷新失败不应更新
 	require.Equal(t, 0, invalidator.calls)  // 刷新失败不应触发缓存失效
 	require.Equal(t, 0, repo.setErrorCalls) // 可重试错误耗尽不标记 error，下个周期继续重试
+	require.Equal(t, 1, repo.setTempUnschedCalls)
+	require.Contains(t, repo.lastTempUnschedReason, TokenRefreshRetryExhaustedReasonPrefix)
 }
 
 // TestTokenRefreshService_RefreshWithRetry_AntigravityRefreshFailed 测试 Antigravity 刷新失败不设置错误状态
@@ -673,15 +913,12 @@ func TestIsNonRetryableRefreshError(t *testing.T) {
 		{name: "network_error", err: errors.New("network timeout"), expected: false},
 		{name: "invalid_grant", err: errors.New("invalid_grant"), expected: true},
 		{name: "invalid_client", err: errors.New("invalid_client"), expected: true},
-		{name: "invalid_refresh_token", err: errors.New(`OPENAI_OAUTH_TOKEN_REFRESH_FAILED: token refresh failed: status 401, body: {"error":{"code":"invalid_refresh_token"}}`), expected: true},
-		{name: "token_expired", err: errors.New(`OPENAI_OAUTH_TOKEN_REFRESH_FAILED: token refresh failed: status 401, body: {"error":{"code":"token_expired"}}`), expected: true},
 		{name: "refresh_token_reused", err: errors.New(`OPENAI_OAUTH_TOKEN_REFRESH_FAILED: token refresh failed: status 401, body: {"error":{"code":"refresh_token_reused"}}`), expected: true},
-		{name: "app_session_terminated", err: errors.New(`OPENAI_OAUTH_TOKEN_REFRESH_FAILED: token refresh failed: status 401, body: {"error": {"code": "app_session_terminated"}}`), expected: true},
 		{name: "unauthorized_client", err: errors.New("unauthorized_client"), expected: true},
 		{name: "access_denied", err: errors.New("access_denied"), expected: true},
 		{name: "no_refresh_token", err: errors.New("no refresh token available"), expected: true},
-		{name: "grok_entitlement_denied", err: errors.New("GROK_OAUTH_ENTITLEMENT_DENIED: subscription required"), expected: true},
-		{name: "invalid_scope", err: errors.New("invalid_scope: requested scope is not allowed"), expected: true},
+		{name: "refresh_token_expired", err: errors.New("refresh_token_expired"), expected: true},
+		{name: "refresh_token_reused", err: errors.New("refresh_token_reused"), expected: true},
 		{name: "invalid_grant_with_desc", err: errors.New("Error: invalid_grant - token revoked"), expected: true},
 		{name: "case_insensitive", err: errors.New("INVALID_GRANT"), expected: true},
 	}

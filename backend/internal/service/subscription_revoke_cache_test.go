@@ -1,5 +1,3 @@
-//go:build unit
-
 package service
 
 import (
@@ -72,7 +70,42 @@ func TestRevokeSubscription_InvalidatesL1CacheSynchronously(t *testing.T) {
 
 	_, err = svc.GetActiveSubscription(context.Background(), 10, 20)
 	require.ErrorIs(t, err, ErrSubscriptionNotFound)
-	require.Equal(t, 2, repo.getActiveCalls, "撤销后应回源确认订阅已不存在，不能命中旧 L1")
+	require.Equal(t, 2, repo.getActiveCalls, "revocation should evict old L1 entry before returning")
+}
+
+type subscriptionInvalidationCacheStub struct {
+	BillingCache
+	invalidated []string
+	published   []string
+}
+
+func (s *subscriptionInvalidationCacheStub) InvalidateSubscriptionCache(_ context.Context, userID, groupID int64) error {
+	s.invalidated = append(s.invalidated, subCacheKey(userID, groupID))
+	return nil
+}
+
+func (s *subscriptionInvalidationCacheStub) PublishSubscriptionCacheInvalidation(_ context.Context, cacheKey string) error {
+	s.published = append(s.published, cacheKey)
+	return nil
+}
+
+func (s *subscriptionInvalidationCacheStub) SubscribeSubscriptionCacheInvalidation(_ context.Context, _ func(cacheKey string)) error {
+	return nil
+}
+
+func TestRevokeSubscription_InvalidatesBillingCacheAndPublishes(t *testing.T) {
+	repo := &revokeCacheUserSubRepoStub{
+		sub: &UserSubscription{ID: 2, UserID: 11, GroupID: 21, Status: SubscriptionStatusActive, ExpiresAt: time.Now().Add(time.Hour)},
+	}
+	cache := &subscriptionInvalidationCacheStub{}
+	svc := NewSubscriptionService(groupRepoNoop{}, repo, &BillingCacheService{cache: cache}, nil, nil)
+	t.Cleanup(svc.Stop)
+
+	err := svc.RevokeSubscription(context.Background(), 2)
+	require.NoError(t, err)
+
+	require.Equal(t, []string{subCacheKey(11, 21)}, cache.invalidated)
+	require.Equal(t, []string{subCacheKey(11, 21)}, cache.published)
 }
 
 type restoreUserSubRepoStub struct {

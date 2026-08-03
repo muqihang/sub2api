@@ -61,3 +61,10 @@ func TestConcurrencyErrorResponse(t *testing.T) {
 		})
 	}
 }
+
+func TestConcurrencyErrorResponseWaitQueueFull(t *testing.T) {
+	status, errorType, message := concurrencyErrorResponse(&WaitQueueFullError{SlotType: "user"}, "user")
+	require.Equal(t, http.StatusTooManyRequests, status)
+	require.Equal(t, "rate_limit_error", errorType)
+	require.Equal(t, "Too many pending requests, please retry later", message)
+}

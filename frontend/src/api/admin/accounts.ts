@@ -20,7 +20,8 @@ import type {
   CodexSessionImportResult,
   OpenAICodexPATCreateRequest,
   CheckMixedChannelRequest,
-  CheckMixedChannelResponse
+  CheckMixedChannelResponse,
+  FormalPoolStatusDashboard
 } from '@/types'
 
 /**
@@ -64,6 +65,15 @@ export interface AccountListWithEtagResult {
   notModified: boolean
   etag: string | null
   data: PaginatedResponse<Account> | null
+}
+
+export async function getFormalPoolStatusDashboard(options?: {
+  signal?: AbortSignal
+}): Promise<FormalPoolStatusDashboard> {
+  const { data } = await apiClient.get<FormalPoolStatusDashboard>('/admin/formal-pool/status-dashboard', {
+    signal: options?.signal
+  })
+  return data
 }
 
 export async function listWithEtag(
@@ -135,6 +145,51 @@ export async function getById(id: number): Promise<Account> {
  */
 export async function create(accountData: CreateAccountRequest): Promise<Account> {
   const { data } = await apiClient.post<Account>('/admin/accounts', accountData)
+  return data
+}
+
+export interface ClaudePlatformAWSBatchCreateRow {
+  name: string
+  workspace_id: string
+  aws_region: string
+  api_key: string
+  proxy_id: number
+  concurrency?: number
+  priority?: number
+}
+
+export interface ClaudePlatformAWSBatchCreateRequest {
+  idempotency_key?: string
+  group_ids?: number[]
+  rows: ClaudePlatformAWSBatchCreateRow[]
+}
+
+export interface ClaudePlatformAWSBatchCreateResultRow {
+  index: number
+  status: string
+  region: string
+  workspace_ref?: string
+  workspace_binding_hmac_present?: boolean
+  endpoint_ref?: string
+  credential_ref?: string
+  proxy_identity_ref?: string
+  account_ref?: string
+  created_account_id?: number
+  cc_gateway_runtime_registered?: boolean
+  formal_pool_schedulable?: boolean
+}
+
+export interface ClaudePlatformAWSBatchCreateResult {
+  rows: ClaudePlatformAWSBatchCreateResultRow[]
+}
+
+export async function createClaudePlatformAWSBatch(
+  request: ClaudePlatformAWSBatchCreateRequest
+): Promise<ClaudePlatformAWSBatchCreateResult> {
+  const { data } = await apiClient.post<ClaudePlatformAWSBatchCreateResult>(
+    '/admin/accounts/claude-platform-aws/batch',
+    request
+  )
   return data
 }
 
@@ -335,9 +390,9 @@ export async function resetTempUnschedulable(id: number): Promise<{ message: str
  */
 export async function generateAuthUrl(
   endpoint: string,
-  config: { proxy_id?: number }
-): Promise<{ auth_url: string; session_id: string }> {
-  const { data } = await apiClient.post<{ auth_url: string; session_id: string }>(endpoint, config)
+  config: { proxy_id?: number; egress_bucket?: string }
+): Promise<{ auth_url: string; session_id: string; egress_bucket?: string; proxy_selected?: boolean; proxy_label?: string; proxy_hash?: string }> {
+  const { data } = await apiClient.post<{ auth_url: string; session_id: string; egress_bucket?: string; proxy_selected?: boolean; proxy_label?: string; proxy_hash?: string }>(endpoint, config)
   return data
 }
 
@@ -349,7 +404,7 @@ export async function generateAuthUrl(
  */
 export async function exchangeCode(
   endpoint: string,
-  exchangeData: { session_id: string; code: string; state?: string; proxy_id?: number }
+  exchangeData: { session_id: string; code: string; state?: string; proxy_id?: number; egress_bucket?: string }
 ): Promise<Record<string, unknown>> {
   const { data } = await apiClient.post<Record<string, unknown>>(endpoint, exchangeData)
   return data
@@ -560,9 +615,7 @@ export async function syncFromCrs(params: {
       action: string
       error?: string
     }>
-  }>('/admin/accounts/sync/crs', params, {
-    timeout: 180000 // 180s timeout: sync refreshes each existing account's OAuth token serially
-  })
+  }>('/admin/accounts/sync/crs', params, { timeout: 180000 })
   return data
 }
 
@@ -614,7 +667,7 @@ export async function importData(payload: {
 
 export async function importCodexSession(payload: CodexSessionImportRequest): Promise<CodexSessionImportResult> {
   const { data } = await apiClient.post<CodexSessionImportResult>('/admin/accounts/import/codex-session', payload, {
-    timeout: 120000 // 120s timeout for large session imports
+    timeout: 120000
   })
   return data
 }
@@ -645,16 +698,42 @@ export async function refreshOpenAIToken(
   refreshToken: string,
   proxyId?: number | null,
   endpoint: string = '/admin/openai/refresh-token',
-  clientId?: string
+  clientId?: string,
+  egressBucket?: string
 ): Promise<Record<string, unknown>> {
-  const payload: { refresh_token: string; proxy_id?: number; client_id?: string } = {
+  const payload: { refresh_token: string; proxy_id?: number; client_id?: string; egress_bucket?: string } = {
     refresh_token: refreshToken
   }
   if (proxyId) {
     payload.proxy_id = proxyId
   }
-  if (clientId) {
-    payload.client_id = clientId
+  if (clientId?.trim()) {
+    payload.client_id = clientId.trim()
+  }
+  if (egressBucket?.trim()) {
+    payload.egress_bucket = egressBucket.trim()
+  }
+  const { data } = await apiClient.post<Record<string, unknown>>(endpoint, payload)
+  return data
+}
+
+/**
+ * Validate Sora session token and exchange to access token
+ * @param sessionToken - Sora session token
+ * @param proxyId - Optional proxy ID
+ * @param endpoint - API endpoint path
+ * @returns Token information including access_token
+ */
+export async function validateSoraSessionToken(
+  sessionToken: string,
+  proxyId?: number | null,
+  endpoint: string = '/admin/sora/st2at'
+): Promise<Record<string, unknown>> {
+  const payload: { session_token: string; proxy_id?: number } = {
+    session_token: sessionToken
+  }
+  if (proxyId) {
+    payload.proxy_id = proxyId
   }
   const { data } = await apiClient.post<Record<string, unknown>>(endpoint, payload)
   return data
@@ -717,9 +796,6 @@ export async function setPrivacy(id: number): Promise<Account> {
   return data
 }
 
-/**
- * OpenAI / Codex rate-limit reset feature: query and reset upstream usage.
- */
 export interface OpenAIRateLimitWindow {
   used_percent: number
   limit_window_seconds: number
@@ -750,9 +826,6 @@ export interface OpenAIRateLimitResetCredits {
 }
 
 export interface OpenAIQuotaUsage {
-  user_id?: string
-  account_id?: string
-  email?: string
   plan_type?: string
   rate_limit?: OpenAIRateLimit | null
   additional_rate_limits?: OpenAIAdditionalRateLimit[]
@@ -761,7 +834,6 @@ export interface OpenAIQuotaUsage {
 }
 
 export interface OpenAIQuotaResetCredit {
-  id?: string
   reset_type?: string
   status?: string
   granted_at?: string
@@ -776,17 +848,11 @@ export interface OpenAIQuotaResetResult {
   windows_reset: number
 }
 
-/**
- * Query OpenAI/Codex rate-limit usage for an OAuth account.
- */
 export async function queryOpenAIQuota(id: number): Promise<OpenAIQuotaUsage> {
   const { data } = await apiClient.get<OpenAIQuotaUsage>(`/admin/openai/accounts/${id}/quota`)
   return data
 }
 
-/**
- * Consume one rate-limit-reset credit for an OpenAI/Codex OAuth account.
- */
 export async function resetOpenAIQuota(id: number): Promise<OpenAIQuotaResetResult> {
   const { data } = await apiClient.post<OpenAIQuotaResetResult>(`/admin/openai/accounts/${id}/reset-quota`)
   return data
@@ -807,8 +873,10 @@ export async function createSparkShadow(parentId: number, payload: SparkShadowCr
 export const accountsAPI = {
   list,
   listWithEtag,
+  getFormalPoolStatusDashboard,
   getById,
   create,
+  createClaudePlatformAWSBatch,
   update,
   checkMixedChannelRisk,
   delete: deleteAccount,
@@ -824,6 +892,8 @@ export const accountsAPI = {
   clearRateLimit,
   recoverState,
   resetAccountQuota,
+  queryOpenAIQuota,
+  resetOpenAIQuota,
   getTempUnschedulableStatus,
   resetTempUnschedulable,
   setSchedulable,
@@ -847,8 +917,6 @@ export const accountsAPI = {
   batchRefresh,
   setPrivacy,
   revertProxyFallback,
-  queryOpenAIQuota,
-  resetOpenAIQuota,
   createSparkShadow
 }
 

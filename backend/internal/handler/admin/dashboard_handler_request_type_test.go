@@ -17,8 +17,11 @@ type dashboardUsageRepoCapture struct {
 	service.UsageLogRepository
 	trendRequestType *int16
 	trendStream      *bool
+	trendFilters     *usagestats.UsageLogFilters
 	modelRequestType *int16
 	modelStream      *bool
+	modelFilters     *usagestats.UsageLogFilters
+	groupFilters     *usagestats.UsageLogFilters
 	rankingLimit     int
 	ranking          []usagestats.UserSpendingRankingItem
 	rankingTotal     float64
@@ -39,6 +42,18 @@ func (s *dashboardUsageRepoCapture) GetUsageTrendWithFilters(
 	return []usagestats.TrendDataPoint{}, nil
 }
 
+func (s *dashboardUsageRepoCapture) GetUsageTrendWithUsageFilters(
+	ctx context.Context,
+	startTime, endTime time.Time,
+	granularity string,
+	filters usagestats.UsageLogFilters,
+) ([]usagestats.TrendDataPoint, error) {
+	s.trendFilters = &filters
+	s.trendRequestType = filters.RequestType
+	s.trendStream = filters.Stream
+	return []usagestats.TrendDataPoint{}, nil
+}
+
 func (s *dashboardUsageRepoCapture) GetModelStatsWithFilters(
 	ctx context.Context,
 	startTime, endTime time.Time,
@@ -50,6 +65,27 @@ func (s *dashboardUsageRepoCapture) GetModelStatsWithFilters(
 	s.modelRequestType = requestType
 	s.modelStream = stream
 	return []usagestats.ModelStat{}, nil
+}
+
+func (s *dashboardUsageRepoCapture) GetModelStatsWithUsageFiltersBySource(
+	ctx context.Context,
+	startTime, endTime time.Time,
+	filters usagestats.UsageLogFilters,
+	source string,
+) ([]usagestats.ModelStat, error) {
+	s.modelFilters = &filters
+	s.modelRequestType = filters.RequestType
+	s.modelStream = filters.Stream
+	return []usagestats.ModelStat{}, nil
+}
+
+func (s *dashboardUsageRepoCapture) GetGroupStatsWithUsageFilters(
+	ctx context.Context,
+	startTime, endTime time.Time,
+	filters usagestats.UsageLogFilters,
+) ([]usagestats.GroupStat, error) {
+	s.groupFilters = &filters
+	return []usagestats.GroupStat{}, nil
 }
 
 func (s *dashboardUsageRepoCapture) GetUserSpendingRanking(
@@ -73,6 +109,8 @@ func newDashboardRequestTypeTestRouter(repo *dashboardUsageRepoCapture) *gin.Eng
 	router := gin.New()
 	router.GET("/admin/dashboard/trend", handler.GetUsageTrend)
 	router.GET("/admin/dashboard/models", handler.GetModelStats)
+	router.GET("/admin/dashboard/groups", handler.GetGroupStats)
+	router.GET("/admin/dashboard/snapshot-v2", handler.GetSnapshotV2)
 	router.GET("/admin/dashboard/users-ranking", handler.GetUserSpendingRanking)
 	return router
 }
@@ -169,6 +207,49 @@ func TestDashboardModelStatsValidModelSource(t *testing.T) {
 	router.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestDashboardTrendEntityFiltersPropagate(t *testing.T) {
+	dashboardTrendCache = newSnapshotCache(30 * time.Second)
+	repo := &dashboardUsageRepoCapture{}
+	router := newDashboardRequestTypeTestRouter(repo)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/dashboard/trend?entity_id=123&entity_type=workspace&claimed_entity_id=workspace-alpha", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotNil(t, repo.trendFilters)
+	require.Equal(t, int64(123), repo.trendFilters.EntityID)
+	require.Equal(t, "workspace", repo.trendFilters.EntityType)
+	require.Equal(t, "workspace-alpha", repo.trendFilters.ClaimedEntityID)
+}
+
+func TestDashboardTopLevelEntityFiltersPropagateToSnapshotReads(t *testing.T) {
+	dashboardSnapshotV2Cache = newSnapshotCache(30 * time.Second)
+	dashboardTrendCache = newSnapshotCache(30 * time.Second)
+	dashboardModelStatsCache = newSnapshotCache(30 * time.Second)
+	dashboardGroupStatsCache = newSnapshotCache(30 * time.Second)
+	repo := &dashboardUsageRepoCapture{}
+	router := newDashboardRequestTypeTestRouter(repo)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/dashboard/snapshot-v2?include_stats=false&include_group_stats=true&entity_id=123&entity_type=workspace&claimed_entity_id=workspace-alpha", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotNil(t, repo.trendFilters)
+	require.Equal(t, int64(123), repo.trendFilters.EntityID)
+	require.Equal(t, "workspace", repo.trendFilters.EntityType)
+	require.Equal(t, "workspace-alpha", repo.trendFilters.ClaimedEntityID)
+	require.NotNil(t, repo.modelFilters)
+	require.Equal(t, int64(123), repo.modelFilters.EntityID)
+	require.Equal(t, "workspace", repo.modelFilters.EntityType)
+	require.Equal(t, "workspace-alpha", repo.modelFilters.ClaimedEntityID)
+	require.NotNil(t, repo.groupFilters)
+	require.Equal(t, int64(123), repo.groupFilters.EntityID)
+	require.Equal(t, "workspace", repo.groupFilters.EntityType)
+	require.Equal(t, "workspace-alpha", repo.groupFilters.ClaimedEntityID)
 }
 
 func TestDashboardUsersRankingLimitAndCache(t *testing.T) {

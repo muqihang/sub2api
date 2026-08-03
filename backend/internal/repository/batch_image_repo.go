@@ -274,6 +274,62 @@ WHERE batch_id = $1`, batchID, code, message, now)
 	return appendBatchImageEventWithSQL(ctx, r.sql, batchID, eventType, map[string]any{"error_code": code})
 }
 
+func (r *batchImageRepository) ListBatchImageJobsPendingEnqueue(ctx context.Context, limit int) ([]*service.BatchImageJob, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	rows, err := r.sql.QueryContext(ctx, batchImageJobSelectSQL+`
+ WHERE status = 'submitted'
+   AND provider_job_name IS NOT NULL
+   AND provider_job_name <> ''
+   AND last_error_code = 'QUEUE_FAILED'
+ ORDER BY updated_at ASC, id ASC
+ LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return scanBatchImageJobs(rows)
+}
+
+func (r *batchImageRepository) MarkBatchImageJobQueueRecovered(ctx context.Context, batchID string) error {
+	if r.db == nil {
+		return r.markBatchImageJobQueueRecoveredWithSQL(ctx, r.sql, batchID)
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := r.markBatchImageJobQueueRecoveredWithSQL(ctx, tx, batchID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (r *batchImageRepository) markBatchImageJobQueueRecoveredWithSQL(ctx context.Context, sqlq batchImageSQLExecutor, batchID string) error {
+	res, err := sqlq.ExecContext(ctx, `
+UPDATE batch_image_jobs
+SET last_error_code = NULL,
+    last_error_message = NULL,
+    updated_at = $2,
+    version = version + 1
+WHERE batch_id = $1
+  AND status = 'submitted'
+  AND last_error_code = 'QUEUE_FAILED'`, batchID, time.Now())
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return nil
+	}
+	return appendBatchImageEventWithSQL(ctx, sqlq, batchID, "queue_recovered", map[string]any{"batch_id": batchID})
+}
+
 func (r *batchImageRepository) MarkBatchImageJobSettled(ctx context.Context, params service.MarkBatchImageJobSettledParams) error {
 	if r.db == nil {
 		return r.markBatchImageJobSettledWithSQL(ctx, r.sql, params)

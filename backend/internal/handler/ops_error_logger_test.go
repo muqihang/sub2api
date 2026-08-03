@@ -1,11 +1,15 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -139,6 +143,31 @@ func TestOpsErrorLoggerMiddleware_DoesNotBreakOuterMiddlewares(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, rec.Code)
 }
 
+func TestOpsErrorLoggerMiddleware_CompactKeepaliveDoesNotLeaveReleasedWriter(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Next()
+		_ = c.Writer.Status()
+		_ = c.Writer.Size()
+		_ = c.Writer.Written()
+	})
+	router.GET("/responses", OpsErrorLoggerMiddleware(nil), func(c *gin.Context) {
+		service.MarkOpenAICompactClientStream(c)
+		stop := service.StartOpenAICompactSSEKeepalive(c, time.Hour)
+		defer stop()
+		c.Status(http.StatusNoContent)
+	})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/responses", nil)
+	require.NotPanics(t, func() {
+		router.ServeHTTP(recorder, request)
+	})
+	require.Equal(t, http.StatusNoContent, recorder.Code)
+}
+
 // setupOpsErrorLogTestQueue 阻止 enqueueOpsErrorLog 启动真实 worker，改用可检查的测试队列。
 func setupOpsErrorLogTestQueue(t *testing.T, size int) {
 	t.Helper()
@@ -159,7 +188,9 @@ func TestLogOpsStreamError_RecordsInBandConcurrencyLimit(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.ClientRequestID, "client-request-id"))
 	c.Set(opsModelKey, "test-model")
+	c.Set(opsAccountIDKey, int64(42))
 
 	service.MarkOpsStreamError(c, "rate_limit_error",
 		"Concurrency limit exceeded for account, please retry later", http.StatusTooManyRequests)
@@ -180,6 +211,9 @@ func TestLogOpsStreamError_RecordsInBandConcurrencyLimit(t *testing.T) {
 	require.Equal(t, "P1", job.entry.Severity)            // 用 IntendedStatus 429 分级
 	require.Equal(t, "test-model", job.entry.Model)
 	require.Equal(t, "Concurrency limit exceeded for account, please retry later", job.entry.ErrorMessage)
+	require.Nil(t, job.entry.AccountID)
+	require.Empty(t, job.entry.ClientRequestID)
+	require.Nil(t, job.entry.ClientIP)
 }
 
 // 未标记流内错误时 logOpsStreamError 必须是 no-op（不误记正常的 200 流）。
@@ -1063,4 +1097,72 @@ func TestGetOpsAPIKeyPrefersPrimaryContextKey(t *testing.T) {
 	got := getOpsAPIKey(c)
 	require.NotNil(t, got)
 	require.Equal(t, int64(1), got.ID, "已鉴权请求应优先使用正式 api key")
+}
+
+func TestOpsErrorLoggerMiddleware_ConsumesLocalRuntimeGuardMetadata(t *testing.T) {
+	resetOpsErrorLoggerStateForTest(t)
+	gin.SetMode(gin.TestMode)
+
+	repo := &opsErrorLoggerLocalGuardRepo{}
+	ops := service.NewOpsService(repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	r := gin.New()
+	r.POST("/v1/responses", OpsErrorLoggerMiddleware(ops), func(c *gin.Context) {
+		c.Set(service.OpenAIRuntimeGuardMetadataKey, service.OpenAIRuntimeGuardMetadata{
+			Action:           "block",
+			Category:         "reasoning.unknown_effort",
+			Metric:           "openai_runtime_guard.blocked.reasoning_effort",
+			Field:            "reasoning_effort",
+			Path:             "reasoning_effort",
+			TextHash:         "hash-ops",
+			SanitizedSummary: "blocked locally",
+		})
+		service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalPolicyDenied)
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"type": "invalid_request_error", "message": "blocked"}})
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+
+	require.Eventually(t, func() bool { return repo.last() != nil }, 2*time.Second, 20*time.Millisecond)
+	entry := repo.last()
+	require.NotNil(t, entry.UpstreamErrorsJSON)
+	serialized := *entry.UpstreamErrorsJSON
+	require.Contains(t, serialized, `"kind":"local_runtime_guard"`)
+	require.Contains(t, serialized, `"runtime_guard_action":"block"`)
+	require.Contains(t, serialized, `"runtime_guard_category":"reasoning.unknown_effort"`)
+	require.Contains(t, serialized, `"upstream_called":false`)
+	require.Contains(t, serialized, `"raw_body_logged":false`)
+	require.NotContains(t, strings.ToLower(serialized), "token")
+	require.NotContains(t, strings.ToLower(serialized), "cookie")
+}
+
+type opsErrorLoggerLocalGuardRepo struct {
+	service.OpsRepository
+	mu       sync.Mutex
+	captured []*service.OpsInsertErrorLogInput
+}
+
+func (r *opsErrorLoggerLocalGuardRepo) InsertErrorLog(_ context.Context, input *service.OpsInsertErrorLogInput) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.captured = append(r.captured, input)
+	return int64(len(r.captured)), nil
+}
+
+func (r *opsErrorLoggerLocalGuardRepo) BatchInsertErrorLogs(_ context.Context, inputs []*service.OpsInsertErrorLogInput) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.captured = append(r.captured, inputs...)
+	return int64(len(r.captured)), nil
+}
+
+func (r *opsErrorLoggerLocalGuardRepo) last() *service.OpsInsertErrorLogInput {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.captured) == 0 {
+		return nil
+	}
+	return r.captured[len(r.captured)-1]
 }

@@ -1,0 +1,48 @@
+oracle-sidecar-capability-v1 = {
+  "schema_id": "oracle.sidecar.capability",
+  "schema_major": 1,
+  "schema_revision": 0,
+  "key_epoch": uint,
+  "capability_id": safe-ref,
+  "attempt_id": safe-ref,
+  "nonce": safe-ref,
+  "issued_at_ms": uint,
+  "deadline_ms": uint,
+  "method": "POST",
+  "authority": tstr,
+  "normalized_path_query": tstr,
+  "ordered_headers_sha256": sha256,
+  "body_sha256": sha256,
+  "content_length": uint,
+  "content_encoding": "identity" / "gzip" / "br" / "zstd",
+  "profile_generation": uint,
+  "proxy_generation": uint,
+  "credential_generation": uint,
+  "transport_cell_generation": uint,
+  "contract_digest": sha256,
+  "manifest_digest": sha256,
+  "destination_policy_generation": uint,
+  "destination_class": "public_provider" / "approved_proxy",
+  "allowed_destinations": [+ destination],
+  "response_policy_ref": safe-ref,
+  "retry_owner": "none" / "cc_gateway" / "sub2api",
+  "key_id": safe-ref,
+  "key_role": "sidecar_capability",
+  "signature": bstr .size 64
+}
+
+destination = {
+  "host": tstr,
+  "port": 1..65535
+}
+
+safe-ref = tstr .size (1..200)
+sha256 = bstr .size 32
+
+; Normative encoding is RFC 8949 core deterministic CBOR.
+; Maps use text keys only. Floats, tags, undefined, indefinite lengths,
+; duplicate keys, trailing items, and non-shortest encodings are invalid.
+; The frame is uint32be(cbor_length) || cbor_bytes and is at most 65536 bytes.
+; Signature input is:
+;   "oracle-sidecar-capability-v1" || h'00' || unsigned_envelope_cbor
+; The uint32 frame length and the signature field are excluded from signature input.

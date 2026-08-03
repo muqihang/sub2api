@@ -46,6 +46,7 @@ func (r *apiKeyRepository) Create(ctx context.Context, key *service.APIKey) erro
 		SetKey(key.Key).
 		SetName(key.Name).
 		SetStatus(key.Status).
+		SetNillableRestrictedClientProduct(key.RestrictedClientProduct).
 		SetNillableGroupID(key.GroupID).
 		SetNillableLastUsedAt(key.LastUsedAt).
 		SetQuota(key.Quota).
@@ -75,7 +76,11 @@ func (r *apiKeyRepository) Create(ctx context.Context, key *service.APIKey) erro
 func (r *apiKeyRepository) GetByID(ctx context.Context, id int64) (*service.APIKey, error) {
 	m, err := r.activeQuery().
 		Where(apikey.IDEQ(id)).
-		WithUser().
+		WithUser(func(q *dbent.UserQuery) {
+			q.WithAllowedGroups(func(gq *dbent.GroupQuery) {
+				gq.Select(group.FieldID)
+			})
+		}).
 		WithGroup().
 		Only(ctx)
 	if err != nil {
@@ -134,6 +139,7 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 			apikey.FieldGroupID,
 			apikey.FieldName,
 			apikey.FieldStatus,
+			apikey.FieldRestrictedClientProduct,
 			apikey.FieldIPWhitelist,
 			apikey.FieldIPBlacklist,
 			apikey.FieldQuota,
@@ -174,7 +180,13 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 				group.FieldIsExclusive,
 				group.FieldStatus,
 				group.FieldSubscriptionType,
+				group.FieldAugmentGatewayEntitled,
+				group.FieldCodexGatewayEntitled,
 				group.FieldRateMultiplier,
+				group.FieldPeakRateEnabled,
+				group.FieldPeakStart,
+				group.FieldPeakEnd,
+				group.FieldPeakRateMultiplier,
 				group.FieldDailyLimitUsd,
 				group.FieldWeeklyLimitUsd,
 				group.FieldMonthlyLimitUsd,
@@ -202,10 +214,6 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 				group.FieldMessagesDispatchModelConfig,
 				group.FieldModelsListConfig,
 				group.FieldRpmLimit,
-				group.FieldPeakRateEnabled,
-				group.FieldPeakStart,
-				group.FieldPeakEnd,
-				group.FieldPeakRateMultiplier,
 			)
 		}).
 		Only(ctx)
@@ -230,6 +238,7 @@ func (r *apiKeyRepository) Update(ctx context.Context, key *service.APIKey) erro
 		Where(apikey.IDEQ(key.ID), apikey.DeletedAtIsNil()).
 		SetName(key.Name).
 		SetStatus(key.Status).
+		SetNillableRestrictedClientProduct(key.RestrictedClientProduct).
 		SetQuota(key.Quota).
 		SetQuotaUsed(key.QuotaUsed).
 		SetRateLimit5h(key.RateLimit5h).
@@ -243,6 +252,11 @@ func (r *apiKeyRepository) Update(ctx context.Context, key *service.APIKey) erro
 		builder.SetGroupID(*key.GroupID)
 	} else {
 		builder.ClearGroupID()
+	}
+	if key.RestrictedClientProduct != nil {
+		builder.SetRestrictedClientProduct(*key.RestrictedClientProduct)
+	} else {
+		builder.ClearRestrictedClientProduct()
 	}
 
 	// Expiration time
@@ -414,7 +428,6 @@ func (r *apiKeyRepository) apiKeyListByUserIDQuery(userID int64, filters service
 			q = q.Where(apikey.GroupIDEQ(*filters.GroupID))
 		}
 	}
-
 	return q
 }
 
@@ -507,19 +520,19 @@ func (r *apiKeyRepository) latestUsageLogIPs(ctx context.Context, apiKeyIDs []in
 		}
 	}()
 
-	out := make(map[int64]string, len(apiKeyIDs))
+	result = make(map[int64]string, len(apiKeyIDs))
 	for rows.Next() {
 		var apiKeyID int64
 		var ipAddress string
 		if err := rows.Scan(&apiKeyID, &ipAddress); err != nil {
 			return nil, err
 		}
-		out[apiKeyID] = ipAddress
+		result[apiKeyID] = ipAddress
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return result, nil
 }
 
 func latestUsageLogIPsQuery(apiKeyIDs []int64, dialectName string) (string, []any) {
@@ -834,29 +847,30 @@ func apiKeyEntityToService(m *dbent.APIKey) *service.APIKey {
 		return nil
 	}
 	out := &service.APIKey{
-		ID:            m.ID,
-		UserID:        m.UserID,
-		Key:           m.Key,
-		Name:          m.Name,
-		Status:        m.Status,
-		IPWhitelist:   m.IPWhitelist,
-		IPBlacklist:   m.IPBlacklist,
-		LastUsedAt:    m.LastUsedAt,
-		CreatedAt:     m.CreatedAt,
-		UpdatedAt:     m.UpdatedAt,
-		GroupID:       m.GroupID,
-		Quota:         m.Quota,
-		QuotaUsed:     m.QuotaUsed,
-		ExpiresAt:     m.ExpiresAt,
-		RateLimit5h:   m.RateLimit5h,
-		RateLimit1d:   m.RateLimit1d,
-		RateLimit7d:   m.RateLimit7d,
-		Usage5h:       m.Usage5h,
-		Usage1d:       m.Usage1d,
-		Usage7d:       m.Usage7d,
-		Window5hStart: m.Window5hStart,
-		Window1dStart: m.Window1dStart,
-		Window7dStart: m.Window7dStart,
+		ID:                      m.ID,
+		UserID:                  m.UserID,
+		Key:                     m.Key,
+		Name:                    m.Name,
+		Status:                  m.Status,
+		RestrictedClientProduct: m.RestrictedClientProduct,
+		IPWhitelist:             m.IPWhitelist,
+		IPBlacklist:             m.IPBlacklist,
+		LastUsedAt:              m.LastUsedAt,
+		CreatedAt:               m.CreatedAt,
+		UpdatedAt:               m.UpdatedAt,
+		GroupID:                 m.GroupID,
+		Quota:                   m.Quota,
+		QuotaUsed:               m.QuotaUsed,
+		ExpiresAt:               m.ExpiresAt,
+		RateLimit5h:             m.RateLimit5h,
+		RateLimit1d:             m.RateLimit1d,
+		RateLimit7d:             m.RateLimit7d,
+		Usage5h:                 m.Usage5h,
+		Usage1d:                 m.Usage1d,
+		Usage7d:                 m.Usage7d,
+		Window5hStart:           m.Window5hStart,
+		Window1dStart:           m.Window1dStart,
+		Window7dStart:           m.Window7dStart,
 	}
 	if m.Edges.User != nil {
 		out.User = userEntityToService(m.Edges.User)
@@ -926,6 +940,12 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 		Status:                          g.Status,
 		Hydrated:                        true,
 		SubscriptionType:                g.SubscriptionType,
+		AugmentGatewayEntitled:          g.AugmentGatewayEntitled,
+		CodexGatewayEntitled:            g.CodexGatewayEntitled,
+		PeakRateEnabled:                 g.PeakRateEnabled,
+		PeakStart:                       g.PeakStart,
+		PeakEnd:                         g.PeakEnd,
+		PeakRateMultiplier:              g.PeakRateMultiplier,
 		DailyLimitUSD:                   g.DailyLimitUsd,
 		WeeklyLimitUSD:                  g.WeeklyLimitUsd,
 		MonthlyLimitUSD:                 g.MonthlyLimitUsd,
@@ -959,10 +979,6 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 		MessagesDispatchModelConfig:     g.MessagesDispatchModelConfig,
 		ModelsListConfig:                g.ModelsListConfig,
 		RPMLimit:                        g.RpmLimit,
-		PeakRateEnabled:                 g.PeakRateEnabled,
-		PeakStart:                       g.PeakStart,
-		PeakEnd:                         g.PeakEnd,
-		PeakRateMultiplier:              g.PeakRateMultiplier,
 		CreatedAt:                       g.CreatedAt,
 		UpdatedAt:                       g.UpdatedAt,
 	}

@@ -125,7 +125,7 @@ func (c *userMsgQueueCache) AcquireLock(ctx context.Context, accountID int64, re
 			Score:  float64(expireAtMs),
 			Member: strconv.FormatInt(accountID, 10),
 		}).Err(); err != nil {
-			logger.LegacyPrintf("repository.umq", "Warning: update lock index for account %d failed: %v", accountID, err)
+			logger.LegacyPrintf("repository.umq", "Warning: update lock index failed: %v", err)
 		}
 	}
 	return acquired == 1, nil
@@ -144,7 +144,7 @@ func (c *userMsgQueueCache) ReleaseLock(ctx context.Context, accountID int64, re
 		// 与下一个 AcquireLock 的 ZAdd 存在竞态：可能误删新持有者刚写入的索引项。
 		// 该锁下次被争用时 AcquireLock 的回填路径会重新登记，无需在此加锁。
 		if err := c.rdb.ZRem(ctx, umqLockIndexKey, strconv.FormatInt(accountID, 10)).Err(); err != nil {
-			logger.LegacyPrintf("repository.umq", "Warning: remove lock index for account %d failed: %v", accountID, err)
+			logger.LegacyPrintf("repository.umq", "Warning: remove lock index failed: %v", err)
 		}
 	}
 	return result == 1, nil
@@ -230,7 +230,7 @@ func (c *userMsgQueueCache) ReconcileExpiredLockCandidates(ctx context.Context, 
 				Score:  float64(nowMs + pttl),
 				Member: member,
 			}).Err(); err != nil {
-				logger.LegacyPrintf("repository.umq", "Warning: reschedule lock index member %s failed: %v", member, err)
+				logger.LegacyPrintf("repository.umq", "Warning: reschedule lock index member failed: %v", err)
 			}
 		}
 	}
@@ -240,7 +240,7 @@ func (c *userMsgQueueCache) ReconcileExpiredLockCandidates(ctx context.Context, 
 // removeLockIndexMember 移除锁索引残留；索引维护是 best-effort，失败只记日志。
 func (c *userMsgQueueCache) removeLockIndexMember(ctx context.Context, member string) {
 	if err := c.rdb.ZRem(ctx, umqLockIndexKey, member).Err(); err != nil {
-		logger.LegacyPrintf("repository.umq", "Warning: remove lock index member %s failed: %v", member, err)
+		logger.LegacyPrintf("repository.umq", "Warning: remove lock index member failed: %v", err)
 	}
 }
 

@@ -1,5 +1,4 @@
--- Cyber-policy blocks are recorded as request_type=4 so they remain visible in
--- usage audits without being confused with legacy request_type=0 rows.
+-- Cyber-policy blocks use request_type=4 so usage audits retain their outcome.
 ALTER TABLE usage_logs
     DROP CONSTRAINT IF EXISTS usage_logs_request_type_check;
 

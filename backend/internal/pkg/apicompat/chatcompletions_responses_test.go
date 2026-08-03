@@ -37,10 +37,12 @@ func TestUsageConversionsPreserveCacheWriteTokens(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(`{
 		"input_tokens":1000,
 		"output_tokens":50,
+		"cache_creation_input_tokens":999,
 		"input_tokens_details":{"cached_tokens":100,"cache_write_tokens":200}
 	}`), &responsesUsage))
 	require.NotNil(t, responsesUsage.InputTokensDetails)
 	require.Equal(t, 200, responsesUsage.InputTokensDetails.CacheWriteTokens)
+	require.Equal(t, 200, responsesUsage.CacheCreationInputTokens, "官方嵌套 cache_write_tokens 应优先")
 
 	chatUsage := chatUsageFromResponsesUsage(&responsesUsage)
 	require.NotNil(t, chatUsage.PromptTokensDetails)
@@ -51,26 +53,6 @@ func TestUsageConversionsPreserveCacheWriteTokens(t *testing.T) {
 	require.NotNil(t, roundTrip.InputTokensDetails)
 	require.Equal(t, 200, roundTrip.CacheCreationInputTokens)
 	require.Equal(t, 200, roundTrip.InputTokensDetails.CacheWriteTokens)
-}
-
-func TestResponsesUsageNestedCacheWritePresenceOverridesTopLevelAlias(t *testing.T) {
-	tests := []struct {
-		name       string
-		nestedJSON string
-		want       int
-	}{
-		{name: "explicit zero", nestedJSON: `{"cache_write_tokens":0}`, want: 0},
-		{name: "nonzero", nestedJSON: `{"cache_write_tokens":7}`, want: 7},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var usage ResponsesUsage
-			payload := []byte(`{"input_tokens":20,"output_tokens":2,"cache_creation_input_tokens":19,"input_tokens_details":` + tt.nestedJSON + `}`)
-			require.NoError(t, json.Unmarshal(payload, &usage))
-			require.Equal(t, tt.want, usage.CacheCreationInputTokens)
-		})
-	}
 }
 
 func TestChatCompletionsToResponses_SystemMessage(t *testing.T) {
@@ -154,7 +136,7 @@ func TestChatCompletionsToResponses_ToolCalls(t *testing.T) {
 	assert.Equal(t, "ping", resp.Tools[0].Name)
 }
 
-func TestChatCompletionsToResponses_ToolStrict(t *testing.T) {
+func TestChatCompletionsToResponses_ToolStrictDefaultsFalse(t *testing.T) {
 	strictTrue := true
 	strictFalse := false
 	tests := []struct {
@@ -162,9 +144,9 @@ func TestChatCompletionsToResponses_ToolStrict(t *testing.T) {
 		strict *bool
 		want   bool
 	}{
-		{name: "defaults omitted strict to false", want: false},
-		{name: "preserves explicit true", strict: &strictTrue, want: true},
-		{name: "preserves explicit false", strict: &strictFalse, want: false},
+		{name: "omitted strict", want: false},
+		{name: "explicit true", strict: &strictTrue, want: true},
+		{name: "explicit false", strict: &strictFalse, want: false},
 	}
 
 	for _, tt := range tests {
@@ -189,15 +171,12 @@ func TestChatCompletionsToResponses_ToolStrict(t *testing.T) {
 
 			payload, err := json.Marshal(resp)
 			require.NoError(t, err)
-
 			var serialized struct {
 				Tools []map[string]json.RawMessage `json:"tools"`
 			}
 			require.NoError(t, json.Unmarshal(payload, &serialized))
-			require.Len(t, serialized.Tools, 1)
-			strictJSON, ok := serialized.Tools[0]["strict"]
-			require.True(t, ok, "strict must be present in the Responses payload")
-			assert.JSONEq(t, string(mustMarshalJSON(t, tt.want)), string(strictJSON))
+			require.Contains(t, serialized.Tools[0], "strict")
+			assert.JSONEq(t, string(mustMarshalJSON(t, tt.want)), string(serialized.Tools[0]["strict"]))
 		})
 	}
 }

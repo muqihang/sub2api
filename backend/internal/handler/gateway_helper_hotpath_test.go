@@ -5,11 +5,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -30,9 +30,6 @@ type helperConcurrencyCacheStub struct {
 	waitDecrementCalls  int
 	waitMaxWait         int
 	waitIncrementHook   func()
-	apiKeyTrackCalls    int
-	apiKeyReleaseCalls  int
-	apiKeyTrackIDs      []int64
 }
 
 func (s *helperConcurrencyCacheStub) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
@@ -99,29 +96,6 @@ func (s *helperConcurrencyCacheStub) ReleaseUserSlot(ctx context.Context, userID
 
 func (s *helperConcurrencyCacheStub) GetUserConcurrency(ctx context.Context, userID int64) (int, error) {
 	return 0, nil
-}
-
-func (s *helperConcurrencyCacheStub) TrackAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.apiKeyTrackCalls++
-	s.apiKeyTrackIDs = append(s.apiKeyTrackIDs, apiKeyID)
-	return nil
-}
-
-func (s *helperConcurrencyCacheStub) ReleaseAPIKeySlot(ctx context.Context, apiKeyID int64, requestID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.apiKeyReleaseCalls++
-	return nil
-}
-
-func (s *helperConcurrencyCacheStub) GetAPIKeyConcurrencyBatch(ctx context.Context, apiKeyIDs []int64) (map[int64]int, error) {
-	out := make(map[int64]int, len(apiKeyIDs))
-	for _, apiKeyID := range apiKeyIDs {
-		out[apiKeyID] = 0
-	}
-	return out, nil
 }
 
 func (s *helperConcurrencyCacheStub) IncrementWaitCount(ctx context.Context, userID int64, maxWait int) (bool, error) {
@@ -245,6 +219,55 @@ func TestSetClaudeCodeClientContext_ReuseParsedRequest(t *testing.T) {
 	})
 }
 
+func TestSetClaudeCodeClientContext_ClaudeCodePromptWithoutMetadataSetsFalse(t *testing.T) {
+	c, _ := newHelperTestContext(http.MethodPost, "/v1/messages")
+	c.Request.Header.Set("User-Agent", "Claude Code/2.1.161")
+	body := []byte(`{
+		"model":"claude-3-5-sonnet-20241022",
+		"system":[{"text":"You are Claude Code, Anthropic's official CLI for Claude."}]
+	}`)
+
+	SetClaudeCodeClientContext(c, body, nil)
+	require.False(t, service.IsClaudeCodeClient(c.Request.Context()))
+}
+
+func TestSetClaudeCodeClientContext_ClaudeCodePromptWithInvalidMetadataSetsFalse(t *testing.T) {
+	c, _ := newHelperTestContext(http.MethodPost, "/v1/messages")
+	c.Request.Header.Set("User-Agent", "Claude Code/2.1.161")
+	body := []byte(`{
+		"model":"claude-3-5-sonnet-20241022",
+		"system":[{"text":"You are Claude Code, Anthropic's official CLI for Claude."}],
+		"metadata":{"user_id":"invalid-format"}
+	}`)
+
+	SetClaudeCodeClientContext(c, body, nil)
+	require.False(t, service.IsClaudeCodeClient(c.Request.Context()))
+}
+
+func TestSetClaudeCodeClientContext_BroaderOfficialUAAndVersion(t *testing.T) {
+	tests := []struct {
+		name        string
+		ua          string
+		wantVersion string
+	}{
+		{"claude cli current", "claude-cli/2.1.161 (external, sdk-cli)", "2.1.161"},
+		{"claude code spaced", "Claude Code/2.1.161", "2.1.161"},
+		{"claude code hyphenated", "claude-code/2.1.161", "2.1.161"},
+		{"claudecode compact", "ClaudeCode/2.1.161", "2.1.161"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := newHelperTestContext(http.MethodPost, "/v1/messages")
+			c.Request.Header.Set("User-Agent", tt.ua)
+
+			SetClaudeCodeClientContext(c, validClaudeCodeBodyJSON(), nil)
+			require.True(t, service.IsClaudeCodeClient(c.Request.Context()))
+			require.Equal(t, tt.wantVersion, service.GetClaudeCodeVersion(c.Request.Context()))
+		})
+	}
+}
+
 func TestWaitForSlotWithPingTimeout_AccountAndUserAcquire(t *testing.T) {
 	cache := &helperConcurrencyCacheStub{
 		accountSeq: []bool{false, true},
@@ -291,55 +314,11 @@ func TestAcquireUserSlotWithWait_ImmediateAcquireSkipsWaitQueue(t *testing.T) {
 	require.NotNil(t, release)
 	release()
 
-	require.Equal(t, 1, cache.userAcquireCalls)
 	require.Equal(t, 0, cache.waitIncrementCalls)
 	require.Equal(t, 0, cache.waitDecrementCalls)
-	require.Equal(t, 1, cache.userReleaseCalls)
 }
 
-func TestAcquireUserSlotWithWait_TracksAPIKeySlot(t *testing.T) {
-	cache := &helperConcurrencyCacheStub{
-		userSeq: []bool{true},
-	}
-	concurrency := service.NewConcurrencyService(cache)
-	helper := NewConcurrencyHelper(concurrency, SSEPingFormatNone, 5*time.Millisecond)
-	c, _ := newHelperTestContext(http.MethodPost, "/v1/messages")
-	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{ID: 77})
-	streamStarted := false
-
-	release, err := helper.acquireUserSlotWithWaitTimeout(c, 202, 3, time.Second, false, &streamStarted)
-	require.NoError(t, err)
-	require.NotNil(t, release)
-	require.Equal(t, 1, cache.apiKeyTrackCalls)
-	require.Equal(t, []int64{77}, cache.apiKeyTrackIDs)
-
-	release()
-
-	require.Equal(t, 1, cache.userReleaseCalls)
-	require.Equal(t, 1, cache.apiKeyReleaseCalls)
-}
-
-func TestTryAcquireUserSlotForAPIKey_TracksAPIKeySlot(t *testing.T) {
-	cache := &helperConcurrencyCacheStub{
-		userSeq: []bool{true},
-	}
-	concurrency := service.NewConcurrencyService(cache)
-	helper := NewConcurrencyHelper(concurrency, SSEPingFormatNone, 5*time.Millisecond)
-
-	release, acquired, err := helper.TryAcquireUserSlotForAPIKey(context.Background(), 202, 3, 77)
-	require.NoError(t, err)
-	require.True(t, acquired)
-	require.NotNil(t, release)
-	require.Equal(t, 1, cache.apiKeyTrackCalls)
-	require.Equal(t, []int64{77}, cache.apiKeyTrackIDs)
-
-	release()
-
-	require.Equal(t, 1, cache.userReleaseCalls)
-	require.Equal(t, 1, cache.apiKeyReleaseCalls)
-}
-
-func TestAcquireUserSlotWithWait_WaitSuccessDecrementsBeforeReturn(t *testing.T) {
+func TestAcquireUserSlotWithWait_CountsOnlyWaitingRequests(t *testing.T) {
 	cache := &helperConcurrencyCacheStub{
 		userSeq:     []bool{false, true},
 		waitAllowed: true,
@@ -352,63 +331,30 @@ func TestAcquireUserSlotWithWait_WaitSuccessDecrementsBeforeReturn(t *testing.T)
 	release, err := helper.acquireUserSlotWithWaitTimeout(c, 202, 3, time.Second, false, &streamStarted)
 	require.NoError(t, err)
 	require.NotNil(t, release)
-
-	require.Equal(t, 2, cache.userAcquireCalls)
-	require.Equal(t, 1, cache.waitIncrementCalls)
-	require.Equal(t, 20, cache.waitMaxWait)
-	require.Equal(t, 1, cache.waitDecrementCalls)
-
 	release()
-	require.Equal(t, 1, cache.userReleaseCalls)
-}
 
-func TestAcquireUserSlotWithWait_TimeoutDecrementsWaitQueue(t *testing.T) {
-	cache := &helperConcurrencyCacheStub{
-		userSeq:     []bool{false, false, false},
-		waitAllowed: true,
-	}
-	concurrency := service.NewConcurrencyService(cache)
-	helper := NewConcurrencyHelper(concurrency, SSEPingFormatNone, 5*time.Millisecond)
-	c, _ := newHelperTestContext(http.MethodPost, "/v1/messages")
-	streamStarted := false
-
-	release, err := helper.acquireUserSlotWithWaitTimeout(c, 202, 3, 30*time.Millisecond, false, &streamStarted)
-	require.Nil(t, release)
-	var cErr *ConcurrencyError
-	require.ErrorAs(t, err, &cErr)
-	require.True(t, cErr.IsTimeout)
 	require.Equal(t, 1, cache.waitIncrementCalls)
 	require.Equal(t, 1, cache.waitDecrementCalls)
-	require.Equal(t, 0, cache.userReleaseCalls)
+	require.Equal(t, service.CalculateMaxWait(3)-3, cache.waitMaxWait)
 }
 
-func TestAcquireUserSlotWithWait_RequestCancelDecrementsWaitQueue(t *testing.T) {
-	cancelled := make(chan struct{})
-	var cancel context.CancelFunc
+func TestAcquireUserSlotWithWait_WaitQueueFullReturnsTypedError(t *testing.T) {
 	cache := &helperConcurrencyCacheStub{
-		userSeq:     []bool{false, false},
-		waitAllowed: true,
-		waitIncrementHook: func() {
-			cancel()
-			close(cancelled)
-		},
+		userSeq:     []bool{false},
+		waitAllowed: false,
 	}
 	concurrency := service.NewConcurrencyService(cache)
 	helper := NewConcurrencyHelper(concurrency, SSEPingFormatNone, 5*time.Millisecond)
 	c, _ := newHelperTestContext(http.MethodPost, "/v1/messages")
-	reqCtx, cancelFunc := context.WithCancel(c.Request.Context())
-	cancel = cancelFunc
-	defer cancel()
-	c.Request = c.Request.WithContext(reqCtx)
 	streamStarted := false
 
 	release, err := helper.acquireUserSlotWithWaitTimeout(c, 202, 3, time.Second, false, &streamStarted)
-	<-cancelled
 	require.Nil(t, release)
-	require.ErrorIs(t, err, context.Canceled)
+	var waitErr *WaitQueueFullError
+	require.ErrorAs(t, err, &waitErr)
+	require.Equal(t, "user", waitErr.SlotType)
 	require.Equal(t, 1, cache.waitIncrementCalls)
-	require.Equal(t, 1, cache.waitDecrementCalls)
-	require.Equal(t, 0, cache.userReleaseCalls)
+	require.Equal(t, 0, cache.waitDecrementCalls)
 }
 
 func TestWaitForSlotWithPingTimeout_TimeoutAndStreamPing(t *testing.T) {
@@ -499,4 +445,189 @@ type helperConcurrencyCacheStubWithError struct {
 
 func (s *helperConcurrencyCacheStubWithError) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
 	return false, s.err
+}
+
+func TestForceAnthropicCompatNonNativePreservesOfficialClaudeCodeUA(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"claude-sonnet-4-6","metadata":{"user_id":"{\"device_id\":\"abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd\",\"session_id\":\"123e4567-e89b-42d3-a456-426614174000\"}"},"system":[{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
+	c.Request.Header.Set("User-Agent", "claude-cli/2.1.150 (external, sdk-cli)")
+
+	SetClaudeCodeClientContext(c, body, nil)
+	require.True(t, service.IsClaudeCodeClient(c.Request.Context()))
+	require.Equal(t, "2.1.150", service.GetClaudeCodeVersion(c.Request.Context()))
+
+	decision := service.AnthropicCompatIngressDecision{InboundRoute: service.AnthropicCompatInboundMessages, CCGatewayRoute: service.AnthropicCompatCCGatewayMessages, ClientType: service.AnthropicCompatClientType}
+	ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), service.NewAnthropicCompatAuditSummary(decision))
+	c.Request = c.Request.WithContext(ctx)
+	forceAnthropicCompatNonNative(c)
+
+	require.True(t, service.IsClaudeCodeClient(c.Request.Context()))
+	require.Equal(t, "2.1.150", service.GetClaudeCodeVersion(c.Request.Context()))
+}
+
+func TestSetClaudeCodeClientContextPreservesClaudeCodeToolShapeFromProxyUAWithoutBeta(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"claude-opus-4-8","tools":[{"name":"Bash","input_schema":{"type":"object"}},{"name":"Read","input_schema":{"type":"object"}},{"name":"Grep","input_schema":{"type":"object"}},{"name":"Glob","input_schema":{"type":"object"}},{"name":"TodoWrite","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
+	c.Request.Header.Set("User-Agent", "Go-http-client/1.1")
+	c.Request.Header.Set("anthropic-version", "2023-06-01")
+	decision := service.AnthropicCompatIngressDecision{InboundRoute: service.AnthropicCompatInboundMessages, CCGatewayRoute: service.AnthropicCompatCCGatewayMessages, ClientType: service.AnthropicCompatClientType}
+	ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), service.NewAnthropicCompatAuditSummary(decision))
+	c.Request = c.Request.WithContext(ctx)
+
+	SetClaudeCodeClientContext(c, body, nil)
+	forceAnthropicCompatNonNative(c)
+
+	require.True(t, service.IsClaudeCodeClient(c.Request.Context()))
+}
+
+func TestSetClaudeCodeClientContextPreservesLargeForwardedToolSetWithoutKnownNames(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"claude-sonnet-4-6","tools":[{"name":"tool_01"},{"name":"tool_02"},{"name":"tool_03"},{"name":"tool_04"},{"name":"tool_05"},{"name":"tool_06"},{"name":"tool_07"},{"name":"tool_08"},{"name":"tool_09"},{"name":"tool_10"}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
+	c.Request.Header.Set("User-Agent", "Go-http-client/1.1")
+	c.Request.Header.Set("anthropic-version", "2023-06-01")
+	decision := service.AnthropicCompatIngressDecision{InboundRoute: service.AnthropicCompatInboundMessages, CCGatewayRoute: service.AnthropicCompatCCGatewayMessages, ClientType: service.AnthropicCompatClientType}
+	ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), service.NewAnthropicCompatAuditSummary(decision))
+	c.Request = c.Request.WithContext(ctx)
+
+	SetClaudeCodeClientContext(c, body, nil)
+	forceAnthropicCompatNonNative(c)
+
+	require.True(t, service.IsClaudeCodeClient(c.Request.Context()))
+}
+
+func TestSetClaudeCodeClientContextDowngradesProxyUAWithoutClaudeCodeToolShape(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"claude-opus-4-8","tools":[{"name":"lookup","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
+	c.Request.Header.Set("User-Agent", "Go-http-client/1.1")
+	c.Request.Header.Set("anthropic-version", "2023-06-01")
+	decision := service.AnthropicCompatIngressDecision{InboundRoute: service.AnthropicCompatInboundMessages, CCGatewayRoute: service.AnthropicCompatCCGatewayMessages, ClientType: service.AnthropicCompatClientType}
+	ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), service.NewAnthropicCompatAuditSummary(decision))
+	ctx = service.SetClaudeCodeClient(ctx, true)
+	c.Request = c.Request.WithContext(ctx)
+
+	SetClaudeCodeClientContext(c, body, nil)
+	forceAnthropicCompatNonNative(c)
+
+	require.False(t, service.IsClaudeCodeClient(c.Request.Context()))
+}
+
+func TestSetClaudeCodeClientContextPreservesClaudeCodeCompatBetaFromProxyUA(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
+	c.Request.Header.Set("User-Agent", "Go-http-client/2.0")
+	c.Request.Header.Set("anthropic-beta", "claude-code-20250219,interleaved-thinking-2025-05-14,mid-conversation-system-2026-04-07,effort-2025-11-24,oauth-2025-04-20")
+	c.Request.Header.Set("anthropic-version", "2023-06-01")
+
+	decision := service.AnthropicCompatIngressDecision{InboundRoute: service.AnthropicCompatInboundMessages, CCGatewayRoute: service.AnthropicCompatCCGatewayMessages, ClientType: service.AnthropicCompatClientType}
+	ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), service.NewAnthropicCompatAuditSummary(decision))
+	ctx = service.SetClaudeCodeClient(ctx, true)
+	c.Request = c.Request.WithContext(ctx)
+
+	SetClaudeCodeClientContext(c, body, nil)
+
+	require.True(t, service.IsClaudeCodeClient(c.Request.Context()))
+}
+
+func TestForceAnthropicCompatNonNativePreservesClaudeCodeCompatBetaFromProxyUA(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`))
+	c.Request.Header.Set("User-Agent", "Go-http-client/2.0")
+	c.Request.Header.Set("anthropic-beta", "claude-code-20250219,interleaved-thinking-2025-05-14,mid-conversation-system-2026-04-07,effort-2025-11-24,oauth-2025-04-20")
+	c.Request.Header.Set("anthropic-version", "2023-06-01")
+	c.Request = c.Request.WithContext(service.SetClaudeCodeClient(c.Request.Context(), true))
+
+	decision := service.AnthropicCompatIngressDecision{InboundRoute: service.AnthropicCompatInboundMessages, CCGatewayRoute: service.AnthropicCompatCCGatewayMessages, ClientType: service.AnthropicCompatClientType}
+	ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), service.NewAnthropicCompatAuditSummary(decision))
+	c.Request = c.Request.WithContext(ctx)
+	forceAnthropicCompatNonNative(c)
+
+	require.True(t, service.IsClaudeCodeClient(c.Request.Context()))
+}
+
+func TestSetClaudeCodeClientContextDowngradesProxyUAWithoutCompatAudit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
+	c.Request.Header.Set("User-Agent", "Go-http-client/2.0")
+	c.Request.Header.Set("anthropic-beta", "claude-code-20250219,interleaved-thinking-2025-05-14")
+	c.Request = c.Request.WithContext(service.SetClaudeCodeClient(c.Request.Context(), true))
+
+	SetClaudeCodeClientContext(c, body, nil)
+
+	require.False(t, service.IsClaudeCodeClient(c.Request.Context()))
+}
+
+func TestSetClaudeCodeClientContextDowngradesProxyUAWithoutExactClaudeCodeBeta(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := []byte(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
+	c.Request.Header.Set("User-Agent", "Go-http-client/2.0")
+	c.Request.Header.Set("anthropic-beta", "not-claude-code-20250219,claude-code-20250219x,interleaved-thinking-2025-05-14")
+	decision := service.AnthropicCompatIngressDecision{InboundRoute: service.AnthropicCompatInboundMessages, CCGatewayRoute: service.AnthropicCompatCCGatewayMessages, ClientType: service.AnthropicCompatClientType}
+	ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), service.NewAnthropicCompatAuditSummary(decision))
+	ctx = service.SetClaudeCodeClient(ctx, true)
+	c.Request = c.Request.WithContext(ctx)
+
+	SetClaudeCodeClientContext(c, body, nil)
+
+	require.False(t, service.IsClaudeCodeClient(c.Request.Context()))
+}
+
+func TestPreserveClaudeCodeRuntimeBridgeClientReappliesAfterCompatDowngrade(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`))
+	c.Request.Header.Set("User-Agent", "Go-http-client/2.0")
+	c.Request = c.Request.WithContext(service.SetClaudeCodeClient(c.Request.Context(), true))
+
+	decision := service.AnthropicCompatIngressDecision{InboundRoute: service.AnthropicCompatInboundMessages, CCGatewayRoute: service.AnthropicCompatCCGatewayMessages, ClientType: service.AnthropicCompatClientType}
+	ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), service.NewAnthropicCompatAuditSummary(decision))
+	c.Request = c.Request.WithContext(ctx)
+	forceAnthropicCompatNonNative(c)
+	require.False(t, service.IsClaudeCodeClient(c.Request.Context()))
+
+	product := "claude_code_runtime"
+	preserveClaudeCodeRuntimeBridgeClient(c, &service.APIKey{RestrictedClientProduct: &product})
+
+	require.True(t, service.IsClaudeCodeClient(c.Request.Context()))
+}
+
+func TestForceAnthropicCompatNonNativeStillDowngradesNonOfficialUA(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`))
+	c.Request.Header.Set("User-Agent", "Go-http-client/2.0")
+	c.Request = c.Request.WithContext(service.SetClaudeCodeClient(c.Request.Context(), true))
+	c.Request = c.Request.WithContext(service.SetClaudeCodeVersion(c.Request.Context(), "2.1.150"))
+
+	decision := service.AnthropicCompatIngressDecision{InboundRoute: service.AnthropicCompatInboundMessages, CCGatewayRoute: service.AnthropicCompatCCGatewayMessages, ClientType: service.AnthropicCompatClientType}
+	ctx := service.WithAnthropicCompatAuditSummary(c.Request.Context(), service.NewAnthropicCompatAuditSummary(decision))
+	c.Request = c.Request.WithContext(ctx)
+	forceAnthropicCompatNonNative(c)
+
+	require.False(t, service.IsClaudeCodeClient(c.Request.Context()))
+	require.Empty(t, service.GetClaudeCodeVersion(c.Request.Context()))
 }

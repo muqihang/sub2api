@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 
 import UsageStatsCards from '../UsageStatsCards.vue'
+import type { AdminUsageStatsResponse } from '@/api/admin/usage'
 
 const messages: Record<string, string> = {
   'usage.totalRequests': 'Total Requests',
@@ -29,7 +30,7 @@ vi.mock('vue-i18n', async () => {
   }
 })
 
-const stats = {
+const stats: AdminUsageStatsResponse = {
   total_requests: 1,
   total_input_tokens: 100,
   total_output_tokens: 50,
@@ -46,9 +47,7 @@ const stats = {
 describe('UsageStatsCards', () => {
   it('shows cache token breakdown values', () => {
     const wrapper = mount(UsageStatsCards, {
-      props: {
-        stats,
-      },
+      props: { stats },
       global: {
         stubs: {
           Icon: true,

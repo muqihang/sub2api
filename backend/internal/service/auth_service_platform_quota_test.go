@@ -9,13 +9,14 @@ import (
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeInsertRecorder 记录 BulkInsertInitial 调用，实现 UserPlatformQuotaRepository port。
 type fakeInsertRecorder struct {
 	records []UserPlatformQuotaRecord
 	err     error
-	lastCtx context.Context // 捕获最后一次 BulkInsertInitial 收到的 ctx（用于断言事务隔离）
+	lastCtx context.Context
 }
 
 func (f *fakeInsertRecorder) GetByUserPlatform(_ context.Context, _ int64, _ string) (*UserPlatformQuotaRecord, error) {
@@ -81,15 +82,9 @@ func TestSnapshotPlatformQuotaDefaults_PassesToRepoBulkInsert(t *testing.T) {
 	}
 }
 
-// TestSnapshotPlatformQuotaDefaults_DetachesCallerTransaction 锁定 fix① 不变量：
-// 平台配额快照是 best-effort，必须脱离调用方事务执行——这样它失败（例如某平台
-// 违反 user_platform_quotas 的 CHECK 约束）也不会把调用方的注册主事务标记为 aborted。
-// 历史 bug：snapshot 在 OAuth pending handler 的 binding tx 中执行，grok 违约毒化整个
-// 事务 → consumePendingOAuthBrowserSessionTx 撞 "transaction aborted" → 500 → 清 cookie → 404。
 func TestSnapshotPlatformQuotaDefaults_DetachesCallerTransaction(t *testing.T) {
 	fakeRepo := &fakeInsertRecorder{}
-	s := &AuthService{userPlatformQuotaRepo: fakeRepo}
-
+	svc := &AuthService{userPlatformQuotaRepo: fakeRepo}
 	five := 5.0
 	plan := &signupGrantPlan{
 		PlatformQuotas: map[string]*DefaultPlatformQuotaSetting{
@@ -97,19 +92,11 @@ func TestSnapshotPlatformQuotaDefaults_DetachesCallerTransaction(t *testing.T) {
 		},
 	}
 
-	// 模拟调用方（OAuth pending handler）在事务 ctx 中调用快照
 	txCtx := dbent.NewTxContext(context.Background(), &dbent.Tx{})
 
-	if err := s.snapshotPlatformQuotaDefaults(txCtx, 999, plan); err != nil {
-		t.Fatalf("snapshot should not error (fail-open): %v", err)
-	}
-
-	if fakeRepo.lastCtx == nil {
-		t.Fatal("expected BulkInsertInitial to be called")
-	}
-	if dbent.TxFromContext(fakeRepo.lastCtx) != nil {
-		t.Error("快照必须脱离调用方事务执行（best-effort，失败不得毒化注册事务），但 repo 收到了仍携带事务的 ctx")
-	}
+	require.NoError(t, svc.snapshotPlatformQuotaDefaults(txCtx, 999, plan))
+	require.NotNil(t, fakeRepo.lastCtx)
+	require.Nil(t, dbent.TxFromContext(fakeRepo.lastCtx))
 }
 
 func TestSnapshotPlatformQuotaDefaults_NilPlanIsNoop(t *testing.T) {

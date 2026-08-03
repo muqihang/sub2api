@@ -23,6 +23,7 @@ vi.mock('vue-i18n', async () => {
       t: (key: string) => key
     })
   }
+
 })
 
 function makeAccount(overrides: Partial<Account>): Account {
@@ -70,6 +71,44 @@ describe('AccountUsageCell', () => {
         dispatchEvent: vi.fn(),
       }))
     })
+  })
+
+  it('Anthropic OAuth usage renders Fable 7d window', async () => {
+    getUsage.mockResolvedValue({
+      five_hour: null,
+      seven_day: null,
+      seven_day_sonnet: null,
+      seven_day_fable: {
+        utilization: 88,
+        resets_at: '2099-03-13T12:00:00Z',
+        remaining_seconds: 3600
+      }
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 101,
+          platform: 'anthropic',
+          type: 'oauth',
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ resetsAt }}|{{ color }}</div>'
+          },
+          AccountQuotaInfo: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    expect(getUsage).toHaveBeenCalledWith(101, 'passive')
+    expect(wrapper.text()).toContain('7d F|88|2099-03-13T12:00:00Z|amber')
   })
 
   it('Antigravity 图片用量会聚合新旧 image 模型', async () => {
@@ -343,6 +382,36 @@ describe('AccountUsageCell', () => {
     expect(wrapper.text()).toContain('5h|18|900')
   })
 
+  it('OpenAI OAuth 即使无本地 usage 也渲染 upstream quota reset cell', async () => {
+    getUsage.mockResolvedValue({})
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 2020,
+          platform: 'openai',
+          type: 'oauth',
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: true,
+          AccountQuotaInfo: true,
+          OpenAIQuotaResetCell: {
+            props: ['account'],
+            template: '<div data-testid="openai-quota-reset-cell">quota {{ account.id }}</div>'
+          }
+        }
+      }
+    })
+
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="openai-quota-reset-cell"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('quota 2020')
+  })
+
   it('OpenAI OAuth 在无 codex 快照时会回退显示 usage 接口窗口', async () => {
 	getUsage.mockResolvedValue({
 	  five_hour: {
@@ -566,58 +635,6 @@ describe('AccountUsageCell', () => {
 		expect(badges.some(node => node.attributes('title') === 'usage.userBilled')).toBe(true)
   })
 
-  it('Grok OAuth 会展示本地 user billed 用量并保留超限百分比', async () => {
-    getUsage.mockResolvedValue({
-      grok_local_usage: {
-        requests: 4,
-        tokens: 1200,
-        cost: 0.12,
-        standard_cost: 0.12,
-        user_cost: 0.34
-      },
-      grok_request_quota: {
-        limit: 10,
-        remaining: -2,
-        reset_at: '2026-07-09T16:00:00Z'
-      },
-      grok_quota_snapshot_state: 'observed'
-    })
-
-    const wrapper = mount(AccountUsageCell, {
-      props: {
-        account: makeAccount({
-          id: 3861,
-          platform: 'grok',
-          type: 'oauth',
-          extra: {}
-        })
-      },
-      global: {
-        stubs: {
-          UsageProgressBar: {
-            props: ['label', 'utilization', 'resetsAt', 'color'],
-            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ resetsAt }}</div>'
-          },
-          AccountQuotaInfo: true,
-          GrokQuotaProbeCell: true
-        }
-      }
-    })
-
-    await flushPromises()
-
-    expect(getUsage).toHaveBeenCalledWith(3861)
-    expect(wrapper.text()).toContain('4 req')
-    expect(wrapper.text()).toContain('1.2K')
-    expect(wrapper.text()).toContain('A $0.12')
-    expect(wrapper.text()).toContain('U $0.34')
-    expect(wrapper.text()).toContain('admin.accounts.usageWindow.grokRequests|120|2026-07-09T16:00:00Z')
-
-    const badges = wrapper.findAll('span[title]')
-    expect(badges.some(node => node.attributes('title') === 'usage.accountBilled')).toBe(true)
-    expect(badges.some(node => node.attributes('title') === 'usage.userBilled')).toBe(true)
-  })
-
   it('Key 账号在 today stats loading 时显示骨架屏', async () => {
 		const wrapper = mount(AccountUsageCell, {
 		  props: {
@@ -708,101 +725,33 @@ describe('AccountUsageCell', () => {
 		expect(wrapper.text()).toContain('U $0.00')
   })
 
-  it('Anthropic OAuth 会渲染 7d F (Fable) 进度条，且 7d S 逻辑保留', async () => {
-    getUsage.mockResolvedValue({
-      source: 'passive',
-      five_hour: {
-        utilization: 41,
-        resets_at: '2026-07-03T10:00:00Z',
-        remaining_seconds: 3600
-      },
-      seven_day: {
-        utilization: 56,
-        resets_at: '2026-07-06T22:00:00Z',
-        remaining_seconds: 300000
-      },
-      seven_day_sonnet: {
-        utilization: 30,
-        resets_at: '2026-07-06T22:00:00Z',
-        remaining_seconds: 300000
-      },
-      seven_day_fable: {
-        utilization: 100,
-        resets_at: '2026-07-06T22:00:00Z',
-        remaining_seconds: 300000
-      }
-    })
-
+  it('Grok OAuth accounts show an on-demand quota probe without generic usage fetch', async () => {
     const wrapper = mount(AccountUsageCell, {
       props: {
         account: makeAccount({
-          id: 3001,
-          platform: 'anthropic',
+          id: 5001,
+          platform: 'grok',
           type: 'oauth',
           extra: {}
         })
       },
       global: {
         stubs: {
-          UsageProgressBar: {
-            props: ['label', 'utilization', 'resetsAt', 'color'],
-            template: '<div class="usage-bar">{{ label }}|{{ utilization }}</div>'
-          },
+          UsageProgressBar: true,
           AccountQuotaInfo: true,
-          GrokQuotaProbeCell: true
+          GrokQuotaProbeCell: {
+            props: ['account'],
+            template: '<div data-testid="grok-quota-probe">probe {{ account.id }}</div>'
+          }
         }
       }
     })
 
     await flushPromises()
 
-    expect(wrapper.text()).toContain('5h|41')
-    expect(wrapper.text()).toContain('7d|56')
-    expect(wrapper.text()).toContain('7d S|30')
-    expect(wrapper.text()).toContain('7d F|100')
+    expect(getUsage).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="grok-quota-probe"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('probe 5001')
   })
 
-  it('Anthropic OAuth 无 Fable 数据时不渲染 7d F 进度条', async () => {
-    getUsage.mockResolvedValue({
-      source: 'passive',
-      five_hour: {
-        utilization: 41,
-        resets_at: '2026-07-03T10:00:00Z',
-        remaining_seconds: 3600
-      },
-      seven_day: {
-        utilization: 56,
-        resets_at: '2026-07-06T22:00:00Z',
-        remaining_seconds: 300000
-      }
-    })
-
-    const wrapper = mount(AccountUsageCell, {
-      props: {
-        account: makeAccount({
-          id: 3002,
-          platform: 'anthropic',
-          type: 'oauth',
-          extra: {}
-        })
-      },
-      global: {
-        stubs: {
-          UsageProgressBar: {
-            props: ['label', 'utilization', 'resetsAt', 'color'],
-            template: '<div class="usage-bar">{{ label }}|{{ utilization }}</div>'
-          },
-          AccountQuotaInfo: true,
-          GrokQuotaProbeCell: true
-        }
-      }
-    })
-
-    await flushPromises()
-
-    expect(wrapper.text()).toContain('5h|41')
-    expect(wrapper.text()).toContain('7d|56')
-    expect(wrapper.text()).not.toContain('7d S')
-    expect(wrapper.text()).not.toContain('7d F')
-  })
 })

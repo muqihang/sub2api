@@ -25,19 +25,10 @@ describe('AppSidebar scroll position persistence', () => {
     expect(componentSource).toContain('sidebar-nav')
   })
 
-  it('declares sidebarNavRef in script setup', () => {
-    expect(componentSource).toContain("const sidebarNavRef = ref<HTMLElement | null>(null)")
-  })
-
-  it('saves scroll position on beforeUnmount', () => {
+  it('saves and restores the nav scroll position across remounts', () => {
     expect(componentSource).toContain('onBeforeUnmount')
     expect(componentSource).toContain('appStore.sidebarScrollTop')
     expect(componentSource).toContain('sidebarNavRef.value.scrollTop')
-  })
-
-  it('restores scroll position on mount', () => {
-    expect(componentSource).toContain('onMounted')
-    expect(componentSource).toContain('appStore.sidebarScrollTop')
     expect(componentSource).toContain('nextTick')
   })
 })
@@ -51,5 +42,28 @@ describe('AppSidebar header styles', () => {
     expect(sidebarBrandBlockMatch).not.toBeNull()
     expect(sidebarHeaderBlockMatch?.[0]).not.toContain('@apply overflow-hidden;')
     expect(sidebarBrandBlockMatch?.[0]).not.toContain('overflow: hidden;')
+  })
+})
+
+describe('AppSidebar Augment Gateway admin navigation', () => {
+  it('keeps the Augment Gateway admin link visible in simple mode', () => {
+    expect(componentSource).toContain("{ path: '/admin/augment-gateway', label: t('admin.augmentGateway.title'), icon: GlobeIcon },")
+    expect(componentSource).not.toContain("{ path: '/admin/augment-gateway', label: t('admin.augmentGateway.title'), icon: GlobeIcon, hideInSimpleMode: true },")
+  })
+})
+
+
+describe('AppSidebar Codex entry center user navigation', () => {
+  it('exposes /codex in the same user sidebar as Augment Quick Login', () => {
+    expect(componentSource).toContain("{ path: '/plugin/augment/quick-login', label: t('plugin.augment.quickLogin.title'), icon: GlobeIcon },")
+    expect(componentSource).toContain("{ path: '/codex', label: t('codex.title'), icon: ")
+  })
+})
+
+describe('AppSidebar logo home navigation', () => {
+  it('links both logo and site name to the computed home path', () => {
+    expect(componentSource).toContain(':to="homePath"')
+    expect(componentSource).toContain("const homePath = computed(() => (isAdmin.value ? '/admin/dashboard' : '/dashboard'))")
+    expect(componentSource.match(/@click="handleMenuItemClick\(homePath\)"/g)?.length).toBeGreaterThanOrEqual(2)
   })
 })

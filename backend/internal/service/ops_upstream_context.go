@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 	"time"
 
@@ -38,12 +39,12 @@ const (
 	//（例如等待并发槽位超时后回退的限流、Wait 后二次计费校验失败）本会在错误看板里隐形。
 	OpsStreamErrorKey = "ops_stream_error"
 
-	// Client-side configuration denials should remain visible in ops_error_logs,
-	// but should be excluded from SLA/error-rate calculations.
-	// ResponseCommittedKey 由 handleErrorResponse 系列函数在写完 HTTP 错误响应后设置。
-	// ensureForwardErrorResponse 检查此 key，为 true 时跳过兜底写入，避免在已完成的 JSON 后追加 SSE。
+	// ResponseCommittedKey marks complete client-visible error responses already
+	// written by service helpers, so handlers do not append a fallback SSE frame.
 	ResponseCommittedKey = "response_committed"
 
+	// Client-side configuration denials should remain visible in ops_error_logs,
+	// but should be excluded from SLA/error-rate calculations.
 	OpsClientBusinessLimitedKey                          = "ops_client_business_limited"
 	OpsClientBusinessLimitedReasonKey                    = "ops_client_business_limited_reason"
 	OpsClientBusinessLimitedReasonIPRestriction          = "api_key_ip_restriction"
@@ -53,15 +54,29 @@ const (
 	OpsClientBusinessLimitedReasonLocalPolicyDenied      = "local_policy_denied"
 )
 
-func MarkResponseCommitted(c *gin.Context) { c.Set(ResponseCommittedKey, true) }
+func setOpsUpstreamRequestBody(c *gin.Context, body []byte) {
+	// Upstream v0.1.135 removed request-body replay storage. Keep this hook for
+	// source compatibility only; do not persist raw prompts/bodies in ops logs.
+	_ = c
+	_ = body
+}
+
+func MarkResponseCommitted(c *gin.Context) {
+	if c != nil {
+		c.Set(ResponseCommittedKey, true)
+	}
+}
 
 func IsResponseCommitted(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
 	v, ok := c.Get(ResponseCommittedKey)
 	if !ok {
 		return false
 	}
-	b, _ := v.(bool)
-	return b
+	marked, _ := v.(bool)
+	return marked
 }
 
 func SetOpsLatencyMs(c *gin.Context, key string, value int64) {
@@ -171,9 +186,10 @@ type OpsUpstreamErrorEvent struct {
 	Passthrough bool `json:"passthrough,omitempty"`
 
 	// Context
-	Platform    string `json:"platform,omitempty"`
-	AccountID   int64  `json:"account_id,omitempty"`
-	AccountName string `json:"account_name,omitempty"`
+	Platform      string `json:"platform,omitempty"`
+	AccountID     int64  `json:"account_id,omitempty"`
+	AccountName   string `json:"account_name,omitempty"`
+	UpstreamModel string `json:"upstream_model,omitempty"`
 
 	// Outcome
 	UpstreamStatusCode int    `json:"upstream_status_code,omitempty"`
@@ -189,8 +205,70 @@ type OpsUpstreamErrorEvent struct {
 	// Kind: http_error | request_error | retry_exhausted | failover
 	Kind string `json:"kind,omitempty"`
 
+	RuntimeGuardBucket   string `json:"runtime_guard_bucket,omitempty"`
+	RuntimeGuardCategory string `json:"runtime_guard_category,omitempty"`
+	RuntimeGuardMetric   string `json:"runtime_guard_metric,omitempty"`
+	RuntimeGuardAction   string `json:"runtime_guard_action,omitempty"`
+	UpstreamCalled       *bool  `json:"upstream_called,omitempty"`
+	RawBodyLogged        *bool  `json:"raw_body_logged,omitempty"`
+	TextHash             string `json:"text_hash,omitempty"`
+	SanitizedSummary     string `json:"sanitized_summary,omitempty"`
+
 	Message string `json:"message,omitempty"`
 	Detail  string `json:"detail,omitempty"`
+}
+
+func AppendOpsOpenAIRuntimeGuardLocalEvent(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	rawMeta, ok := c.Get(OpenAIRuntimeGuardMetadataKey)
+	if !ok {
+		return
+	}
+	meta, ok := rawMeta.(OpenAIRuntimeGuardMetadata)
+	if !ok {
+		if ptr, ptrOK := rawMeta.(*OpenAIRuntimeGuardMetadata); ptrOK && ptr != nil {
+			meta = *ptr
+			ok = true
+		}
+	}
+	action := strings.TrimSpace(meta.Action)
+	switch action {
+	case "repair", "block", "learned_block":
+	default:
+		return
+	}
+	if !ok || strings.TrimSpace(meta.Category) == "" || strings.TrimSpace(meta.Metric) == "" {
+		return
+	}
+	upstreamCalled := false
+	rawBodyLogged := false
+	detailMap := map[string]any{
+		"field": meta.Field,
+		"path":  meta.Path,
+		"status": func() int {
+			if meta.Status > 0 {
+				return meta.Status
+			}
+			return 0
+		}(),
+	}
+	detail, _ := json.Marshal(detailMap)
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		Platform:             PlatformOpenAI,
+		Kind:                 "local_runtime_guard",
+		RuntimeGuardBucket:   "local_runtime_guard",
+		RuntimeGuardCategory: strings.TrimSpace(meta.Category),
+		RuntimeGuardMetric:   strings.TrimSpace(meta.Metric),
+		RuntimeGuardAction:   action,
+		UpstreamCalled:       &upstreamCalled,
+		RawBodyLogged:        &rawBodyLogged,
+		TextHash:             safeOpenAIRuntimeGuardMetadataValue(meta.TextHash),
+		SanitizedSummary:     truncateString(sanitizeOpenAIRuntimeGuardMessage(meta.SanitizedSummary), 512),
+		Message:              strings.TrimSpace(meta.Category),
+		Detail:               string(detail),
+	})
 }
 
 func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
@@ -207,8 +285,27 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	ev.UpstreamURL = strings.TrimSpace(ev.UpstreamURL)
 	ev.Message = strings.TrimSpace(ev.Message)
 	ev.Detail = strings.TrimSpace(ev.Detail)
-	if ev.Message != "" {
+	if ev.Message != "" && ev.Platform != PlatformOpenAI && ev.RuntimeGuardBucket == "" {
 		ev.Message = sanitizeUpstreamErrorMessage(ev.Message)
+	}
+	if ev.Platform == PlatformOpenAI || ev.RuntimeGuardBucket != "" {
+		if ev.RuntimeGuardBucket == "" {
+			classification := ClassifyOpenAIRuntimeGuardUpstreamError(ev.UpstreamStatusCode, nil, []byte(firstNonBlankString(ev.Detail, ev.UpstreamResponseBody)), ev.Message)
+			if classification.Bucket != "" {
+				ev.RuntimeGuardBucket = classification.Bucket
+				ev.RuntimeGuardCategory = classification.Category
+				ev.RuntimeGuardMetric = classification.Metric
+				ev.RuntimeGuardAction = classification.Action
+			}
+		}
+		if ev.RuntimeGuardBucket != "" {
+			ev.Message = sanitizeOpenAIRuntimeGuardMessage(ev.Message)
+			ev.Detail = sanitizeOpsUpstreamRuntimeGuardPayload(ev.Detail)
+			ev.UpstreamResponseBody = sanitizeOpsUpstreamRuntimeGuardPayload(ev.UpstreamResponseBody)
+			setOpsUpstreamError(c, ev.UpstreamStatusCode, ev.Message, firstNonBlankString(ev.Detail, ev.UpstreamResponseBody))
+		} else if ev.Message != "" {
+			ev.Message = sanitizeUpstreamErrorMessage(ev.Message)
+		}
 	}
 
 	var existing []*OpsUpstreamErrorEvent
@@ -293,4 +390,19 @@ func safeUpstreamURL(rawURL string) string {
 		rawURL = rawURL[:idx]
 	}
 	return rawURL
+}
+
+var (
+	encryptedContentJSONRegex = regexp.MustCompile(`(?i)("encrypted_content"\s*:\s*")[^"]*(")`)
+	promptJSONRegex           = regexp.MustCompile(`(?i)("(?:prompt|input|instructions|messages)"\s*:\s*")[^"]*(")`)
+)
+
+func sanitizeOpsUpstreamRuntimeGuardPayload(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	raw = redactOpenAIRuntimeGuardOpaquePayloadMarkers(raw)
+	raw = sanitizeUpstreamErrorMessage(raw)
+	return truncateString(raw, 2048)
 }

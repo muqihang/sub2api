@@ -47,9 +47,7 @@
               class="btn btn-secondary px-2 md:px-3"
               :title="t('keys.columnSettings')"
             >
-              <svg class="h-4 w-4 md:mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M9 4.5v15m6-15v15m-10.875 0h15.75c.621 0 1.125-.504 1.125-1.125V5.625c0-.621-.504-1.125-1.125-1.125H4.125C3.504 4.5 3 5.004 3 5.625v12.75c0 .621.504 1.125 1.125 1.125z" />
-              </svg>
+              <Icon name="grid" size="sm" class="md:mr-1.5" />
               <span class="hidden md:inline">{{ t('keys.columnSettings') }}</span>
             </button>
             <div
@@ -139,15 +137,15 @@
               >
                 <GroupBadge
                   v-if="row.group"
-                  :name="row.group.name"
+                  :name="userFacingGroupName(row.group)"
                   :platform="row.group.platform"
                   :subscription-type="row.group.subscription_type"
                   :rate-multiplier="row.group.rate_multiplier"
-                  :user-rate-multiplier="userGroupRates[row.group.id]"
                   :peak-rate-enabled="row.group.peak_rate_enabled"
                   :peak-start="row.group.peak_start"
                   :peak-end="row.group.peak_end"
                   :peak-rate-multiplier="row.group.peak_rate_multiplier"
+                  :user-rate-multiplier="userGroupRates[row.group.id]"
                 />
                 <span v-else class="text-sm text-gray-400 dark:text-dark-500">{{
                   t('keys.noGroup')
@@ -461,10 +459,31 @@
         </div>
 
         <div>
+          <div class="mb-3 flex items-center justify-between">
+            <div>
+              <label class="input-label mb-0">{{ t('keys.augmentOnlyLabel') }}</label>
+              <p class="input-hint mt-1">{{ t('keys.augmentOnlyHint') }}</p>
+            </div>
+            <button
+              type="button"
+              @click="toggleAugmentOnly"
+              :class="[
+                'relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none',
+                formData.augment_only ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+              ]"
+            >
+              <span
+                :class="[
+                  'pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                  formData.augment_only ? 'translate-x-4' : 'translate-x-0'
+                ]"
+              />
+            </button>
+          </div>
           <label class="input-label">{{ t('keys.groupLabel') }}</label>
           <Select
             v-model="formData.group_id"
-            :options="groupOptions"
+            :options="modalGroupOptions"
             :placeholder="t('keys.selectGroup')"
             :searchable="true"
             :search-placeholder="t('keys.searchGroup')"
@@ -477,11 +496,11 @@
                 :platform="(option as unknown as GroupOption).platform"
                 :subscription-type="(option as unknown as GroupOption).subscriptionType"
                 :rate-multiplier="(option as unknown as GroupOption).rate"
-                :user-rate-multiplier="(option as unknown as GroupOption).userRate"
                 :peak-rate-enabled="(option as unknown as GroupOption).peakRateEnabled"
                 :peak-start="(option as unknown as GroupOption).peakStart"
                 :peak-end="(option as unknown as GroupOption).peakEnd"
                 :peak-rate-multiplier="(option as unknown as GroupOption).peakRateMultiplier"
+                :user-rate-multiplier="(option as unknown as GroupOption).userRate"
               />
               <span v-else class="text-gray-400">{{ t('keys.selectGroup') }}</span>
             </template>
@@ -491,11 +510,11 @@
                 :platform="(option as unknown as GroupOption).platform"
                 :subscription-type="(option as unknown as GroupOption).subscriptionType"
                 :rate-multiplier="(option as unknown as GroupOption).rate"
-                :user-rate-multiplier="(option as unknown as GroupOption).userRate"
                 :peak-rate-enabled="(option as unknown as GroupOption).peakRateEnabled"
                 :peak-start="(option as unknown as GroupOption).peakStart"
                 :peak-end="(option as unknown as GroupOption).peakEnd"
                 :peak-rate-multiplier="(option as unknown as GroupOption).peakRateMultiplier"
+                :user-rate-multiplier="(option as unknown as GroupOption).userRate"
                 :description="(option as unknown as GroupOption).description"
                 :selected="selected"
               />
@@ -987,9 +1006,14 @@
     <!-- Use Key Modal -->
     <UseKeyModal
       :show="showUseKeyModal"
+      :api-key-id="selectedKey?.id ?? null"
       :api-key="selectedKey?.key || ''"
       :base-url="publicSettings?.api_base_url || ''"
       :platform="selectedKey?.group?.platform || null"
+      :available-models="selectedKey?.group?.models_list_config?.enabled
+        ? selectedKey.group.models_list_config.models
+        : []"
+      :augment-only="selectedKey?.augment_only || false"
       :allow-messages-dispatch="selectedKey?.group?.allow_messages_dispatch || false"
       @close="closeUseKeyModal"
     />
@@ -1091,10 +1115,6 @@
               :subscription-type="option.subscriptionType"
               :rate-multiplier="option.rate"
               :user-rate-multiplier="option.userRate"
-              :peak-rate-enabled="option.peakRateEnabled"
-              :peak-start="option.peakStart"
-              :peak-end="option.peakEnd"
-              :peak-rate-multiplier="option.peakRateMultiplier"
               :description="option.description"
               :selected="
                 selectedKeyForGroup?.group_id === option.value ||
@@ -1114,6 +1134,7 @@
 
 <script setup lang="ts">
 	import { ref, reactive, computed, onMounted, onUnmounted, type ComponentPublicInstance } from 'vue'
+	import { useRoute, useRouter } from 'vue-router'
 	import { useI18n } from 'vue-i18n'
 	import { useAppStore } from '@/stores/app'
 	import { useOnboardingStore } from '@/stores/onboarding'
@@ -1136,11 +1157,12 @@ import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 	import EndpointPopover from '@/components/keys/EndpointPopover.vue'
 	import GroupBadge from '@/components/common/GroupBadge.vue'
 	import GroupOptionItem from '@/components/common/GroupOptionItem.vue'
-	import type { ApiKey, Group, PublicSettings, SubscriptionType, GroupPlatform, UpdateApiKeyRequest } from '@/types'
+import type { ApiKey, Group, PublicSettings, SubscriptionType, GroupPlatform, UpdateApiKeyRequest } from '@/types'
 import type { Column } from '@/components/common/types'
 import type { BatchApiKeyUsageStats } from '@/api/usage'
 import { formatDateTime } from '@/utils/format'
 import { maskApiKey } from '@/utils/maskApiKey'
+import { applyChangedKeyBindingFields } from '@/views/user/keyBindingUpdate'
 import {
   buildCcSwitchImportDeeplink,
   type CcSwitchClientType
@@ -1159,17 +1181,20 @@ interface GroupOption {
   description: string | null
   rate: number
   userRate: number | null
-  peakRateEnabled: boolean
-  peakStart: string
-  peakEnd: string
-  peakRateMultiplier: number
+  peakRateEnabled?: boolean
+  peakStart?: string
+  peakEnd?: string
+  peakRateMultiplier?: number
   subscriptionType: SubscriptionType
   platform: GroupPlatform
+  augmentGatewayEntitled: boolean
 }
 
 const appStore = useAppStore()
 const onboardingStore = useOnboardingStore()
 const { copyToClipboard: clipboardCopy } = useClipboard()
+const route = useRoute()
+const router = useRouter()
 
 const allColumns = computed<Column[]>(() => [
   { key: 'name', label: t('common.name'), sortable: true },
@@ -1198,15 +1223,21 @@ const VERSION_NEW_HIDDEN_COLUMNS: Record<number, string[]> = {
 const toggleableColumns = computed(() =>
   allColumns.value.filter((col) => !ALWAYS_VISIBLE_COLUMNS.has(col.key))
 )
-
 const hiddenColumns = reactive<Set<string>>(new Set())
+
+const getToggleableColumnKeys = () =>
+  new Set(toggleableColumns.value.map((col) => col.key))
 
 const saveColumnsToStorage = () => {
   try {
-    localStorage.setItem(HIDDEN_COLUMNS_KEY, JSON.stringify([...hiddenColumns]))
+    const validKeys = getToggleableColumnKeys()
+    localStorage.setItem(
+      HIDDEN_COLUMNS_KEY,
+      JSON.stringify([...hiddenColumns].filter((key) => validKeys.has(key)))
+    )
     localStorage.setItem(COLUMN_SETTINGS_VERSION_KEY, String(COLUMN_SETTINGS_VERSION))
-  } catch (error) {
-    console.error('Failed to save API key table columns:', error)
+  } catch {
+    // Ignore localStorage failures; column visibility is a UI preference.
   }
 }
 
@@ -1215,20 +1246,18 @@ const loadSavedColumns = () => {
   try {
     const saved = localStorage.getItem(HIDDEN_COLUMNS_KEY)
     if (saved) {
-      const parsed = JSON.parse(saved) as string[]
-      const validColumnKeys = new Set(allColumns.value.map((col) => col.key))
-      parsed
-        .filter((key) =>
-          typeof key === 'string' &&
-          validColumnKeys.has(key) &&
-          !ALWAYS_VISIBLE_COLUMNS.has(key)
-        )
-        .forEach((key) => hiddenColumns.add(key))
+      const parsed = JSON.parse(saved)
+      const validKeys = getToggleableColumnKeys()
+      if (Array.isArray(parsed)) {
+        parsed
+          .filter((key): key is string => typeof key === 'string' && validKeys.has(key))
+          .forEach((key) => hiddenColumns.add(key))
+      }
       const storedVersion = Number(localStorage.getItem(COLUMN_SETTINGS_VERSION_KEY) ?? '1')
       if (storedVersion < COLUMN_SETTINGS_VERSION) {
-        for (let v = storedVersion + 1; v <= COLUMN_SETTINGS_VERSION; v++) {
-          for (const key of VERSION_NEW_HIDDEN_COLUMNS[v] ?? []) {
-            if (validColumnKeys.has(key) && !ALWAYS_VISIBLE_COLUMNS.has(key)) {
+        for (let version = storedVersion + 1; version <= COLUMN_SETTINGS_VERSION; version++) {
+          for (const key of VERSION_NEW_HIDDEN_COLUMNS[version] ?? []) {
+            if (validKeys.has(key) && !ALWAYS_VISIBLE_COLUMNS.has(key)) {
               hiddenColumns.add(key)
             }
           }
@@ -1241,14 +1270,14 @@ const loadSavedColumns = () => {
       DEFAULT_HIDDEN_COLUMNS.forEach((key) => hiddenColumns.add(key))
       localStorage.setItem(COLUMN_SETTINGS_VERSION_KEY, String(COLUMN_SETTINGS_VERSION))
     }
-  } catch (error) {
-    console.error('Failed to load API key table columns:', error)
+  } catch {
+    hiddenColumns.clear()
     DEFAULT_HIDDEN_COLUMNS.forEach((key) => hiddenColumns.add(key))
   }
 }
 
 const toggleColumn = (key: string) => {
-  if (ALWAYS_VISIBLE_COLUMNS.has(key)) return
+  if (!getToggleableColumnKeys().has(key)) return
   if (hiddenColumns.has(key)) {
     hiddenColumns.delete(key)
   } else {
@@ -1324,6 +1353,7 @@ const setGroupButtonRef = (keyId: number, el: Element | ComponentPublicInstance 
 const formData = ref({
   name: '',
   group_id: null as number | null,
+  augment_only: false,
   status: 'active' as 'active' | 'inactive',
   use_custom_key: false,
   custom_key: '',
@@ -1375,7 +1405,7 @@ const shouldSubmitEditStatus = (key: ApiKey, status: 'active' | 'inactive') => {
 const groupFilterOptions = computed(() => [
   { value: '', label: t('keys.allGroups') },
   { value: 0, label: t('keys.noGroup') },
-  ...groups.value.map((g) => ({ value: g.id, label: g.name }))
+  ...groups.value.map((g) => ({ value: g.id, label: userFacingGroupName(g) }))
 ])
 
 const statusFilterOptions = computed(() => [
@@ -1405,7 +1435,7 @@ const onStatusFilterChange = (value: string | number | boolean | null) => {
 const groupOptions = computed(() =>
   groups.value.map((group) => ({
     value: group.id,
-    label: group.name,
+    label: userFacingGroupName(group),
     description: group.description,
     rate: group.rate_multiplier,
     userRate: userGroupRates.value[group.id] ?? null,
@@ -1414,20 +1444,49 @@ const groupOptions = computed(() =>
     peakEnd: group.peak_end,
     peakRateMultiplier: group.peak_rate_multiplier,
     subscriptionType: group.subscription_type,
-    platform: group.platform
+    platform: group.platform,
+    augmentGatewayEntitled: group.augment_gateway_entitled
   }))
+)
+
+function userFacingGroupName(group: Pick<Group, 'name' | 'augment_gateway_entitled'>): string {
+  const rawName = String(group.name || '').trim()
+  if (group.augment_gateway_entitled && rawName === 'Augment Local') {
+    return 'Augment专用'
+  }
+  return rawName
+}
+
+const entitledGroupOptions = computed(() =>
+  groupOptions.value.filter((group) => group.augmentGatewayEntitled)
+)
+
+const modalGroupOptions = computed(() =>
+  formData.value.augment_only ? entitledGroupOptions.value : groupOptions.value
 )
 
 // Group dropdown search
 const groupSearchQuery = ref('')
 const filteredGroupOptions = computed(() => {
+  const sourceOptions = selectedKeyForGroup.value?.augment_only ? entitledGroupOptions.value : groupOptions.value
   const query = groupSearchQuery.value.trim().toLowerCase()
-  if (!query) return groupOptions.value
-  return groupOptions.value.filter((opt) => {
+  if (!query) return sourceOptions
+  return sourceOptions.filter((opt) => {
     return opt.label.toLowerCase().includes(query) ||
       (opt.description && opt.description.toLowerCase().includes(query))
   })
 })
+
+const toggleAugmentOnly = () => {
+  formData.value.augment_only = !formData.value.augment_only
+  if (!formData.value.augment_only) {
+    return
+  }
+  const currentGroup = groups.value.find((group) => group.id === formData.value.group_id)
+  if (!currentGroup?.augment_gateway_entitled) {
+    formData.value.group_id = null
+  }
+}
 
 const copyToClipboard = async (text: string, keyId: number) => {
   const success = await clipboardCopy(text, t('keys.copied'))
@@ -1523,6 +1582,22 @@ const loadPublicSettings = async () => {
   }
 }
 
+const maybeOpenAugmentKeyCreate = async () => {
+  if (route.query.create !== 'augment') {
+    return
+  }
+  if (groups.value.length === 0) {
+    return
+  }
+  const entitledGroup = groups.value.find((group) => group.augment_gateway_entitled) || null
+  formData.value.augment_only = true
+  formData.value.group_id = entitledGroup?.id ?? null
+  showCreateModal.value = true
+  const nextQuery = { ...route.query }
+  delete nextQuery.create
+  await router.replace({ path: route.path, query: nextQuery })
+}
+
 const openUseKeyModal = (key: ApiKey) => {
   selectedKey.value = key
   showUseKeyModal.value = true
@@ -1558,6 +1633,7 @@ const editKey = (key: ApiKey) => {
   formData.value = {
     name: key.name,
     group_id: key.group_id,
+    augment_only: key.augment_only,
     status: key.status === 'quota_exhausted' || key.status === 'expired' ? 'inactive' : key.status,
     use_custom_key: false,
     custom_key: '',
@@ -1642,9 +1718,6 @@ const closeGroupSelector = (event: MouseEvent) => {
     groupSelectorKeyId.value = null
     dropdownPosition.value = null
   }
-  if (columnDropdownRef.value && !columnDropdownRef.value.contains(target)) {
-    showColumnDropdown.value = false
-  }
 }
 
 const confirmDelete = (key: ApiKey) => {
@@ -1655,7 +1728,7 @@ const confirmDelete = (key: ApiKey) => {
 const handleSubmit = async () => {
   // Validate group_id is required
   if (formData.value.group_id === null) {
-    appStore.showError(t('keys.groupRequired'))
+    appStore.showError(t(formData.value.augment_only ? 'keys.augmentGroupRequired' : 'keys.groupRequired'))
     return
   }
 
@@ -1709,9 +1782,8 @@ const handleSubmit = async () => {
   submitting.value = true
   try {
     if (showEditModal.value && selectedKey.value) {
-      const updates: UpdateApiKeyRequest = {
+      const payload: UpdateApiKeyRequest = applyChangedKeyBindingFields({
         name: formData.value.name,
-        group_id: formData.value.group_id,
         ip_whitelist: ipWhitelist,
         ip_blacklist: ipBlacklist,
         quota: quota,
@@ -1719,17 +1791,24 @@ const handleSubmit = async () => {
         rate_limit_5h: rateLimitData.rate_limit_5h,
         rate_limit_1d: rateLimitData.rate_limit_1d,
         rate_limit_7d: rateLimitData.rate_limit_7d,
-      }
+      }, {
+        group_id: selectedKey.value.group_id,
+        augment_only: selectedKey.value.augment_only,
+      }, {
+        group_id: formData.value.group_id,
+        augment_only: formData.value.augment_only,
+      })
       if (shouldSubmitEditStatus(selectedKey.value, formData.value.status)) {
-        updates.status = formData.value.status
+        payload.status = formData.value.status
       }
-      await keysAPI.update(selectedKey.value.id, updates)
+      await keysAPI.update(selectedKey.value.id, payload)
       appStore.showSuccess(t('keys.keyUpdatedSuccess'))
     } else {
       const customKey = formData.value.use_custom_key ? formData.value.custom_key : undefined
       await keysAPI.create(
         formData.value.name,
         formData.value.group_id,
+        formData.value.augment_only,
         customKey,
         ipWhitelist,
         ipBlacklist,
@@ -1781,6 +1860,7 @@ const closeModals = () => {
   formData.value = {
     name: '',
     group_id: null,
+    augment_only: false,
     status: 'active',
     use_custom_key: false,
     custom_key: '',
@@ -1947,7 +2027,7 @@ function formatResetTime(resetAt: string | null): string {
 onMounted(() => {
   loadSavedColumns()
   loadApiKeys()
-  loadGroups()
+  loadGroups().then(() => maybeOpenAugmentKeyCreate())
   loadUserGroupRates()
   loadPublicSettings()
   document.addEventListener('click', closeGroupSelector)

@@ -1,0 +1,136 @@
+{
+  "cc_gateway": {
+    "account_identities": {
+      "opaque:account-ref:v1:placeholder": {
+        "account_ref": "opaque:account-ref:v1:placeholder",
+        "account_ref_policy": "server_scoped_hmac_with_key_id_scope_version_required",
+        "account_uuid_ref": "opaque:account-ref:v1:placeholder",
+        "device_id": "<from-account-identity>",
+        "persona_variant": "claude-code-2.1.150-macos-local",
+        "policy_version": "2.1.150",
+        "session_policy": "preserve_downstream_session_id"
+      }
+    },
+    "auth": {
+      "gateway_token": "${CC_GATEWAY_TOKEN}",
+      "tokens": []
+    },
+    "egress_buckets": {
+      "home-ip-canary-2026-05-22": {
+        "allowed_account_ids": [
+          "opaque:account-ref:v1:placeholder"
+        ],
+        "enabled": true,
+        "proxy_url": "${CC_EGRESS_PROXY_URL}"
+      }
+    },
+    "env": {
+      "arch": "arm64",
+      "deployment_environment": "production-session",
+      "is_ci": false,
+      "is_claude_ai_auth": true,
+      "is_running_with_bun": false,
+      "node_version": "v22.22.2",
+      "package_managers": "npm",
+      "platform": "darwin",
+      "platform_raw": "darwin",
+      "runtimes": "node",
+      "terminal": "iTerm2.app",
+      "version": "2.1.150",
+      "version_base": "2.1.150"
+    },
+    "identity": {
+      "device_id": "<from-account-identity>",
+      "email": "redacted-email"
+    },
+    "logging": {
+      "audit": true,
+      "level": "info"
+    },
+    "mode": "sub2api",
+    "prompt_env": {
+      "platform": "darwin",
+      "shell": "zsh",
+      "working_dir": "/Users/redacted/projects"
+    },
+    "providers": {
+      "anthropic": true
+    },
+    "server": {
+      "port": 18443,
+      "tls": {
+        "cert": "",
+        "key": ""
+      }
+    },
+    "shared_pool": {
+      "billing_cch_mode": "sign",
+      "candidate_model_allowlist": [
+        "claude-sonnet-4-8",
+        "claude-opus-4-8"
+      ],
+      "candidate_model_audit_budgets": {
+        "claude-opus-4-8": 25,
+        "claude-sonnet-4-8": 25
+      },
+      "candidate_model_kill_switches": {
+        "claude-opus-4-8": false,
+        "claude-sonnet-4-8": false
+      },
+      "candidate_model_replay_proofs": {
+        "claude-opus-4-8": "fixture-opus-48",
+        "claude-sonnet-4-8": "fixture-sonnet-48"
+      },
+      "message_beta_profile": "claude_code_2_1_150_subscription_1m",
+      "persona_resolver": {
+        "exact_version": "2.1.150",
+        "future_candidate_models": {
+          "allowlist_ref": "candidate_model_allowlist",
+          "capability_downgrade_allowed": false,
+          "decision": "gray_path"
+        },
+        "registry_profile": "claude_code_2_1_150_subscription_1m",
+        "source_of_truth": "cc_gateway_dynamic_persona_resolver",
+        "trusted_minor_drift": {
+          "capability_downgrade_allowed": false,
+          "decision": "observed_minor_drift",
+          "example_version": "2.1.151"
+        },
+        "unknown_major": {
+          "action": "fail_closed",
+          "decision": "quarantine_version"
+        },
+        "version_family": "2.1"
+      },
+      "production_budget": {
+        "enforcement_enabled": false,
+        "mode": "observe_only",
+        "p0_hard_block_only": true
+      },
+      "production_upstream_enabled": true,
+      "signing_enabled": true,
+      "signing_evidence_gates_approved": true,
+      "upstream_mode": "production"
+    },
+    "upstream": {
+      "url": "https://api.anthropic.com"
+    }
+  },
+  "mode": "production-session",
+  "raw_dir": "docs/anti-ban/runtime-productization/2026-05-24-cli-through/production-session/raw",
+  "required_env": {
+    "ALLOW_REAL_ANTHROPIC_PRODUCTION": "1",
+    "CC_EGRESS_PROXY_URL": "<required>",
+    "CC_GATEWAY_TOKEN": "<required>"
+  },
+  "requires_real_anthropic": true,
+  "run_dir": "docs/anti-ban/runtime-productization/2026-05-24-cli-through/production-session",
+  "schema_version": 1,
+  "session_budget": {
+    "enforcement_enabled": false,
+    "hard_limits_source": "operational_data_required",
+    "mode": "observe_only",
+    "normal_capability_policy": "allow_tools_thinking_1m_opus_stream_max_tokens_32000",
+    "p0_hard_block_only": true
+  }
+}

@@ -29,29 +29,15 @@ type GrokTokenProvider struct {
 	tempUnschedCache TempUnschedCache
 }
 
-func NewGrokTokenProvider(
-	accountRepo AccountRepository,
-	tokenCache GrokTokenCache,
-) *GrokTokenProvider {
-	return &GrokTokenProvider{
-		accountRepo:   accountRepo,
-		tokenCache:    tokenCache,
-		refreshPolicy: AntigravityProviderRefreshPolicy(),
-	}
+func NewGrokTokenProvider(accountRepo AccountRepository, tokenCache GrokTokenCache) *GrokTokenProvider {
+	return &GrokTokenProvider{accountRepo: accountRepo, tokenCache: tokenCache, refreshPolicy: AntigravityProviderRefreshPolicy()}
 }
-
 func (p *GrokTokenProvider) SetRefreshAPI(api *OAuthRefreshAPI, executor OAuthRefreshExecutor) {
 	p.refreshAPI = api
 	p.executor = executor
 }
-
-func (p *GrokTokenProvider) SetRefreshPolicy(policy ProviderRefreshPolicy) {
-	p.refreshPolicy = policy
-}
-
-func (p *GrokTokenProvider) SetTempUnschedCache(cache TempUnschedCache) {
-	p.tempUnschedCache = cache
-}
+func (p *GrokTokenProvider) SetRefreshPolicy(policy ProviderRefreshPolicy) { p.refreshPolicy = policy }
+func (p *GrokTokenProvider) SetTempUnschedCache(cache TempUnschedCache)    { p.tempUnschedCache = cache }
 
 func (p *GrokTokenProvider) GetAccessToken(ctx context.Context, account *Account) (string, error) {
 	if account == nil {
@@ -60,14 +46,12 @@ func (p *GrokTokenProvider) GetAccessToken(ctx context.Context, account *Account
 	if account.Platform != PlatformGrok || account.Type != AccountTypeOAuth {
 		return "", errors.New("not a grok oauth account")
 	}
-
 	cacheKey := GrokTokenCacheKey(account)
 	if p.tokenCache != nil {
 		if token, err := p.tokenCache.GetAccessToken(ctx, cacheKey); err == nil && strings.TrimSpace(token) != "" {
 			return token, nil
 		}
 	}
-
 	expiresAt := account.GetCredentialAsTime("expires_at")
 	needsRefresh := expiresAt == nil || time.Until(*expiresAt) <= grokTokenRefreshSkew
 	if needsRefresh && strings.TrimSpace(account.GetGrokRefreshToken()) == "" {
@@ -85,17 +69,15 @@ func (p *GrokTokenProvider) GetAccessToken(ctx context.Context, account *Account
 			if p.refreshPolicy.OnRefreshError == ProviderRefreshErrorReturn {
 				return "", err
 			}
-		} else if !result.LockHeld && result.Account != nil {
+		} else if result != nil && !result.LockHeld && result.Account != nil {
 			account = result.Account
 			expiresAt = account.GetCredentialAsTime("expires_at")
 		}
 	}
-
 	accessToken := account.GetGrokAccessToken()
 	if strings.TrimSpace(accessToken) == "" {
 		return "", errors.New("access_token not found in credentials")
 	}
-
 	if p.tokenCache != nil {
 		latestAccount, isStale := CheckTokenVersion(ctx, account, p.accountRepo)
 		if isStale && latestAccount != nil {
@@ -119,7 +101,6 @@ func (p *GrokTokenProvider) GetAccessToken(ctx context.Context, account *Account
 			_ = p.tokenCache.SetAccessToken(ctx, cacheKey, accessToken, ttl)
 		}
 	}
-
 	return accessToken, nil
 }
 
@@ -135,24 +116,20 @@ func (p *GrokTokenProvider) markTempUnschedulable(account *Account, refreshErr e
 	}
 	if isNonRetryableRefreshError(refreshErr) {
 		if err := p.accountRepo.SetError(context.Background(), account.ID, "grok token refresh failed (non-retryable): "+redactedErr); err != nil {
-			slog.Warn(grokTokenProviderLogComponent+".set_error_status_failed", "account_id", account.ID, "error", err)
+			slog.Warn(grokTokenProviderLogComponent+".set_error_status_failed", "error", err)
 		}
 		return
 	}
 	reason := "grok token refresh failed on request path: " + redactedErr
 	bgCtx := context.Background()
 	if err := p.accountRepo.SetTempUnschedulable(bgCtx, account.ID, until, reason); err != nil {
-		slog.Warn(grokTokenProviderLogComponent+".set_temp_unschedulable_failed", "account_id", account.ID, "error", err)
+		slog.Warn(grokTokenProviderLogComponent+".set_temp_unschedulable_failed", "error", err)
 		return
 	}
 	if p.tempUnschedCache != nil {
-		state := &TempUnschedState{
-			UntilUnix:       until.Unix(),
-			TriggeredAtUnix: now.Unix(),
-			ErrorMessage:    grokTempUnschedulableErrorCode + ": " + reason,
-		}
+		state := &TempUnschedState{UntilUnix: until.Unix(), TriggeredAtUnix: now.Unix(), ErrorMessage: grokTempUnschedulableErrorCode + ": " + reason}
 		if err := p.tempUnschedCache.SetTempUnsched(bgCtx, account.ID, state); err != nil {
-			slog.Warn(grokTokenProviderLogComponent+".temp_unsched_cache_set_failed", "account_id", account.ID, "error", err)
+			slog.Warn(grokTokenProviderLogComponent+".temp_unsched_cache_set_failed", "error", err)
 		}
 	}
 }

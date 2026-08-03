@@ -18,6 +18,8 @@ import (
 	"go.uber.org/zap"
 )
 
+const publicVectorModelUnavailableMessage = "Requested model is not available"
+
 // Embeddings handles the OpenAI-compatible Embeddings API.
 // POST /v1/embeddings
 func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
@@ -118,7 +120,6 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 			service.OpenAIUpstreamTransportHTTPSSE,
 			service.OpenAIEndpointCapabilityEmbeddings,
 			false,
-			false,
 		)
 		if err != nil {
 			reqLog.Warn("openai_embeddings.account_select_failed",
@@ -127,10 +128,12 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 			)
 			if len(failedAccountIDs) == 0 {
 				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, service.PlatformOpenAI)
-				if !cls.ModelNotFound {
-					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
+				if cls.ModelNotFound {
+					h.errorResponse(c, cls.Status, cls.ErrType, publicVectorModelUnavailableMessage)
+					return
 				}
-				h.errorResponse(c, cls.Status, cls.ErrType, cls.Message)
+				markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
+				h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable")
 				return
 			}
 			if lastFailoverErr != nil {
@@ -142,10 +145,12 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 		}
 		if selection == nil || selection.Account == nil {
 			cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, service.PlatformOpenAI)
-			if !cls.ModelNotFound {
-				markOpsRoutingCapacityLimited(c)
+			if cls.ModelNotFound {
+				h.errorResponse(c, cls.Status, cls.ErrType, publicVectorModelUnavailableMessage)
+				return
 			}
-			h.errorResponse(c, cls.Status, cls.ErrType, cls.Message)
+			markOpsRoutingCapacityLimited(c)
+			h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "No available accounts")
 			return
 		}
 		account := selection.Account

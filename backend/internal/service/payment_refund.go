@@ -17,13 +17,10 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/ent/paymentproviderinstance"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
-	"github.com/Wei-Shaw/sub2api/internal/payment/provider"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
 
 // --- Refund Flow ---
-
-var createPaymentProviderFromInstance = provider.CreateProvider
 
 // getOrderProviderInstance looks up the provider instance that processed this order.
 // For legacy orders without provider_instance_id, it resolves only when the
@@ -439,6 +436,7 @@ func (s *PaymentService) QueryAndFinalizeRefund(ctx context.Context, oid int64) 
 			return early, nil
 		}
 	}
+
 	switch strings.TrimSpace(resp.Status) {
 	case payment.ProviderStatusSuccess, payment.ProviderStatusRefunded:
 		if err := s.applyRefundFinalDeduction(ctx, plan); err != nil {
@@ -446,7 +444,7 @@ func (s *PaymentService) QueryAndFinalizeRefund(ctx context.Context, oid int64) 
 		}
 		return s.markRefundOk(ctx, plan)
 	case payment.ProviderStatusPending:
-		s.writeAuditLog(ctx, oid, "REFUND_QUERY_PENDING", "admin", map[string]any{"refundID": resp.RefundID})
+		s.writeAuditLog(ctx, oid, "REFUND_QUERY_PENDING", "admin", map[string]any{"refundID": refundResponseID(resp)})
 		return &RefundResult{Success: false, Warning: "gateway refund is still pending confirmation"}, nil
 	default:
 		return s.finalizeRefundFailed(ctx, o, fmt.Errorf("payment refund returned unknown status: %s", strings.TrimSpace(resp.Status)))
@@ -459,21 +457,20 @@ func (s *PaymentService) refundFinalizePlan(o *dbent.PaymentOrder) *RefundPlan {
 	if reason == "" {
 		reason = fmt.Sprintf("refund order:%d", o.ID)
 	}
+	balanceToDeduct := 0.0
+	if o.OrderType == payment.OrderTypeBalance {
+		balanceToDeduct = refundAmount
+	}
 	return &RefundPlan{
-		OrderID:       o.ID,
-		Order:         o,
-		RefundAmount:  refundAmount,
-		GatewayAmount: calculateGatewayRefundAmount(o.Amount, o.PayAmount, refundAmount, PaymentOrderCurrency(o)),
-		Reason:        reason,
-		Force:         o.ForceRefund,
-		DeductBalance: true,
-		DeductionType: payment.DeductionTypeBalance,
-		BalanceToDeduct: func() float64 {
-			if o.OrderType == payment.OrderTypeBalance {
-				return refundAmount
-			}
-			return 0
-		}(),
+		OrderID:         o.ID,
+		Order:           o,
+		RefundAmount:    refundAmount,
+		GatewayAmount:   calculateGatewayRefundAmount(o.Amount, o.PayAmount, refundAmount, PaymentOrderCurrency(o)),
+		Reason:          reason,
+		Force:           o.ForceRefund,
+		DeductBalance:   true,
+		DeductionType:   payment.DeductionTypeBalance,
+		BalanceToDeduct: balanceToDeduct,
 	}
 }
 
@@ -559,11 +556,40 @@ func (s *PaymentService) markRefundOk(ctx context.Context, p *RefundPlan) (*Refu
 		fs = OrderStatusPartiallyRefunded
 	}
 	now := time.Now()
-	_, err := s.entClient.PaymentOrder.UpdateOneID(p.OrderID).SetStatus(fs).SetRefundAmount(p.RefundAmount).SetRefundReason(p.Reason).SetRefundAt(now).SetForceRefund(p.Force).Save(ctx)
+	tx, err := s.entClient.Tx(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin refund finalization tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	txCtx := dbent.NewTxContext(ctx, tx)
+	_, err = tx.Client().PaymentOrder.UpdateOneID(p.OrderID).SetStatus(fs).SetRefundAmount(p.RefundAmount).SetRefundReason(p.Reason).SetRefundAt(now).SetForceRefund(p.Force).Save(txCtx)
 	if err != nil {
 		return nil, fmt.Errorf("mark refund: %w", err)
 	}
-	s.writeAuditLog(ctx, p.OrderID, "REFUND_SUCCESS", "admin", map[string]any{"refundAmount": p.RefundAmount, "reason": p.Reason, "balanceDeducted": p.BalanceToDeduct, "force": p.Force})
+	var reversal AffiliateRewardReversalResult
+	if s.affiliateService != nil {
+		reversal, err = s.affiliateService.ReverseOrderRewards(txCtx, p.OrderID, p.RefundAmount, p.Order.Amount)
+		if err != nil {
+			return nil, fmt.Errorf("reverse affiliate rewards: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit refund finalization: %w", err)
+	}
+	if reversal.InviterUserID > 0 {
+		s.affiliateService.invalidateAffiliateCaches(ctx, reversal.InviterUserID)
+	}
+	if reversal.InviteeUserID > 0 {
+		s.affiliateService.invalidateAffiliateCaches(ctx, reversal.InviteeUserID)
+	}
+	s.writeAuditLog(ctx, p.OrderID, "REFUND_SUCCESS", "admin", map[string]any{
+		"refundAmount":                  p.RefundAmount,
+		"reason":                        p.Reason,
+		"balanceDeducted":               p.BalanceToDeduct,
+		"force":                         p.Force,
+		"affiliateRebateReversed":       reversal.InviterRebateReversed,
+		"affiliateInviteeBonusReversed": reversal.InviteeBonusReversed,
+	})
 	return &RefundResult{Success: true, BalanceDeducted: p.BalanceToDeduct, SubDaysDeducted: p.SubDaysToDeduct}, nil
 }
 

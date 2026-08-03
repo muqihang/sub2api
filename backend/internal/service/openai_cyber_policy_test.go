@@ -2,6 +2,7 @@ package service
 
 import (
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -32,9 +33,32 @@ func TestMarkOpsCyberPolicyFirstWins(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	MarkOpsCyberPolicy(c, CyberPolicyMark{Code: "cyber_policy", Message: "first"})
-	MarkOpsCyberPolicy(c, CyberPolicyMark{Code: "cyber_policy", Message: "second"})
-	require.Equal(t, "first", GetOpsCyberPolicy(c).Message, "first mark wins, later marks ignored")
+	MarkOpsCyberPolicy(c, CyberPolicyMark{Code: "cyber_policy", Message: "first", UpstreamStatus: 200})
+	MarkOpsCyberPolicy(c, CyberPolicyMark{Code: "cyber_policy", Message: "second", UpstreamStatus: 400})
+	require.Equal(t, 200, GetOpsCyberPolicy(c).UpstreamStatus, "first mark wins, later marks ignored")
+}
+
+func TestMarkOpsCyberPolicySanitizesRuntimeEvidence(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	rawMarker := "raw-refusal-and-prompt-must-not-persist"
+
+	MarkOpsCyberPolicy(c, CyberPolicyMark{
+		Message:        "blocked token=secret-value user@example.com",
+		Body:           `{"response":{"instructions":"` + rawMarker + `","error":{"code":"cyber_policy"}}}`,
+		UpstreamStatus: 200,
+		UpstreamInTok:  17,
+		UpstreamOutTok: 3,
+	})
+
+	mark := GetOpsCyberPolicy(c)
+	require.NotNil(t, mark)
+	require.Equal(t, safeCyberPolicyMessage, mark.Message)
+	require.NotContains(t, mark.Message, "secret-value")
+	require.NotContains(t, mark.Message, "user@example.com")
+	require.NotContains(t, mark.Body, rawMarker)
+	require.NotContains(t, strings.ToLower(mark.Body), "instructions")
+	require.JSONEq(t, `{"event":"cyber_policy","upstream_status_code":200,"input_tokens":17,"output_tokens":3}`, mark.Body)
 }
 
 func TestMarkOpsCyberPolicyNilContext(t *testing.T) {
@@ -57,7 +81,7 @@ func TestClearOpsCyberPolicy_AllowsRemark(t *testing.T) {
 	MarkOpsCyberPolicy(c, CyberPolicyMark{Message: "second", UpstreamStatus: 400})
 	got := GetOpsCyberPolicy(c)
 	require.NotNil(t, got, "re-mark after Clear must take effect")
-	require.Equal(t, "second", got.Message)
+	require.Equal(t, 400, got.UpstreamStatus)
 }
 
 func TestDetectOpenAICyberPolicy(t *testing.T) {

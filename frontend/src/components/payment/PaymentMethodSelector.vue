@@ -44,6 +44,7 @@ import alipayIcon from '@/assets/icons/alipay.svg'
 import wxpayIcon from '@/assets/icons/wxpay.svg'
 import stripeIcon from '@/assets/icons/stripe.svg'
 import airwallexIcon from '@/assets/icons/airwallex.svg'
+import easypayIcon from '@/assets/icons/easypay.svg'
 import paymentIcon from '@/assets/icons/payment.svg'
 
 export interface PaymentMethodOption {
@@ -69,6 +70,7 @@ const METHOD_ICONS: Record<string, string> = {
   wxpay: wxpayIcon,
   stripe: stripeIcon,
   airwallex: airwallexIcon,
+  easypay: easypayIcon,
   credit_card: paymentIcon,
 }
 

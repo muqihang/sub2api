@@ -47,6 +47,11 @@ func (APIKey) Fields() []ent.Field {
 		field.String("status").
 			MaxLen(20).
 			Default(domain.StatusActive),
+		field.String("restricted_client_product").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "text"}).
+			Comment("限制此 API Key 仅可用于特定客户端产品"),
 		field.Time("last_used_at").
 			Optional().
 			Nillable().

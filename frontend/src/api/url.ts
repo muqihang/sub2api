@@ -1,11 +1,10 @@
 const DEFAULT_API_BASE_URL = '/api/v1'
-const API_BASE_URL = normalizeAPIBaseURL(import.meta.env.VITE_API_BASE_URL)
 
 function normalizePath(path: string): string {
   return path.startsWith('/') ? path : `/${path}`
 }
 
-function normalizeAPIBaseURL(value: unknown): string {
+export function normalizeAPIBaseURL(value: unknown): string {
   const raw = String(value || DEFAULT_API_BASE_URL).trim() || DEFAULT_API_BASE_URL
   const withoutTrailingSlash = raw.replace(/\/+$/, '')
   if (/^[a-z][a-z\d+.-]*:\/\//i.test(withoutTrailingSlash) || withoutTrailingSlash.startsWith('//')) {
@@ -15,7 +14,7 @@ function normalizeAPIBaseURL(value: unknown): string {
 }
 
 export function getAPIBaseURL(): string {
-  return API_BASE_URL
+  return normalizeAPIBaseURL(import.meta.env.VITE_API_BASE_URL)
 }
 
 export function buildApiUrl(path: string): string {
@@ -32,11 +31,12 @@ export function buildApiUrl(path: string): string {
 export function buildGatewayUrl(path: string): string {
   const suffix = normalizePath(path)
   try {
-    const origin =
+    const apiBaseUrl =
       typeof window === 'undefined'
-        ? new URL(getAPIBaseURL()).origin
-        : new URL(getAPIBaseURL(), window.location.origin).origin
-    return `${origin}${suffix}`
+        ? new URL(getAPIBaseURL())
+        : new URL(getAPIBaseURL(), window.location.origin)
+    const gatewayBasePath = apiBaseUrl.pathname.replace(/\/api\/v1$/, '')
+    return `${apiBaseUrl.origin}${gatewayBasePath}${suffix}`
   } catch {
     return suffix
   }

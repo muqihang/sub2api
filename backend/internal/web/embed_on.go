@@ -300,15 +300,65 @@ func tryServeOverrideFile(c *gin.Context, overrideDir, cleanPath string) bool {
 func shouldBypassEmbeddedFrontend(path string) bool {
 	trimmed := strings.TrimSpace(path)
 	return strings.HasPrefix(trimmed, "/api/") ||
+		trimmed == "/alpha" ||
+		strings.HasPrefix(trimmed, "/alpha/") ||
+		strings.HasPrefix(trimmed, "/openai/") ||
 		strings.HasPrefix(trimmed, "/v1/") ||
 		strings.HasPrefix(trimmed, "/v1beta/") ||
 		strings.HasPrefix(trimmed, "/backend-api/") ||
+		strings.HasPrefix(trimmed, "/codex/") ||
 		strings.HasPrefix(trimmed, "/antigravity/") ||
 		strings.HasPrefix(trimmed, "/setup/") ||
 		trimmed == "/health" ||
 		trimmed == "/responses" ||
 		strings.HasPrefix(trimmed, "/responses/") ||
-		strings.HasPrefix(trimmed, "/images/")
+		strings.HasPrefix(trimmed, "/images/") ||
+		isAugmentLegacyGatewayPath(trimmed)
+}
+
+func isAugmentLegacyGatewayPath(path string) bool {
+	switch path {
+	case "/get-models",
+		"/batch-upload",
+		"/checkpoint-blobs",
+		"/find-missing",
+		"/save-chat",
+		"/chat",
+		"/chat-stream",
+		"/prompt-enhancer",
+		"/instruction-stream",
+		"/smart-paste-stream",
+		"/generate-commit-message-stream",
+		"/next_edit_loc",
+		"/next-edit-stream",
+		"/get-implicit-external-sources",
+		"/search-external-sources",
+		"/notifications/read",
+		"/subscription-banner",
+		"/report-error",
+		"/report-feature-vector",
+		"/client-metrics",
+		"/record-session-events",
+		"/record-request-events",
+		"/record-user-events",
+		"/record-preference-sample",
+		"/client-completion-timelines",
+		"/chat-feedback",
+		"/completion-feedback",
+		"/next-edit-feedback",
+		"/resolve-completions",
+		"/resolve-chat-input-completion",
+		"/resolve-edit",
+		"/resolve-instruction",
+		"/resolve-next-edit",
+		"/resolve-smart-paste":
+		return true
+	default:
+		return strings.HasPrefix(path, "/usage/api/") ||
+			strings.HasPrefix(path, "/remote-agents/") ||
+			strings.HasPrefix(path, "/agents/") ||
+			strings.HasPrefix(path, "/context-canvas/")
+	}
 }
 
 func serveIndexHTML(c *gin.Context, fsys fs.FS) {

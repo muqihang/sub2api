@@ -2,12 +2,14 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"sync"
 	"time"
 
 	"github.com/alitto/pond/v2"
+	"github.com/google/uuid"
 )
 
 // MonitorScheduler 调度器接口，供 ChannelMonitorService 在 CRUD 时回调，
@@ -47,6 +49,8 @@ type monitorRunnerSvc interface {
 type ChannelMonitorRunner struct {
 	svc            monitorRunnerSvc
 	settingService *SettingService
+	leaderLock     LeaderLockCache
+	instanceID     string
 
 	pool         pond.Pool
 	parentCtx    context.Context
@@ -93,16 +97,18 @@ func (t *scheduledMonitor) nextDelay() time.Duration {
 //
 // pool 在构造时即建好：避免 Start 在 mu 内赋值、fire/Stop 在 mu 外读取的竞态隐患，
 // 且 pond.NewPool 创建本身近似零开销，提前建池不会浪费资源。
-func NewChannelMonitorRunner(svc *ChannelMonitorService, settingService *SettingService) *ChannelMonitorRunner {
-	return newChannelMonitorRunner(svc, settingService)
+func NewChannelMonitorRunner(svc *ChannelMonitorService, settingService *SettingService, leaderLock LeaderLockCache) *ChannelMonitorRunner {
+	return newChannelMonitorRunner(svc, settingService, leaderLock)
 }
 
 // newChannelMonitorRunner 内部构造，接受最小化接口，便于单元测试注入 stub。
-func newChannelMonitorRunner(svc monitorRunnerSvc, settingService *SettingService) *ChannelMonitorRunner {
+func newChannelMonitorRunner(svc monitorRunnerSvc, settingService *SettingService, leaderLock LeaderLockCache) *ChannelMonitorRunner {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ChannelMonitorRunner{
 		svc:            svc,
 		settingService: settingService,
+		leaderLock:     leaderLock,
+		instanceID:     uuid.NewString(),
 		pool:           pond.NewPool(monitorWorkerConcurrency),
 		parentCtx:      ctx,
 		parentCancel:   cancel,
@@ -264,6 +270,10 @@ func (r *ChannelMonitorRunner) fire(ctx context.Context, task *scheduledMonitor)
 			"monitor_id", task.id, "name", task.name)
 		return
 	}
+	if !r.tryClaimInterval(ctx, task) {
+		r.releaseInFlight(task.id)
+		return
+	}
 	if _, ok := r.pool.TrySubmit(func() {
 		r.runOne(task.id, task.name)
 	}); !ok {
@@ -272,6 +282,30 @@ func (r *ChannelMonitorRunner) fire(ctx context.Context, task *scheduledMonitor)
 		slog.Warn("channel_monitor: worker pool full, skip submission",
 			"monitor_id", task.id, "name", task.name)
 	}
+}
+
+// tryClaimInterval prevents retained rollback containers from probing the same
+// monitor independently. The Redis key is intentionally left to expire after a
+// full configured interval; releasing it when the HTTP request finishes would
+// let another staggered instance run immediately and recreate the token waste.
+func (r *ChannelMonitorRunner) tryClaimInterval(ctx context.Context, task *scheduledMonitor) bool {
+	if r.leaderLock == nil {
+		return true
+	}
+	claimCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	key := fmt.Sprintf("channel-monitor:%d:interval", task.id)
+	ok, err := r.leaderLock.TryAcquireLeaderLock(claimCtx, key, r.instanceID, task.interval)
+	if err != nil {
+		slog.Warn("channel_monitor: interval claim failed, skip cycle",
+			"monitor_id", task.id, "name", task.name, "error", err)
+		return false
+	}
+	if !ok {
+		slog.Debug("channel_monitor: interval already claimed by peer",
+			"monitor_id", task.id, "name", task.name)
+	}
+	return ok
 }
 
 // tryAcquireInFlight 原子地占用 monitor 的 in-flight 槽。

@@ -45,7 +45,18 @@ func TestOpenAITokenRefresherSkipsShadow(t *testing.T) {
 	// 影子账号：ParentAccountID 非 nil → CanRefresh 应返回 false
 	require.False(t, r.CanRefresh(&Account{ID: 200, Platform: PlatformOpenAI, Type: AccountTypeOAuth, ParentAccountID: &pid}))
 	// 普通账号：有 refresh_token → CanRefresh 应返回 true
-	require.True(t, r.CanRefresh(&Account{ID: 100, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{"refresh_token": "RT"}}))
+	require.True(t, r.CanRefresh(&Account{
+		ID:       100,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Status:   StatusActive,
+		Extra: map[string]any{
+			"openai_pool_role":    OpenAIPoolRoleMain,
+			"openai_auth_state":   OpenAIAuthStateHealthy,
+			"openai_token_source": OpenAITokenSourceRTManaged,
+		},
+		Credentials: map[string]any{"refresh_token": "RT"},
+	}))
 }
 
 // --- 2. TestAccountConnection 影子凭据解析 ---

@@ -84,38 +84,23 @@ const success = ref(false)
 const hint = ref(t('payment.stripePopup.redirecting'))
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
-let initTimeoutTimer: ReturnType<typeof setTimeout> | null = null
-let messageHandler: ((event: MessageEvent) => void) | null = null
 
 function closeWindow() { window.close() }
 
-function clearInitTimeout() {
-  if (initTimeoutTimer) {
-    clearTimeout(initTimeoutTimer)
-    initTimeoutTimer = null
-  }
-}
-
 onMounted(() => {
-  messageHandler = (event: MessageEvent) => {
+  const handler = (event: MessageEvent) => {
     if (event.origin !== window.location.origin) return
     if (event.data?.type !== 'STRIPE_POPUP_INIT') return
-    // INIT 已到达，取消兜底超时，避免长时间的扫码支付被误判为超时。
-    clearInitTimeout()
-    if (messageHandler) {
-      window.removeEventListener('message', messageHandler)
-      messageHandler = null
-    }
+    window.removeEventListener('message', handler)
     initStripe(event.data.clientSecret, event.data.publishableKey)
   }
-  window.addEventListener('message', messageHandler)
+  window.addEventListener('message', handler)
 
   if (window.opener) {
     window.opener.postMessage({ type: 'STRIPE_POPUP_READY' }, window.location.origin)
   }
 
-  // 仅兜底“父窗口始终未发 STRIPE_POPUP_INIT”的场景。
-  initTimeoutTimer = setTimeout(() => {
+  setTimeout(() => {
     if (!error.value && !success.value) {
       error.value = t('payment.stripePopup.timeout')
     }
@@ -123,12 +108,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
-  clearInitTimeout()
-  if (messageHandler) {
-    window.removeEventListener('message', messageHandler)
-    messageHandler = null
-  }
+  if (pollTimer) clearInterval(pollTimer)
 })
 
 async function initStripe(clientSecret: string, publishableKey: string) {
@@ -169,15 +149,10 @@ async function initStripe(clientSecret: string, publishableKey: string) {
 }
 
 function startPolling() {
-  let inFlight = false
   pollTimer = setInterval(async () => {
-    // 防重入：接口响应慢于轮询间隔时避免并发重叠请求。
-    if (inFlight) return
-    inFlight = true
     try {
-      // access token 存储在 localStorage 的 'auth_token' 键下（见 api/client.ts），
-      // 之前误读 'token' 导致轮询请求不带认证、永远 401，支付成功无法被检测到。
-      const token = localStorage.getItem('auth_token') || ''
+      const token = document.cookie.split('; ').find(c => c.startsWith('token='))?.split('=')[1]
+        || localStorage.getItem('token') || ''
       const res = await fetch(buildApiUrl(`/payment/orders/${orderId}`), {
         headers: token ? { Authorization: 'Bearer ' + token } : {},
         credentials: 'include',
@@ -190,9 +165,7 @@ function startPolling() {
         success.value = true
         setTimeout(closeWindow, 2000)
       }
-    } catch { /* ignore */ } finally {
-      inFlight = false
-    }
+    } catch { /* ignore */ }
   }, 3000)
 }
 </script>

@@ -74,16 +74,18 @@ func (m *mockAccountRepoForGemini) FindByExtraField(ctx context.Context, key str
 func (m *mockAccountRepoForGemini) ListCRSAccountIDs(ctx context.Context) (map[string]int64, error) {
 	return nil, nil
 }
-func (m *mockAccountRepoForGemini) Update(ctx context.Context, account *Account) error { return nil }
-func (m *mockAccountRepoForGemini) Delete(ctx context.Context, id int64) error         { return nil }
+func (m *mockAccountRepoForGemini) Update(ctx context.Context, account *Account) error {
+	if m.accountsByID != nil && account != nil {
+		m.accountsByID[account.ID] = account
+	}
+	return nil
+}
+func (m *mockAccountRepoForGemini) Delete(ctx context.Context, id int64) error { return nil }
 func (m *mockAccountRepoForGemini) List(ctx context.Context, params pagination.PaginationParams) ([]Account, *pagination.PaginationResult, error) {
 	return nil, nil, nil
 }
 func (m *mockAccountRepoForGemini) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode string) ([]Account, *pagination.PaginationResult, error) {
 	return nil, nil, nil
-}
-func (m *mockAccountRepoForGemini) ListAllWithFilters(ctx context.Context, platform, accountType, status, search string, groupID int64, privacyMode string) ([]Account, error) {
-	return nil, nil
 }
 func (m *mockAccountRepoForGemini) ListByGroup(ctx context.Context, groupID int64) ([]Account, error) {
 	return nil, nil
@@ -299,6 +301,30 @@ func (m *mockGatewayCacheForGemini) DeleteSessionAccountID(ctx context.Context, 
 	}
 	m.deletedSessions[sessionHash]++
 	delete(m.sessionBindings, sessionHash)
+	return nil
+}
+
+func (m *mockGatewayCacheForGemini) IncrModelCallCount(ctx context.Context, accountID int64, model string) (int64, error) {
+	return 0, nil
+}
+
+func (m *mockGatewayCacheForGemini) GetModelLoadBatch(ctx context.Context, accountIDs []int64, model string) (map[int64]*ModelLoadInfo, error) {
+	return nil, nil
+}
+
+func (m *mockGatewayCacheForGemini) RecordOpenAICacheSample(ctx context.Context, accountID int64, model string, inputTokens int64, cacheReadTokens int64) error {
+	return nil
+}
+
+func (m *mockGatewayCacheForGemini) GetOpenAICacheHealthBatch(ctx context.Context, accountIDs []int64, model string) (map[int64]*OpenAICacheHealthInfo, error) {
+	return map[int64]*OpenAICacheHealthInfo{}, nil
+}
+
+func (m *mockGatewayCacheForGemini) FindGeminiSession(ctx context.Context, groupID int64, prefixHash, digestChain string) (uuid string, accountID int64, found bool) {
+	return "", 0, false
+}
+
+func (m *mockGatewayCacheForGemini) SaveGeminiSession(ctx context.Context, groupID int64, prefixHash, digestChain, uuid string, accountID int64) error {
 	return nil
 }
 

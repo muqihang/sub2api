@@ -56,6 +56,12 @@ declare module 'vue-router' {
     requiresRiskControl?: boolean
 
     /**
+     * Whether the current user must own an active API key whose group permits batch images.
+     * @default false
+     */
+    requiresBatchImageAccess?: boolean
+
+    /**
      * i18n key for the page title
      */
     titleKey?: string

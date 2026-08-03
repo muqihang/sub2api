@@ -88,10 +88,6 @@ func (s *accountRepoStubForBulkUpdate) ListByGroup(_ context.Context, groupID in
 	return nil, nil
 }
 
-func (s *accountRepoStubForBulkUpdate) ListAllWithFilters(context.Context, string, string, string, string, int64, string) ([]Account, error) {
-	return nil, nil
-}
-
 func (s *accountRepoStubForBulkUpdate) ListWithFilters(_ context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode string) ([]Account, *pagination.PaginationResult, error) {
 	s.listCalled = true
 	s.lastListParams = params
@@ -249,4 +245,106 @@ func TestAdminServiceBulkUpdateAccounts_ResolvesIDsFromFilters(t *testing.T) {
 	require.Equal(t, 2, result.Success)
 	require.Equal(t, 0, result.Failed)
 	require.Equal(t, []int64{7, 11}, result.SuccessIDs)
+}
+
+func TestAdminService_BulkUpdateAccounts_FormalPoolImportedCannotBeMadeSchedulable(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{
+		getByIDsAccounts: []*Account{{
+			ID:          301,
+			Platform:    PlatformAnthropic,
+			Type:        AccountTypeSetupToken,
+			Status:      StatusActive,
+			Schedulable: false,
+			Extra:       map[string]any{FormalPoolExtraOnboardingStage: FormalPoolStageImported},
+		}},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+	schedulable := true
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs:  []int64{301},
+		Schedulable: &schedulable,
+	})
+
+	require.Nil(t, result)
+	require.Error(t, err)
+	require.Empty(t, repo.bulkUpdateIDs)
+}
+
+func TestAdminService_BulkUpdateAccounts_FormalPoolProductionCanBeMadeSchedulable(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{
+		getByIDsAccounts: []*Account{{
+			ID:          302,
+			Platform:    PlatformAnthropic,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: false,
+			Extra:       mergeFormalPoolTestExtra(FormalPoolStageProduction),
+		}},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+	schedulable := true
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs:  []int64{302},
+		Schedulable: &schedulable,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, []int64{302}, repo.bulkUpdateIDs)
+}
+
+func TestAdminService_BulkUpdateAccounts_FormalPoolRejectsAtomicWarmingAndSchedulableUpdate(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{
+		getByIDsAccounts: []*Account{{
+			ID:          303,
+			Platform:    PlatformAnthropic,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: false,
+			Extra:       mergeFormalPoolTestExtra(FormalPoolStageHealthcheckPassed),
+		}},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+	schedulable := true
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+		AccountIDs:  []int64{303},
+		Schedulable: &schedulable,
+		Extra:       mergeFormalPoolTestExtra(FormalPoolStageWarming),
+	})
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Contains(t, err.Error(), "FORMAL_POOL_ONBOARDING_STAGE_NOT_SCHEDULABLE")
+	require.Empty(t, repo.bulkUpdateIDs)
+}
+
+func TestAdminService_BulkUpdateAccounts_FormalPoolPreWarmingStagesCannotBeMadeSchedulable(t *testing.T) {
+	for _, stage := range []string{FormalPoolStageImported, FormalPoolStageRefreshed, FormalPoolStageRuntimeRegistered, FormalPoolStageHealthcheckPassed, FormalPoolStageQuarantined} {
+		t.Run(stage, func(t *testing.T) {
+			repo := &accountRepoStubForBulkUpdate{
+				getByIDsAccounts: []*Account{{
+					ID:          304,
+					Platform:    PlatformAnthropic,
+					Type:        AccountTypeOAuth,
+					Status:      StatusActive,
+					Schedulable: false,
+					Extra:       map[string]any{FormalPoolExtraOnboardingStage: stage},
+				}},
+			}
+			svc := &adminServiceImpl{accountRepo: repo}
+			schedulable := true
+
+			result, err := svc.BulkUpdateAccounts(context.Background(), &BulkUpdateAccountsInput{
+				AccountIDs:  []int64{304},
+				Schedulable: &schedulable,
+			})
+
+			require.Nil(t, result)
+			require.Error(t, err)
+			require.Empty(t, repo.bulkUpdateIDs)
+		})
+	}
 }

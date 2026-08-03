@@ -9,6 +9,7 @@ describe('formatPaymentAmount', () => {
   })
 })
 
+
 describe('currencySymbol', () => {
   it('maps common payment currencies and falls back safely', () => {
     expect(currencySymbol('USD')).toBe('$')

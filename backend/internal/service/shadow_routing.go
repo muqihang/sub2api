@@ -1,5 +1,7 @@
 package service
 
+import "context"
+
 // parentHealthyForShadow 报告 spark 影子账号的母账号凭据是否可用(影子据此可被调度)。
 //
 // 非影子账号直接返回 true（不受此检查约束）。
@@ -24,17 +26,11 @@ func parentHealthyForShadow(account *Account, lookup func(int64) *Account) bool 
 	return parent.IsOpenAIOAuth() && parent.IsCredentialUsableForShadow()
 }
 
-// sparkModelVariants 返回所有归一到 spark 的模型 ID（当前仅 base：spark 无 effort 变体）。
-// 从 codexModelMap 派生，使集合与别名表单一来源、不漂移；若上游将来新增 spark 变体，
-// 在 codexModelMap 注册后此处自动跟随。
+// sparkModelVariants returns the Spark shadow default allowlist. Keep this
+// separate from Codex aliases: aliases such as *-low/high are gateway
+// normalization helpers, not Spark shadow default model_mapping entries.
 func sparkModelVariants() []string {
-	out := make([]string, 0, 1)
-	for alias, target := range codexModelMap {
-		if target == "gpt-5.3-codex-spark" {
-			out = append(out, alias)
-		}
-	}
-	return out
+	return []string{"gpt-5.3-codex-spark"}
 }
 
 // defaultSparkShadowModelMapping 返回 spark 影子账号的默认 model_mapping。
@@ -48,4 +44,12 @@ func defaultSparkShadowModelMapping() map[string]any {
 		mapping[m] = m
 	}
 	return mapping
+}
+
+func listAccountShadowsByParent(ctx context.Context, repo AccountRepository, parentID int64) ([]*Account, error) {
+	shadowRepo, ok := any(repo).(AccountShadowRepository)
+	if !ok || shadowRepo == nil {
+		return nil, nil
+	}
+	return shadowRepo.ListShadowsByParent(ctx, parentID)
 }

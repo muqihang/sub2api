@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
@@ -28,14 +29,15 @@ func IsWindowExpired(windowStart *time.Time, duration time.Duration) bool {
 }
 
 type APIKey struct {
-	ID          int64
-	UserID      int64
-	Key         string
-	Name        string
-	GroupID     *int64
-	Status      string
-	IPWhitelist []string
-	IPBlacklist []string
+	ID                      int64
+	UserID                  int64
+	Key                     string
+	Name                    string
+	GroupID                 *int64
+	Status                  string
+	RestrictedClientProduct *string
+	IPWhitelist             []string
+	IPBlacklist             []string
 	// 预编译的 IP 规则，用于认证热路径避免重复 ParseIP/ParseCIDR。
 	CompiledIPWhitelist *ip.CompiledIPRules `json:"-"`
 	CompiledIPBlacklist *ip.CompiledIPRules `json:"-"`
@@ -43,9 +45,9 @@ type APIKey struct {
 	LastUsedIP          *string
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
+	CurrentConcurrency  int // Real-time active request count for this API key (stats only)
 	User                *User
 	Group               *Group
-	CurrentConcurrency  int
 
 	// Quota fields
 	Quota     float64    // Quota limit in USD (0 = unlimited)
@@ -66,6 +68,25 @@ type APIKey struct {
 
 func (k *APIKey) IsActive() bool {
 	return k.Status == StatusActive
+}
+
+func (k *APIKey) ClientProduct() string {
+	if k == nil || k.RestrictedClientProduct == nil {
+		return ""
+	}
+	return strings.TrimSpace(*k.RestrictedClientProduct)
+}
+
+func (k *APIKey) IsClientProduct(product string) bool {
+	return k.ClientProduct() == strings.TrimSpace(product)
+}
+
+func (k *APIKey) IsAugmentOnly() bool {
+	return k.IsClientProduct(AugmentClientProductZhumeng)
+}
+
+func (k *APIKey) IsCodexOnly() bool {
+	return k.IsClientProduct(CodexUsageClientProduct)
 }
 
 // HasRateLimits returns true if any rate limit window is configured

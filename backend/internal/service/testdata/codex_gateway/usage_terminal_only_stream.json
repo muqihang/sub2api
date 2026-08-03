@@ -1,0 +1,37 @@
+{
+  "name": "usage_terminal_only_stream",
+  "mode": "stream",
+  "request": {
+    "model": "deepseek-v4-pro",
+    "input": [
+      {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "stats only with terminal"
+          }
+        ]
+      }
+    ]
+  },
+  "upstream": {
+    "status_code": 200,
+    "headers": {
+      "Content-Type": "text/event-stream"
+    },
+    "body": "data: {\"id\":\"chatcmpl_usage_terminal_only\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"chatcmpl_usage_terminal_only\",\"object\":\"chat.completion.chunk\",\"model\":\"deepseek-v4-pro\",\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":0,\"total_tokens\":4,\"prompt_cache_hit_tokens\":2}}\n\ndata: [DONE]\n\n"
+  },
+  "expect": {
+    "terminal_event": "response.completed",
+    "response_status": "completed",
+    "usage": {
+      "input_tokens": 4,
+      "output_tokens": 0,
+      "total_tokens": 4,
+      "cached_tokens": 2
+    },
+    "output_types": []
+  }
+}

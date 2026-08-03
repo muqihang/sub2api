@@ -1,6 +1,8 @@
 // Package claude provides constants and helpers for Claude API integration.
 package claude
 
+import "github.com/tidwall/gjson"
+
 // Claude Code 客户端相关常量
 
 // Beta header 常量
@@ -20,33 +22,31 @@ const (
 	BetaFastMode                 = "fast-mode-2026-02-01"
 
 	// 新增（对齐官方 CLI 2.1.9x 以来的流量）
-	BetaPromptCachingScope = "prompt-caching-scope-2026-01-05"
-	BetaEffort             = "effort-2025-11-24"
-	BetaRedactThinking     = "redact-thinking-2026-02-12"
-	BetaContextManagement  = "context-management-2025-06-27"
-	BetaExtendedCacheTTL   = "extended-cache-ttl-2025-04-11"
+	BetaPromptCachingScope    = "prompt-caching-scope-2026-01-05"
+	BetaEffort                = "effort-2025-11-24"
+	BetaAdvisorTool           = "advisor-tool-2026-03-01"
+	BetaStructuredOutputs     = "structured-outputs-2025-12-15"
+	BetaMidConversationSystem = "mid-conversation-system-2026-04-07"
+	BetaRedactThinking        = "redact-thinking-2026-02-12"
+	BetaContextManagement     = "context-management-2025-06-27"
+	BetaExtendedCacheTTL      = "extended-cache-ttl-2025-04-11"
 )
 
 // DroppedBetas 是转发时需要从 anthropic-beta header 中移除的 beta token 列表。
 // 这些 token 是客户端特有的，不应透传给上游 API。
 var DroppedBetas = []string{}
 
-// DefaultBetaHeader Claude Code 客户端默认的 anthropic-beta header
-const DefaultBetaHeader = BetaClaudeCode + "," + BetaOAuth + "," + BetaInterleavedThinking + "," + BetaFineGrainedToolStreaming
+// DefaultBetaHeader Claude Code 标准 /v1/messages 请求默认的 anthropic-beta header。
+const DefaultBetaHeader = BetaClaudeCode + "," + BetaInterleavedThinking + "," + BetaContextManagement + "," + BetaPromptCachingScope
 
-// MessageBetaHeaderNoTools /v1/messages 在无工具时的 beta header
-//
-// NOTE: Claude Code OAuth credentials are scoped to Claude Code. When we "mimic"
-// Claude Code for non-Claude-Code clients, we must include the claude-code beta
-// even if the request doesn't use tools, otherwise upstream may reject the
-// request as a non-Claude-Code API request.
-const MessageBetaHeaderNoTools = BetaClaudeCode + "," + BetaOAuth + "," + BetaInterleavedThinking
+// MessageBetaHeaderNoTools /v1/messages 在无工具时的 beta header。
+const MessageBetaHeaderNoTools = DefaultBetaHeader
 
-// MessageBetaHeaderWithTools /v1/messages 在有工具时的 beta header
-const MessageBetaHeaderWithTools = BetaClaudeCode + "," + BetaOAuth + "," + BetaInterleavedThinking
+// MessageBetaHeaderWithTools /v1/messages 在有工具时的 beta header。
+const MessageBetaHeaderWithTools = DefaultBetaHeader
 
-// CountTokensBetaHeader count_tokens 请求使用的 anthropic-beta header
-const CountTokensBetaHeader = BetaClaudeCode + "," + BetaOAuth + "," + BetaInterleavedThinking + "," + BetaTokenCounting
+// CountTokensBetaHeader count_tokens OAuth 请求使用的 anthropic-beta header。
+const CountTokensBetaHeader = BetaClaudeCode + "," + BetaInterleavedThinking + "," + BetaContextManagement + "," + BetaOAuth + "," + BetaTokenCounting
 
 // HaikuBetaHeader Haiku 模型使用的 anthropic-beta header（不需要 claude-code beta）
 const HaikuBetaHeader = BetaOAuth + "," + BetaInterleavedThinking
@@ -65,25 +65,96 @@ const DefaultCacheControlTTL = "5m"
 // CLICurrentVersion 是 sub2api 当前对外伪装的 Claude Code CLI 版本号（三段 semver）。
 // 用于 billing attribution block 中的 cc_version=X.Y.Z.{fp} 前缀以及 fingerprint 计算。
 // 必须与 DefaultHeaders["User-Agent"] 中的版本号严格一致；不一致会被 Anthropic 判第三方。
-const CLICurrentVersion = "2.1.161"
+const CLICurrentVersion = "2.1.175"
 
-// FullClaudeCodeMimicryBetas 返回最"像"真实 Claude Code CLI 的完整 beta 列表，
-// 用于 OAuth 账号伪装成 Claude Code 时使用。
-// 顺序与真实 CLI 抓包一致。
-//
-// 使用建议：
-//   - OAuth 账号 + 非 haiku：追加这整份列表，再按需保留 client 带来的 beta。
-//   - OAuth 账号 + haiku：Anthropic 对 haiku 不做 third-party 判定，使用 HaikuBetaHeader 即可。
-//   - API-key 账号：不要使用本函数，参见 APIKeyBetaHeader。
-//   - 不默认加入 redact-thinking，避免上游抹除 thinking 内容；客户端显式传入时由合并逻辑保留。
+// ClaudeCodeMessagesBetas returns the real Claude Code /v1/messages beta tokens.
+func ClaudeCodeMessagesBetas() []string {
+	return []string{
+		BetaClaudeCode,
+		BetaInterleavedThinking,
+		BetaContextManagement,
+		BetaPromptCachingScope,
+	}
+}
+
+// ClaudeCodeMessagesOAuthBetas returns the OAuth /v1/messages beta tokens.
+func ClaudeCodeMessagesOAuthBetas() []string {
+	return []string{
+		BetaClaudeCode,
+		BetaInterleavedThinking,
+		BetaContextManagement,
+		BetaPromptCachingScope,
+		BetaOAuth,
+	}
+}
+
+// ClaudeCodeMessagesOAuthBetasForBody returns the observed Claude Code CLI 2.1.175
+// OAuth /v1/messages beta sequence for a specific request shape.
+func ClaudeCodeMessagesOAuthBetasForBody(body []byte) []string {
+	betas := []string{
+		BetaClaudeCode,
+		BetaOAuth,
+		BetaInterleavedThinking,
+		BetaContextManagement,
+		BetaPromptCachingScope,
+		BetaAdvisorTool,
+		BetaEffort,
+	}
+	if gjson.GetBytes(body, "thinking").Exists() || gjson.GetBytes(body, "context_management").Exists() {
+		return append(betas, BetaExtendedCacheTTL)
+	}
+	return append(betas, BetaStructuredOutputs)
+}
+
+// ClaudeCode2175Subscription1MBetas returns the verified Claude Code 2.1.175
+// subscription/1M messages beta sequence used by CC Gateway's native profile.
+func ClaudeCode2175Subscription1MBetas() []string {
+	return []string{
+		BetaClaudeCode,
+		BetaContext1M,
+		BetaInterleavedThinking,
+		BetaContextManagement,
+		BetaPromptCachingScope,
+		BetaMidConversationSystem,
+		BetaEffort,
+	}
+}
+
+// ClaudeCode2175APIKeyNon1MBetas returns the verified Claude Code 2.1.175
+// API-key/non-1M messages beta sequence captured in Plan B.
+func ClaudeCode2175APIKeyNon1MBetas() []string {
+	return []string{
+		BetaClaudeCode,
+		BetaInterleavedThinking,
+		BetaContextManagement,
+		BetaPromptCachingScope,
+		BetaMidConversationSystem,
+		BetaEffort,
+	}
+}
+
+// ClaudeCodeCountTokensOAuthBetas returns the OAuth /v1/messages/count_tokens beta tokens.
+func ClaudeCodeCountTokensOAuthBetas() []string {
+	return []string{
+		BetaClaudeCode,
+		BetaInterleavedThinking,
+		BetaContextManagement,
+		BetaOAuth,
+		BetaTokenCounting,
+	}
+}
+
+// FullClaudeCodeMimicryBetas returns the body-independent full Claude Code OAuth beta set.
+// For /v1/messages requests prefer ClaudeCodeMessagesOAuthBetasForBody when the body is available.
 func FullClaudeCodeMimicryBetas() []string {
 	return []string{
 		BetaClaudeCode,
 		BetaOAuth,
 		BetaInterleavedThinking,
-		BetaPromptCachingScope,
-		BetaEffort,
 		BetaContextManagement,
+		BetaPromptCachingScope,
+		BetaAdvisorTool,
+		BetaEffort,
 		BetaExtendedCacheTTL,
 	}
 }
@@ -93,7 +164,7 @@ var DefaultHeaders = map[string]string{
 	// Keep these in sync with recent Claude CLI traffic to reduce the chance
 	// that Claude Code-scoped OAuth credentials are rejected as "non-CLI" usage.
 	// 版本参考：对齐 Parrot (src/transform/cc_mimicry.py:49) 的 CLI_USER_AGENT。
-	"User-Agent":                                "claude-cli/" + CLICurrentVersion + " (external, cli)",
+	"User-Agent":                                "claude-cli/" + CLICurrentVersion + " (external, sdk-cli)",
 	"X-Stainless-Lang":                          "js",
 	"X-Stainless-Package-Version":               "0.94.0",
 	"X-Stainless-OS":                            "Linux",
@@ -101,7 +172,6 @@ var DefaultHeaders = map[string]string{
 	"X-Stainless-Runtime":                       "node",
 	"X-Stainless-Runtime-Version":               "v24.3.0",
 	"X-Stainless-Retry-Count":                   "0",
-	"X-Stainless-Timeout":                       "600",
 	"X-App":                                     "cli",
 	"Anthropic-Dangerous-Direct-Browser-Access": "true",
 }
@@ -123,24 +193,6 @@ var DefaultModels = []Model{
 		CreatedAt:   "2026-06-09T00:00:00Z",
 	},
 	{
-		ID:          "claude-opus-4-5-20251101",
-		Type:        "model",
-		DisplayName: "Claude Opus 4.5",
-		CreatedAt:   "2025-11-01T00:00:00Z",
-	},
-	{
-		ID:          "claude-opus-4-6",
-		Type:        "model",
-		DisplayName: "Claude Opus 4.6",
-		CreatedAt:   "2026-02-06T00:00:00Z",
-	},
-	{
-		ID:          "claude-opus-4-7",
-		Type:        "model",
-		DisplayName: "Claude Opus 4.7",
-		CreatedAt:   "2026-04-17T00:00:00Z",
-	},
-	{
 		ID:          "claude-opus-4-8",
 		Type:        "model",
 		DisplayName: "Claude Opus 4.8",
@@ -157,12 +209,6 @@ var DefaultModels = []Model{
 		Type:        "model",
 		DisplayName: "Claude Sonnet 4.6",
 		CreatedAt:   "2026-02-18T00:00:00Z",
-	},
-	{
-		ID:          "claude-sonnet-4-5-20250929",
-		Type:        "model",
-		DisplayName: "Claude Sonnet 4.5",
-		CreatedAt:   "2025-09-29T00:00:00Z",
 	},
 	{
 		ID:          "claude-haiku-4-5-20251001",
@@ -182,20 +228,16 @@ func DefaultModelIDs() []string {
 }
 
 // DefaultTestModel 测试时使用的默认模型
-const DefaultTestModel = "claude-sonnet-4-5-20250929"
+const DefaultTestModel = "claude-sonnet-4-6"
 
 // ModelIDOverrides Claude OAuth 请求需要的模型 ID 映射
 var ModelIDOverrides = map[string]string{
-	"claude-sonnet-4-5": "claude-sonnet-4-5-20250929",
-	"claude-opus-4-5":   "claude-opus-4-5-20251101",
-	"claude-haiku-4-5":  "claude-haiku-4-5-20251001",
+	"claude-haiku-4-5": "claude-haiku-4-5-20251001",
 }
 
 // ModelIDReverseOverrides 用于将上游模型 ID 还原为短名
 var ModelIDReverseOverrides = map[string]string{
-	"claude-sonnet-4-5-20250929": "claude-sonnet-4-5",
-	"claude-opus-4-5-20251101":   "claude-opus-4-5",
-	"claude-haiku-4-5-20251001":  "claude-haiku-4-5",
+	"claude-haiku-4-5-20251001": "claude-haiku-4-5",
 }
 
 // NormalizeModelID 根据 Claude OAuth 规则映射模型

@@ -3,10 +3,10 @@ import en from '@/i18n/locales/en'
 
 function flattenKeys(obj: Record<string, any>, prefix = ''): string[] {
   const keys: string[] = []
-  for (const [k, v] of Object.entries(obj)) {
-    const fullKey = prefix ? `${prefix}.${k}` : k
-    if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
-      keys.push(...flattenKeys(v, fullKey))
+  for (const [key, value] of Object.entries(obj)) {
+    const fullKey = prefix ? `${prefix}.${key}` : key
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      keys.push(...flattenKeys(value, fullKey))
     } else {
       keys.push(fullKey)
     }
@@ -24,15 +24,13 @@ describe('ops locale key completeness', () => {
 
   for (const key of requiredKeys) {
     it(`en locale has ${key}`, () => {
-      const enKeys = flattenKeys(en)
-      expect(enKeys).toContain(key)
+      expect(flattenKeys(en)).toContain(key)
     })
   }
 })
 
 describe('groups locale key completeness', () => {
   it('en locale has admin.groups.failedToSave', () => {
-    const enKeys = flattenKeys(en)
-    expect(enKeys).toContain('admin.groups.failedToSave')
+    expect(flattenKeys(en)).toContain('admin.groups.failedToSave')
   })
 })

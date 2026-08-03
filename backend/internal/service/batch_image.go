@@ -340,6 +340,11 @@ type BatchImageRepository interface {
 	AppendBatchImageEvent(ctx context.Context, batchID, eventType string, payload any) error
 }
 
+type BatchImageQueueRecoveryRepository interface {
+	ListBatchImageJobsPendingEnqueue(ctx context.Context, limit int) ([]*BatchImageJob, error)
+	MarkBatchImageJobQueueRecovered(ctx context.Context, batchID string) error
+}
+
 func NewBatchImageID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {

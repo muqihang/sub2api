@@ -22,11 +22,7 @@ func NewGrokOAuthHandler(
 	adminService service.AdminService,
 	quotaService *service.GrokQuotaService,
 ) *GrokOAuthHandler {
-	return &GrokOAuthHandler{
-		grokOAuthService: grokOAuthService,
-		adminService:     adminService,
-		quotaService:     quotaService,
-	}
+	return &GrokOAuthHandler{grokOAuthService: grokOAuthService, adminService: adminService, quotaService: quotaService}
 }
 
 type GrokGenerateAuthURLRequest struct {
@@ -98,7 +94,7 @@ func (h *GrokOAuthHandler) RefreshToken(c *gin.Context) {
 	}
 
 	var proxyURL string
-	if req.ProxyID != nil {
+	if req.ProxyID != nil && h.adminService != nil {
 		proxy, err := h.adminService.GetProxy(c.Request.Context(), *req.ProxyID)
 		if err == nil && proxy != nil {
 			proxyURL = proxy.URL()
@@ -141,9 +137,7 @@ func (h *GrokOAuthHandler) RefreshAccountToken(c *gin.Context) {
 	if baseURL := strings.TrimSpace(account.GetCredential("base_url")); baseURL != "" {
 		newCredentials["base_url"] = baseURL
 	}
-	updatedAccount, err := h.adminService.UpdateAccount(c.Request.Context(), accountID, &service.UpdateAccountInput{
-		Credentials: newCredentials,
-	})
+	updatedAccount, err := h.adminService.UpdateAccount(c.Request.Context(), accountID, &service.UpdateAccountInput{Credentials: newCredentials})
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

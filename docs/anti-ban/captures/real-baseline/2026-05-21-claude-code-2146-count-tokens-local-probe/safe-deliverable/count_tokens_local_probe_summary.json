@@ -1,0 +1,153 @@
+{
+  "cli_version": "2.1.146",
+  "goal": "Attempt to observe official Claude Code /v1/messages/count_tokens locally without real upstream traffic.",
+  "route": "/v1/messages/count_tokens",
+  "status": "DEFER",
+  "route_policy": "block",
+  "excluded_from_first_wave_canary": true,
+  "reason": "Minimal local official-CLI attempts did not naturally emit count_tokens; per SOP no extra prompt/tool complexity was added.",
+  "attempts": [
+    {
+      "name": "default_attribution_minimal_print_json",
+      "attribution_mode": "default",
+      "command_redacted": [
+        "claude",
+        "--debug",
+        "api",
+        "--debug-file",
+        "<DEBUG_FILE>",
+        "-p",
+        "<PROMPT_REDACTED>",
+        "--output-format",
+        "json",
+        "--no-session-persistence"
+      ],
+      "messages_requests_observed": 4,
+      "count_tokens_requests_observed": 0,
+      "request_count_total": 4,
+      "request_count_retry_like": 0,
+      "first_request_summary": {
+        "method": "POST",
+        "path": "/v1/messages?beta=true",
+        "header_key_order": [
+          "Accept",
+          "Authorization",
+          "Content-Type",
+          "User-Agent",
+          "X-Claude-Code-Session-Id",
+          "X-Stainless-Arch",
+          "X-Stainless-Lang",
+          "X-Stainless-OS",
+          "X-Stainless-Package-Version",
+          "X-Stainless-Retry-Count",
+          "X-Stainless-Runtime",
+          "X-Stainless-Runtime-Version",
+          "X-Stainless-Timeout",
+          "anthropic-beta",
+          "anthropic-dangerous-direct-browser-access",
+          "anthropic-version",
+          "x-app",
+          "Connection",
+          "Host",
+          "Accept-Encoding",
+          "Content-Length"
+        ],
+        "anthropic_beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+        "accept_encoding": "gzip, deflate, br, zstd",
+        "accept_encoding_present": true,
+        "body_top_level_keys": [
+          "context_management",
+          "max_tokens",
+          "messages",
+          "metadata",
+          "model",
+          "output_config",
+          "stream",
+          "system",
+          "thinking",
+          "tools"
+        ],
+        "metadata_user_id_fields": [
+          "account_uuid",
+          "device_id",
+          "session_id"
+        ],
+        "safe_ref_omitted_reason": "digest_omitted_by_policy",
+        "billing_block_present": true,
+        "cch_present": true,
+        "safe_header_ref_omitted_reason": "digest_omitted_by_policy"
+      }
+    },
+    {
+      "name": "attribution_off_minimal_print_json",
+      "attribution_mode": "CLAUDE_CODE_ATTRIBUTION_HEADER=0",
+      "command_redacted": [
+        "claude",
+        "--debug",
+        "api",
+        "--debug-file",
+        "<DEBUG_FILE>",
+        "-p",
+        "<PROMPT_REDACTED>",
+        "--output-format",
+        "json",
+        "--no-session-persistence"
+      ],
+      "messages_requests_observed": 4,
+      "count_tokens_requests_observed": 0,
+      "request_count_total": 4,
+      "request_count_retry_like": 0,
+      "first_request_summary": {
+        "method": "POST",
+        "path": "/v1/messages?beta=true",
+        "header_key_order": [
+          "Accept",
+          "Authorization",
+          "Content-Type",
+          "User-Agent",
+          "X-Claude-Code-Session-Id",
+          "X-Stainless-Arch",
+          "X-Stainless-Lang",
+          "X-Stainless-OS",
+          "X-Stainless-Package-Version",
+          "X-Stainless-Retry-Count",
+          "X-Stainless-Runtime",
+          "X-Stainless-Runtime-Version",
+          "X-Stainless-Timeout",
+          "anthropic-beta",
+          "anthropic-dangerous-direct-browser-access",
+          "anthropic-version",
+          "x-app",
+          "Connection",
+          "Host",
+          "Accept-Encoding",
+          "Content-Length"
+        ],
+        "anthropic_beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advisor-tool-2026-03-01,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+        "accept_encoding": "gzip, deflate, br, zstd",
+        "accept_encoding_present": true,
+        "body_top_level_keys": [
+          "context_management",
+          "max_tokens",
+          "messages",
+          "metadata",
+          "model",
+          "output_config",
+          "stream",
+          "system",
+          "thinking",
+          "tools"
+        ],
+        "metadata_user_id_fields": [
+          "account_uuid",
+          "device_id",
+          "session_id"
+        ],
+        "safe_ref_omitted_reason": "digest_omitted_by_policy",
+        "billing_block_present": false,
+        "cch_present": false,
+        "safe_header_ref_omitted_reason": "digest_omitted_by_policy"
+      }
+    }
+  ]
+}

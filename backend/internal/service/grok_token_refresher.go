@@ -9,22 +9,15 @@ import (
 
 const grokTokenRefreshSkew = time.Hour
 
-type GrokTokenRefresher struct {
-	grokOAuthService GrokOAuthTokenService
-}
+type GrokTokenRefresher struct{ grokOAuthService GrokOAuthTokenService }
 
 func NewGrokTokenRefresher(grokOAuthService GrokOAuthTokenService) *GrokTokenRefresher {
 	return &GrokTokenRefresher{grokOAuthService: grokOAuthService}
 }
-
-func (r *GrokTokenRefresher) CacheKey(account *Account) string {
-	return GrokTokenCacheKey(account)
-}
-
+func (r *GrokTokenRefresher) CacheKey(account *Account) string { return GrokTokenCacheKey(account) }
 func (r *GrokTokenRefresher) CanRefresh(account *Account) bool {
 	return account != nil && account.Platform == PlatformGrok && account.Type == AccountTypeOAuth
 }
-
 func (r *GrokTokenRefresher) NeedsRefresh(account *Account, refreshWindow time.Duration) bool {
 	if account == nil || strings.TrimSpace(account.GetGrokRefreshToken()) == "" {
 		return false
@@ -38,7 +31,6 @@ func (r *GrokTokenRefresher) NeedsRefresh(account *Account, refreshWindow time.D
 	}
 	return time.Until(*expiresAt) < refreshWindow
 }
-
 func (r *GrokTokenRefresher) Refresh(ctx context.Context, account *Account) (map[string]any, error) {
 	if r == nil || r.grokOAuthService == nil {
 		return nil, errors.New("grok oauth service is not configured")

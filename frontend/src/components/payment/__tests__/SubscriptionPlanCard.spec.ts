@@ -1,6 +1,6 @@
 import { mount } from "@vue/test-utils";
-import { describe, expect, it } from "vitest";
-import { createPinia } from "pinia";
+import { createPinia, setActivePinia } from "pinia";
+import { beforeEach, describe, expect, it } from "vitest";
 import { createI18n } from "vue-i18n";
 import SubscriptionPlanCard from "../SubscriptionPlanCard.vue";
 
@@ -43,10 +43,14 @@ const mountPlanCard = (groupPlatform: string) =>
         is_active: true,
       },
     },
-    global: { plugins: [i18n, createPinia()] },
+    global: { plugins: [i18n] },
   });
 
 describe("SubscriptionPlanCard", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
   it("does not show Antigravity model scopes for OpenAI plans", () => {
     const text = mountPlanCard("openai").text();
 

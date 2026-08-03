@@ -131,10 +131,17 @@ vi.mock("vue-i18n", async () => {
     "admin.settings.wechatConnect.redirectUrlPlaceholder": "https://your-site.com/api/v1/auth/oauth/wechat/callback",
     "admin.settings.wechatConnect.generateAndCopy": "使用当前站点生成并复制",
     "admin.settings.wechatConnect.redirectUrlSetAndCopied": "已使用当前站点生成回调地址并复制到剪贴板",
-    "admin.settings.wechatConnect.frontendRedirectUrlLabel": "前端回调地址",
-    "admin.settings.wechatConnect.frontendRedirectUrlPlaceholder": "/auth/wechat/callback",
-    "admin.settings.wechatConnect.frontendRedirectUrlHint": "通常用于前端路由回调地址，需与后端配置保持一致。",
-    "admin.settings.authSourceDefaults.title": "认证来源默认值",
+  "admin.settings.wechatConnect.frontendRedirectUrlLabel": "前端回调地址",
+  "admin.settings.wechatConnect.frontendRedirectUrlPlaceholder": "/auth/wechat/callback",
+  "admin.settings.wechatConnect.frontendRedirectUrlHint": "通常用于前端路由回调地址，需与后端配置保持一致。",
+  "admin.settings.registration.authAgreement.enabled": "认证协议",
+  "admin.settings.registration.authAgreement.enabledHint": "在用户登录或注册前要求同意认证协议",
+  "admin.settings.registration.authAgreement.version": "协议版本",
+  "admin.settings.registration.authAgreement.versionPlaceholder": "例如：2026-01",
+  "admin.settings.registration.authAgreement.versionHint": "用于标识当前生效的协议版本",
+  "admin.settings.registration.authAgreement.promptOnFirstVisit": "首次访问时提示",
+  "admin.settings.registration.authAgreement.promptOnFirstVisitHint": "用户首次访问时显示认证协议提示",
+  "admin.settings.authSourceDefaults.title": "认证来源默认值",
     "admin.settings.authSourceDefaults.description": "按注册来源配置新用户默认余额、并发、订阅与授权策略。",
     "admin.settings.authSourceDefaults.requireEmailLabel": "第三方注册强制补充邮箱",
     "admin.settings.authSourceDefaults.requireEmailHint": "启用后，Linux DO、OIDC、微信注册缺少邮箱时必须先补充邮箱地址。",
@@ -161,23 +168,6 @@ vi.mock("vue-i18n", async () => {
     "admin.settings.payment.findProvider": "查看支持的支付方式",
     "admin.settings.openaiExperimentalScheduler.title": "OpenAI 实验调度策略",
     "admin.settings.openaiExperimentalScheduler.description": "默认关闭。开启后仅影响本网关在 OpenAI 账号间的实验性调度选择逻辑，不代表上游 OpenAI 官方能力。",
-    "admin.settings.openaiExperimentalScheduler.stickyWeightedTitle": "粘性加权",
-    "admin.settings.openaiExperimentalScheduler.stickyWeightedDescription": "开启后 previous_response_id 和 session_hash 粘性进入高级调度打分；关闭时仍按旧逻辑硬命中粘性账号。",
-    "admin.settings.openaiExperimentalScheduler.subscriptionPriorityTitle": "订阅优先",
-    "admin.settings.openaiExperimentalScheduler.subscriptionPriorityDescription": "开启后先在 ChatGPT 订阅账号池中按权值选取；订阅池拿不到席位时再回退到非订阅账号池。",
-    "admin.settings.openaiExperimentalScheduler.weightsTitle": "调度权值覆盖",
-    "admin.settings.openaiExperimentalScheduler.weightsDescription": "留空时使用配置/环境变量值；配置未设置时使用内置默认值。页面非空设置优先。",
-    "admin.settings.openaiExperimentalScheduler.defaultPlaceholder": "配置/默认：{value}",
-    "admin.settings.openaiExperimentalScheduler.topKLabel": "TopK",
-    "admin.settings.openaiExperimentalScheduler.priorityWeight": "优先级",
-    "admin.settings.openaiExperimentalScheduler.loadWeight": "负载",
-    "admin.settings.openaiExperimentalScheduler.queueWeight": "排队",
-    "admin.settings.openaiExperimentalScheduler.errorRateWeight": "错误率",
-    "admin.settings.openaiExperimentalScheduler.ttftWeight": "首包延迟",
-    "admin.settings.openaiExperimentalScheduler.resetWeight": "重置窗口",
-    "admin.settings.openaiExperimentalScheduler.quotaHeadroomWeight": "额度余量",
-    "admin.settings.openaiExperimentalScheduler.previousResponseWeight": "previous_response 粘性",
-    "admin.settings.openaiExperimentalScheduler.sessionStickyWeight": "session_hash 粘性",
     "admin.settings.site.uploadImage": "上传图片",
     "admin.settings.site.remove": "移除",
     "admin.settings.platformQuota.platform": "平台",
@@ -312,6 +302,9 @@ const baseSettingsResponse = {
   registration_email_suffix_whitelist: [],
   promo_code_enabled: true,
   invitation_code_enabled: false,
+  auth_agreement_enabled: false,
+  auth_agreement_version: "",
+  auth_agreement_prompt_on_first_visit: false,
   password_reset_enabled: false,
   totp_enabled: false,
   totp_encryption_key_configured: false,
@@ -395,12 +388,9 @@ const baseSettingsResponse = {
   enable_fingerprint_unification: true,
   enable_metadata_passthrough: false,
   enable_cch_signing: false,
-  enable_claude_oauth_system_prompt_injection: true,
-  claude_oauth_system_prompt: "",
-  claude_oauth_system_prompt_blocks: "",
   enable_anthropic_cache_ttl_1h_injection: false,
-  rewrite_message_cache_control: false,
   enable_client_dateline_normalization: true,
+  rewrite_message_cache_control: false,
   antigravity_user_agent_version: "",
   openai_codex_user_agent: "",
   payment_enabled: true,
@@ -429,34 +419,13 @@ const baseSettingsResponse = {
   payment_visible_method_alipay_enabled: true,
   payment_visible_method_wxpay_enabled: true,
   openai_advanced_scheduler_enabled: false,
-  openai_advanced_scheduler_sticky_weighted_enabled: false,
-  openai_advanced_scheduler_subscription_priority_enabled: false,
-  openai_advanced_scheduler_lb_top_k: "",
-  openai_advanced_scheduler_weight_priority: "",
-  openai_advanced_scheduler_weight_load: "",
-  openai_advanced_scheduler_weight_queue: "",
-  openai_advanced_scheduler_weight_error_rate: "",
-  openai_advanced_scheduler_weight_ttft: "",
-  openai_advanced_scheduler_weight_reset: "",
-  openai_advanced_scheduler_weight_quota_headroom: "",
-  openai_advanced_scheduler_weight_previous_response: "",
-  openai_advanced_scheduler_weight_session_sticky: "",
-  openai_advanced_scheduler_effective_lb_top_k: "7",
-  openai_advanced_scheduler_effective_weight_priority: "1",
-  openai_advanced_scheduler_effective_weight_load: "1",
-  openai_advanced_scheduler_effective_weight_queue: "0.7",
-  openai_advanced_scheduler_effective_weight_error_rate: "0.8",
-  openai_advanced_scheduler_effective_weight_ttft: "0.5",
-  openai_advanced_scheduler_effective_weight_reset: "0",
-  openai_advanced_scheduler_effective_weight_quota_headroom: "0",
-  openai_advanced_scheduler_effective_weight_previous_response: "5",
-  openai_advanced_scheduler_effective_weight_session_sticky: "3",
   balance_low_notify_enabled: false,
   balance_low_notify_threshold: 0,
   balance_low_notify_recharge_url: "",
   subscription_expiry_notify_enabled: true,
   account_quota_notify_enabled: false,
   account_quota_notify_emails: [],
+  use_new_account_management_ux: false,
   // 平台限额嵌套字段（新后端契约）
   default_platform_quotas: {
     anthropic:   { daily: null, weekly: null, monthly: null },
@@ -686,12 +655,11 @@ describe("admin SettingsView payment visible method controls", () => {
     );
   });
 
-  it("submits Claude OAuth system prompt injection gateway settings", async () => {
-    const blocks = `[{"type":"text","text":"custom block","cache_control":true}]`;
+
+  it("submits client dateline normalization gateway setting", async () => {
     getSettings.mockResolvedValueOnce({
       ...baseSettingsResponse,
-      enable_claude_oauth_system_prompt_injection: false,
-      claude_oauth_system_prompt_blocks: blocks,
+      enable_client_dateline_normalization: false,
     });
 
     const wrapper = mountView();
@@ -703,23 +671,9 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(updateSettings).toHaveBeenCalledTimes(1);
     expect(updateSettings).toHaveBeenCalledWith(
       expect.objectContaining({
-        enable_claude_oauth_system_prompt_injection: false,
+        enable_client_dateline_normalization: false,
       }),
     );
-    const payload = updateSettings.mock.calls[0][0] as {
-      claude_oauth_system_prompt_blocks: string;
-    };
-    expect(JSON.parse(payload.claude_oauth_system_prompt_blocks)).toEqual([
-      {
-        enabled: true,
-        type: "text",
-        text: "custom block",
-        cache_control: {
-          type: "ephemeral",
-          ttl: "5m",
-        },
-      },
-    ]);
   });
 
   it("submits Antigravity user agent version gateway setting", async () => {
@@ -836,10 +790,6 @@ describe("admin SettingsView payment visible method controls", () => {
   });
 
   it("normalizes null supported_types from API so provider card stays visible", async () => {
-    // Backend returns null for supported_types when the list is empty
-    // (Go nil slice → JSON null). Without normalization, ProviderCard's
-    // isSelected() throws TypeError on null.includes(), causing the card
-    // to vanish from the list.
     const providerWithNullTypes = {
       id: 42,
       provider_key: "easypay",
@@ -892,12 +842,11 @@ describe("admin SettingsView payment visible method controls", () => {
     await flushPromises();
     await openPaymentTab(wrapper);
 
-    // The provider should still be in the list
-    expect(receivedProviders.length).toBe(1);
-    // supported_types should be normalized to an empty array, not null
+    expect(receivedProviders).toHaveLength(1);
     expect(Array.isArray(receivedProviders[0].supported_types)).toBe(true);
     expect(receivedProviders[0].supported_types).toEqual([]);
   });
+
 });
 
 describe("admin SettingsView wechat connect controls", () => {
@@ -1022,6 +971,57 @@ describe("admin SettingsView wechat connect controls", () => {
     ).toBe("/auth/wechat/callback");
   });
 
+  it("loads and saves authentication agreement settings", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      auth_agreement_enabled: true,
+      auth_agreement_version: "2026-01",
+      auth_agreement_prompt_on_first_visit: true,
+    });
+
+    const wrapper = mountView();
+
+    await flushPromises();
+    await openSecurityTab(wrapper);
+
+    expect(
+      (
+        wrapper.get('[data-testid="auth-agreement-enabled"]')
+          .element as HTMLInputElement
+      ).checked,
+    ).toBe(true);
+    expect(
+      (
+        wrapper.get('[data-testid="auth-agreement-version"]')
+          .element as HTMLInputElement
+      ).value,
+    ).toBe("2026-01");
+    expect(
+      (
+        wrapper.get('[data-testid="auth-agreement-prompt-on-first-visit"]')
+          .element as HTMLInputElement
+      ).checked,
+    ).toBe(true);
+
+    await wrapper
+      .get('[data-testid="auth-agreement-version"]')
+      .setValue("2026-02");
+    await wrapper
+      .get('[data-testid="auth-agreement-prompt-on-first-visit"]')
+      .setValue(false);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        auth_agreement_enabled: true,
+        auth_agreement_version: "2026-02",
+        auth_agreement_prompt_on_first_visit: false,
+      }),
+    );
+  });
+
   it("links GitHub OAuth Apps guide to GitHub developer settings", async () => {
     getSettings.mockResolvedValueOnce({
       ...baseSettingsResponse,
@@ -1038,6 +1038,30 @@ describe("admin SettingsView wechat connect controls", () => {
     expect(link.attributes("href")).toBe("https://github.com/settings/developers");
     expect(link.attributes("target")).toBe("_blank");
     expect(link.attributes("rel")).toContain("noopener");
+  });
+
+  it("builds OAuth callback suggestions from the configured API base", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      api_base_url: "https://api.example.com/api/v1",
+      github_oauth_enabled: true,
+      google_oauth_enabled: true,
+      linuxdo_connect_enabled: true,
+      wechat_connect_enabled: true,
+      oidc_connect_enabled: true,
+    });
+
+    const wrapper = mountView();
+
+    await flushPromises();
+    await openSecurityTab(wrapper);
+
+    const text = wrapper.text();
+    expect(text).toContain("https://api.example.com/api/v1/auth/oauth/linuxdo/callback");
+    expect(text).toContain("https://api.example.com/api/v1/auth/oauth/github/callback");
+    expect(text).toContain("https://api.example.com/api/v1/auth/oauth/google/callback");
+    expect(text).toContain("https://api.example.com/api/v1/auth/oauth/wechat/callback");
+    expect(text).toContain("https://api.example.com/api/v1/auth/oauth/oidc/callback");
   });
 
   it("saves WeChat Connect fields using the backend contract and clears the secret after save", async () => {
@@ -1144,6 +1168,57 @@ describe("admin SettingsView wechat connect controls", () => {
       }),
     );
   });
+
+  it("loads use_new_account_management_ux=true from getSettings and renders the toggle as checked", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      use_new_account_management_ux: true,
+    });
+
+    const wrapper = mountView();
+
+    await flushPromises();
+
+    const toggle = wrapper.get(
+      '[data-testid="use-new-account-management-ux-toggle"]',
+    ).element as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+  });
+
+  it("includes use_new_account_management_ux=false in updateSettings payload by default", async () => {
+    const wrapper = mountView();
+
+    await flushPromises();
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        use_new_account_management_ux: false,
+      }),
+    );
+  });
+
+  it("submits use_new_account_management_ux=true after the admin enables the toggle", async () => {
+    const wrapper = mountView();
+
+    await flushPromises();
+
+    const toggle = wrapper.get(
+      '[data-testid="use-new-account-management-ux-toggle"]',
+    );
+    await toggle.setValue(true);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        use_new_account_management_ux: true,
+      }),
+    );
+  });
 });
 
 describe("admin SettingsView platform quota matrix", () => {
@@ -1190,7 +1265,7 @@ describe("admin SettingsView platform quota matrix", () => {
     getProviders.mockResolvedValue({ data: [] });
   });
 
-  it("从 baseSettings 加载默认平台配额数据并在 Users tab 渲染 5 平台行", async () => {
+  it("从 baseSettings 加载默认平台配额数据并在 Users tab 渲染允许平台行", async () => {
     const wrapper = mountView();
     await flushPromises();
     await openUsersTab(wrapper);
@@ -1203,9 +1278,10 @@ describe("admin SettingsView platform quota matrix", () => {
     expect(html).toContain("openai");
     expect(html).toContain("gemini");
     expect(html).toContain("antigravity");
+    expect(html).toContain("grok");
   });
 
-  it("保存时 updateSettings payload 应包含嵌套 default_platform_quotas 对象（含全 5 平台）", async () => {
+  it("保存时 updateSettings payload 应包含嵌套 default_platform_quotas 对象（含全部允许平台）", async () => {
     const wrapper = mountView();
     await flushPromises();
     await openUsersTab(wrapper);
@@ -1235,13 +1311,13 @@ describe("admin SettingsView platform quota matrix", () => {
     expect(payload).not.toHaveProperty("default_platform_quota_openai_weekly");
   });
 
-  it("加载后 form.default_platform_quotas 含全 5 平台，从嵌套 JSON 正确读取数值", async () => {
+  it("加载后 form.default_platform_quotas 含全部允许平台，从嵌套 JSON 正确读取数值", async () => {
     getSettings.mockResolvedValueOnce({
       ...baseSettingsResponse,
       default_platform_quotas: {
         anthropic: { daily: 5, weekly: null, monthly: null },
         openai:    { daily: null, weekly: 12.5, monthly: null },
-        // gemini / antigravity 缺失 → 应被归一化为全 null
+        // gemini / antigravity / grok 缺失 → 应被归一化为全 null
       },
     });
 
@@ -1260,6 +1336,7 @@ describe("admin SettingsView platform quota matrix", () => {
     // 缺失平台应补全为 null
     expect(quotas["gemini"]).toEqual({ daily: null, weekly: null, monthly: null });
     expect(quotas["antigravity"]).toEqual({ daily: null, weekly: null, monthly: null });
+    expect(quotas["grok"]).toEqual({ daily: null, weekly: null, monthly: null });
   });
 
   it("空输入（v-model.number 产出 \"\"）在提交时清洗为 null 而非空字符串", async () => {
@@ -1271,6 +1348,7 @@ describe("admin SettingsView platform quota matrix", () => {
         openai:    { daily: null, weekly: null, monthly: null },
         gemini:    { daily: null, weekly: null, monthly: null },
         antigravity: { daily: null, weekly: null, monthly: null },
+        grok: { daily: null, weekly: null, monthly: null },
       },
     });
 

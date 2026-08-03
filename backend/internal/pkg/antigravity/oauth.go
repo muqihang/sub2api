@@ -30,11 +30,8 @@ const (
 	// AntigravityOAuthClientSecretEnv 是 Antigravity OAuth client_secret 的环境变量名。
 	AntigravityOAuthClientSecretEnv = "ANTIGRAVITY_OAUTH_CLIENT_SECRET"
 
-	// AntigravityUserAgentVersionEnv 是 Antigravity User-Agent 版本号的环境变量名。
-	AntigravityUserAgentVersionEnv = "ANTIGRAVITY_USER_AGENT_VERSION"
-
 	// DefaultUserAgentVersion 是未通过环境变量或后台设置覆盖时使用的默认版本号。
-	DefaultUserAgentVersion = "1.23.2"
+	DefaultUserAgentVersion = "1.107.0"
 
 	// 固定的 redirect_uri（用户需手动复制 code）
 	RedirectURI = "http://localhost:8085/callback"
@@ -45,6 +42,17 @@ const (
 		"https://www.googleapis.com/auth/userinfo.profile " +
 		"https://www.googleapis.com/auth/cclog " +
 		"https://www.googleapis.com/auth/experimentsandconfigs"
+
+	// User-Agent / 版本相关环境变量。
+	// - ANTIGRAVITY_USER_AGENT_VERSION: 兼容上游，设置版本号
+	// - ANTIGRAVITY_USER_AGENT: 直接覆盖完整 UA（优先级高）
+	// - ANTIGRAVITY_VERSION: 仅设置版本号（优先级高于 *_USER_AGENT_VERSION）
+	// - ANTIGRAVITY_V1INTERNAL_USER_AGENT: 覆盖 v1internal 请求体中的 userAgent 字段
+	AntigravityUserAgentVersionEnv    = "ANTIGRAVITY_USER_AGENT_VERSION"
+	AntigravityUserAgentEnv           = "ANTIGRAVITY_USER_AGENT"
+	AntigravityVersionEnv             = "ANTIGRAVITY_VERSION"
+	AntigravityV1InternalUserAgentEnv = "ANTIGRAVITY_V1INTERNAL_USER_AGENT"
+	DefaultUserAgentOSArch            = "windows/amd64"
 
 	// Session 过期时间
 	SessionTTL = 30 * time.Minute
@@ -83,6 +91,37 @@ func init() {
 	}
 }
 
+func composeUserAgent(version string) string {
+	if normalized := NormalizeUserAgentVersion(version); normalized != "" {
+		return fmt.Sprintf("antigravity/%s %s", normalized, DefaultUserAgentOSArch)
+	}
+	return fmt.Sprintf("antigravity/%s %s", defaultUserAgentVersion, DefaultUserAgentOSArch)
+}
+
+func extractVersionFromUserAgent(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	first := firstUserAgentToken(raw)
+	const prefix = "antigravity/"
+	if !strings.HasPrefix(strings.ToLower(first), prefix) {
+		return ""
+	}
+	return strings.TrimSpace(first[len(prefix):])
+}
+
+func firstUserAgentToken(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if i := strings.IndexByte(raw, ' '); i > 0 {
+		return strings.TrimSpace(raw[:i])
+	}
+	return raw
+}
+
 // NormalizeUserAgentVersion 校验并归一化 Antigravity User-Agent 版本号。
 func NormalizeUserAgentVersion(version string) string {
 	version = strings.TrimSpace(version)
@@ -117,15 +156,61 @@ func GetUserAgentVersionForContext(ctx context.Context) string {
 			return version
 		}
 	}
+	if ver := NormalizeUserAgentVersion(os.Getenv(AntigravityVersionEnv)); ver != "" {
+		return ver
+	}
+	if ver := NormalizeUserAgentVersion(os.Getenv(AntigravityUserAgentVersionEnv)); ver != "" {
+		return ver
+	}
 	return defaultUserAgentVersion
+}
+
+// EffectiveUserAgent returns the effective User-Agent used for Antigravity upstream requests.
+func EffectiveUserAgent() string {
+	if ua := strings.TrimSpace(os.Getenv(AntigravityUserAgentEnv)); ua != "" {
+		return ua
+	}
+	return GetUserAgentForContext(context.Background())
+}
+
+// EffectiveV1InternalUserAgent returns the effective `userAgent` field value used in v1internal request bodies.
+func EffectiveV1InternalUserAgent() string {
+	if ua := strings.TrimSpace(os.Getenv(AntigravityV1InternalUserAgentEnv)); ua != "" {
+		return ua
+	}
+	if ver := NormalizeUserAgentVersion(os.Getenv(AntigravityVersionEnv)); ver != "" {
+		return fmt.Sprintf("antigravity/%s", ver)
+	}
+	if full := strings.TrimSpace(os.Getenv(AntigravityUserAgentEnv)); full != "" {
+		return firstUserAgentToken(full)
+	}
+	return fmt.Sprintf("antigravity/%s", GetUserAgentVersionForContext(context.Background()))
+}
+
+// EffectiveIDEVersion returns the effective Antigravity IDE version used in
+// v1internal metadata such as loadCodeAssist requests.
+func EffectiveIDEVersion() string {
+	if ua := strings.TrimSpace(os.Getenv(AntigravityV1InternalUserAgentEnv)); ua != "" {
+		if ver := NormalizeUserAgentVersion(extractVersionFromUserAgent(ua)); ver != "" {
+			return ver
+		}
+		return firstUserAgentToken(ua)
+	}
+	if ver := NormalizeUserAgentVersion(os.Getenv(AntigravityVersionEnv)); ver != "" {
+		return ver
+	}
+	if ua := strings.TrimSpace(os.Getenv(AntigravityUserAgentEnv)); ua != "" {
+		if ver := NormalizeUserAgentVersion(extractVersionFromUserAgent(ua)); ver != "" {
+			return ver
+		}
+		return firstUserAgentToken(ua)
+	}
+	return GetUserAgentVersionForContext(context.Background())
 }
 
 // BuildUserAgent 使用指定版本号构造 User-Agent；版本为空或非法时回退默认值。
 func BuildUserAgent(version string) string {
-	if normalized := NormalizeUserAgentVersion(version); normalized != "" {
-		return fmt.Sprintf("antigravity/%s windows/amd64", normalized)
-	}
-	return fmt.Sprintf("antigravity/%s windows/amd64", defaultUserAgentVersion)
+	return composeUserAgent(version)
 }
 
 // GetUserAgentForContext 返回当前请求应使用的 User-Agent。
@@ -135,7 +220,7 @@ func GetUserAgentForContext(ctx context.Context) string {
 
 // GetUserAgent 返回当前配置的 User-Agent。
 func GetUserAgent() string {
-	return GetUserAgentForContext(context.Background())
+	return EffectiveUserAgent()
 }
 
 func getClientSecret() (string, error) {

@@ -2,33 +2,114 @@ package repository
 
 import (
 	"context"
-	"regexp"
+	"encoding/json"
 	"testing"
+	"time"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
 
-func TestSchedulerOutboxRepositoryDeleteConsumedUpToUsesBoundedCTE(t *testing.T) {
+func TestEnqueueSchedulerOutboxDedupUsesDedupKeyConflict(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	accountID := int64(42)
+	payload := map[string]any{"group_ids": []int64{7, 8}}
+	payloadJSON, err := json.Marshal(payload)
+	require.NoError(t, err)
+	expectedKey := schedulerOutboxDedupKey(service.SchedulerOutboxEventAccountChanged, &accountID, nil, payloadJSON)
+
+	mock.ExpectExec(`INSERT INTO scheduler_outbox \(event_type, account_id, group_id, payload, dedup_key\)(?s).*ON CONFLICT \(dedup_key\) WHERE dedup_key IS NOT NULL DO NOTHING`).
+		WithArgs(service.SchedulerOutboxEventAccountChanged, sqlmock.AnyArg(), nil, sqlmock.AnyArg(), expectedKey).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err = enqueueSchedulerOutbox(context.Background(), db, service.SchedulerOutboxEventAccountChanged, &accountID, nil, payload)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestEnqueueSchedulerOutboxNonDedupEventDoesNotUseDedupKey(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	accountID := int64(42)
+	payload := map[string]any{"last_used_at": "2026-07-07T00:00:00Z"}
+	mock.ExpectExec(`INSERT INTO scheduler_outbox \(event_type, account_id, group_id, payload\)`).
+		WithArgs(service.SchedulerOutboxEventAccountLastUsed, sqlmock.AnyArg(), nil, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err = enqueueSchedulerOutbox(context.Background(), db, service.SchedulerOutboxEventAccountLastUsed, &accountID, nil, payload)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestSchedulerOutboxListAfterAndReleaseDedupClearsClaimedDedupKeys(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	createdAt := time.Date(2026, 7, 7, 0, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(`WITH selected AS MATERIALIZED(?s).*SET dedup_key = NULL`).
+		WithArgs(int64(7), 100).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "event_type", "account_id", "group_id", "payload", "created_at"}).
+			AddRow(int64(8), service.SchedulerOutboxEventAccountChanged, int64(42), nil, []byte(`{"group_ids":[7]}`), createdAt))
+
+	repo := &schedulerOutboxRepository{db: db}
+	events, err := repo.ListAfterAndReleaseDedup(context.Background(), 7, 100)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	require.Equal(t, int64(8), events[0].ID)
+	require.NotNil(t, events[0].AccountID)
+	require.Equal(t, int64(42), *events[0].AccountID)
+	require.Equal(t, []any{float64(7)}, events[0].Payload["group_ids"])
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestSchedulerOutboxDedupKeyIsStableAndPayloadAware(t *testing.T) {
+	accountID := int64(42)
+	groupID := int64(7)
+	payloadA := []byte(`{"group_ids":[7]}`)
+	payloadB := []byte(`{"group_ids":[8]}`)
+
+	keyA1 := schedulerOutboxDedupKey(service.SchedulerOutboxEventAccountChanged, &accountID, nil, payloadA)
+	keyA2 := schedulerOutboxDedupKey(service.SchedulerOutboxEventAccountChanged, &accountID, nil, payloadA)
+	keyB := schedulerOutboxDedupKey(service.SchedulerOutboxEventAccountChanged, &accountID, nil, payloadB)
+	groupKey := schedulerOutboxDedupKey(service.SchedulerOutboxEventGroupChanged, nil, &groupID, nil)
+
+	require.NotEmpty(t, keyA1)
+	require.Equal(t, keyA1, keyA2)
+	require.NotEqual(t, keyA1, keyB)
+	require.NotEqual(t, keyA1, groupKey)
+}
+
+func TestSchedulerOutboxDedupKeyTreatsEmptyGroupPayloadAsLiteralNil(t *testing.T) {
+	accountID := int64(42)
+	keyLiteralNil := schedulerOutboxDedupKey(service.SchedulerOutboxEventAccountChanged, &accountID, nil, nil)
+
+	var payload any = buildSchedulerGroupPayload(nil)
+	require.Nil(t, payload, "empty group payload must be untyped nil to avoid typed-nil JSON null dedup drift")
+
+	var payloadJSON []byte
+	if payload != nil {
+		encoded, err := json.Marshal(payload)
+		require.NoError(t, err)
+		payloadJSON = encoded
+	}
+	keyEmptyGroups := schedulerOutboxDedupKey(service.SchedulerOutboxEventAccountChanged, &accountID, nil, payloadJSON)
+	require.Equal(t, keyLiteralNil, keyEmptyGroups)
+}
+
+func TestSchedulerOutboxRepositoryDeleteConsumedUpToUsesBoundedCTEWithGrace(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
 	repo := &schedulerOutboxRepository{db: db}
-	const expectedSQL = `
-		WITH doomed AS (
-			SELECT id
-			FROM scheduler_outbox
-			WHERE id <= $1
-				AND created_at < NOW() - INTERVAL '10 seconds'
-			ORDER BY id ASC
-			LIMIT $2
-		)
-		DELETE FROM scheduler_outbox o
-		USING doomed d
-		WHERE o.id = d.id
-	`
-	mock.ExpectExec(regexp.QuoteMeta(expectedSQL)).
+	mock.ExpectExec(`WITH doomed AS \((?s).*WHERE id <= \$1\s+AND created_at < NOW\(\) - INTERVAL '10 seconds'(?s).*DELETE FROM scheduler_outbox`).
 		WithArgs(int64(42), 5000).
 		WillReturnResult(sqlmock.NewResult(0, 17))
 
@@ -59,9 +140,9 @@ func TestSchedulerOutboxRepositoryTryAcquireCleanupLock(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	repo := &schedulerOutboxRepository{db: db}
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT pg_try_advisory_lock(hashtext('scheduler_outbox_cleanup'))")).
+	mock.ExpectQuery(`SELECT pg_try_advisory_lock\(hashtext\('scheduler_outbox_cleanup'\)\)`).
 		WillReturnRows(sqlmock.NewRows([]string{"pg_try_advisory_lock"}).AddRow(true))
-	mock.ExpectExec(regexp.QuoteMeta("SELECT pg_advisory_unlock(hashtext('scheduler_outbox_cleanup'))")).
+	mock.ExpectExec(`SELECT pg_advisory_unlock\(hashtext\('scheduler_outbox_cleanup'\)\)`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	lease, acquired, err := repo.TryAcquireCleanupLock(context.Background())
@@ -80,39 +161,12 @@ func TestSchedulerOutboxRepositoryTryAcquireCleanupLockUnavailable(t *testing.T)
 	defer func() { _ = db.Close() }()
 
 	repo := &schedulerOutboxRepository{db: db}
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT pg_try_advisory_lock(hashtext('scheduler_outbox_cleanup'))")).
+	mock.ExpectQuery(`SELECT pg_try_advisory_lock\(hashtext\('scheduler_outbox_cleanup'\)\)`).
 		WillReturnRows(sqlmock.NewRows([]string{"pg_try_advisory_lock"}).AddRow(false))
 
 	lease, acquired, err := repo.TryAcquireCleanupLock(context.Background())
 	require.NoError(t, err)
 	require.False(t, acquired)
 	require.Nil(t, lease)
-
 	require.NoError(t, mock.ExpectationsWereMet())
-}
-
-// buildSchedulerGroupPayload 在 groupIDs 为空时必须返回 untyped nil（any），
-// 否则 enqueueSchedulerOutbox 的 "payload != nil" 接口判空会被 typed-nil 欺骗，
-// 把 payload marshal 成 "null" 写入 dedup_key 哈希，破坏与其他 nil-payload
-// 调用的去重一致性。本测试用 ungrouped 账号场景验证两条路径的 dedup_key 一致。
-func TestEnqueueSchedulerOutbox_UngroupedAccountDedupesWithLiteralNilPayload(t *testing.T) {
-	accountID := int64(42)
-
-	// Path A: 显式 nil payload（如 SetError、SetStatus 等调用模式）
-	keyLiteralNil := schedulerOutboxDedupKey("account_changed", &accountID, nil, nil)
-
-	// Path B: buildSchedulerGroupPayload(account.GroupIDs) 当账号没有任何分组
-	emptyGroupsPayload := buildSchedulerGroupPayload(nil)
-	require.Nil(t, emptyGroupsPayload,
-		"buildSchedulerGroupPayload(empty) must return untyped-nil any to avoid typed-nil marshal")
-
-	// 模拟 enqueueSchedulerOutbox 内部的判空逻辑
-	var payloadJSON []byte
-	if emptyGroupsPayload != nil {
-		t.Fatalf("typed-nil regression: buildSchedulerGroupPayload(empty) interface should be nil")
-	}
-	keyEmptyGroups := schedulerOutboxDedupKey("account_changed", &accountID, nil, payloadJSON)
-
-	require.Equal(t, keyLiteralNil, keyEmptyGroups,
-		"ungrouped-account account_changed must share dedup_key with other nil-payload variants")
 }

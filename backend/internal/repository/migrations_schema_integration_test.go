@@ -93,6 +93,13 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	requireColumn(t, tx, "usage_billing_dedup_archive", "request_fingerprint", "character varying", 64, false)
 	requireIndex(t, tx, "usage_billing_dedup_archive", "usage_billing_dedup_archive_pkey")
 
+	// ops_system_logs: API key id index for operational log triage.
+	requireColumn(t, tx, "ops_system_logs", "api_key_id", "bigint", 0, true)
+	requireIndex(t, tx, "ops_system_logs", "idx_ops_system_logs_api_key_id_created_at")
+
+	requireColumn(t, tx, "content_moderation_logs", "matched_keyword", "character varying", 255, false)
+	requireColumnDefaultContains(t, tx, "content_moderation_logs", "matched_keyword", "''")
+
 	// settings table should exist
 	var settingsRegclass sql.NullString
 	require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT to_regclass('public.settings')").Scan(&settingsRegclass))
@@ -102,14 +109,6 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	var securitySecretsRegclass sql.NullString
 	require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT to_regclass('public.security_secrets')").Scan(&securitySecretsRegclass))
 	require.True(t, securitySecretsRegclass.Valid, "expected security_secrets table to exist")
-
-	// scheduler_outbox pending dedup support
-	requireColumn(t, tx, "scheduler_outbox", "dedup_key", "text", 0, true)
-	requireIndex(t, tx, "scheduler_outbox", "idx_scheduler_outbox_pending_dedup_key")
-
-	// ops_system_logs: API key id index for operational log triage
-	requireColumn(t, tx, "ops_system_logs", "api_key_id", "bigint", 0, true)
-	requireIndex(t, tx, "ops_system_logs", "idx_ops_system_logs_api_key_id_created_at")
 
 	// user_allowed_groups table should exist
 	var uagRegclass sql.NullString
@@ -158,6 +157,17 @@ func TestMigrationsRunner_AuthIdentityAndPaymentSchemaStayAligned(t *testing.T) 
 	requireIndex(t, tx, "payment_orders", "paymentorder_out_trade_no")
 	requirePartialUniqueIndexDefinition(t, tx, "payment_orders", "paymentorder_out_trade_no", "out_trade_no", "WHERE")
 	requireIndexAbsent(t, tx, "payment_orders", "paymentorder_out_trade_no_unique")
+}
+
+func TestAugmentMigrationSchemaIncludesDedicatedGroupIsolationColumns(t *testing.T) {
+	tx := testTx(t)
+
+	requireColumn(t, tx, "groups", "augment_gateway_entitled", "boolean", 0, false)
+	requireColumnDefaultContains(t, tx, "groups", "augment_gateway_entitled", "false")
+	requireColumn(t, tx, "groups", "codex_gateway_entitled", "boolean", 0, false)
+	requireColumnDefaultContains(t, tx, "groups", "codex_gateway_entitled", "false")
+
+	requireColumn(t, tx, "api_keys", "restricted_client_product", "text", 0, true)
 }
 
 func requireIndex(t *testing.T, tx *sql.Tx, table, index string) {

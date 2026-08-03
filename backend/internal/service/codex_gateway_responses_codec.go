@@ -1,0 +1,487 @@
+package service
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"strings"
+)
+
+func DecodeCodexGatewayResponsesCreateRequest(body []byte) (CodexGatewayResponsesCreateRequest, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return CodexGatewayResponsesCreateRequest{}, err
+	}
+
+	req := CodexGatewayResponsesCreateRequest{
+		RawFields: make(map[string]json.RawMessage, len(raw)),
+	}
+	for key, value := range raw {
+		req.RawFields[key] = append(json.RawMessage(nil), value...)
+	}
+	if v, ok := raw["model"]; ok {
+		if err := json.Unmarshal(v, &req.Model); err != nil {
+			return CodexGatewayResponsesCreateRequest{}, err
+		}
+	}
+	req.Instructions = cloneCodexGatewayRawJSON(raw["instructions"])
+	req.Input = cloneCodexGatewayRawJSON(raw["input"])
+	req.Tools = cloneCodexGatewayRawJSON(raw["tools"])
+	req.ToolChoice = cloneCodexGatewayRawJSON(raw["tool_choice"])
+	req.Reasoning = cloneCodexGatewayRawJSON(raw["reasoning"])
+	req.Text = cloneCodexGatewayRawJSON(raw["text"])
+	req.Include = cloneCodexGatewayRawJSON(raw["include"])
+	req.ClientMetadata = cloneCodexGatewayRawJSON(raw["client_metadata"])
+	if v, ok := raw["prompt_cache_key"]; ok {
+		if err := json.Unmarshal(v, &req.PromptCacheKey); err != nil {
+			return CodexGatewayResponsesCreateRequest{}, err
+		}
+	}
+	if v, ok := raw["parallel_tool_calls"]; ok {
+		if err := json.Unmarshal(v, &req.ParallelToolCalls); err != nil {
+			return CodexGatewayResponsesCreateRequest{}, err
+		}
+	}
+	if v, ok := raw["store"]; ok {
+		if err := json.Unmarshal(v, &req.Store); err != nil {
+			return CodexGatewayResponsesCreateRequest{}, err
+		}
+	}
+	if v, ok := raw["max_output_tokens"]; ok {
+		if err := json.Unmarshal(v, &req.MaxOutputTokens); err != nil {
+			return CodexGatewayResponsesCreateRequest{}, err
+		}
+	}
+	if v, ok := raw["previous_response_id"]; ok {
+		if err := json.Unmarshal(v, &req.PreviousResponseID); err != nil {
+			return CodexGatewayResponsesCreateRequest{}, err
+		}
+	}
+	if v, ok := raw["stream"]; ok {
+		if err := json.Unmarshal(v, &req.Stream); err != nil {
+			return CodexGatewayResponsesCreateRequest{}, err
+		}
+	}
+	return req, nil
+}
+
+func ValidateCodexGatewayResponsesCreateRequest(req CodexGatewayResponsesCreateRequest) error {
+	if strings.TrimSpace(req.Model) == "" {
+		return fmt.Errorf("model is required")
+	}
+	return nil
+}
+
+type CodexGatewayResponseEventWriter struct {
+	w              io.Writer
+	sequenceNumber int
+}
+
+func NewCodexGatewayResponseEventWriter(w io.Writer) *CodexGatewayResponseEventWriter {
+	return &CodexGatewayResponseEventWriter{w: w}
+}
+
+func NewCodexGatewayResponseEventWriterWithSequence(w io.Writer, sequenceNumber int) *CodexGatewayResponseEventWriter {
+	if sequenceNumber < 0 {
+		sequenceNumber = 0
+	}
+	return &CodexGatewayResponseEventWriter{w: w, sequenceNumber: sequenceNumber}
+}
+
+func (w *CodexGatewayResponseEventWriter) NextSequenceNumber() int {
+	if w == nil {
+		return 0
+	}
+	return w.sequenceNumber
+}
+
+func (r CodexGatewayResponse) MarshalJSON() ([]byte, error) {
+	payload := make(map[string]json.RawMessage, len(r.RawFields)+8)
+	for key, value := range r.RawFields {
+		payload[key] = cloneCodexGatewayRawJSON(value)
+	}
+
+	set := func(key string, value any, include bool) error {
+		if !include {
+			return nil
+		}
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		payload[key] = raw
+		return nil
+	}
+
+	if err := set("id", r.ID, r.ID != ""); err != nil {
+		return nil, err
+	}
+	if err := set("object", r.Object, r.Object != ""); err != nil {
+		return nil, err
+	}
+	if err := set("model", r.Model, r.Model != ""); err != nil {
+		return nil, err
+	}
+	if err := set("status", r.Status, r.Status != ""); err != nil {
+		return nil, err
+	}
+	if err := set("output", r.Output, r.Output != nil); err != nil {
+		return nil, err
+	}
+	if err := set("usage", json.RawMessage(r.Usage), len(r.Usage) > 0); err != nil {
+		return nil, err
+	}
+	if err := set("error", r.Error, r.Error != nil); err != nil {
+		return nil, err
+	}
+	if err := set("incomplete_details", json.RawMessage(r.IncompleteDetails), len(r.IncompleteDetails) > 0); err != nil {
+		return nil, err
+	}
+
+	return json.Marshal(payload)
+}
+
+func (e CodexGatewayResponseError) MarshalJSON() ([]byte, error) {
+	payload := make(map[string]json.RawMessage, len(e.RawFields)+2)
+	for key, value := range e.RawFields {
+		payload[key] = cloneCodexGatewayRawJSON(value)
+	}
+
+	set := func(key string, value any, include bool) error {
+		if !include {
+			return nil
+		}
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		payload[key] = raw
+		return nil
+	}
+
+	if err := set("code", e.Code, e.Code != ""); err != nil {
+		return nil, err
+	}
+	if err := set("message", e.Message, e.Message != ""); err != nil {
+		return nil, err
+	}
+
+	return json.Marshal(payload)
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteResponseCreated(response CodexGatewayResponse) error {
+	return w.write("response.created", map[string]any{
+		"type":     "response.created",
+		"response": response,
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteResponseInProgress(response CodexGatewayResponse) error {
+	return w.write("response.in_progress", map[string]any{
+		"type":     "response.in_progress",
+		"response": response,
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteOutputItemAdded(responseID string, outputIndex int, item json.RawMessage) error {
+	item = normalizeCodexGatewayOutputItemWireFields(item)
+	payload := map[string]any{
+		"type":         "response.output_item.added",
+		"response_id":  responseID,
+		"output_index": outputIndex,
+		"item":         json.RawMessage(item),
+	}
+	addCodexGatewayOutputItemIdentityFields(payload, item)
+	return w.write("response.output_item.added", payload)
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteOutputTextDelta(responseID, itemID string, outputIndex, contentIndex int, delta string) error {
+	return w.write("response.output_text.delta", map[string]any{
+		"type":          "response.output_text.delta",
+		"response_id":   responseID,
+		"item_id":       itemID,
+		"output_index":  outputIndex,
+		"content_index": contentIndex,
+		"delta":         delta,
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteOutputTextDone(responseID, itemID string, outputIndex, contentIndex int, text string) error {
+	return w.write("response.output_text.done", map[string]any{
+		"type":          "response.output_text.done",
+		"response_id":   responseID,
+		"item_id":       itemID,
+		"output_index":  outputIndex,
+		"content_index": contentIndex,
+		"text":          text,
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteReasoningTextDelta(responseID, itemID string, outputIndex, contentIndex int, delta string) error {
+	return w.write("response.reasoning_text.delta", map[string]any{
+		"type":          "response.reasoning_text.delta",
+		"response_id":   responseID,
+		"item_id":       itemID,
+		"output_index":  outputIndex,
+		"content_index": contentIndex,
+		"delta":         delta,
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteReasoningTextDone(responseID, itemID string, outputIndex, contentIndex int, text string) error {
+	return w.write("response.reasoning_text.done", map[string]any{
+		"type":          "response.reasoning_text.done",
+		"response_id":   responseID,
+		"item_id":       itemID,
+		"output_index":  outputIndex,
+		"content_index": contentIndex,
+		"text":          text,
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteReasoningSummaryTextDelta(responseID, itemID string, outputIndex, summaryIndex int, delta string) error {
+	return w.write("response.reasoning_summary_text.delta", map[string]any{
+		"type":          "response.reasoning_summary_text.delta",
+		"response_id":   responseID,
+		"item_id":       itemID,
+		"output_index":  outputIndex,
+		"summary_index": summaryIndex,
+		"delta":         delta,
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteReasoningSummaryTextDone(responseID, itemID string, outputIndex, summaryIndex int, text string) error {
+	return w.write("response.reasoning_summary_text.done", map[string]any{
+		"type":          "response.reasoning_summary_text.done",
+		"response_id":   responseID,
+		"item_id":       itemID,
+		"output_index":  outputIndex,
+		"summary_index": summaryIndex,
+		"text":          text,
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteContentPartAdded(responseID, itemID string, outputIndex, contentIndex int, part json.RawMessage) error {
+	return w.write("response.content_part.added", map[string]any{
+		"type":          "response.content_part.added",
+		"response_id":   responseID,
+		"item_id":       itemID,
+		"output_index":  outputIndex,
+		"content_index": contentIndex,
+		"part":          json.RawMessage(part),
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteContentPartDone(responseID, itemID string, outputIndex, contentIndex int, part json.RawMessage) error {
+	return w.write("response.content_part.done", map[string]any{
+		"type":          "response.content_part.done",
+		"response_id":   responseID,
+		"item_id":       itemID,
+		"output_index":  outputIndex,
+		"content_index": contentIndex,
+		"part":          json.RawMessage(part),
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteFunctionCallArgumentsDelta(responseID, itemID string, outputIndex int, delta string) error {
+	payload := map[string]any{
+		"type":         "response.function_call_arguments.delta",
+		"response_id":  responseID,
+		"item_id":      itemID,
+		"output_index": outputIndex,
+		"delta":        delta,
+	}
+	if callID := strings.TrimPrefix(strings.TrimSpace(itemID), "fc_"); callID != "" && callID != strings.TrimSpace(itemID) {
+		payload["call_id"] = callID
+	}
+	return w.write("response.function_call_arguments.delta", payload)
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteCustomToolCallInputDelta(responseID, itemID, callID string, outputIndex int, delta string) error {
+	return w.write("response.custom_tool_call_input.delta", map[string]any{
+		"type":         "response.custom_tool_call_input.delta",
+		"response_id":  responseID,
+		"item_id":      itemID,
+		"call_id":      callID,
+		"output_index": outputIndex,
+		"delta":        delta,
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteCustomToolCallInputDone(responseID, itemID string, outputIndex int, input string) error {
+	payload := map[string]any{
+		"type":         "response.custom_tool_call_input.done",
+		"response_id":  responseID,
+		"item_id":      itemID,
+		"output_index": outputIndex,
+		"input":        input,
+	}
+	if callID := strings.TrimPrefix(strings.TrimSpace(itemID), "fc_"); callID != "" && callID != strings.TrimSpace(itemID) {
+		payload["call_id"] = callID
+	}
+	return w.write("response.custom_tool_call_input.done", payload)
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteFunctionCallArgumentsDone(responseID, itemID string, outputIndex int, item json.RawMessage) error {
+	item = normalizeCodexGatewayOutputItemWireFields(item)
+	payload := map[string]any{
+		"type":         "response.function_call_arguments.done",
+		"response_id":  responseID,
+		"item_id":      itemID,
+		"output_index": outputIndex,
+		"item":         json.RawMessage(item),
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(item, &parsed); err == nil {
+		if callID, ok := codexGatewayOutputItemStringField(parsed, "call_id"); ok && strings.TrimSpace(callID) != "" {
+			payload["call_id"] = callID
+		}
+		if name, ok := codexGatewayOutputItemStringField(parsed, "name"); ok && strings.TrimSpace(name) != "" {
+			payload["name"] = name
+		}
+		if arguments, ok := codexGatewayOutputItemStringField(parsed, "arguments"); ok {
+			payload["arguments"] = arguments
+		}
+	}
+	return w.write("response.function_call_arguments.done", payload)
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteOutputItemDone(responseID string, outputIndex int, item json.RawMessage) error {
+	item = normalizeCodexGatewayOutputItemWireFields(item)
+	payload := map[string]any{
+		"type":         "response.output_item.done",
+		"response_id":  responseID,
+		"output_index": outputIndex,
+		"item":         json.RawMessage(item),
+	}
+	addCodexGatewayOutputItemIdentityFields(payload, item)
+	return w.write("response.output_item.done", payload)
+}
+
+func normalizeCodexGatewayOutputItemWireFields(item json.RawMessage) json.RawMessage {
+	if len(item) == 0 {
+		return item
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(item, &parsed); err != nil {
+		return item
+	}
+	changed := false
+	switch strings.TrimSpace(firstCodexGatewayToolString(parsed["type"])) {
+	case "message":
+		if _, ok := parsed["content"]; !ok || parsed["content"] == nil {
+			parsed["content"] = []any{}
+			changed = true
+		}
+	case "reasoning":
+		if _, ok := parsed["summary"]; !ok || parsed["summary"] == nil {
+			parsed["summary"] = []any{}
+			changed = true
+		}
+	case "function_call":
+		if _, ok := parsed["arguments"]; !ok || parsed["arguments"] == nil {
+			parsed["arguments"] = ""
+			changed = true
+		}
+	}
+	if !changed {
+		return item
+	}
+	raw, err := json.Marshal(parsed)
+	if err != nil {
+		return item
+	}
+	return raw
+}
+
+func codexGatewayOutputItemStringField(parsed map[string]any, key string) (string, bool) {
+	if parsed == nil {
+		return "", false
+	}
+	value, ok := parsed[key]
+	if !ok {
+		return "", false
+	}
+	s, ok := value.(string)
+	if !ok {
+		return firstCodexGatewayToolString(value), firstCodexGatewayToolString(value) != ""
+	}
+	return s, true
+}
+
+func addCodexGatewayOutputItemIdentityFields(payload map[string]any, item json.RawMessage) {
+	if payload == nil || len(item) == 0 {
+		return
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(item, &parsed); err != nil {
+		return
+	}
+	if itemID := strings.TrimSpace(firstCodexGatewayToolString(parsed["id"])); itemID != "" {
+		payload["item_id"] = itemID
+	}
+	if callID := strings.TrimSpace(firstCodexGatewayToolString(parsed["call_id"])); callID != "" {
+		payload["call_id"] = callID
+	}
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteWebSearchCallEvent(name, responseID, itemID string, outputIndex int) error {
+	eventName := "response.web_search_call." + strings.TrimSpace(name)
+	return w.write(eventName, map[string]any{
+		"type":         eventName,
+		"response_id":  responseID,
+		"item_id":      itemID,
+		"output_index": outputIndex,
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteResponseCompleted(response CodexGatewayResponse) error {
+	return w.write("response.completed", map[string]any{
+		"type":     "response.completed",
+		"response": response,
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteResponseFailed(response CodexGatewayResponse) error {
+	return w.write("response.failed", map[string]any{
+		"type":     "response.failed",
+		"response": response,
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) WriteResponseIncomplete(response CodexGatewayResponse) error {
+	return w.write("response.incomplete", map[string]any{
+		"type":     "response.incomplete",
+		"response": response,
+	})
+}
+
+func (w *CodexGatewayResponseEventWriter) write(name string, payload any) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	var eventPayload map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &eventPayload); err != nil {
+		return err
+	}
+	sequenceNumber, err := json.Marshal(w.sequenceNumber)
+	if err != nil {
+		return err
+	}
+	eventPayload["sequence_number"] = sequenceNumber
+	w.sequenceNumber++
+	data, err := json.Marshal(eventPayload)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w.w, "event: %s\ndata: %s\n\n", name, data)
+	return err
+}
+
+func cloneCodexGatewayRawJSON(value json.RawMessage) json.RawMessage {
+	if len(value) == 0 {
+		return nil
+	}
+	return append(json.RawMessage(nil), value...)
+}

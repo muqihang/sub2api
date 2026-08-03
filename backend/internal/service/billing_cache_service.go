@@ -91,14 +91,14 @@ type cacheWriteTask struct {
 	subscriptionData *subscriptionCacheData
 }
 
-// apiKeyRateLimitLoader defines the interface for loading rate limit data from DB.
-type apiKeyRateLimitLoader interface {
-	GetRateLimitData(ctx context.Context, keyID int64) (*APIKeyRateLimitData, error)
-}
-
 type subscriptionCacheInvalidationPubSub interface {
 	PublishSubscriptionCacheInvalidation(ctx context.Context, cacheKey string) error
 	SubscribeSubscriptionCacheInvalidation(ctx context.Context, handler func(cacheKey string)) error
+}
+
+// apiKeyRateLimitLoader defines the interface for loading rate limit data from DB.
+type apiKeyRateLimitLoader interface {
+	GetRateLimitData(ctx context.Context, keyID int64) (*APIKeyRateLimitData, error)
 }
 
 // BillingCacheService 计费缓存服务

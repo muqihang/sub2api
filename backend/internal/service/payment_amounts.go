@@ -32,6 +32,28 @@ func calculateCreditedBalance(paymentAmount, multiplier float64) float64 {
 		InexactFloat64()
 }
 
+func calculateGatewayPaymentAmount(orderAmount, multiplier float64, currency string) float64 {
+	fractionDigits := int32(payment.CurrencyMaxFractionDigits(currency))
+	return decimal.NewFromFloat(orderAmount).
+		Div(decimal.NewFromFloat(normalizeBalanceRechargeMultiplier(multiplier))).
+		Round(fractionDigits).
+		InexactFloat64()
+}
+
+// calculateSubscriptionGatewayBaseAmount applies explicit subscription FX only.
+// A zero rate is intentional: it keeps existing deployments charging plan.Price
+// directly instead of reusing the balance recharge multiplier.
+func calculateSubscriptionGatewayBaseAmount(amount, usdToCnyRate float64, currency string) float64 {
+	rate := normalizeSubscriptionUSDToCNYRate(usdToCnyRate)
+	if rate <= 0 || currency != payment.DefaultPaymentCurrency {
+		return amount
+	}
+	return decimal.NewFromFloat(amount).
+		Mul(decimal.NewFromFloat(rate)).
+		Round(int32(payment.CurrencyMaxFractionDigits(currency))).
+		InexactFloat64()
+}
+
 func calculateGatewayRefundAmount(orderAmount, payAmount, refundAmount float64, currency string) float64 {
 	if orderAmount <= 0 || payAmount <= 0 || refundAmount <= 0 {
 		return 0

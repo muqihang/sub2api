@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -170,7 +171,7 @@ func (w *BatchImageWorker) RunOnce(ctx context.Context) error {
 	if err != nil {
 		logger.L().Warn("batch_image.worker_process_failed",
 			zap.String("batch_id", reserved.BatchID),
-			zap.Error(err),
+			zap.String("error_class", fmt.Sprintf("%T", err)),
 		)
 		return w.queue.RequeueAfter(ctx, reserved.BatchID, w.opts.ErrorRetryDelay)
 	}

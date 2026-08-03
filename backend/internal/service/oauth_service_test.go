@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/oauth"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 )
@@ -236,8 +237,11 @@ func TestOAuthService_ExchangeCode_SessionNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("ExchangeCode 应返回错误（session 不存在）")
 	}
-	if err.Error() != "session not found or expired" {
-		t.Fatalf("错误信息不匹配: got=%q", err.Error())
+	if got := infraerrors.Code(err); got != 400 {
+		t.Fatalf("错误状态不匹配: got=%d want=400 err=%v", got, err)
+	}
+	if got := infraerrors.Reason(err); got != "CLAUDE_OAUTH_SESSION_NOT_FOUND" {
+		t.Fatalf("错误 reason 不匹配: got=%q", got)
 	}
 }
 
@@ -377,8 +381,14 @@ func TestOAuthService_ExchangeCode_ClientError(t *testing.T) {
 	if err == nil {
 		t.Fatal("ExchangeCode 应返回错误")
 	}
-	if err.Error() != "upstream error: invalid code" {
-		t.Fatalf("错误信息不匹配: got=%q", err.Error())
+	if got := infraerrors.Code(err); got != 400 {
+		t.Fatalf("错误状态不匹配: got=%d want=400 err=%v", got, err)
+	}
+	if got := infraerrors.Reason(err); got != "CLAUDE_OAUTH_CODE_EXCHANGE_FAILED" {
+		t.Fatalf("错误 reason 不匹配: got=%q", got)
+	}
+	if got := infraerrors.Message(err); got != "Claude OAuth authorization code exchange failed; generate a fresh authorization link and try again" {
+		t.Fatalf("错误 message 不匹配: got=%q", got)
 	}
 }
 
@@ -487,20 +497,14 @@ func TestOAuthService_RefreshAccountToken_EmptyRefreshToken(t *testing.T) {
 	}
 }
 
-func TestOAuthService_RefreshAccountToken_Success(t *testing.T) {
+func TestOAuthService_RefreshAccountToken_NoProxyIDFailsClosedWithoutRefresh_Unit(t *testing.T) {
 	t.Parallel()
 
+	refreshCalled := false
 	client := &mockClaudeOAuthClient{
 		refreshTokenFunc: func(ctx context.Context, refreshToken, proxyURL string) (*oauth.TokenResponse, error) {
-			if refreshToken != "account-refresh-token" {
-				t.Errorf("refreshToken 不匹配: got=%q", refreshToken)
-			}
-			return &oauth.TokenResponse{
-				AccessToken:  "refreshed-access",
-				TokenType:    "Bearer",
-				ExpiresIn:    3600,
-				RefreshToken: "new-refresh",
-			}, nil
+			refreshCalled = true
+			return nil, fmt.Errorf("must not refresh without account proxy")
 		},
 	}
 
@@ -517,12 +521,12 @@ func TestOAuthService_RefreshAccountToken_Success(t *testing.T) {
 		},
 	}
 
-	tokenInfo, err := svc.RefreshAccountToken(context.Background(), account)
-	if err != nil {
-		t.Fatalf("RefreshAccountToken 返回错误: %v", err)
+	_, err := svc.RefreshAccountToken(context.Background(), account)
+	if err == nil {
+		t.Fatal("RefreshAccountToken 应在 account.ProxyID 为空时 fail closed")
 	}
-	if tokenInfo.AccessToken != "refreshed-access" {
-		t.Fatalf("AccessToken 不匹配: got=%q", tokenInfo.AccessToken)
+	if refreshCalled {
+		t.Fatal("RefreshToken 不应在 account.ProxyID 为空时被调用")
 	}
 }
 
@@ -543,7 +547,7 @@ func TestOAuthService_RefreshAccountToken_WithProxy(t *testing.T) {
 
 	client := &mockClaudeOAuthClient{
 		refreshTokenFunc: func(ctx context.Context, refreshToken, proxyURL string) (*oauth.TokenResponse, error) {
-			if proxyURL != "socks5://user:pass@socks.example.com:1080" {
+			if proxyURL != "socks5h://user:pass@socks.example.com:1080" {
 				t.Errorf("proxyURL 不匹配: got=%q", proxyURL)
 			}
 			return &oauth.TokenResponse{

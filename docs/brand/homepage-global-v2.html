@@ -1,0 +1,790 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>逐梦工作台 / Zhumeng Workstation — 你的桌面 AI 工作站</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    body { font-family: 'Inter', system-ui, sans-serif; }
+    .font-mono { font-family: 'JetBrains Mono', monospace; }
+    .dot-bg {
+      background-image: radial-gradient(circle, rgba(20, 184, 166, 0.12) 1px, transparent 1px);
+      background-size: 24px 24px;
+    }
+    .gradient-text {
+      background: linear-gradient(135deg, #0d9488 0%, #0891b2 50%, #2563eb 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .hero-glow {
+      background: radial-gradient(ellipse at 50% 0%, rgba(20, 184, 166, 0.15) 0%, rgba(255, 255, 255, 0) 60%);
+    }
+    .card { transition: all 0.2s ease; }
+    .card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 16px 48px -12px rgba(13, 148, 136, 0.18);
+      border-color: rgba(13, 148, 136, 0.4);
+    }
+    .terminal-cursor::after {
+      content: '▍';
+      color: #2dd4bf;
+      animation: blink 1s infinite;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+    .lang-en { display: none; }
+    body.lang-en .lang-zh { display: none; }
+    body.lang-en .lang-en { display: inline; }
+    .soft-shadow { box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.04); }
+  </style>
+</head>
+<body class="bg-white text-slate-900 antialiased">
+
+<!-- ====== NAV ====== -->
+<nav class="sticky top-0 z-50 backdrop-blur-md bg-white/85 border-b border-slate-200">
+  <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+    <div class="flex items-center gap-10">
+      <a href="#" class="flex items-center gap-2 text-lg font-bold">
+        <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-teal-600 to-cyan-600 flex items-center justify-center text-white font-mono">Z</div>
+        <span class="text-slate-900">Zhumeng Workstation</span>
+      </a>
+      <div class="hidden md:flex items-center gap-7 text-sm text-slate-600">
+        <a href="#workstation" class="hover:text-teal-700 transition"><span class="lang-zh">工作台</span><span class="lang-en">Workstation</span></a>
+        <a href="#tools" class="hover:text-teal-700 transition"><span class="lang-zh">预装工具</span><span class="lang-en">Tools</span></a>
+        <a href="#difference" class="hover:text-teal-700 transition"><span class="lang-zh">核心差异</span><span class="lang-en">Why us</span></a>
+        <a href="#cloud-bridge" class="hover:text-teal-700 transition">Cloud Bridge</a>
+        <a href="#developer" class="hover:text-teal-700 transition"><span class="lang-zh">开发者 API</span><span class="lang-en">Developer API</span></a>
+        <a href="#pricing" class="hover:text-teal-700 transition"><span class="lang-zh">定价</span><span class="lang-en">Pricing</span></a>
+        <a href="#enterprise" class="hover:text-teal-700 transition"><span class="lang-zh">企业方案</span><span class="lang-en">Enterprise</span></a>
+      </div>
+    </div>
+    <div class="flex items-center gap-3">
+      <button onclick="toggleLang()" class="text-xs font-mono px-2 py-1 rounded border border-slate-300 text-slate-600 hover:text-teal-700 hover:border-teal-400 transition">
+        <span id="lang-indicator">中 / EN</span>
+      </button>
+      <a href="#" class="hidden md:block text-sm text-slate-600 hover:text-teal-700 transition"><span class="lang-zh">登录</span><span class="lang-en">Sign in</span></a>
+      <a href="#download" class="text-sm px-4 py-2 rounded-md bg-gradient-to-r from-teal-600 to-cyan-600 text-white font-medium hover:opacity-90 transition shadow-sm">
+        <span class="lang-zh">免费下载</span><span class="lang-en">Get Workstation</span>
+      </a>
+    </div>
+  </div>
+</nav>
+
+<!-- ====== HERO ====== -->
+<section class="relative overflow-hidden">
+  <div class="absolute inset-0 hero-glow pointer-events-none"></div>
+  <div class="absolute inset-x-0 top-0 h-[600px] dot-bg opacity-50 pointer-events-none [mask-image:linear-gradient(to_bottom,white_0%,transparent_100%)]"></div>
+  <div class="max-w-7xl mx-auto px-6 pt-20 pb-24 relative">
+    <div class="grid lg:grid-cols-12 gap-12 items-center">
+      <div class="lg:col-span-7">
+        <div class="inline-flex items-center gap-2 text-xs font-mono px-3 py-1.5 rounded-full border border-teal-200 bg-teal-50 text-teal-700 mb-6">
+          <span class="w-1.5 h-1.5 rounded-full bg-teal-500 animate-pulse"></span>
+          <span class="lang-zh">v1.0 · 桌面 App 公开测试中</span>
+          <span class="lang-en">v1.0 · Desktop App in open beta</span>
+        </div>
+        <h1 class="text-5xl md:text-6xl font-bold leading-tight tracking-tight mb-6">
+          <span class="lang-zh">你的桌面 <br/><span class="gradient-text">AI 工作站</span>。</span>
+          <span class="lang-en">Your desktop <br/><span class="gradient-text">AI workstation</span>.</span>
+        </h1>
+        <p class="text-xl text-slate-600 leading-relaxed mb-8 max-w-xl">
+          <span class="lang-zh">所有顶级 AI 工具,本地运行,统一调度。GPT、Claude、DeepSeek 按任务智能混调,成本骤降 80%。</span>
+          <span class="lang-en">All top-tier AI tools, running locally, dispatched as one. Smart-mix GPT, Claude, and DeepSeek by task — cut your costs by 80%.</span>
+        </p>
+
+        <div class="flex flex-wrap items-center gap-2 mb-10">
+          <span class="text-xs font-mono px-3 py-1.5 rounded-md bg-white border border-slate-200 text-slate-700 soft-shadow">BYOK · <span class="lang-zh">你的 key</span><span class="lang-en">your keys</span></span>
+          <span class="text-xs font-mono px-3 py-1.5 rounded-md bg-white border border-slate-200 text-slate-700 soft-shadow"><span class="lang-zh">协议适配</span><span class="lang-en">Protocol Adapter</span></span>
+          <span class="text-xs font-mono px-3 py-1.5 rounded-md bg-white border border-slate-200 text-slate-700 soft-shadow"><span class="lang-zh">智能路由</span><span class="lang-en">Smart Routing</span></span>
+          <span class="text-xs font-mono px-3 py-1.5 rounded-md bg-white border border-slate-200 text-slate-700 soft-shadow">Cloud Bridge</span>
+        </div>
+
+        <div class="flex flex-wrap gap-3">
+          <a href="#download" class="inline-flex items-center gap-2 px-6 py-3 rounded-md bg-gradient-to-r from-teal-600 to-cyan-600 text-white font-medium hover:opacity-90 transition shadow-md shadow-teal-500/20">
+            <span class="lang-zh">免费下载 Workstation</span><span class="lang-en">Download Workstation Free</span>
+            <span class="font-mono">→</span>
+          </a>
+          <a href="#cloud-bridge" class="inline-flex items-center gap-2 px-6 py-3 rounded-md bg-white border border-slate-300 text-slate-700 hover:border-teal-400 hover:text-teal-700 transition">
+            <span class="lang-zh">了解 Cloud Bridge</span><span class="lang-en">Explore Cloud Bridge</span>
+          </a>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-6 mt-10 text-xs text-slate-500">
+          <div class="flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+            <span class="lang-zh">macOS · Windows · Linux</span><span class="lang-en">macOS · Windows · Linux</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="font-mono text-teal-600">★</span>
+            <span class="lang-zh">基于 Apache 2.0 协议构建,核心代码开源审计</span><span class="lang-en">Built on open source, auditable core</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Terminal mock (keep dark for contrast) -->
+      <div class="lg:col-span-5">
+        <div class="rounded-xl bg-slate-950 border border-slate-800 overflow-hidden soft-shadow">
+          <div class="flex items-center gap-2 px-4 py-3 bg-slate-900/80 border-b border-slate-800">
+            <span class="w-3 h-3 rounded-full bg-rose-500"></span>
+            <span class="w-3 h-3 rounded-full bg-amber-500"></span>
+            <span class="w-3 h-3 rounded-full bg-emerald-500"></span>
+            <span class="ml-3 text-xs font-mono text-slate-500">~ codex (via Zhumeng Workstation)</span>
+          </div>
+          <div class="p-5 font-mono text-sm leading-relaxed">
+            <div class="text-slate-500"># <span class="lang-zh">在 Codex 里运行 DeepSeek-V3,体验跟 GPT 一样原生</span><span class="lang-en">Run DeepSeek-V3 in Codex — feels native, like GPT</span></div>
+            <div class="mt-2"><span class="text-teal-400">$</span> <span class="text-slate-200">codex "refactor this file to use async/await"</span></div>
+            <div class="mt-3 text-xs text-slate-500"><span class="lang-zh">[Workstation]</span><span class="lang-en">[Workstation]</span> <span class="text-teal-300">→ route: deepseek-v3</span> <span class="text-slate-600">(cost: $0.003)</span></div>
+            <div class="mt-3 text-slate-200">  <span class="text-emerald-400">●</span> <span class="lang-zh">analyzing 3 files...</span><span class="lang-en">analyzing 3 files...</span></div>
+            <div class="mt-1 text-slate-200">  <span class="text-emerald-400">●</span> <span class="lang-zh">applying patches...</span><span class="lang-en">applying patches...</span></div>
+            <div class="mt-1 text-slate-200">  <span class="text-emerald-400">●</span> <span class="lang-zh">done in 4.2s</span><span class="lang-en">done in 4.2s</span></div>
+            <div class="mt-4 pt-3 border-t border-slate-800 text-xs text-slate-500">
+              <span class="lang-zh">同样任务用 GPT-5: $0.024 · 用 Workstation 自动路由: $0.003</span>
+              <span class="lang-en">Same task on GPT-5: $0.024 · with Workstation routing: $0.003</span>
+            </div>
+            <div class="mt-2 text-teal-400 terminal-cursor"></div>
+          </div>
+        </div>
+        <div class="mt-3 text-xs text-slate-500 text-center font-mono">
+          <span class="lang-zh">↑ 在 Codex 中跑 DeepSeek,Workstation 自动适配 Responses 协议</span>
+          <span class="lang-en">↑ DeepSeek inside Codex — Workstation handles Responses protocol adaptation</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====== LOGO STRIP ====== -->
+<section class="border-y border-slate-200 bg-slate-50/60">
+  <div class="max-w-7xl mx-auto px-6 py-8">
+    <p class="text-center text-xs font-mono text-slate-500 mb-5">
+      <span class="lang-zh">已被开发者、研究团队、企业 IT 选用</span>
+      <span class="lang-en">Trusted by developers, research teams, and enterprise IT</span>
+    </p>
+    <div class="flex flex-wrap items-center justify-center gap-x-12 gap-y-4 text-slate-400 font-mono text-sm">
+      <span>{{ LOGO_1 }}</span>
+      <span>{{ LOGO_2 }}</span>
+      <span>{{ LOGO_3 }}</span>
+      <span>{{ LOGO_4 }}</span>
+      <span>{{ LOGO_5 }}</span>
+    </div>
+  </div>
+</section>
+
+<!-- ====== TOOLS MATRIX ====== -->
+<section id="tools" class="py-24 bg-white">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="text-center mb-16">
+      <p class="text-xs font-mono text-teal-600 mb-3 tracking-wider"><span class="lang-zh">预装旗舰工具</span><span class="lang-en">PRE-INSTALLED FLAGSHIP TOOLS</span></p>
+      <h2 class="text-4xl font-bold mb-4 text-slate-900">
+        <span class="lang-zh">装一次 Workstation,<span class="gradient-text">所有顶级 AI 工具开箱即用</span></span>
+        <span class="lang-en">Install once. <span class="gradient-text">Every top AI tool, ready to go.</span></span>
+      </h2>
+      <p class="text-slate-600 max-w-2xl mx-auto">
+        <span class="lang-zh">每个工具都经过深度适配,在 Workstation 里以原生体验运行 —— 但可以连接你想用的任何模型。</span>
+        <span class="lang-en">Each tool is deeply adapted to run with a native feel inside Workstation — yet works with any model you choose.</span>
+      </p>
+    </div>
+
+    <div class="grid md:grid-cols-3 gap-6">
+      <!-- Augment -->
+      <div class="card rounded-xl border border-slate-200 bg-white p-6 soft-shadow">
+        <div class="flex items-center justify-between mb-5">
+          <div class="w-10 h-10 rounded-lg bg-teal-50 border border-teal-200 flex items-center justify-center font-mono text-teal-700 font-semibold">A</div>
+          <span class="text-xs font-mono text-slate-500"><span class="lang-zh">兼容</span><span class="lang-en">compatible with</span> Augment Code</span>
+        </div>
+        <h3 class="text-xl font-semibold mb-2 text-slate-900"><span class="lang-zh">Workstation · Augment 增强</span><span class="lang-en">Workstation · Augment Enhanced</span></h3>
+        <p class="text-sm text-slate-600 mb-5 leading-relaxed">
+          <span class="lang-zh">理解你整个代码库的 AI 结对工程师。保留原版超长上下文引擎,模型可换成 DeepSeek 等高性价比选项,成本骤降。</span>
+          <span class="lang-en">Your AI pair programmer that understands your whole codebase. Preserves Augment's context engine, swaps the model for DeepSeek-class options to slash cost.</span>
+        </p>
+        <ul class="space-y-2 text-sm text-slate-700 mb-6">
+          <li class="flex gap-2"><span class="text-teal-600 font-mono">✓</span> <span class="lang-zh">协议适配:Augment 协议层 ↔ 任意模型</span><span class="lang-en">Adapts Augment protocol ↔ any model</span></li>
+          <li class="flex gap-2"><span class="text-teal-600 font-mono">✓</span> <span class="lang-zh">完整保留实时上下文感知引擎</span><span class="lang-en">Real-time context engine preserved</span></li>
+          <li class="flex gap-2"><span class="text-teal-600 font-mono">✓</span> <span class="lang-zh">单次任务成本可低至原版 1/8</span><span class="lang-en">Up to 8× cheaper per task</span></li>
+        </ul>
+        <a href="#" class="text-sm font-medium text-teal-700 hover:text-teal-900">
+          <span class="lang-zh">查看详情 →</span><span class="lang-en">Learn more →</span>
+        </a>
+      </div>
+
+      <!-- DeepRotor -->
+      <div class="card rounded-xl border border-slate-200 bg-white p-6 soft-shadow">
+        <div class="flex items-center justify-between mb-5">
+          <div class="w-10 h-10 rounded-lg bg-cyan-50 border border-cyan-200 flex items-center justify-center font-mono text-cyan-700 font-semibold">D</div>
+          <span class="text-xs font-mono text-slate-500"><span class="lang-zh">兼容</span><span class="lang-en">compatible with</span> DeepRotor</span>
+        </div>
+        <h3 class="text-xl font-semibold mb-2 text-slate-900"><span class="lang-zh">Workstation · DeepRotor 学术版</span><span class="lang-en">Workstation · DeepRotor Academic</span></h3>
+        <p class="text-sm text-slate-600 mb-5 leading-relaxed">
+          <span class="lang-zh">为科研团队打造的论文深度阅读、知识图谱、学术对话工作流。免部署,精读/泛读模型无缝切换。</span>
+          <span class="lang-en">Deep reading, knowledge graphs, and academic chat for research teams. No setup, switch between deep and broad reading models on the fly.</span>
+        </p>
+        <ul class="space-y-2 text-sm text-slate-700 mb-6">
+          <li class="flex gap-2"><span class="text-cyan-600 font-mono">✓</span> <span class="lang-zh">免部署,直接在 Workstation 启动</span><span class="lang-en">No deploy — launches inside Workstation</span></li>
+          <li class="flex gap-2"><span class="text-cyan-600 font-mono">✓</span> <span class="lang-zh">导师/团队统一发卡协作</span><span class="lang-en">Team key management for advisors</span></li>
+          <li class="flex gap-2"><span class="text-cyan-600 font-mono">✓</span> <span class="lang-zh">支持云端同步个人知识库</span><span class="lang-en">Cloud-sync your personal knowledge base</span></li>
+        </ul>
+        <a href="#" class="text-sm font-medium text-cyan-700 hover:text-cyan-900">
+          <span class="lang-zh">查看详情 →</span><span class="lang-en">Learn more →</span>
+        </a>
+      </div>
+
+      <!-- Codex / Claude Code -->
+      <div class="card rounded-xl border border-slate-200 bg-white p-6 soft-shadow">
+        <div class="flex items-center justify-between mb-5">
+          <div class="w-10 h-10 rounded-lg bg-blue-50 border border-blue-200 flex items-center justify-center font-mono text-blue-700 font-semibold">C</div>
+          <span class="text-xs font-mono text-slate-500"><span class="lang-zh">兼容</span><span class="lang-en">compatible with</span> Codex / Claude Code</span>
+        </div>
+        <h3 class="text-xl font-semibold mb-2 text-slate-900"><span class="lang-zh">Workstation · Codex / Claude Code 适配</span><span class="lang-en">Workstation · Codex / Claude Code Adapter</span></h3>
+        <p class="text-sm text-slate-600 mb-5 leading-relaxed">
+          <span class="lang-zh">通过协议适配层,在 Codex / Claude Code 中直接调用 DeepSeek、Qwen、Kimi 等模型,99% 接近原生体验。</span>
+          <span class="lang-en">Run DeepSeek, Qwen, or Kimi natively inside Codex / Claude Code via our protocol adapter — 99% native feel.</span>
+        </p>
+        <ul class="space-y-2 text-sm text-slate-700 mb-6">
+          <li class="flex gap-2"><span class="text-blue-600 font-mono">✓</span> <span class="lang-zh">Responses 协议 + app.json v2 完整适配</span><span class="lang-en">Full Responses + app.json v2 adapter</span></li>
+          <li class="flex gap-2"><span class="text-blue-600 font-mono">✓</span> <span class="lang-zh">流式 / tool_use / thinking 字段对齐</span><span class="lang-en">Streaming / tool_use / thinking alignment</span></li>
+          <li class="flex gap-2"><span class="text-blue-600 font-mono">✓</span> <span class="lang-zh">引导从官方渠道安装原版,我们只做适配</span><span class="lang-en">We adapt — install originals from official sources</span></li>
+        </ul>
+        <a href="#" class="text-sm font-medium text-blue-700 hover:text-blue-900">
+          <span class="lang-zh">查看详情 →</span><span class="lang-en">Learn more →</span>
+        </a>
+      </div>
+    </div>
+
+    <div class="mt-10 text-center text-sm text-slate-500">
+      <span class="lang-zh">Cursor、Windsurf、Continue、Aider 等的适配正在开发中 ·</span>
+      <span class="lang-en">Cursor, Windsurf, Continue, Aider adapters coming soon ·</span>
+      <a href="#" class="text-teal-700 hover:text-teal-900"><span class="lang-zh">查看路线图</span><span class="lang-en">See roadmap</span></a>
+    </div>
+  </div>
+</section>
+
+<!-- ====== CORE DIFFERENCE ====== -->
+<section id="difference" class="py-24 bg-slate-50/60 border-y border-slate-200">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="text-center mb-16">
+      <p class="text-xs font-mono text-teal-600 mb-3 tracking-wider"><span class="lang-zh">为什么不是另一个 API 中转</span><span class="lang-en">WHY THIS ISN'T ANOTHER API RESELLER</span></p>
+      <h2 class="text-4xl font-bold mb-4 text-slate-900">
+        <span class="lang-zh">三件事让我们<span class="gradient-text">跟所有同类工具都不一样</span></span>
+        <span class="lang-en">Three things <span class="gradient-text">no one else does together</span></span>
+      </h2>
+    </div>
+
+    <div class="grid md:grid-cols-3 gap-8">
+      <div class="space-y-4 p-6 rounded-xl bg-white border border-slate-200 soft-shadow">
+        <div class="w-12 h-12 rounded-xl bg-teal-50 border border-teal-200 flex items-center justify-center font-mono text-teal-700 text-xl font-semibold">1</div>
+        <h3 class="text-xl font-semibold text-slate-900"><span class="lang-zh">BYOK,Key 留在你手里</span><span class="lang-en">BYOK — keys stay with you</span></h3>
+        <p class="text-slate-600 leading-relaxed">
+          <span class="lang-zh">所有供应商的 API key 存储在你本地的桌面 App 里,不上传不经过我们的服务器。你的请求直接从你的电脑发往 OpenAI / Anthropic / DeepSeek / 字节豆包等。</span>
+          <span class="lang-en">All provider API keys live in your local app. Nothing uploaded, nothing through our servers. Your requests go directly from your machine to OpenAI / Anthropic / DeepSeek / etc.</span>
+        </p>
+        <p class="text-sm font-mono text-teal-700">
+          <span class="lang-zh">"你的 key,你的钱,你的工具。"</span>
+          <span class="lang-en">"Your keys. Your money. Your tools."</span>
+        </p>
+      </div>
+
+      <div class="space-y-4 p-6 rounded-xl bg-white border border-slate-200 soft-shadow">
+        <div class="w-12 h-12 rounded-xl bg-cyan-50 border border-cyan-200 flex items-center justify-center font-mono text-cyan-700 text-xl font-semibold">2</div>
+        <h3 class="text-xl font-semibold text-slate-900"><span class="lang-zh">协议适配 + 智能路由</span><span class="lang-en">Protocol adapter + smart routing</span></h3>
+        <p class="text-slate-600 leading-relaxed">
+          <span class="lang-zh">市面上的工具只能用自家模型 —— Cursor 锁 Claude,Trae 锁豆包。Workstation 把 GPT、Claude、DeepSeek 等模型适配到 Codex / Augment / Claude Code 里,按任务自动选最优模型组合。</span>
+          <span class="lang-en">Most tools lock you to one vendor — Cursor to Claude, Trae to Doubao. Workstation adapts GPT, Claude, DeepSeek to run inside Codex / Augment / Claude Code, and dispatches each task to the best model.</span>
+        </p>
+        <p class="text-sm font-mono text-cyan-700">
+          <span class="lang-zh">代码补全 → DeepSeek · 长上下文 → Claude · 视觉 → GPT-4o</span>
+          <span class="lang-en">Code → DeepSeek · Long context → Claude · Vision → GPT-4o</span>
+        </p>
+      </div>
+
+      <div class="space-y-4 p-6 rounded-xl bg-white border border-slate-200 soft-shadow">
+        <div class="w-12 h-12 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center font-mono text-blue-700 text-xl font-semibold">3</div>
+        <h3 class="text-xl font-semibold text-slate-900"><span class="lang-zh">云端是可选,不是必须</span><span class="lang-en">Cloud is optional, not required</span></h3>
+        <p class="text-slate-600 leading-relaxed">
+          <span class="lang-zh">不想管 key?可以一键开启 Cloud Bridge,使用我们托管的多模型路由。但默认是关闭的 —— 我们想让 Workstation 永远是先离线、再可选连云的产品。</span>
+          <span class="lang-en">Don't want to manage keys? Flip on Cloud Bridge for hosted multi-model routing. But it's off by default — Workstation is always offline-first, cloud-optional.</span>
+        </p>
+        <p class="text-sm font-mono text-blue-700">
+          <span class="lang-zh">默认关闭 · 主动启用 · 协议确认</span>
+          <span class="lang-en">Off by default · opt-in · with consent</span>
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====== CLOUD BRIDGE ====== -->
+<section id="cloud-bridge" class="py-24 bg-white">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="grid lg:grid-cols-2 gap-16 items-center">
+      <div>
+        <p class="text-xs font-mono text-teal-600 mb-3 tracking-wider">CLOUD BRIDGE</p>
+        <h2 class="text-4xl font-bold mb-6 text-slate-900">
+          <span class="lang-zh">当你不想管 key,<br/><span class="gradient-text">RoutePort</span> 就接上。</span>
+          <span class="lang-en">When you don't want to manage keys,<br/><span class="gradient-text">RoutePort</span> takes over.</span>
+        </h2>
+        <p class="text-slate-600 leading-relaxed mb-6">
+          <span class="lang-zh">Cloud Bridge 由我们的姐妹服务 RoutePort 提供 —— 一个对标 OpenRouter 的全模型托管路由,你不用注册各家供应商,一个账号通行所有模型。在 Workstation 里点一下就接上。</span>
+          <span class="lang-en">Cloud Bridge is powered by our sister service, RoutePort — a hosted multi-model gateway, like OpenRouter, but with one account that covers everything. One click in Workstation to plug in.</span>
+        </p>
+        <ul class="space-y-3 mb-8">
+          <li class="flex items-start gap-3">
+            <span class="text-teal-600 font-mono mt-0.5">▸</span>
+            <span class="text-slate-700"><span class="lang-zh">300+ 模型,统一计费</span><span class="lang-en">300+ models, unified billing</span></span>
+          </li>
+          <li class="flex items-start gap-3">
+            <span class="text-teal-600 font-mono mt-0.5">▸</span>
+            <span class="text-slate-700"><span class="lang-zh">按 token 计费,与官方价持平 + 5% 平台费</span><span class="lang-en">Pay-per-token, provider rates + 5% platform fee</span></span>
+          </li>
+          <li class="flex items-start gap-3">
+            <span class="text-teal-600 font-mono mt-0.5">▸</span>
+            <span class="text-slate-700"><span class="lang-zh">全球节点,毫秒级路由</span><span class="lang-en">Global edge, millisecond routing</span></span>
+          </li>
+          <li class="flex items-start gap-3">
+            <span class="text-teal-600 font-mono mt-0.5">▸</span>
+            <span class="text-slate-700"><span class="lang-zh">用量上限、预算告警、团队配额内置</span><span class="lang-en">Usage caps, budget alerts, team quotas built-in</span></span>
+          </li>
+        </ul>
+        <a href="#" class="inline-flex items-center gap-2 text-sm font-medium text-teal-700 hover:text-teal-900">
+          <span class="lang-zh">前往 RoutePort 官网</span><span class="lang-en">Visit RoutePort</span>
+          <span class="font-mono">↗</span>
+        </a>
+        <p class="text-xs text-slate-500 mt-6 max-w-md">
+          <span class="lang-zh">提示:Cloud Bridge / RoutePort 仅向中国大陆境外用户提供。Workstation 默认关闭 Cloud Bridge,启用需主动确认。</span>
+          <span class="lang-en">Note: Cloud Bridge / RoutePort is available outside Mainland China only. Off by default; explicit opt-in required to enable.</span>
+        </p>
+      </div>
+
+      <!-- Settings panel mock (keep dark for contrast) -->
+      <div class="rounded-xl bg-slate-950 border border-slate-800 p-6 font-mono text-sm soft-shadow">
+        <div class="flex items-center justify-between mb-4 pb-3 border-b border-slate-800">
+          <span class="text-slate-400"><span class="lang-zh">workstation 设置</span><span class="lang-en">workstation settings</span></span>
+          <span class="text-xs text-emerald-400">● <span class="lang-zh">已连接</span><span class="lang-en">connected</span></span>
+        </div>
+        <div class="space-y-4">
+          <div class="flex items-center justify-between">
+            <span class="text-slate-200"><span class="lang-zh">本地网关</span><span class="lang-en">Local Gateway</span></span>
+            <span class="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 text-xs">ON</span>
+          </div>
+          <div class="pl-4 text-xs text-slate-500 space-y-1">
+            <div>· OpenAI · <span class="text-slate-300">sk-...4f2a</span></div>
+            <div>· Anthropic · <span class="text-slate-300">sk-ant-...b91</span></div>
+            <div>· DeepSeek · <span class="text-slate-300">sk-...c8d</span></div>
+            <div>· <span class="lang-zh">添加供应商...</span><span class="lang-en">add provider...</span></div>
+          </div>
+          <div class="flex items-center justify-between pt-3 border-t border-slate-800">
+            <span class="text-slate-200">Cloud Bridge <span class="text-xs text-slate-500">(via RoutePort)</span></span>
+            <span class="px-2 py-0.5 rounded bg-teal-500/10 text-teal-400 text-xs">ON</span>
+          </div>
+          <div class="pl-4 text-xs text-slate-500 space-y-1">
+            <div>· <span class="lang-zh">余额:</span><span class="lang-en">Balance:</span> <span class="text-slate-300">$42.18</span></div>
+            <div>· <span class="lang-zh">本月用量:</span><span class="lang-en">This month:</span> <span class="text-slate-300">$7.82</span> <span class="text-emerald-400">(-78% vs GPT-only)</span></div>
+          </div>
+          <div class="pt-3 border-t border-slate-800">
+            <div class="text-xs text-slate-500 mb-2"><span class="lang-zh">路由策略</span><span class="lang-en">Routing strategy</span></div>
+            <div class="text-xs text-slate-400">code → <span class="text-blue-300">deepseek-v3</span></div>
+            <div class="text-xs text-slate-400">long-ctx → <span class="text-teal-300">claude-4-sonnet</span></div>
+            <div class="text-xs text-slate-400">vision → <span class="text-blue-300">gpt-5o</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====== DEVELOPER API ====== -->
+<section id="developer" class="py-24 bg-slate-50/60 border-y border-slate-200">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="grid lg:grid-cols-2 gap-16 items-center">
+      <!-- Code block (keep dark) -->
+      <div class="order-2 lg:order-1 rounded-xl bg-slate-950 border border-slate-800 overflow-hidden soft-shadow">
+        <div class="flex items-center gap-2 px-4 py-3 bg-slate-900/80 border-b border-slate-800">
+          <span class="text-xs font-mono text-slate-500">python · openai sdk</span>
+        </div>
+        <pre class="p-5 font-mono text-xs leading-relaxed overflow-x-auto"><span class="text-slate-500"># <span class="lang-zh">把 base_url 指到 Workstation 或 RoutePort</span><span class="lang-en">point base_url at Workstation or RoutePort</span></span>
+<span class="text-teal-300">from</span> <span class="text-slate-200">openai</span> <span class="text-teal-300">import</span> <span class="text-slate-200">OpenAI</span>
+
+<span class="text-slate-200">client</span> = <span class="text-slate-200">OpenAI</span>(
+    <span class="text-blue-300">api_key</span>=<span class="text-emerald-300">"zm-..."</span>,
+    <span class="text-blue-300">base_url</span>=<span class="text-emerald-300">"http://localhost:7878/v1"</span>,
+)
+
+<span class="text-slate-200">response</span> = <span class="text-slate-200">client.chat.completions.create</span>(
+    <span class="text-blue-300">model</span>=<span class="text-emerald-300">"zhumeng/auto"</span>,  <span class="text-slate-500"># <span class="lang-zh">让 Workstation 自动选模型</span><span class="lang-en">let Workstation pick</span></span>
+    <span class="text-blue-300">messages</span>=[{<span class="text-emerald-300">"role"</span>: <span class="text-emerald-300">"user"</span>, <span class="text-emerald-300">"content"</span>: <span class="text-emerald-300">"Hello"</span>}],
+)
+</pre>
+      </div>
+
+      <div class="order-1 lg:order-2">
+        <p class="text-xs font-mono text-teal-600 mb-3 tracking-wider"><span class="lang-zh">面向开发者</span><span class="lang-en">FOR DEVELOPERS</span></p>
+        <h2 class="text-4xl font-bold mb-6 text-slate-900">
+          <span class="lang-zh">兼容 OpenAI 的<br/><span class="gradient-text">本地路由网关</span></span>
+          <span class="lang-en">An <span class="gradient-text">OpenAI-compatible</span><br/>local gateway</span>
+        </h2>
+        <p class="text-slate-600 leading-relaxed mb-6">
+          <span class="lang-zh">Workstation 在本地暴露一个 OpenAI 兼容接口。你的脚本、自动化、IDE 插件、CI/CD 任务都可以通过 localhost 接进来,无缝接入 BYOK 多模型 + 智能路由。</span>
+          <span class="lang-en">Workstation exposes an OpenAI-compatible endpoint on localhost. Scripts, automation, IDE plugins, CI/CD — anything that speaks the OpenAI API works out of the box, with BYOK + smart routing.</span>
+        </p>
+        <ul class="space-y-3 mb-8 text-sm">
+          <li class="flex items-start gap-3 text-slate-700"><span class="text-teal-600 font-mono">▸</span> <span class="lang-zh">完整 OpenAI v1 API 兼容(chat / completions / embeddings / images)</span><span class="lang-en">Full OpenAI v1 API surface (chat / completions / embeddings / images)</span></li>
+          <li class="flex items-start gap-3 text-slate-700"><span class="text-teal-600 font-mono">▸</span> <span class="lang-zh">流式 SSE / tool_use / vision 全支持</span><span class="lang-en">Streaming SSE / tool_use / vision supported</span></li>
+          <li class="flex items-start gap-3 text-slate-700"><span class="text-teal-600 font-mono">▸</span> <span class="lang-zh">本地用量看板 + 成本追踪</span><span class="lang-en">Local usage dashboard + cost tracking</span></li>
+        </ul>
+        <div class="flex gap-3">
+          <a href="#" class="text-sm px-4 py-2 rounded-md bg-white border border-slate-300 text-slate-700 hover:border-teal-400 hover:text-teal-700 transition"><span class="lang-zh">查看 API 文档</span><span class="lang-en">View API docs</span></a>
+          <a href="#" class="text-sm px-4 py-2 rounded-md bg-white border border-slate-300 text-slate-700 hover:border-teal-400 hover:text-teal-700 transition"><span class="lang-zh">SDK · GitHub</span><span class="lang-en">SDKs · GitHub</span></a>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====== PRICING ====== -->
+<section id="pricing" class="py-24 bg-white">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="text-center mb-16">
+      <p class="text-xs font-mono text-teal-600 mb-3 tracking-wider"><span class="lang-zh">定价</span><span class="lang-en">PRICING</span></p>
+      <h2 class="text-4xl font-bold mb-4 text-slate-900">
+        <span class="lang-zh"><span class="gradient-text">真正可用的免费版</span>。专业能力可订阅。</span>
+        <span class="lang-en"><span class="gradient-text">Genuinely useful Free</span>. Upgrade for power.</span>
+      </h2>
+      <p class="text-slate-600 max-w-2xl mx-auto">
+        <span class="lang-zh">不限调用量,不限供应商数。付费档锁的是"智能路由 + 同步 + 分析"等专业能力。</span>
+        <span class="lang-en">Free is unmetered and unlimited on providers. Paid tiers unlock smart routing, sync, and analytics.</span>
+      </p>
+    </div>
+
+    <div class="grid lg:grid-cols-4 gap-5">
+      <!-- Free -->
+      <div class="rounded-xl border border-slate-200 bg-white p-6 flex flex-col soft-shadow">
+        <h3 class="text-lg font-semibold mb-2 text-slate-900">Free</h3>
+        <p class="text-xs text-slate-500 mb-5"><span class="lang-zh">个人尝鲜</span><span class="lang-en">For trying it out</span></p>
+        <div class="text-3xl font-bold mb-1 text-slate-900">$0</div>
+        <div class="text-xs text-slate-500 mb-6"><span class="lang-zh">永久免费</span><span class="lang-en">Forever free</span></div>
+        <ul class="space-y-2 text-sm text-slate-700 flex-1">
+          <li class="flex gap-2"><span class="text-emerald-600 font-mono">✓</span> <span class="lang-zh">全部预装工具</span><span class="lang-en">All pre-installed tools</span></li>
+          <li class="flex gap-2"><span class="text-emerald-600 font-mono">✓</span> <span class="lang-zh">BYOK · 任意供应商</span><span class="lang-en">BYOK · any provider</span></li>
+          <li class="flex gap-2"><span class="text-emerald-600 font-mono">✓</span> <span class="lang-zh">手动路由</span><span class="lang-en">Manual routing</span></li>
+          <li class="flex gap-2"><span class="text-emerald-600 font-mono">✓</span> <span class="lang-zh">7 天用量看板</span><span class="lang-en">7-day usage dashboard</span></li>
+          <li class="flex gap-2"><span class="text-slate-300 font-mono">—</span> <span class="text-slate-400"><span class="lang-zh">智能路由</span><span class="lang-en">Smart routing</span></span></li>
+          <li class="flex gap-2"><span class="text-slate-300 font-mono">—</span> <span class="text-slate-400"><span class="lang-zh">云端同步</span><span class="lang-en">Cloud sync</span></span></li>
+        </ul>
+        <a href="#" class="mt-6 text-sm px-4 py-2.5 rounded-md bg-white border border-slate-300 text-slate-700 hover:border-teal-400 hover:text-teal-700 text-center transition"><span class="lang-zh">免费下载</span><span class="lang-en">Download Free</span></a>
+      </div>
+
+      <!-- Pro -->
+      <div class="rounded-xl border-2 border-teal-500 bg-gradient-to-b from-teal-50 to-white p-6 flex flex-col relative shadow-xl shadow-teal-500/15">
+        <span class="absolute -top-3 left-1/2 -translate-x-1/2 text-xs font-mono px-3 py-1 rounded-full bg-gradient-to-r from-teal-600 to-cyan-600 text-white"><span class="lang-zh">最受欢迎</span><span class="lang-en">Most popular</span></span>
+        <h3 class="text-lg font-semibold mb-2 text-slate-900">Pro</h3>
+        <p class="text-xs text-slate-600 mb-5"><span class="lang-zh">个人重度用户</span><span class="lang-en">For power users</span></p>
+        <div class="text-3xl font-bold mb-1 text-slate-900">$5<span class="text-base text-slate-500 font-normal">/mo</span></div>
+        <div class="text-xs text-slate-500 mb-6"><span class="lang-zh">年付 $42 · 节省 30%</span><span class="lang-en">$42/yr · save 30%</span></div>
+        <ul class="space-y-2 text-sm text-slate-700 flex-1">
+          <li class="flex gap-2"><span class="text-teal-600 font-mono">✓</span> <span class="lang-zh">Free 全部 +</span><span class="lang-en">Everything in Free +</span></li>
+          <li class="flex gap-2"><span class="text-teal-600 font-mono">✓</span> <span class="lang-zh"><strong>智能路由引擎</strong></span><span class="lang-en"><strong>Smart routing engine</strong></span></li>
+          <li class="flex gap-2"><span class="text-teal-600 font-mono">✓</span> <span class="lang-zh">工具高级配置</span><span class="lang-en">Advanced tool configs</span></li>
+          <li class="flex gap-2"><span class="text-teal-600 font-mono">✓</span> <span class="lang-zh">云端配置同步</span><span class="lang-en">Cloud config sync</span></li>
+          <li class="flex gap-2"><span class="text-teal-600 font-mono">✓</span> <span class="lang-zh">完整用量分析</span><span class="lang-en">Full usage analytics</span></li>
+          <li class="flex gap-2"><span class="text-teal-600 font-mono">✓</span> <span class="lang-zh">邮件支持</span><span class="lang-en">Email support</span></li>
+        </ul>
+        <a href="#" class="mt-6 text-sm px-4 py-2.5 rounded-md bg-gradient-to-r from-teal-600 to-cyan-600 text-white text-center font-medium transition hover:opacity-90 shadow-md shadow-teal-500/20"><span class="lang-zh">开始 Pro</span><span class="lang-en">Start Pro</span></a>
+      </div>
+
+      <!-- Team -->
+      <div class="rounded-xl border border-slate-200 bg-white p-6 flex flex-col soft-shadow">
+        <h3 class="text-lg font-semibold mb-2 text-slate-900">Team</h3>
+        <p class="text-xs text-slate-500 mb-5"><span class="lang-zh">5+ 人小团队</span><span class="lang-en">For small teams (5+)</span></p>
+        <div class="text-3xl font-bold mb-1 text-slate-900">$4<span class="text-base text-slate-500 font-normal">/seat/mo</span></div>
+        <div class="text-xs text-slate-500 mb-6"><span class="lang-zh">年付 · 5 座起</span><span class="lang-en">Annual · 5 seats min</span></div>
+        <ul class="space-y-2 text-sm text-slate-700 flex-1">
+          <li class="flex gap-2"><span class="text-blue-600 font-mono">✓</span> <span class="lang-zh">Pro 全部 +</span><span class="lang-en">Everything in Pro +</span></li>
+          <li class="flex gap-2"><span class="text-blue-600 font-mono">✓</span> <span class="lang-zh">团队 Key Vault (RBAC)</span><span class="lang-en">Team Key Vault (RBAC)</span></li>
+          <li class="flex gap-2"><span class="text-blue-600 font-mono">✓</span> <span class="lang-zh">用量审计 + 成本分摊</span><span class="lang-en">Usage audit + chargeback</span></li>
+          <li class="flex gap-2"><span class="text-blue-600 font-mono">✓</span> <span class="lang-zh">策略管控("禁用 GPT-4o")</span><span class="lang-en">Policy enforcement</span></li>
+          <li class="flex gap-2"><span class="text-blue-600 font-mono">✓</span> <span class="lang-zh">管理控制台</span><span class="lang-en">Admin console</span></li>
+          <li class="flex gap-2"><span class="text-blue-600 font-mono">✓</span> <span class="lang-zh">SLA 支持</span><span class="lang-en">SLA support</span></li>
+        </ul>
+        <a href="#" class="mt-6 text-sm px-4 py-2.5 rounded-md bg-white border border-slate-300 text-slate-700 hover:border-teal-400 hover:text-teal-700 text-center transition"><span class="lang-zh">联系销售</span><span class="lang-en">Contact sales</span></a>
+      </div>
+
+      <!-- Enterprise -->
+      <div class="rounded-xl border border-slate-200 bg-white p-6 flex flex-col soft-shadow">
+        <h3 class="text-lg font-semibold mb-2 text-slate-900">Enterprise</h3>
+        <p class="text-xs text-slate-500 mb-5"><span class="lang-zh">私有化大客户</span><span class="lang-en">Self-hosted at scale</span></p>
+        <div class="text-3xl font-bold mb-1 text-slate-900"><span class="lang-zh">商务洽谈</span><span class="lang-en">Custom</span></div>
+        <div class="text-xs text-slate-500 mb-6"><span class="lang-zh">典型 $25K-50K/年</span><span class="lang-en">Typically $25K-50K/yr</span></div>
+        <ul class="space-y-2 text-sm text-slate-700 flex-1">
+          <li class="flex gap-2"><span class="text-amber-600 font-mono">✓</span> <span class="lang-zh">私有化部署</span><span class="lang-en">On-prem deployment</span></li>
+          <li class="flex gap-2"><span class="text-amber-600 font-mono">✓</span> <span class="lang-zh">SSO / SAML / SOC2</span><span class="lang-en">SSO / SAML / SOC2</span></li>
+          <li class="flex gap-2"><span class="text-amber-600 font-mono">✓</span> <span class="lang-zh">定制路由策略</span><span class="lang-en">Custom routing policies</span></li>
+          <li class="flex gap-2"><span class="text-amber-600 font-mono">✓</span> <span class="lang-zh">专属支持工程师</span><span class="lang-en">Dedicated support</span></li>
+          <li class="flex gap-2"><span class="text-amber-600 font-mono">✓</span> <span class="lang-zh">定制 SLA</span><span class="lang-en">Custom SLA</span></li>
+        </ul>
+        <a href="#enterprise" class="mt-6 text-sm px-4 py-2.5 rounded-md bg-white border border-slate-300 text-slate-700 hover:border-teal-400 hover:text-teal-700 text-center transition"><span class="lang-zh">联系销售</span><span class="lang-en">Talk to sales</span></a>
+      </div>
+    </div>
+
+    <!-- Cloud Bridge add-on -->
+    <div class="mt-8 rounded-xl border border-slate-200 bg-slate-50/60 p-6 flex flex-col md:flex-row items-start md:items-center gap-6">
+      <div class="flex-1">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="text-xs font-mono px-2 py-0.5 rounded bg-teal-100 text-teal-700 border border-teal-200">ADD-ON</span>
+          <h4 class="text-lg font-semibold text-slate-900">Cloud Bridge Tokens</h4>
+        </div>
+        <p class="text-sm text-slate-600">
+          <span class="lang-zh">任意档位可加购。通过 RoutePort 走平台托管路由,按 token 计费(官方价 + 5% 平台费)。仅境外用户可用。</span>
+          <span class="lang-en">Add-on for any tier. Routed through RoutePort, pay-per-token (provider rates + 5% platform fee). Available outside Mainland China only.</span>
+        </p>
+      </div>
+      <a href="#" class="text-sm px-4 py-2 rounded-md bg-white border border-slate-300 text-slate-700 hover:border-teal-400 hover:text-teal-700 transition whitespace-nowrap">
+        <span class="lang-zh">查看 token 价格 →</span><span class="lang-en">View token pricing →</span>
+      </a>
+    </div>
+
+    <!-- Edu / OSS -->
+    <div class="mt-6 grid md:grid-cols-2 gap-5">
+      <div class="rounded-xl border border-emerald-200 bg-emerald-50/60 p-5 flex items-center gap-4">
+        <div class="text-2xl">🎓</div>
+        <div>
+          <h4 class="font-semibold mb-1 text-slate-900"><span class="lang-zh">学生免费 Pro 1 年</span><span class="lang-en">Students: Free Pro for 1 year</span></h4>
+          <p class="text-xs text-slate-600"><span class="lang-zh">用 .edu 邮箱验证</span><span class="lang-en">Verify with .edu email</span></p>
+        </div>
+      </div>
+      <div class="rounded-xl border border-blue-200 bg-blue-50/60 p-5 flex items-center gap-4">
+        <div class="text-2xl">⭐</div>
+        <div>
+          <h4 class="font-semibold mb-1 text-slate-900"><span class="lang-zh">开源贡献者免费 Pro 终身</span><span class="lang-en">OSS maintainers: Free Pro forever</span></h4>
+          <p class="text-xs text-slate-600"><span class="lang-zh">100+ stars 仓库的 maintainer</span><span class="lang-en">Maintainers of 100+ stars repos</span></p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====== ENTERPRISE ====== -->
+<section id="enterprise" class="py-24 bg-gradient-to-br from-teal-50/60 via-white to-cyan-50/60 border-y border-slate-200">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="rounded-2xl bg-white border border-teal-200 p-10 md:p-14 shadow-xl shadow-teal-500/10">
+      <div class="grid lg:grid-cols-2 gap-12 items-center">
+        <div>
+          <p class="text-xs font-mono text-teal-600 mb-3 tracking-wider">ENTERPRISE</p>
+          <h2 class="text-3xl md:text-4xl font-bold mb-5 text-slate-900">
+            <span class="lang-zh">把 Workstation <br/><span class="gradient-text">部署在你自己的机房</span></span>
+            <span class="lang-en">Deploy Workstation <br/><span class="gradient-text">in your own datacenter</span></span>
+          </h2>
+          <p class="text-slate-600 leading-relaxed mb-7">
+            <span class="lang-zh">数据零外发、key 完全自管、模型自由选择。适合金融、医疗、政企、高校实验室等对数据合规有严格要求的客户。</span>
+            <span class="lang-en">Zero data egress, fully self-managed keys, freedom to choose any model. Built for finance, healthcare, government, and academic teams with strict compliance.</span>
+          </p>
+          <ul class="space-y-3 text-sm text-slate-700">
+            <li class="flex gap-2"><span class="text-teal-600 font-mono">▸</span> <span class="lang-zh">私有化部署 · 离线运行</span><span class="lang-en">On-prem · air-gapped possible</span></li>
+            <li class="flex gap-2"><span class="text-teal-600 font-mono">▸</span> <span class="lang-zh">SSO / SAML / SCIM / 审计日志</span><span class="lang-en">SSO / SAML / SCIM / audit logs</span></li>
+            <li class="flex gap-2"><span class="text-teal-600 font-mono">▸</span> <span class="lang-zh">定制路由策略与白名单</span><span class="lang-en">Custom routing policies + allowlists</span></li>
+            <li class="flex gap-2"><span class="text-teal-600 font-mono">▸</span> <span class="lang-zh">技术对接 + 培训 + 持续支持</span><span class="lang-en">Onboarding + training + ongoing support</span></li>
+          </ul>
+        </div>
+        <div class="rounded-xl bg-slate-50 border border-slate-200 p-6">
+          <h3 class="font-semibold mb-4 text-slate-900"><span class="lang-zh">预约方案演示</span><span class="lang-en">Schedule a demo</span></h3>
+          <div class="space-y-3 text-sm">
+            <div>
+              <label class="text-xs text-slate-600 block mb-1"><span class="lang-zh">姓名</span><span class="lang-en">Name</span></label>
+              <input class="w-full bg-white border border-slate-300 rounded-md px-3 py-2 text-slate-900 focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100" placeholder="Jane Doe" />
+            </div>
+            <div>
+              <label class="text-xs text-slate-600 block mb-1"><span class="lang-zh">公司邮箱</span><span class="lang-en">Work email</span></label>
+              <input class="w-full bg-white border border-slate-300 rounded-md px-3 py-2 text-slate-900 focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-100" placeholder="jane@acme.com" />
+            </div>
+            <div>
+              <label class="text-xs text-slate-600 block mb-1"><span class="lang-zh">团队规模</span><span class="lang-en">Team size</span></label>
+              <select class="w-full bg-white border border-slate-300 rounded-md px-3 py-2 text-slate-900 focus:border-teal-500 focus:outline-none">
+                <option>10-50</option>
+                <option>50-200</option>
+                <option>200-1000</option>
+                <option>1000+</option>
+              </select>
+            </div>
+            <button class="w-full mt-2 px-4 py-2.5 rounded-md bg-gradient-to-r from-teal-600 to-cyan-600 text-white font-medium hover:opacity-90 transition shadow-md shadow-teal-500/20">
+              <span class="lang-zh">预约 30 分钟演示</span><span class="lang-en">Book a 30-min demo</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====== FAQ ====== -->
+<section class="py-24 bg-white">
+  <div class="max-w-4xl mx-auto px-6">
+    <div class="text-center mb-12">
+      <p class="text-xs font-mono text-teal-600 mb-3 tracking-wider">FAQ</p>
+      <h2 class="text-3xl font-bold text-slate-900"><span class="lang-zh">常见问题</span><span class="lang-en">Common questions</span></h2>
+    </div>
+
+    <div class="space-y-3">
+      <details class="group rounded-lg border border-slate-200 bg-white p-5 hover:border-teal-300 transition">
+        <summary class="cursor-pointer font-medium flex justify-between items-center text-slate-900"><span><span class="lang-zh">Workstation 跟 LiteLLM / OpenRouter 有什么不一样?</span><span class="lang-en">How is Workstation different from LiteLLM / OpenRouter?</span></span><span class="font-mono text-slate-400 group-open:rotate-45 transition">+</span></summary>
+        <p class="mt-4 text-sm text-slate-600 leading-relaxed">
+          <span class="lang-zh">LiteLLM 是 Python 库,要写代码起 Docker;OpenRouter 是云服务,key 经过他们的服务器。Workstation 是桌面 App + 本地网关,装一次就有 GUI 配置;而且我们做了协议适配层,让 DeepSeek 这种非 GPT 模型能在 Codex / Claude Code 等工具里以近乎原生体验运行 —— 这一层是这两家没有的。</span>
+          <span class="lang-en">LiteLLM is a Python library — code or Docker required. OpenRouter is hosted; your keys traverse their servers. Workstation is a desktop app + local gateway — install once, GUI to configure, keys stay local. And our protocol adapter layer makes non-GPT models like DeepSeek run with near-native feel inside Codex / Claude Code — something neither does.</span>
+        </p>
+      </details>
+
+      <details class="group rounded-lg border border-slate-200 bg-white p-5 hover:border-teal-300 transition">
+        <summary class="cursor-pointer font-medium flex justify-between items-center text-slate-900"><span><span class="lang-zh">Codex / Claude Code 是不是要我自己装?</span><span class="lang-en">Do I need to install Codex / Claude Code myself?</span></span><span class="font-mono text-slate-400 group-open:rotate-45 transition">+</span></summary>
+        <p class="mt-4 text-sm text-slate-600 leading-relaxed">
+          <span class="lang-zh">是的。Workstation 引导你从官方渠道安装原版工具(npm / pip / 官方安装包),我们只负责适配和配置。这样合规干净,而且原版的更新你也能第一时间用到。</span>
+          <span class="lang-en">Yes. Workstation guides you to install the original tools from their official channels (npm, pip, official packages). We handle adaptation and configuration only. This keeps things clean and lets you get upstream updates immediately.</span>
+        </p>
+      </details>
+
+      <details class="group rounded-lg border border-slate-200 bg-white p-5 hover:border-teal-300 transition">
+        <summary class="cursor-pointer font-medium flex justify-between items-center text-slate-900"><span><span class="lang-zh">我的 API key 安全吗?</span><span class="lang-en">Are my API keys safe?</span></span><span class="font-mono text-slate-400 group-open:rotate-45 transition">+</span></summary>
+        <p class="mt-4 text-sm text-slate-600 leading-relaxed">
+          <span class="lang-zh">Key 加密存储在你本地的桌面 App 里,不上传不经过我们的服务器。Workstation 的本地网关代码我们正在分阶段开源,你可以审计每一个字节怎么处理你的 key。</span>
+          <span class="lang-en">Keys are encrypted locally, never uploaded, never proxied through our servers. Workstation's local gateway code is being progressively open-sourced — audit every byte that touches your key.</span>
+        </p>
+      </details>
+
+      <details class="group rounded-lg border border-slate-200 bg-white p-5 hover:border-teal-300 transition">
+        <summary class="cursor-pointer font-medium flex justify-between items-center text-slate-900"><span><span class="lang-zh">Cloud Bridge 跟 OpenRouter 有什么区别?</span><span class="lang-en">How does Cloud Bridge compare to OpenRouter?</span></span><span class="font-mono text-slate-400 group-open:rotate-45 transition">+</span></summary>
+        <p class="mt-4 text-sm text-slate-600 leading-relaxed">
+          <span class="lang-zh">Cloud Bridge 由我们的姐妹品牌 RoutePort 提供,功能类似 OpenRouter,但有两点不同:(1) 在 Workstation 里一键开关,跟本地路由共存;(2) 仅向境外用户提供。</span>
+          <span class="lang-en">Cloud Bridge is powered by our sister brand RoutePort. Similar to OpenRouter in spirit, with two differences: (1) one-click toggle inside Workstation, coexisting with local routing; (2) available outside Mainland China only.</span>
+        </p>
+      </details>
+
+      <details class="group rounded-lg border border-slate-200 bg-white p-5 hover:border-teal-300 transition">
+        <summary class="cursor-pointer font-medium flex justify-between items-center text-slate-900"><span><span class="lang-zh">没有 VPN 能装 Claude Code / Codex 这些工具吗?</span><span class="lang-en">Can I install Codex / Claude Code without a VPN?</span></span><span class="font-mono text-slate-400 group-open:rotate-45 transition">+</span></summary>
+        <p class="mt-4 text-sm text-slate-600 leading-relaxed">
+          <span class="lang-zh">可以。Workstation 自动检测网络环境,国内网络下自动用 npmmirror 等公共镜像源安装(秒级速度),装完恢复你原本的 npm 配置。</span>
+          <span class="lang-en">Yes. Workstation auto-detects your network. In Mainland-only environments, it temporarily switches npm to public mirrors (like npmmirror) for fast installs, and restores your original npm config after.</span>
+        </p>
+      </details>
+
+      <details class="group rounded-lg border border-slate-200 bg-white p-5 hover:border-teal-300 transition">
+        <summary class="cursor-pointer font-medium flex justify-between items-center text-slate-900"><span><span class="lang-zh">你们跟 Augment / Anthropic / OpenAI 是合作关系吗?</span><span class="lang-en">Are you affiliated with Augment / Anthropic / OpenAI?</span></span><span class="font-mono text-slate-400 group-open:rotate-45 transition">+</span></summary>
+        <p class="mt-4 text-sm text-slate-600 leading-relaxed">
+          <span class="lang-zh">不,Workstation 是独立第三方工具,提供与上述厂商工具的兼容能力和增强体验。Codex、Augment、Claude 等商标分别为各自所有者所有,本产品与 OpenAI、Anthropic、Augment 公司无关联。</span>
+          <span class="lang-en">No. Workstation is an independent third-party tool that provides compatibility with and enhancements for those products. Codex, Augment, Claude, and other names are trademarks of their respective owners. Zhumeng is not affiliated with OpenAI, Anthropic, or Augment.</span>
+        </p>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ====== FINAL CTA ====== -->
+<section id="download" class="py-24 bg-gradient-to-br from-teal-50/80 via-white to-cyan-50/80 border-t border-slate-200">
+  <div class="max-w-4xl mx-auto px-6 text-center">
+    <h2 class="text-4xl md:text-5xl font-bold mb-6 text-slate-900">
+      <span class="lang-zh"><span class="gradient-text">真正的 AI 工作站</span><br/>装一次就够了。</span>
+      <span class="lang-en">A real <span class="gradient-text">AI workstation</span>.<br/>Install once.</span>
+    </h2>
+    <p class="text-slate-600 mb-10 max-w-xl mx-auto">
+      <span class="lang-zh">macOS、Windows、Linux 三平台同步发布。无需注册,下载即用。</span>
+      <span class="lang-en">macOS, Windows, Linux — all available now. No sign-up required, just download.</span>
+    </p>
+    <div class="flex flex-wrap justify-center gap-3">
+      <a href="#" class="inline-flex items-center gap-3 px-6 py-3 rounded-md bg-gradient-to-r from-teal-600 to-cyan-600 text-white font-medium hover:opacity-90 transition shadow-md shadow-teal-500/20">
+        <span class="font-mono"></span>
+        <span class="lang-zh">下载 macOS 版</span><span class="lang-en">Download for macOS</span>
+      </a>
+      <a href="#" class="inline-flex items-center gap-3 px-6 py-3 rounded-md bg-white border border-slate-300 text-slate-700 hover:border-teal-400 hover:text-teal-700 transition">
+        <span class="font-mono">⊞</span>
+        <span class="lang-zh">下载 Windows 版</span><span class="lang-en">Download for Windows</span>
+      </a>
+      <a href="#" class="inline-flex items-center gap-3 px-6 py-3 rounded-md bg-white border border-slate-300 text-slate-700 hover:border-teal-400 hover:text-teal-700 transition">
+        <span class="font-mono">▲</span>
+        <span class="lang-zh">下载 Linux 版</span><span class="lang-en">Download for Linux</span>
+      </a>
+    </div>
+    <p class="mt-6 text-xs text-slate-500 font-mono">
+      <span class="lang-zh">免费版功能完整 · 升级 Pro 仅 $5/月</span>
+      <span class="lang-en">Free is fully featured · upgrade to Pro for just $5/mo</span>
+    </p>
+  </div>
+</section>
+
+<!-- ====== FOOTER ====== -->
+<footer class="border-t border-slate-200 bg-white py-14">
+  <div class="max-w-7xl mx-auto px-6">
+    <div class="grid md:grid-cols-5 gap-10 mb-12">
+      <div class="md:col-span-2">
+        <div class="flex items-center gap-2 mb-4">
+          <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-teal-600 to-cyan-600 flex items-center justify-center text-white font-mono">Z</div>
+          <span class="font-bold text-slate-900">Zhumeng Workstation</span>
+        </div>
+        <p class="text-sm text-slate-600 leading-relaxed max-w-xs">
+          <span class="lang-zh">你的桌面 AI 工作站。所有顶级 AI 工具,本地运行,统一调度。</span>
+          <span class="lang-en">Your desktop AI workstation. All top tools, running locally, dispatched as one.</span>
+        </p>
+      </div>
+      <div>
+        <h5 class="text-xs font-mono text-slate-500 mb-4 tracking-wider"><span class="lang-zh">产品</span><span class="lang-en">PRODUCT</span></h5>
+        <ul class="space-y-2 text-sm text-slate-600">
+          <li><a href="#workstation" class="hover:text-teal-700"><span class="lang-zh">工作台</span><span class="lang-en">Workstation</span></a></li>
+          <li><a href="#tools" class="hover:text-teal-700"><span class="lang-zh">预装工具</span><span class="lang-en">Tools</span></a></li>
+          <li><a href="#cloud-bridge" class="hover:text-teal-700">Cloud Bridge</a></li>
+          <li><a href="#developer" class="hover:text-teal-700"><span class="lang-zh">开发者 API</span><span class="lang-en">Developer API</span></a></li>
+          <li><a href="#pricing" class="hover:text-teal-700"><span class="lang-zh">定价</span><span class="lang-en">Pricing</span></a></li>
+        </ul>
+      </div>
+      <div>
+        <h5 class="text-xs font-mono text-slate-500 mb-4 tracking-wider"><span class="lang-zh">资源</span><span class="lang-en">RESOURCES</span></h5>
+        <ul class="space-y-2 text-sm text-slate-600">
+          <li><a href="#" class="hover:text-teal-700"><span class="lang-zh">文档</span><span class="lang-en">Docs</span></a></li>
+          <li><a href="#" class="hover:text-teal-700"><span class="lang-zh">GitHub · 开源</span><span class="lang-en">GitHub · Open source</span></a></li>
+          <li><a href="#" class="hover:text-teal-700"><span class="lang-zh">路线图</span><span class="lang-en">Roadmap</span></a></li>
+          <li><a href="#" class="hover:text-teal-700"><span class="lang-zh">Changelog</span><span class="lang-en">Changelog</span></a></li>
+        </ul>
+      </div>
+      <div>
+        <h5 class="text-xs font-mono text-slate-500 mb-4 tracking-wider"><span class="lang-zh">公司</span><span class="lang-en">COMPANY</span></h5>
+        <ul class="space-y-2 text-sm text-slate-600">
+          <li><a href="#" class="hover:text-teal-700"><span class="lang-zh">关于我们</span><span class="lang-en">About</span></a></li>
+          <li><a href="#" class="hover:text-teal-700"><span class="lang-zh">联系销售</span><span class="lang-en">Contact sales</span></a></li>
+          <li><a href="#" class="hover:text-teal-700"><span class="lang-zh">用户协议</span><span class="lang-en">Terms</span></a></li>
+          <li><a href="#" class="hover:text-teal-700"><span class="lang-zh">隐私政策</span><span class="lang-en">Privacy</span></a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="pt-8 border-t border-slate-200 flex flex-col md:flex-row justify-between gap-4 text-xs text-slate-500">
+      <div>
+        © 2026 Zhumeng Workstation. All rights reserved. ·
+        <span class="lang-zh">运营主体:{{ OVERSEAS_ENTITY }}(注册于 {{ JURISDICTION }})</span>
+        <span class="lang-en">Operated by {{ OVERSEAS_ENTITY }} (registered in {{ JURISDICTION }})</span>
+      </div>
+      <div class="font-mono">
+        <span class="lang-zh">服务面向中国大陆境外用户提供 · Cloud Bridge 不对中国大陆用户开放</span>
+        <span class="lang-en">Service provided outside Mainland China · Cloud Bridge unavailable in Mainland China</span>
+      </div>
+    </div>
+    <div class="mt-4 text-xs text-slate-400 leading-relaxed">
+      <span class="lang-zh">Codex, Claude, Augment 等商标分别为其各自所有者所拥有。Zhumeng Workstation 是独立第三方工具,与 OpenAI、Anthropic、Augment 等公司无关联。</span>
+      <span class="lang-en">Codex, Claude, Augment, and other names are trademarks of their respective owners. Zhumeng Workstation is an independent third-party tool, not affiliated with OpenAI, Anthropic, Augment, or any other company.</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+  function toggleLang() {
+    const body = document.body;
+    const indicator = document.getElementById('lang-indicator');
+    if (body.classList.contains('lang-en')) {
+      body.classList.remove('lang-en');
+      indicator.textContent = '中 / EN';
+      document.documentElement.lang = 'zh-CN';
+    } else {
+      body.classList.add('lang-en');
+      indicator.textContent = 'EN / 中';
+      document.documentElement.lang = 'en';
+    }
+  }
+</script>
+
+</body>
+</html>

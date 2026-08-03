@@ -14,6 +14,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"go.uber.org/zap"
 )
 
@@ -34,9 +35,38 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 
 	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	if account.Type == AccountTypeOAuth {
+		if blocked := s.blockOpenAIRuntimeGuardLearnedRequest(c, account, upstreamModel, "embeddings"); blocked != nil {
+			return nil, blocked
+		}
+	}
 	upstreamBody := body
 	if upstreamModel != originalModel {
 		upstreamBody = ReplaceModelInBody(body, upstreamModel)
+	}
+	if strings.TrimSpace(gjson.GetBytes(upstreamBody, "input_type").String()) == "" {
+		if inputType, ok := configuredOpenAIEmbeddingDefaultInputType(account, originalModel); ok {
+			configuredBody, setErr := sjson.SetBytes(upstreamBody, "input_type", inputType)
+			if setErr != nil {
+				writeOpenAIEmbeddingsError(c, http.StatusBadRequest, "invalid_request_error", "invalid embeddings request")
+				return nil, fmt.Errorf("set configured embedding input type: %w", setErr)
+			}
+			upstreamBody = configuredBody
+		}
+	}
+	if dimensions, ok := configuredOpenAIEmbeddingDimensions(account, originalModel); ok {
+		var configuredBody []byte
+		var setErr error
+		if configuredOpenAIEmbeddingOmitDimensions(account, originalModel) {
+			configuredBody, setErr = sjson.DeleteBytes(upstreamBody, "dimensions")
+		} else {
+			configuredBody, setErr = sjson.SetBytes(upstreamBody, "dimensions", dimensions)
+		}
+		if setErr != nil {
+			writeOpenAIEmbeddingsError(c, http.StatusBadRequest, "invalid_request_error", "invalid embeddings request")
+			return nil, fmt.Errorf("set configured embedding dimensions: %w", setErr)
+		}
+		upstreamBody = configuredBody
 	}
 
 	logger.L().Debug("openai embeddings: forwarding",
@@ -81,8 +111,6 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 	if customUA := account.GetOpenAIUserAgent(); customUA != "" {
 		upstreamReq.Header.Set("user-agent", customUA)
 	}
-
-	// 账号级请求头覆写（仅 openai api_key 账号启用时生效）
 	account.ApplyHeaderOverrides(upstreamReq.Header)
 
 	proxyURL := ""
@@ -91,18 +119,7 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 	}
 	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
 	if err != nil {
-		safeErr := sanitizeUpstreamErrorMessage(err.Error())
-		setOpsUpstreamError(c, 0, safeErr, "")
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-			Platform:           account.Platform,
-			AccountID:          account.ID,
-			AccountName:        account.Name,
-			UpstreamStatusCode: 0,
-			Kind:               "request_error",
-			Message:            safeErr,
-		})
-		writeOpenAIEmbeddingsError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
-		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, false)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -132,14 +149,13 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 				Message:            upstreamMsg,
 				Detail:             upstreamDetail,
 			})
-			s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel)
+			s.handleOpenAIAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, upstreamModel, "embeddings")
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
-				ResponseBody:           respBody,
-				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+				RetryableOnSameAccount: account.IsPoolMode() && !isOpenAIInsufficientBalanceError(respBody, upstreamMsg) && account.IsPoolModeRetryableStatus(resp.StatusCode),
 			}
 		}
-		writeOpenAIEmbeddingsUpstreamResponse(c, resp, respBody, s.responseHeaderFilter)
+		writeOpenAIEmbeddingsError(c, resp.StatusCode, "upstream_error", "Upstream request failed")
 		return nil, fmt.Errorf("upstream returned status %d", resp.StatusCode)
 	}
 
@@ -150,8 +166,25 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 		}
 		return nil, fmt.Errorf("read upstream body: %w", err)
 	}
+	if dimensions, ok := configuredOpenAIEmbeddingDimensions(account, originalModel); ok {
+		if actual, valid := openAIEmbeddingResponseDimension(respBody); !valid || actual != dimensions {
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:    account.Platform,
+				AccountID:   account.ID,
+				AccountName: account.Name,
+				Kind:        "failover",
+				Message:     "embedding response dimension mismatch",
+			})
+			return nil, &UpstreamFailoverError{StatusCode: http.StatusBadGateway}
+		}
+	}
 
-	writeOpenAIEmbeddingsUpstreamResponse(c, resp, respBody, s.responseHeaderFilter)
+	clientBody, rewriteErr := sjson.SetBytes(respBody, "model", originalModel)
+	if rewriteErr != nil {
+		writeOpenAIEmbeddingsError(c, http.StatusBadGateway, "api_error", "Invalid embeddings response from upstream")
+		return nil, fmt.Errorf("rewrite embeddings response model: %w", rewriteErr)
+	}
+	writeOpenAIEmbeddingsUpstreamResponse(c, resp, clientBody, s.responseHeaderFilter)
 
 	return &OpenAIForwardResult{
 		RequestID:     firstNonEmptyString(resp.Header.Get("x-request-id"), resp.Header.Get("request-id")),
@@ -162,6 +195,131 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 		Stream:        false,
 		Duration:      time.Since(startTime),
 	}, nil
+}
+
+func configuredOpenAIEmbeddingDefaultInputType(account *Account, requestedModel string) (string, bool) {
+	if account == nil || account.Credentials == nil {
+		return "", false
+	}
+	raw, ok := account.Credentials["embedding_default_input_type"]
+	if !ok || raw == nil {
+		return "", false
+	}
+	values, ok := raw.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	for model, candidate := range values {
+		if !strings.EqualFold(strings.TrimSpace(model), strings.TrimSpace(requestedModel)) {
+			continue
+		}
+		value, _ := candidate.(string)
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "query" || value == "passage" {
+			return value, true
+		}
+		return "", false
+	}
+	return "", false
+}
+
+func configuredOpenAIEmbeddingOmitDimensions(account *Account, requestedModel string) bool {
+	if account == nil || account.Credentials == nil {
+		return false
+	}
+	raw, ok := account.Credentials["embedding_omit_dimensions"]
+	if !ok || raw == nil {
+		return false
+	}
+	values, ok := raw.(map[string]any)
+	if !ok {
+		return false
+	}
+	for model, candidate := range values {
+		if !strings.EqualFold(strings.TrimSpace(model), strings.TrimSpace(requestedModel)) {
+			continue
+		}
+		value, _ := candidate.(bool)
+		return value
+	}
+	return false
+}
+
+func openAIEmbeddingResponseDimension(body []byte) (int64, bool) {
+	data := gjson.GetBytes(body, "data")
+	if !data.Exists() || !data.IsArray() {
+		return 0, false
+	}
+	var dimension int64
+	valid := true
+	count := 0
+	data.ForEach(func(_, item gjson.Result) bool {
+		embedding := item.Get("embedding")
+		if !embedding.IsArray() {
+			valid = false
+			return false
+		}
+		current := int64(len(embedding.Array()))
+		if current <= 0 || (count > 0 && current != dimension) {
+			valid = false
+			return false
+		}
+		dimension = current
+		count++
+		return true
+	})
+	return dimension, valid && count > 0
+}
+
+func configuredOpenAIEmbeddingDimensions(account *Account, requestedModel string) (int64, bool) {
+	if account == nil || account.Credentials == nil {
+		return 0, false
+	}
+	raw, ok := account.Credentials["embedding_dimensions"]
+	if !ok || raw == nil {
+		return 0, false
+	}
+	var value any
+	switch configured := raw.(type) {
+	case map[string]any:
+		value, ok = configured[requestedModel]
+		if !ok {
+			for model, candidate := range configured {
+				if strings.EqualFold(strings.TrimSpace(model), strings.TrimSpace(requestedModel)) {
+					value, ok = candidate, true
+					break
+				}
+			}
+		}
+	case map[string]int:
+		value, ok = configured[requestedModel]
+	case map[string]int64:
+		value, ok = configured[requestedModel]
+	default:
+		return 0, false
+	}
+	if !ok {
+		return 0, false
+	}
+	var dimensions int64
+	switch number := value.(type) {
+	case float64:
+		dimensions = int64(number)
+	case float32:
+		dimensions = int64(number)
+	case int:
+		dimensions = int64(number)
+	case int64:
+		dimensions = number
+	case int32:
+		dimensions = int64(number)
+	default:
+		return 0, false
+	}
+	if dimensions <= 0 {
+		return 0, false
+	}
+	return dimensions, true
 }
 
 func writeOpenAIEmbeddingsUpstreamResponse(c *gin.Context, resp *http.Response, body []byte, filter *responseheaders.CompiledHeaderFilter) {
@@ -208,8 +366,6 @@ func extractOpenAIEmbeddingsUsage(body []byte) OpenAIUsage {
 	)
 	cacheReadTokens := openAICacheReadTokensFromUsage(usage)
 	cacheCreationTokens := openAICacheCreationTokensFromUsage(usage)
-	// 多模态 embedding（如 doubao-embedding-vision）回传图文 token 拆分，
-	// 用于图文不同价计费；纯文本 embedding 该字段为 0，行为不变。
 	imageInputTokens := firstPositiveGJSONInt(
 		usage.Get("prompt_tokens_details.image_tokens"),
 		usage.Get("input_tokens_details.image_tokens"),

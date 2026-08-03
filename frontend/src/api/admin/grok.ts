@@ -1,6 +1,5 @@
 /**
- * Admin Grok/xAI API endpoints
- * Handles xAI OAuth flows for administrators.
+ * Admin Grok/xAI API endpoints.
  */
 
 import { apiClient } from '../client'
@@ -53,12 +52,11 @@ export interface GrokQuotaSnapshot {
   subscription_tier?: string
   entitlement_status?: string
   status_code?: number
-  headers?: Record<string, string>
-  headers_observed: boolean
+  updated_at?: string
+  headers_observed?: boolean
   observation_source?: string
   last_probe_at?: string
   last_headers_seen_at?: string
-  updated_at: string
 }
 
 export interface GrokQuotaProbeResult {
@@ -77,21 +75,13 @@ export interface GrokQuotaResetResult {
   message: string
 }
 
-export async function generateAuthUrl(
-  payload: GrokAuthUrlRequest
-): Promise<GrokAuthUrlResponse> {
-  const { data } = await apiClient.post<GrokAuthUrlResponse>(
-    '/admin/grok/oauth/auth-url',
-    payload
-  )
+export async function generateAuthUrl(payload: GrokAuthUrlRequest): Promise<GrokAuthUrlResponse> {
+  const { data } = await apiClient.post<GrokAuthUrlResponse>('/admin/grok/oauth/auth-url', payload)
   return data
 }
 
 export async function exchangeCode(payload: GrokExchangeCodeRequest): Promise<GrokTokenInfo> {
-  const { data } = await apiClient.post<GrokTokenInfo>(
-    '/admin/grok/oauth/exchange-code',
-    payload
-  )
+  const { data } = await apiClient.post<GrokTokenInfo>('/admin/grok/oauth/exchange-code', payload)
   return data
 }
 
@@ -102,10 +92,7 @@ export async function refreshGrokToken(
   const payload: Record<string, unknown> = { refresh_token: refreshToken }
   if (proxyId) payload.proxy_id = proxyId
 
-  const { data } = await apiClient.post<GrokTokenInfo>(
-    '/admin/grok/oauth/refresh-token',
-    payload
-  )
+  const { data } = await apiClient.post<GrokTokenInfo>('/admin/grok/oauth/refresh-token', payload)
   return data
 }
 

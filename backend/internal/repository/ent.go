@@ -6,6 +6,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/ent"
@@ -59,9 +61,11 @@ func InitEnt(cfg *config.Config) (*ent.Client, *sql.DB, error) {
 	// 这种方式比 Ent 的自动迁移更可控，支持复杂的迁移场景。
 	migrationCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	if err := applyMigrationsFS(migrationCtx, drv.DB(), migrations.FS); err != nil {
-		_ = drv.Close() // 迁移失败时关闭驱动，避免资源泄露
-		return nil, nil, err
+	if !skipStartupMigrations() {
+		if err := applyMigrationsFS(migrationCtx, drv.DB(), migrations.FS); err != nil {
+			_ = drv.Close() // 迁移失败时关闭驱动，避免资源泄露
+			return nil, nil, err
+		}
 	}
 
 	// 创建 Ent 客户端，绑定到已配置的数据库驱动。
@@ -96,4 +100,13 @@ func InitEnt(cfg *config.Config) (*ent.Client, *sql.DB, error) {
 	}
 
 	return client, drv.DB(), nil
+}
+
+func skipStartupMigrations() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("SUB2API_SKIP_STARTUP_MIGRATIONS"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }

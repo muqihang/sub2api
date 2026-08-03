@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"log/slog"
 )
 
 type accountCredentialsUpdater interface {
@@ -18,8 +17,6 @@ func persistAccountCredentials(ctx context.Context, repo AccountRepository, acco
 	// (token 刷新 / 订阅补全 / CRS 创建后刷新等全部经此),在此对影子早返 no-op 是
 	// defense-in-depth——即便某条上游路径漏判,也不会把凭据落到影子行(外审第6轮 P1)。
 	if account.IsCredentialShadow() {
-		slog.Warn("skip persisting credentials to spark shadow account",
-			"account_id", account.ID, "parent_id", *account.ParentAccountID)
 		return nil
 	}
 
@@ -58,6 +55,17 @@ func sanitizeSparkShadowCredentials(credentials map[string]any) map[string]any {
 		if value, ok := credentials[key]; ok && value != nil {
 			out[key] = value
 		}
+	}
+	return out
+}
+
+func cloneCredentials(in map[string]any) map[string]any {
+	if in == nil {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
 	}
 	return out
 }

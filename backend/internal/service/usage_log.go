@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -96,6 +97,47 @@ func ApplyLegacyRequestFields(requestType RequestType, fallbackStream bool, fall
 	}
 }
 
+const (
+	AugmentUsageClientProduct              = "zhumeng_augment"
+	AugmentUsageRequestScopeGateway        = "augment_gateway"
+	AugmentUsageRequestScopeOfficial       = "official_capability"
+	AugmentUsageFeatureScopeChat           = "chat"
+	AugmentUsageFeatureScopeContextEngine  = "context_engine"
+	AugmentUsageFeatureScopePromptEnhancer = "prompt_enhancer"
+	AugmentUsageFeatureScopeInstruction    = "instruction"
+	AugmentUsageFeatureScopeSmartPaste     = "smart_paste"
+	AugmentUsageFeatureScopeCommitMessage  = "commit_message"
+	AugmentUsageFeatureScopeNextEdit       = "next_edit"
+	AugmentUsagePricingVersionV1           = "augment_gateway_v1"
+	AugmentUsageCostSourceProviderUsage    = "provider_usage"
+	AugmentUsageCurrencyUSD                = "USD"
+	AugmentUsageSettlementSettled          = "settled"
+	AugmentUsageSettlementSkipped          = "skipped"
+)
+
+type AugmentUsageFields struct {
+	ClientProduct          *string
+	RequestScope           *string
+	FeatureScope           *string
+	AugmentSessionID       *string
+	RoutePolicyVersion     *string
+	PricingVersion         *string
+	Billable               *bool
+	CostSource             *string
+	Currency               *string
+	UpstreamAttemptID      *string
+	SettlementStatus       *string
+	InputUnitPrice         *float64
+	OutputUnitPrice        *float64
+	CacheReadUnitPrice     *float64
+	CacheCreationUnitPrice *float64
+	ReasoningUnitPrice     *float64
+	EstimatedCost          *float64
+	SettledCost            *float64
+	FreeQuotaApplied       *float64
+	PaidBalanceApplied     *float64
+}
+
 type UsageLog struct {
 	ID        int64
 	UserID    int64
@@ -109,6 +151,12 @@ type UsageLog struct {
 	// UpstreamModel is the actual model sent to the upstream provider after mapping.
 	// Nil means no mapping was applied (requested model was used as-is).
 	UpstreamModel *string
+	// EntityID is the resolved entity_registry.id captured for audit. Nil means legacy/unresolved.
+	EntityID *int64
+	// EntityType is the resolved entity type snapshot captured at write time.
+	EntityType *string
+	// ClaimedEntityID records the client-claimed entity identifier when resolution used an explicit claim.
+	ClaimedEntityID *string
 	// ChannelID 渠道 ID
 	ChannelID *int64
 	// ModelMappingChain 模型映射链，如 "a→b→c"
@@ -166,16 +214,16 @@ type UsageLog struct {
 	// Cache TTL Override 标记（管理员强制替换了缓存 TTL 计费）
 	CacheTTLOverridden bool
 
-	// 图片生成字段
-	ImageCount         int
-	ImageSize          *string
-	ImageInputSize     *string
-	ImageOutputSize    *string
-	ImageSizeSource    *string
-	ImageSizeBreakdown map[string]int
-	MediaType          *string
+	AugmentUsageFields
 
-	// 视频生成字段（Grok 视频按秒计费；video_count>0 的行不要求 image_size）
+	// 图片生成字段
+	ImageCount           int
+	ImageSize            *string
+	ImageInputSize       *string
+	ImageOutputSize      *string
+	ImageSizeSource      *string
+	ImageSizeBreakdown   map[string]int
+	MediaType            *string
 	VideoCount           int
 	VideoResolution      *string
 	VideoDurationSeconds *int
@@ -210,4 +258,32 @@ func (u *UsageLog) SyncRequestTypeAndLegacyFields() {
 	requestType := u.EffectiveRequestType()
 	u.RequestType = requestType
 	u.Stream, u.OpenAIWSMode = ApplyLegacyRequestFields(requestType, u.Stream, u.OpenAIWSMode)
+}
+
+func (u *UsageLog) ApplyEntityAuditFromContext(ctx context.Context) {
+	if u == nil {
+		return
+	}
+	resolved, ok := ResolvedEntityFromContext(ctx)
+	if !ok {
+		return
+	}
+	entityID := resolved.Entity.ID
+	if entityID > 0 {
+		u.EntityID = &entityID
+	}
+	entityType := strings.TrimSpace(resolved.Entity.EntityType)
+	if entityType != "" {
+		u.EntityType = &entityType
+	}
+	if claimed := ClaimedEntityIDFromContext(ctx); claimed != "" {
+		u.ClaimedEntityID = &claimed
+		return
+	}
+	if resolved.Source == EntityResolutionSourceClaimedBinding {
+		claimed := strings.TrimSpace(resolved.Entity.EntityKey)
+		if claimed != "" {
+			u.ClaimedEntityID = &claimed
+		}
+	}
 }

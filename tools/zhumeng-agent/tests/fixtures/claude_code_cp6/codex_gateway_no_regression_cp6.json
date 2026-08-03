@@ -1,0 +1,82 @@
+{
+  "checkpoint": "CP6",
+  "codex_gateway_no_regression": true,
+  "fixture_sha256": {
+    "backend/internal/service/claude_code_bridge_openai_test.go": "sha256:5d7cdc9aee30a9264d1424fe3b652703fb8371e886289fd3b73d6a3f46a60dae",
+    "backend/internal/service/codex_gateway_deepseek_integration_golden_test.go": "sha256:3cc69931e5e4f37abdae48cadb613d8691fe42b7aacf2a8e2dfb615cea1afa7a",
+    "backend/internal/service/codex_gateway_deepseek_request_test.go": "sha256:84ff1b3ea7829f9c7be1fa795f32a9af379c6d218f426d45349b844204d849af",
+    "backend/internal/service/codex_gateway_provider_executor.go": "sha256:cc9f0407411811952572fae4b10b3a658fc7065c8daa41f5335126c1f6eb833e",
+    "backend/internal/service/codex_gateway_provider_executor_test.go": "sha256:4bb594c11285f733dca3a125ea8ef70a9316a4d385d58a52b01b63122c4b9ffa",
+    "backend/internal/service/testdata/codex_gateway/function_tool_call_stream.json": "sha256:de98a1791072ec719488429853df7575d65486c2621f04add11409a569e9e7de",
+    "backend/internal/service/testdata/codex_gateway/reasoning_tool_loop_replay_request.json": "sha256:bdedb1e02186b6aadc7fd4e57f9cb48c5ee2534ec0a77b621b01108627505bf7",
+    "backend/internal/service/testdata/codex_gateway/tool_search_call_output_request.json": "sha256:3bbff6a4f5c5927bbb06ac1e81f7986e1d5d86d02e86b9a0a4c287793126e02e",
+    "backend/internal/service/testdata/codex_gateway/usage_terminal_only_stream.json": "sha256:738b9bda79a218a8ae822478083d22df634accc09a0e195556e5e342cd60bd68",
+    "backend/internal/service/testdata/codex_gateway_deepseek_native_parity/computer_use_output_sizes.json": "sha256:e2b9804ecf2792a8912112167c325f6148b6df183eb5840905755ae7ee6d867d",
+    "backend/internal/service/testdata/codex_gateway_deepseek_native_parity/computer_use_semantic_compression_cases.json": "sha256:0a14bb0ff7f4e944e26d9c560230048adc84496baaeb31c8ebc898bc45d32ad0"
+  },
+  "mode": "fixture_only_no_live_network",
+  "providers": {
+    "agnes": {
+      "beta_path_preserved": true,
+      "computer_use_fixture_bound": true,
+      "computer_use_semantic_compression": true,
+      "native_formal_pool_egress": 0
+    },
+    "deepseek": {
+      "cache_usage_fields": [
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens"
+      ],
+      "fallback_bridge_protocol": "openai_chat_completions",
+      "golden_fixtures": [
+        "function_tool_call_stream",
+        "tool_search_call_output_request",
+        "reasoning_tool_loop_replay_request",
+        "usage_terminal_only_stream"
+      ],
+      "native_formal_pool_egress": 0,
+      "preferred_bridge_protocol": "anthropic_messages",
+      "reasoning_cleaning": "foreign_reasoning_never_native_replay",
+      "tool_search_fixture_bound": true
+    },
+    "openai": {
+      "bridge_protocol": "responses",
+      "cache_usage_field": "usage.prompt_tokens_details.cached_tokens",
+      "native_formal_pool_egress": 0,
+      "reasoning_cleaning": "foreign_reasoning_never_native_replay",
+      "stream_tool_use_mapping_test": "TestCP6OpenAIBridgeResponsesStreamMapsToolCallUsageCacheAndCleansReasoning"
+    }
+  },
+  "required_fixture_paths": [
+    "backend/internal/service/testdata/codex_gateway/function_tool_call_stream.json",
+    "backend/internal/service/testdata/codex_gateway/tool_search_call_output_request.json",
+    "backend/internal/service/testdata/codex_gateway/reasoning_tool_loop_replay_request.json",
+    "backend/internal/service/testdata/codex_gateway/usage_terminal_only_stream.json",
+    "backend/internal/service/testdata/codex_gateway_deepseek_native_parity/computer_use_semantic_compression_cases.json",
+    "backend/internal/service/testdata/codex_gateway_deepseek_native_parity/computer_use_output_sizes.json",
+    "backend/internal/service/claude_code_bridge_openai_test.go",
+    "backend/internal/service/codex_gateway_provider_executor.go",
+    "backend/internal/service/codex_gateway_deepseek_integration_golden_test.go",
+    "backend/internal/service/codex_gateway_deepseek_request_test.go",
+    "backend/internal/service/codex_gateway_provider_executor_test.go"
+  ],
+  "required_go_tests": {
+    "backend/internal/service/claude_code_bridge_openai_test.go": [
+      "TestCP6OpenAIBridgeResponsesStreamMapsToolCallUsageCacheAndCleansReasoning"
+    ],
+    "backend/internal/service/codex_gateway_deepseek_integration_golden_test.go": [
+      "TestCodexGatewayDeepSeekIntegrationGolden_StreamFixtures",
+      "TestCodexGatewayDeepSeekIntegrationGolden_RequestFixtures"
+    ],
+    "backend/internal/service/codex_gateway_deepseek_request_test.go": [
+      "TestCodexGatewayDeepSeekRequest_NativeParityFixtureToolSearch",
+      "TestCodexGatewayDeepSeekRequest_NativeParityFixtureComputerUseOutputSizes",
+      "TestCodexGatewayDeepSeekRequest_NativeParityFixtureComputerUseSemanticCompression"
+    ],
+    "backend/internal/service/codex_gateway_provider_executor_test.go": [
+      "TestCodexGatewayProviderExecutor_UsesDeepSeekProviderGroup",
+      "TestCodexGatewayProviderExecutor_CompleteRoutesAgnesThroughAgnesAdapterAndProviderGroup"
+    ]
+  },
+  "schema_version": "cp6-codex-gateway-no-regression-v1"
+}

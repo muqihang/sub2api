@@ -22,6 +22,23 @@
       </div>
 
       <!-- Platform-specific content -->
+      <template v-else-if="augmentOnly">
+        <div class="rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-900/40 dark:bg-amber-950/30">
+          <p class="text-sm font-semibold text-amber-900 dark:text-amber-100">
+            {{ t('keys.useKeyModal.augmentOnly.title') }}
+          </p>
+          <p class="mt-2 text-sm text-amber-800 dark:text-amber-200">
+            {{ t('keys.useKeyModal.augmentOnly.description') }}
+          </p>
+          <p class="mt-3 text-sm text-amber-800 dark:text-amber-200">
+            {{ t('keys.useKeyModal.augmentOnly.quickLoginNote') }}
+          </p>
+          <p class="mt-3 text-sm text-amber-800 dark:text-amber-200">
+            {{ t('keys.useKeyModal.augmentOnly.sharedWalletNote') }}
+          </p>
+        </div>
+      </template>
+
       <template v-else>
         <!-- Description -->
         <p class="text-sm text-gray-600 dark:text-gray-400">
@@ -43,7 +60,7 @@
               ]"
             >
               <span class="flex items-center gap-2">
-                <component :is="tab.icon" class="w-4 h-4" />
+                <component v-if="tab.icon" :is="tab.icon" class="w-4 h-4" />
                 {{ tab.label }}
               </span>
             </button>
@@ -71,6 +88,34 @@
             </button>
           </nav>
         </div>
+
+        <div
+          v-if="showOpenAIModelSelector"
+          class="flex items-center gap-3 rounded-lg border border-gray-200 px-3 py-2 dark:border-dark-700"
+        >
+          <span class="text-sm font-medium text-gray-700 dark:text-gray-300">OpenAI Model</span>
+          <div class="flex items-center gap-2">
+            <button
+              v-for="modelOption in openAIModelOptions"
+              :key="modelOption"
+              type="button"
+              @click="selectedOpenAIModel = modelOption"
+              :class="[
+                'rounded-lg px-3 py-1.5 text-sm transition-colors',
+                selectedOpenAIModel === modelOption
+                  ? 'bg-primary-500 text-white'
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-dark-700 dark:text-gray-300 dark:hover:bg-dark-600'
+              ]"
+            >
+              {{ modelOption }}
+            </button>
+          </div>
+        </div>
+
+        <ZhumengAgentSetupPanel
+          v-if="showZhumengAgentPanel"
+          :api-key-id="apiKeyId"
+        />
 
         <!-- Code Blocks (Stacked for multi-file platforms) -->
         <div class="space-y-4">
@@ -140,12 +185,16 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { useClipboard } from '@/composables/useClipboard'
 import type { GroupPlatform } from '@/types'
+import ZhumengAgentSetupPanel from './ZhumengAgentSetupPanel.vue'
 
 interface Props {
   show: boolean
+  apiKeyId: number | null
   apiKey: string
   baseUrl: string
   platform: GroupPlatform | null
+  availableModels?: string[]
+  augmentOnly?: boolean
   allowMessagesDispatch?: boolean
 }
 
@@ -156,7 +205,7 @@ interface Emits {
 interface TabConfig {
   id: string
   label: string
-  icon: Component
+  icon?: Component
 }
 
 interface FileConfig {
@@ -172,12 +221,47 @@ const emit = defineEmits<Emits>()
 const { t } = useI18n()
 const { copyToClipboard: clipboardCopy } = useClipboard()
 
+const augmentOnly = computed(() => Boolean(props.augmentOnly))
+
 const copiedIndex = ref<number | null>(null)
 const activeTab = ref<string>('unix')
 const activeClientTab = ref<string>('claude')
+const selectedOpenAIModel = ref<'gpt-5.4' | 'gpt-5.5'>('gpt-5.5')
+const openAIModelOptions: Array<'gpt-5.4' | 'gpt-5.5'> = ['gpt-5.4', 'gpt-5.5']
+const openAIModelContextWindows: Record<'gpt-5.4' | 'gpt-5.5', {
+  contextWindow: number
+  autoCompactTokenLimit: number
+}> = {
+  'gpt-5.4': {
+    contextWindow: 1_050_000,
+    autoCompactTokenLimit: 900_000
+  },
+  'gpt-5.5': {
+    contextWindow: 272_000,
+    autoCompactTokenLimit: 244_800
+  }
+}
+
+type VectorUsageKind = 'embeddings' | 'rerank'
+
+const vectorUsageKind = (model: string): VectorUsageKind | null => {
+  const normalized = model.trim().toLowerCase()
+  if (normalized.includes('embedding')) return 'embeddings'
+  if (normalized.includes('rerank') || normalized.includes('erank')) return 'rerank'
+  return null
+}
+
+const publicModels = computed(() =>
+  (props.availableModels ?? []).map(model => model.trim()).filter(Boolean)
+)
+
+const isVectorUsage = computed(() =>
+  publicModels.value.length > 0 && publicModels.value.every(model => vectorUsageKind(model) !== null)
+)
 
 // Reset tabs when platform changes
 const defaultClientTab = computed(() => {
+  if (isVectorUsage.value) return `vector:${publicModels.value[0]}`
   switch (props.platform) {
     case 'openai':
       return 'codex'
@@ -190,10 +274,11 @@ const defaultClientTab = computed(() => {
   }
 })
 
-watch(() => props.platform, () => {
+watch([() => props.platform, () => props.availableModels], () => {
   activeTab.value = 'unix'
   activeClientTab.value = defaultClientTab.value
-}, { immediate: true })
+  selectedOpenAIModel.value = 'gpt-5.5'
+}, { immediate: true, deep: true })
 
 // Reset shell tab when client changes
 watch(activeClientTab, () => {
@@ -265,6 +350,12 @@ const SparkleIcon = {
 
 const clientTabs = computed((): TabConfig[] => {
   if (!props.platform) return []
+  if (isVectorUsage.value) {
+    return publicModels.value.map(model => ({
+      id: `vector:${model}`,
+      label: model,
+    }))
+  }
   switch (props.platform) {
     case 'openai': {
       const tabs: TabConfig[] = [
@@ -309,7 +400,14 @@ const openaiTabs: TabConfig[] = [
   { id: 'windows', label: 'Windows', icon: WindowsIcon }
 ]
 
-const showShellTabs = computed(() => activeClientTab.value !== 'opencode')
+const showShellTabs = computed(() => !isVectorUsage.value && activeClientTab.value !== 'opencode')
+const showOpenAIModelSelector = computed(() =>
+  !isVectorUsage.value && props.platform === 'openai' && (activeClientTab.value === 'codex' || activeClientTab.value === 'codex-ws')
+)
+
+const showZhumengAgentPanel = computed(() =>
+  !isVectorUsage.value && props.platform === 'openai' && (activeClientTab.value === 'codex' || activeClientTab.value === 'codex-ws')
+)
 
 const currentTabs = computed(() => {
   if (!showShellTabs.value) return []
@@ -320,6 +418,7 @@ const currentTabs = computed(() => {
 })
 
 const platformDescription = computed(() => {
+  if (isVectorUsage.value) return t('keys.useKeyModal.vector.description')
   switch (props.platform) {
     case 'openai':
       if (activeClientTab.value === 'claude') {
@@ -355,7 +454,7 @@ const platformNote = computed(() => {
   }
 })
 
-const showPlatformNote = computed(() => activeClientTab.value !== 'opencode')
+const showPlatformNote = computed(() => !isVectorUsage.value && activeClientTab.value !== 'opencode')
 
 const escapeHtml = (value: string) => value
   .replace(/&/g, '&amp;')
@@ -394,6 +493,34 @@ const currentFiles = computed((): FileConfig[] => {
     return trimmed.endsWith('/v1beta') ? trimmed : `${trimmed}/v1beta`
   })()
 
+  if (isVectorUsage.value) {
+    const model = activeClientTab.value.replace(/^vector:/, '')
+    const kind = vectorUsageKind(model)
+    if (kind === 'rerank') {
+      return [{
+        path: 'cURL',
+        content: `curl ${apiBase}/rerank \\
+  -H "Authorization: Bearer ${apiKey}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "${model}",
+    "query": "Which document is most relevant?",
+    "documents": ["First document", "Second document"]
+  }'`,
+      }]
+    }
+    return [{
+      path: 'cURL',
+      content: `curl ${apiBase}/embeddings \\
+  -H "Authorization: Bearer ${apiKey}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "${model}",
+    "input": ["Text to embed"]
+  }'`,
+    }]
+  }
+
   if (activeClientTab.value === 'opencode') {
     switch (props.platform) {
       case 'anthropic':
@@ -418,9 +545,9 @@ const currentFiles = computed((): FileConfig[] => {
         return generateAnthropicFiles(baseUrl, apiKey)
       }
       if (activeClientTab.value === 'codex-ws') {
-        return generateOpenAIWsFiles(baseUrl, apiKey)
+        return generateOpenAIWsFiles(baseUrl, apiKey, selectedOpenAIModel.value)
       }
-      return generateOpenAIFiles(baseUrl, apiKey)
+      return generateOpenAIFiles(baseUrl, apiKey, selectedOpenAIModel.value)
     case 'gemini':
       return [generateGeminiCliContent(baseUrl, apiKey)]
     case 'antigravity':
@@ -528,18 +655,21 @@ ${keyword('$env:')}${variable('GEMINI_MODEL')}${operator('=')}${string(`"${model
   return { path, content, highlighted }
 }
 
-function generateOpenAIFiles(baseUrl: string, apiKey: string): FileConfig[] {
+function generateOpenAIFiles(baseUrl: string, apiKey: string, model: string): FileConfig[] {
   const isWindows = activeTab.value === 'windows'
   const configDir = isWindows ? '%userprofile%\\.codex' : '~/.codex'
+  const limits = openAIModelContextWindows[model as 'gpt-5.4' | 'gpt-5.5'] ?? openAIModelContextWindows['gpt-5.5']
 
   // config.toml content
   const configContent = `model_provider = "OpenAI"
-model = "gpt-5.5"
-review_model = "gpt-5.5"
+model = "${model}"
+review_model = "${model}"
 model_reasoning_effort = "xhigh"
 disable_response_storage = true
 network_access = "enabled"
 windows_wsl_setup_acknowledged = true
+model_context_window = ${limits.contextWindow}
+model_auto_compact_token_limit = ${limits.autoCompactTokenLimit}
 
 [model_providers.OpenAI]
 name = "OpenAI"
@@ -568,18 +698,21 @@ goals = true`
   ]
 }
 
-function generateOpenAIWsFiles(baseUrl: string, apiKey: string): FileConfig[] {
+function generateOpenAIWsFiles(baseUrl: string, apiKey: string, model: string): FileConfig[] {
   const isWindows = activeTab.value === 'windows'
   const configDir = isWindows ? '%userprofile%\\.codex' : '~/.codex'
+  const limits = openAIModelContextWindows[model as 'gpt-5.4' | 'gpt-5.5'] ?? openAIModelContextWindows['gpt-5.5']
 
   // config.toml content with WebSocket v2
   const configContent = `model_provider = "OpenAI"
-model = "gpt-5.5"
-review_model = "gpt-5.5"
+model = "${model}"
+review_model = "${model}"
 model_reasoning_effort = "xhigh"
 disable_response_storage = true
 network_access = "enabled"
 windows_wsl_setup_acknowledged = true
+model_context_window = ${limits.contextWindow}
+model_auto_compact_token_limit = ${limits.autoCompactTokenLimit}
 
 [model_providers.OpenAI]
 name = "OpenAI"
@@ -707,7 +840,7 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
     'gpt-5.5': {
       name: 'GPT-5.5',
       limit: {
-        context: 1050000,
+        context: 272000,
         output: 128000
       },
       options: {
@@ -757,6 +890,22 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
       limit: {
         context: 128000,
         output: 32000
+      },
+      options: {
+        store: false
+      },
+      variants: {
+        low: {},
+        medium: {},
+        high: {},
+        xhigh: {}
+      }
+    },
+    'gpt-5.3-codex': {
+      name: 'GPT-5.3 Codex',
+      limit: {
+        context: 400000,
+        output: 128000
       },
       options: {
         store: false

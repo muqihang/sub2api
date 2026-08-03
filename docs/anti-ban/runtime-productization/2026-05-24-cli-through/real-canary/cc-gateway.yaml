@@ -1,0 +1,106 @@
+mode: sub2api
+server:
+  port: 18443
+  tls:
+    cert: ""
+    key: ""
+upstream:
+  url: "https://api.anthropic.com"
+providers:
+  anthropic: true
+auth:
+  gateway_token: "${CC_GATEWAY_TOKEN}"
+  tokens:
+identity:
+  device_id: "<from-account-identity>"
+  email: redacted-email
+env:
+  platform: darwin
+  platform_raw: darwin
+  arch: arm64
+  node_version: v22.22.2
+  terminal: iTerm2.app
+  package_managers: npm
+  runtimes: node
+  is_running_with_bun: false
+  is_ci: false
+  is_claude_ai_auth: true
+  version: 2.1.150
+  version_base: 2.1.150
+  deployment_environment: real-canary
+prompt_env:
+  platform: darwin
+  shell: zsh
+  working_dir: /Users/redacted/projects
+shared_pool:
+  max_body_bytes: 2097152
+  billing_cch_mode: sign
+  signing_enabled: true
+  signing_evidence_gates_approved: true
+  upstream_mode: real-canary
+  real_canary_user_approved: true
+  message_beta_profile: claude_code_2_1_150_subscription_1m
+  canary_envelope_role: localhost_canary_guardrail_not_production_capability_ceiling
+  persona_resolver:
+    source_of_truth: cc_gateway_dynamic_persona_resolver
+    registry_profile: claude_code_2_1_150_subscription_1m
+    exact_version: 2.1.150
+    version_family: 2.1
+    trusted_minor_drift:
+      example_version: 2.1.151
+      decision: observed_minor_drift
+      capability_downgrade_allowed: false
+    unknown_major:
+      decision: quarantine_version
+      action: fail_closed
+    future_candidate_models:
+      allowlist_ref: candidate_model_allowlist
+      decision: gray_path
+      capability_downgrade_allowed: false
+  canary_cost_envelope:
+    enabled: true
+    max_tokens: 32000
+    max_body_bytes: 131072
+    max_tools_count: 40
+    allow_thinking: true
+    max_thinking_budget_tokens: 32000
+    allow_output_config: true
+    allow_context_management: true
+    allow_context_1m: true
+    max_context_window_tokens: 1000000
+    allowed_models:
+      - claude-sonnet-4-6
+      - claude-opus-4-7
+      - claude-opus-4-7-thinking
+      - claude-opus-4-6
+      - claude-opus-4-6-thinking
+  candidate_model_allowlist:
+    - claude-sonnet-4-8
+    - claude-opus-4-8
+  candidate_model_replay_proofs:
+    claude-sonnet-4-8: fixture-sonnet-48
+    claude-opus-4-8: fixture-opus-48
+  candidate_model_kill_switches:
+    claude-sonnet-4-8: false
+    claude-opus-4-8: false
+  candidate_model_audit_budgets:
+    claude-sonnet-4-8: 25
+    claude-opus-4-8: 25
+account_identities:
+  scoped_hmac_ref_placeholder:
+    device_id: "<from-account-identity>"
+    account_uuid_ref: scoped_hmac_ref_placeholder
+    account_ref: scoped_hmac_ref_placeholder
+    account_ref_policy: server_scoped_hmac_with_key_id_scope_version_required
+    persona_variant: claude-code-2.1.150-macos-local
+    session_policy: preserve_downstream_session_id
+    policy_version: 2.1.150
+egress_buckets:
+  home-ip-canary-2026-05-22:
+    enabled: true
+    proxy_url: "${CC_EGRESS_PROXY_URL}"
+    allowed_account_ids:
+      - scoped_hmac_ref_placeholder
+logging:
+  level: info
+  audit: true

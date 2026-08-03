@@ -415,6 +415,64 @@ func TestBatchImagePublicService_Submit(t *testing.T) {
 		require.NotEmpty(t, first.ID)
 	})
 
+	t.Run("concurrent idempotency winner is reused without side effects", func(t *testing.T) {
+		svc, repo, queue, gemini, _ := newTestBatchImagePublicService(true)
+		req := validBatchImageSubmitRequest()
+		normalized, err := svc.validateSubmitRequest(req)
+		require.NoError(t, err)
+		apiKeyID := int64(22)
+		repo.jobs["winner"] = &BatchImageJob{
+			BatchID:        "winner",
+			UserID:         11,
+			APIKeyID:       &apiKeyID,
+			Status:         BatchImageJobStatusUploading,
+			Provider:       BatchImageProviderGeminiAPI,
+			Model:          normalized.Model,
+			IdempotencyKey: batchImageStringPtr("client-key"),
+			RequestHash:    batchImageStringPtr(HashBatchImageSubmitRequest(normalized)),
+			CreatedAt:      time.Now(),
+		}
+		repo.idempotencyLookupMisses = 1
+		repo.createErr = ErrBatchImageJobExists
+
+		got, err := svc.Submit(ctx, testBatchImageOwner(), req, "client-key")
+		require.NoError(t, err)
+		require.Equal(t, "winner", got.ID)
+		require.Empty(t, gemini.submits)
+		require.Empty(t, queue.enqueued)
+		require.Empty(t, svc.BillingRepo.(*fakeBatchImageBillingRepo).reserves)
+	})
+
+	t.Run("concurrent idempotency winner rejects a different request", func(t *testing.T) {
+		svc, repo, queue, gemini, _ := newTestBatchImagePublicService(true)
+		original := validBatchImageSubmitRequest()
+		normalized, err := svc.validateSubmitRequest(original)
+		require.NoError(t, err)
+		apiKeyID := int64(22)
+		repo.jobs["winner"] = &BatchImageJob{
+			BatchID:        "winner",
+			UserID:         11,
+			APIKeyID:       &apiKeyID,
+			Status:         BatchImageJobStatusUploading,
+			Provider:       BatchImageProviderGeminiAPI,
+			Model:          normalized.Model,
+			IdempotencyKey: batchImageStringPtr("client-key"),
+			RequestHash:    batchImageStringPtr(HashBatchImageSubmitRequest(normalized)),
+			CreatedAt:      time.Now(),
+		}
+		repo.idempotencyLookupMisses = 1
+		repo.createErr = ErrBatchImageJobExists
+		changed := validBatchImageSubmitRequest()
+		changed.Items[0].Prompt = "diff"
+
+		got, err := svc.Submit(ctx, testBatchImageOwner(), changed, "client-key")
+		require.Nil(t, got)
+		require.ErrorIs(t, err, ErrBatchImageIdempotencyConflict)
+		require.Empty(t, gemini.submits)
+		require.Empty(t, queue.enqueued)
+		require.Empty(t, svc.BillingRepo.(*fakeBatchImageBillingRepo).reserves)
+	})
+
 	t.Run("public response does not expose internals", func(t *testing.T) {
 		svc, _, _, _, _ := newTestBatchImagePublicService(true)
 		got, err := svc.Submit(ctx, testBatchImageOwner(), validBatchImageSubmitRequest(), "")

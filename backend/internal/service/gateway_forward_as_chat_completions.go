@@ -15,6 +15,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -43,6 +44,19 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	originalModel := ccReq.Model
 	clientStream := ccReq.Stream
 	includeUsage := ccReq.StreamOptions != nil && ccReq.StreamOptions.IncludeUsage
+	if account != nil && account.IsClaudePlatformAWS() {
+		writeGatewayCCError(c, http.StatusBadGateway, "cc_gateway_control_plane", "claude-platform-aws compat route is disabled")
+		return nil, fmt.Errorf("claude-platform-aws compat route is disabled")
+	}
+	useCCGateway, ccGatewayErr := s.selectCCGatewayAnthropicRoute(account, ccGatewayRouteChatCompletions)
+	if ccGatewayErr != nil {
+		writeGatewayCCError(c, http.StatusBadGateway, "cc_gateway_control_plane", "CC Gateway route policy rejected request")
+		return nil, ccGatewayErr
+	}
+	if err := enforceFormalPoolNativeProtocolBoundary(ctx, account, string(ccGatewayRouteChatCompletions)); err != nil {
+		writeGatewayCCError(c, http.StatusBadGateway, "cc_gateway_control_plane", "Formal pool native protocol required")
+		return nil, err
+	}
 
 	// 2. Convert CC → Responses → Anthropic (chained conversion)
 	responsesReq, err := apicompat.ChatCompletionsToResponses(&ccReq)
@@ -96,10 +110,14 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	// 否则会被 Anthropic 判为第三方应用并扣 extra usage。
 	// 见 applyClaudeCodeOAuthMimicryToBody 的 godoc。
 	isClaudeCode := false
-	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCode
+	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCode && !useCCGateway
 
 	if shouldMimicClaudeCode {
-		anthropicBody = s.applyClaudeCodeOAuthMimicryToBody(ctx, c, account, anthropicBody, anthropicReq.System, mappedModel)
+		var err error
+		anthropicBody, err = s.applyClaudeCodeOAuthMimicryToBody(ctx, c, account, anthropicBody, anthropicReq.System, mappedModel)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// 7. Enforce cache_control block limit
@@ -113,20 +131,24 @@ func (s *GatewayService) ForwardAsChatCompletions(
 
 	// 9. Get proxy URL
 	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
+	if !useCCGateway && account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
 
 	// 10. Build upstream request
 	upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
-	upstreamReq, _, err := s.buildUpstreamRequest(upstreamCtx, c, account, anthropicBody, token, tokenType, mappedModel, reqStream, shouldMimicClaudeCode)
+	upstreamReq, _, err := s.buildUpstreamRequest(upstreamCtx, c, account, anthropicBody, token, tokenType, mappedModel, reqStream, shouldMimicClaudeCode, false)
 	releaseUpstreamCtx()
 	if err != nil {
 		return nil, fmt.Errorf("build upstream request: %w", err)
 	}
 
 	// 11. Send request
-	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	var tlsProfile *tlsfingerprint.Profile
+	if !useCCGateway {
+		tlsProfile = s.tlsFPProfileService.ResolveTLSProfile(account)
+	}
+	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, tlsProfile)
 	if err != nil {
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
@@ -152,8 +174,38 @@ func (s *GatewayService) ForwardAsChatCompletions(
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
+		if useCCGateway && isCCGatewayControlPlaneResponse(resp) {
+			code := ccGatewayControlPlaneCode(resp, respBody)
+			msg := ccGatewayControlPlaneMessage(respBody)
+			s.handleCCGatewayControlPlaneSideEffects(ctx, account, resp.StatusCode, code, msg)
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:           account.Platform,
+				AccountID:          account.ID,
+				AccountName:        account.Name,
+				UpstreamStatusCode: resp.StatusCode,
+				UpstreamRequestID:  resp.Header.Get("x-request-id"),
+				Kind:               "cc_gateway_control_plane",
+				Message:            code + ": " + msg,
+			})
+			writeCCGatewayControlPlaneError(c, mapUpstreamStatusCode(resp.StatusCode), code, msg)
+			return nil, fmt.Errorf("cc gateway control-plane error: %s", code)
+		}
+
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		if shouldFailClosedCCGatewayUpstream(useCCGateway, account, resp.StatusCode) {
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:           account.Platform,
+				AccountID:          account.ID,
+				AccountName:        account.Name,
+				UpstreamStatusCode: resp.StatusCode,
+				UpstreamRequestID:  resp.Header.Get("x-request-id"),
+				Kind:               "cc_gateway_fail_closed",
+				Message:            upstreamMsg,
+			})
+			writeGatewayCCError(c, mapUpstreamStatusCode(resp.StatusCode), "server_error", "CC Gateway upstream unavailable")
+			return nil, ccGatewayUpstreamFailClosedError(resp.StatusCode)
+		}
 
 		if s.shouldFailoverUpstreamError(resp.StatusCode) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
@@ -180,10 +232,7 @@ func (s *GatewayService) ForwardAsChatCompletions(
 
 	// 13. Extract reasoning effort from CC request body
 	reasoningEffort := extractCCReasoningEffortFromBody(body)
-	// 国产模型默认 effort 补充：本路径是客户端 CC 请求 → Anthropic 上游，
-	// 如果上游是 passback-required 国产模型 (Kimi-anthropic / GLM-anthropic / MiniMax)
-	// 且客户端在 body 里传了 thinking.type=enabled，补中默认 effort。
-	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, mappedModel)
+	reasoningEffort = ApplyChineseThinkingEffortFallback(reasoningEffort, body, mappedModel)
 
 	// 14. Handle normal response
 	// Read Anthropic SSE → convert to Responses events → convert to CC format
@@ -502,11 +551,11 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 // writeGatewayCCError writes an error in OpenAI Chat Completions format for
 // the Anthropic-upstream CC forwarding path.
 func writeGatewayCCError(c *gin.Context, statusCode int, errType, message string) {
-	MarkResponseCommitted(c)
 	c.JSON(statusCode, gin.H{
 		"error": gin.H{
 			"type":    errType,
 			"message": message,
 		},
 	})
+	MarkResponseCommitted(c)
 }

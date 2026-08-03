@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestGatewayRoutesCodexModelsManifestPathIsRegistered(t *testing.T) {
+func TestGatewayRoutesRegistersCodexModelsManifestEndpoint(t *testing.T) {
 	router := newGatewayRoutesTestRouter()
 
 	registered := make(map[string]bool)
@@ -17,6 +17,6 @@ func TestGatewayRoutesCodexModelsManifestPathIsRegistered(t *testing.T) {
 		}
 	}
 
-	require.True(t, registered["/backend-api/codex/models"], "GET /backend-api/codex/models should be registered")
-	require.True(t, registered["/v1/models"], "GET /v1/models should be registered")
+	require.True(t, registered["/v1/models"])
+	require.True(t, registered["/backend-api/codex/models"])
 }

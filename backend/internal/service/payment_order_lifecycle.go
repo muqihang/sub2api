@@ -12,6 +12,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/ent/paymentauditlog"
 	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
+	"github.com/Wei-Shaw/sub2api/internal/payment/provider"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
 
@@ -28,6 +29,8 @@ const (
 
 	pendingWxpayReconcileLimit = 20
 )
+
+var createPaymentProviderFromInstance = provider.CreateProvider
 
 type checkPaidOptions struct {
 	cancelIfUnpaid bool

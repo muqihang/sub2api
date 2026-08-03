@@ -32,6 +32,21 @@ type Profile struct {
 	Extensions          []uint16 // Extension type IDs in order; empty uses default Node.js 24.x order
 }
 
+// EffectiveFingerprintFields is the canonical set of TLS ClientHello fields
+// that affect the generated fingerprint after applying built-in defaults.
+type EffectiveFingerprintFields struct {
+	EnableGREASE        bool     `json:"enable_grease"`
+	CipherSuites        []uint16 `json:"cipher_suites"`
+	Curves              []uint16 `json:"curves"`
+	PointFormats        []uint16 `json:"point_formats"`
+	SignatureAlgorithms []uint16 `json:"signature_algorithms"`
+	ALPNProtocols       []string `json:"alpn_protocols"`
+	SupportedVersions   []uint16 `json:"supported_versions"`
+	KeyShareGroups      []uint16 `json:"key_share_groups"`
+	PSKModes            []uint16 `json:"psk_modes"`
+	Extensions          []uint16 `json:"extensions"`
+}
+
 // Dialer creates TLS connections with custom fingerprints.
 type Dialer struct {
 	profile    *Profile
@@ -307,6 +322,30 @@ func toUTLSCurves(curves []uint16) []utls.CurveID {
 	return result
 }
 
+func fromUTLSCurves(curves []utls.CurveID) []uint16 {
+	result := make([]uint16, len(curves))
+	for i, c := range curves {
+		result[i] = uint16(c)
+	}
+	return result
+}
+
+func fromUTLSSignatureSchemes(schemes []utls.SignatureScheme) []uint16 {
+	result := make([]uint16, len(schemes))
+	for i, s := range schemes {
+		result[i] = uint16(s)
+	}
+	return result
+}
+
+func cloneUint16s(values []uint16) []uint16 {
+	return append([]uint16(nil), values...)
+}
+
+func cloneStrings(values []string) []string {
+	return append([]string(nil), values...)
+}
+
 // defaultExtensionOrder is the Node.js 24.x extension order.
 // Used when Profile.Extensions is empty.
 var defaultExtensionOrder = []uint16{
@@ -329,6 +368,54 @@ var defaultExtensionOrder = []uint16{
 // isGREASEValue checks if a uint16 value matches the TLS GREASE pattern (0x?a?a).
 func isGREASEValue(v uint16) bool {
 	return v&0x0f0f == 0x0a0a && v>>8 == v&0xff
+}
+
+// EffectiveFingerprint resolves a Profile into the fields that actually drive
+// ClientHello construction, including defaults for empty slices.
+func EffectiveFingerprint(profile *Profile) EffectiveFingerprintFields {
+	fields := EffectiveFingerprintFields{
+		EnableGREASE:        profile != nil && profile.EnableGREASE,
+		CipherSuites:        cloneUint16s(defaultCipherSuites),
+		Curves:              fromUTLSCurves(defaultCurves),
+		PointFormats:        cloneUint16s(defaultPointFormats),
+		SignatureAlgorithms: fromUTLSSignatureSchemes(defaultSignatureAlgorithms),
+		ALPNProtocols:       []string{"http/1.1"},
+		SupportedVersions:   []uint16{utls.VersionTLS13, utls.VersionTLS12},
+		KeyShareGroups:      []uint16{uint16(utls.X25519)},
+		PSKModes:            []uint16{uint16(utls.PskModeDHE)},
+		Extensions:          cloneUint16s(defaultExtensionOrder),
+	}
+	if profile == nil {
+		return fields
+	}
+	if len(profile.CipherSuites) > 0 {
+		fields.CipherSuites = cloneUint16s(profile.CipherSuites)
+	}
+	if len(profile.Curves) > 0 {
+		fields.Curves = cloneUint16s(profile.Curves)
+	}
+	if len(profile.PointFormats) > 0 {
+		fields.PointFormats = cloneUint16s(profile.PointFormats)
+	}
+	if len(profile.SignatureAlgorithms) > 0 {
+		fields.SignatureAlgorithms = cloneUint16s(profile.SignatureAlgorithms)
+	}
+	if len(profile.ALPNProtocols) > 0 {
+		fields.ALPNProtocols = cloneStrings(profile.ALPNProtocols)
+	}
+	if len(profile.SupportedVersions) > 0 {
+		fields.SupportedVersions = cloneUint16s(profile.SupportedVersions)
+	}
+	if len(profile.KeyShareGroups) > 0 {
+		fields.KeyShareGroups = cloneUint16s(profile.KeyShareGroups)
+	}
+	if len(profile.PSKModes) > 0 {
+		fields.PSKModes = cloneUint16s(profile.PSKModes)
+	}
+	if len(profile.Extensions) > 0 {
+		fields.Extensions = cloneUint16s(profile.Extensions)
+	}
+	return fields
 }
 
 // buildClientHelloSpecFromProfile constructs ClientHelloSpec from a Profile.

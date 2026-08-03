@@ -12,14 +12,10 @@ const (
 	AnthropicAPIKeyAuthSchemeAuthorizationBearer = "authorization_bearer"
 )
 
-// GetAnthropicAPIKeyAuthScheme returns the upstream authentication scheme for
-// Anthropic API-key accounts. Missing or invalid values keep the historical
-// x-api-key behavior.
 func (a *Account) GetAnthropicAPIKeyAuthScheme() string {
 	if a == nil || a.Platform != PlatformAnthropic || a.Type != AccountTypeAPIKey {
 		return AnthropicAPIKeyAuthSchemeXAPIKey
 	}
-
 	switch strings.TrimSpace(a.GetExtraString(anthropicAPIKeyAuthSchemeExtraKey)) {
 	case AnthropicAPIKeyAuthSchemeAuthorizationBearer:
 		return AnthropicAPIKeyAuthSchemeAuthorizationBearer
@@ -29,6 +25,9 @@ func (a *Account) GetAnthropicAPIKeyAuthScheme() string {
 }
 
 func setAnthropicAPIKeyAuthHeader(header http.Header, account *Account, token string) {
+	if header == nil {
+		return
+	}
 	if account.GetAnthropicAPIKeyAuthScheme() == AnthropicAPIKeyAuthSchemeAuthorizationBearer {
 		header.Set("Authorization", "Bearer "+token)
 		return

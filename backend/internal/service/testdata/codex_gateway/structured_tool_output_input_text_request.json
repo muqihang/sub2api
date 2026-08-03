@@ -1,0 +1,42 @@
+{
+  "name": "structured_tool_output_input_text_request",
+  "mode": "request",
+  "request": {
+    "model": "deepseek-v4-pro",
+    "input": [
+      {
+        "type": "function_call",
+        "call_id": "call_text",
+        "name": "capture_note",
+        "arguments": "{}"
+      },
+      {
+        "type": "function_call_output",
+        "call_id": "call_text",
+        "output": [
+          {
+            "type": "input_text",
+            "text": "plain text output"
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "name": "capture_note",
+        "parameters": {
+          "type": "object"
+        }
+      }
+    ]
+  },
+  "expect": {
+    "messages_contains": [
+      "capture_note",
+      "call_text",
+      "plain text output",
+      "input_text"
+    ]
+  }
+}

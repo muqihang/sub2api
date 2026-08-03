@@ -3,10 +3,10 @@ import { RouterView, useRouter, useRoute } from 'vue-router'
 import { onMounted, onBeforeUnmount, watch } from 'vue'
 import Toast from '@/components/common/Toast.vue'
 import NavigationProgress from '@/components/common/NavigationProgress.vue'
-import AdminComplianceDialog from '@/components/admin/AdminComplianceDialog.vue'
 import { resolveRouteDocumentTitle } from '@/router/title'
 import AnnouncementPopup from '@/components/common/AnnouncementPopup.vue'
-import { useAppStore, useAuthStore, useSubscriptionStore, useAnnouncementStore, useAdminComplianceStore, useAdminSettingsStore } from '@/stores'
+import AdminComplianceDialog from '@/components/admin/AdminComplianceDialog.vue'
+import { useAppStore, useAuthStore, useSubscriptionStore, useAnnouncementStore, useAdminSettingsStore, useAdminComplianceStore } from '@/stores'
 import { getSetupStatus } from '@/api/setup'
 
 const router = useRouter()
@@ -15,8 +15,8 @@ const appStore = useAppStore()
 const authStore = useAuthStore()
 const subscriptionStore = useSubscriptionStore()
 const announcementStore = useAnnouncementStore()
-const adminComplianceStore = useAdminComplianceStore()
 const adminSettingsStore = useAdminSettingsStore()
+const adminComplianceStore = useAdminComplianceStore()
 
 function updateDocumentTitle() {
   const customMenuItems = [
@@ -64,7 +64,7 @@ watch(
     () => adminSettingsStore.customMenuItems,
   ],
   updateDocumentTitle,
-  { deep: true }
+  { deep: true },
 )
 
 // Watch for authentication state and manage subscription data + announcements
@@ -84,9 +84,7 @@ watch(
   (isAuthenticated, oldValue) => {
     if (isAuthenticated) {
       if (authStore.isAdmin) {
-        adminComplianceStore.fetchStatus().catch((error) => {
-          console.error('Failed to fetch admin compliance status:', error)
-        })
+        adminComplianceStore.fetchStatus().catch(() => undefined)
       }
 
       // User logged in: preload subscriptions and start polling
@@ -146,7 +144,7 @@ onMounted(async () => {
   // Load public settings into appStore (will be cached for other components)
   await appStore.fetchPublicSettings()
 
-  // Re-resolve document title now that site settings are available
+  // Re-resolve document title now that site settings are available.
   updateDocumentTitle()
 })
 </script>

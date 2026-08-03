@@ -23,8 +23,6 @@ export function mapErrorCategory(phase?: string | null, errType?: string | null)
           return 'quota'
         case 'invalid_request_error':
           return 'invalid_request'
-        case 'cyber_policy':
-          return 'cyber'
       }
   }
   return 'other'

@@ -34,4 +34,15 @@ describe('PaymentMethodSelector', () => {
     expect(button.classes()).toContain('border-primary-500')
     expect(button.classes()).not.toContain('border-[#02A9F1]')
   })
+
+  it('uses the neutral payment icon for custom methods', () => {
+    const wrapper = mount(PaymentMethodSelector, {
+      props: {
+        selected: 'credit_card',
+        methods: [{ type: 'credit_card', display_name: 'Credit Card', fee_rate: 0, available: true }],
+      },
+    })
+
+    expect(wrapper.get('img').attributes('src')).toContain('payment.svg')
+  })
 })

@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>逐梦 Agent | 让顶级开发工具跑任意模型</title>
+    <!-- 引入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 引入字体 -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['Fira Code', 'monospace'],
+                    },
+                    colors: {
+                        zhumeng: {
+                            bg: '#080A10', // 更深的极致黑
+                            card: '#11141D', // 简化卡片色
+                            border: 'rgba(255,255,255,0.06)', // 更柔和的边框
+                            primary: '#00FFA3', // 极光绿
+                            primaryHover: '#00D186',
+                            secondary: '#3B82F6', // 亮蓝
+                            text: '#F1F5F9',
+                            muted: '#94A3B8'
+                        }
+                    },
+                    animation: {
+                        'pulse-slow': 'pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                        'float': 'float 6s ease-in-out infinite',
+                    },
+                    keyframes: {
+                        float: {
+                            '0%, 100%': { transform: 'translateY(0)' },
+                            '50%': { transform: 'translateY(-10px)' },
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { background-color: #080A10; color: #F1F5F9; }
+        /* 移除原版厚重的背景模糊，改为更清爽的磨砂 */
+        .glass-card {
+            background: rgba(17, 20, 29, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.04);
+            backdrop-filter: blur(16px);
+            transition: border-color 0.2s ease, background 0.2s ease;
+        }
+        .glass-card:hover {
+            border-color: rgba(0, 255, 163, 0.15);
+            background: rgba(17, 20, 29, 0.7);
+        }
+        .bg-glow {
+            position: absolute;
+            width: 800px;
+            height: 600px;
+            background: radial-gradient(circle, rgba(0,255,163,0.08) 0%, rgba(8,10,16,0) 70%);
+            top: -150px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: -1;
+            pointer-events: none;
+        }
+        /* 终端打字光标 */
+        .cursor::after {
+            content: '█';
+            animation: blink 1s step-start infinite;
+            color: #00FFA3;
+            margin-left: 4px;
+        }
+        @keyframes blink { 50% { opacity: 0; } }
+    </style>
+</head>
+<body class="antialiased font-sans relative overflow-x-hidden selection:bg-zhumeng-primary/30 selection:text-zhumeng-primary">
+
+    <div class="bg-glow"></div>
+
+    <!-- 导航栏：极简、透明 -->
+    <nav class="fixed top-0 w-full z-50 bg-[#080A10]/80 backdrop-blur-lg border-b border-zhumeng-border">
+        <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <div class="w-6 h-6 rounded bg-gradient-to-br from-zhumeng-primary to-zhumeng-secondary flex items-center justify-center font-bold text-black text-sm">Z</div>
+                <span class="font-semibold text-base tracking-wide text-white">逐梦 Agent</span>
+            </div>
+            <div class="hidden md:flex items-center gap-8 text-sm font-medium text-zhumeng-muted">
+                <a href="#features" class="hover:text-white transition-colors">核心特性</a>
+                <a href="#architecture" class="hover:text-white transition-colors">架构安全</a>
+                <a href="#team" class="hover:text-white transition-colors">团队治理</a>
+            </div>
+            <div class="flex items-center gap-4">
+                <a href="#" class="text-sm font-medium text-zhumeng-muted hover:text-white hidden sm:block">登录</a>
+                <button class="bg-zhumeng-primary text-black px-4 py-2 rounded font-semibold hover:bg-zhumeng-primaryHover transition-colors text-sm">
+                    获取桌面端
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- 1. 首屏 Hero Section：更犀利的文案，更大的留白 -->
+    <section class="pt-40 pb-28 px-6 max-w-7xl mx-auto flex flex-col lg:flex-row items-center gap-16 relative">
+        <div class="flex-1 text-center lg:text-left z-10">
+            <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-zhumeng-primary/10 border border-zhumeng-primary/20 text-zhumeng-primary text-xs font-mono mb-8">
+                <span class="w-2 h-2 rounded-full bg-zhumeng-primary animate-pulse"></span>
+                v0.1 现已完美接管 Codex & Claude Code
+            </div>
+            <h1 class="text-5xl md:text-7xl font-bold leading-[1.1] mb-6 tracking-tight text-white">
+                零侵入接管顶级工具，<br/>
+                本地调度<span class="text-transparent bg-clip-text bg-gradient-to-r from-zhumeng-primary to-zhumeng-secondary">任意模型</span>。
+            </h1>
+            <p class="text-lg md:text-xl text-zhumeng-muted mb-10 max-w-xl mx-auto lg:mx-0 leading-relaxed font-light">
+                突破供应商锁定。通过 127.0.0.1 本地网关，为 Codex 等工具无缝接入 DeepSeek、通义千问或自带 Key，<strong class="text-white font-medium">完整保留原生交互与满血插件生态。</strong>
+            </p>
+            <div class="flex flex-col sm:flex-row items-center justify-center lg:justify-start gap-4">
+                <button class="w-full sm:w-auto bg-zhumeng-primary text-black px-8 py-3.5 rounded-lg font-semibold hover:bg-zhumeng-primaryHover transition-colors shadow-[0_0_20px_rgba(0,255,163,0.2)]">
+                    免费下载 (macOS)
+                </button>
+                <button class="w-full sm:w-auto glass-card text-white px-8 py-3.5 rounded-lg font-semibold hover:bg-white/5 transition-colors flex items-center justify-center gap-2">
+                    查看工作原理 &rarr;
+                </button>
+            </div>
+        </div>
+
+        <!-- 视觉锚点：保留备受好评的终端动画 -->
+        <div class="flex-1 w-full max-w-lg lg:max-w-none relative animate-float z-10">
+            <div class="absolute -inset-1 bg-gradient-to-r from-zhumeng-primary/20 to-zhumeng-secondary/20 rounded-xl blur-xl opacity-50"></div>
+            <div class="relative bg-[#0D1117] rounded-xl overflow-hidden shadow-2xl border border-zhumeng-border">
+                <div class="bg-[#161B22] px-4 py-3 flex items-center gap-2 border-b border-zhumeng-border">
+                    <div class="w-3 h-3 rounded-full bg-[#FF5F56]"></div>
+                    <div class="w-3 h-3 rounded-full bg-[#FFBD2E]"></div>
+                    <div class="w-3 h-3 rounded-full bg-[#27C93F]"></div>
+                    <div class="ml-4 text-xs font-mono text-zhumeng-muted">~ zhumeng-agent --gateway</div>
+                </div>
+                <div class="p-6 font-mono text-sm leading-relaxed h-[260px] overflow-hidden text-zhumeng-muted">
+                    <div id="term-output" class="whitespace-pre-wrap"></div>
+                    <div id="term-cursor" class="cursor inline-block text-zhumeng-primary"></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 2. 特性楔子 Features：精简文字，突出重点 -->
+    <section id="features" class="py-24 px-6 relative border-t border-zhumeng-border">
+        <div class="max-w-7xl mx-auto">
+            <div class="mb-16">
+                <h2 class="text-3xl md:text-4xl font-bold mb-4 text-white">原生级丝滑，零侵入接管。</h2>
+                <p class="text-zhumeng-muted text-lg">无需魔改二进制，不惧上游版本更新。</p>
+            </div>
+
+            <div class="grid md:grid-cols-3 gap-6">
+                <div class="glass-card p-8 rounded-2xl">
+                    <div class="text-zhumeng-primary mb-6">
+                        <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3 text-white">深度协议适配</h3>
+                    <p class="text-sm text-zhumeng-muted leading-relaxed">
+                        基于本地代理路由进行底层协议变形，完美骗过原生客户端。即便上游 UI 重构也能优雅降级，基础对话永远可用。
+                    </p>
+                </div>
+
+                <div class="glass-card p-8 rounded-2xl">
+                    <div class="text-zhumeng-primary mb-6">
+                        <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path></svg>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3 text-white">自带 Key 或 极简托管</h3>
+                    <p class="text-sm text-zhumeng-muted leading-relaxed">
+                        纯净支持 BYOK（完全免费）。或一键使用逐梦托管的合规 Token 池，彻底告别繁琐的海外账号注册与支付障碍。
+                    </p>
+                </div>
+
+                <div class="glass-card p-8 rounded-2xl">
+                    <div class="text-zhumeng-primary mb-6">
+                        <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                    </div>
+                    <h3 class="text-xl font-bold mb-3 text-white">解锁满血插件生态</h3>
+                    <p class="text-sm text-zhumeng-muted leading-relaxed">
+                        打破区域与账号限制，完整享受顶级工具生态内的所有原生插件与高级特性，还原不受限的编码体验。
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 3. 架构与信任 Architecture & Trust：强化脊柱概念，优化连线视觉 -->
+    <section id="architecture" class="py-32 px-6 bg-[#05060A] relative border-y border-zhumeng-border">
+        <div class="max-w-7xl mx-auto flex flex-col lg:flex-row items-center gap-20">
+            <div class="flex-1">
+                <h2 class="text-3xl md:text-5xl font-bold mb-6 leading-tight text-white">
+                    以本地网关为脊柱，<br/>
+                    <span class="text-zhumeng-primary">代码与 Key 绝不出域。</span>
+                </h2>
+                <p class="text-zhumeng-muted text-lg mb-10 leading-relaxed font-light">
+                    我们只做核心协议的调度器。逐梦 Agent 在你的机器上运行轻量级本地网关 <code>127.0.0.1</code>，接管所有请求流。
+                </p>
+
+                <div class="space-y-6">
+                    <div class="flex items-start gap-4">
+                        <div class="mt-1 text-zhumeng-primary"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg></div>
+                        <div>
+                            <strong class="block text-white text-lg mb-1">物理级隔离</strong>
+                            <span class="text-sm text-zhumeng-muted">自带 API Key 仅在本地网关内存中流转，绝不上传云端，从物理层杜绝泄露。</span>
+                        </div>
+                    </div>
+                    <div class="flex items-start gap-4">
+                        <div class="mt-1 text-zhumeng-primary"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg></div>
+                        <div>
+                            <strong class="block text-white text-lg mb-1">核心组件开源</strong>
+                            <span class="text-sm text-zhumeng-muted">负责拦截与路由的核心代理 <code>gateway-lite</code> 源码公开，随时接受社区审计。</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 架构拓扑图：更极简干净的设计 -->
+            <div class="flex-1 w-full relative">
+                <div class="absolute inset-0 bg-zhumeng-primary/5 rounded-full blur-[80px] pointer-events-none"></div>
+                <div class="glass-card p-8 md:p-12 rounded-3xl relative font-mono text-sm border-zhumeng-border/50">
+                    <div class="flex flex-col md:flex-row justify-between items-center gap-8 relative z-10">
+
+                        <!-- 左侧：工具 -->
+                        <div class="w-32 bg-[#0D1117] border border-zhumeng-border rounded-xl p-5 text-center">
+                            <div class="text-white mb-2">
+                                <svg class="w-8 h-8 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
+                            </div>
+                            <div class="font-bold text-white text-base mb-1">工具层</div>
+                            <div class="text-[10px] text-zhumeng-muted">Codex / Claude</div>
+                        </div>
+
+                        <!-- 箭头 -->
+                        <div class="text-zhumeng-border hidden md:block">
+                            <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 8l4 4m0 0l-4 4m4-4H3"></path></svg>
+                        </div>
+
+                        <!-- 中间：逐梦网关 -->
+                        <div class="w-48 bg-zhumeng-primary/10 border border-zhumeng-primary/30 rounded-xl p-5 text-center relative shadow-[0_0_30px_rgba(0,255,163,0.1)]">
+                            <div class="absolute -top-3 left-1/2 -translate-x-1/2 bg-zhumeng-primary text-black text-[10px] font-bold px-2 py-0.5 rounded uppercase">Core</div>
+                            <div class="text-zhumeng-primary mb-2">
+                                <svg class="w-8 h-8 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"></path></svg>
+                            </div>
+                            <div class="font-bold text-white text-base mb-1">本地网关</div>
+                            <div class="text-[11px] text-zhumeng-primary">127.0.0.1</div>
+                        </div>
+
+                        <!-- 箭头 -->
+                        <div class="text-zhumeng-border hidden md:block">
+                            <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M17 8l4 4m0 0l-4 4m4-4H3"></path></svg>
+                        </div>
+
+                        <!-- 右侧：模型 -->
+                        <div class="w-32 bg-[#0D1117] border border-zhumeng-border rounded-xl p-5 text-center">
+                            <div class="text-white mb-2">
+                                <svg class="w-8 h-8 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"></path></svg>
+                            </div>
+                            <div class="font-bold text-white text-base mb-1">任意模型</div>
+                            <div class="text-[10px] text-zhumeng-muted">DeepSeek/通义</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 4. 团队治理 Team Governance：摒弃复杂的表格 UI，回归直白阐述 -->
+    <section id="team" class="py-32 px-6 relative">
+        <div class="max-w-4xl mx-auto text-center mb-16">
+            <h2 class="text-3xl md:text-5xl font-bold mb-6 text-white">为极客而生，<span class="text-zhumeng-secondary">为团队而治。</span></h2>
+            <p class="text-zhumeng-muted text-lg max-w-2xl mx-auto">当零散的工具接入成为团队的黑盒，你需要一层统一的控制面。</p>
+        </div>
+
+        <div class="max-w-5xl mx-auto grid md:grid-cols-3 gap-6">
+            <div class="glass-card p-8 rounded-2xl border-t-2 border-t-zhumeng-secondary/50">
+                <div class="text-2xl mb-4">🔐</div>
+                <h4 class="text-lg font-bold text-white mb-2">Key Vault 金库</h4>
+                <p class="text-sm text-zhumeng-muted">成员无需接触明文 Key，由管理员统一注入网关池，回收权限一键完成。</p>
+            </div>
+            <div class="glass-card p-8 rounded-2xl border-t-2 border-t-zhumeng-primary/50">
+                <div class="text-2xl mb-4">📊</div>
+                <h4 class="text-lg font-bold text-white mb-2">成本配额控制</h4>
+                <p class="text-sm text-zhumeng-muted">按项目/成员设置 Token 预算，实时大盘监控，告别跑量超刷的账单惊吓。</p>
+            </div>
+            <div class="glass-card p-8 rounded-2xl border-t-2 border-t-purple-500/50">
+                <div class="text-2xl mb-4">👁️</div>
+                <h4 class="text-lg font-bold text-white mb-2">统一配置下发</h4>
+                <p class="text-sm text-zhumeng-muted">一键将区域模型目录、安全合规策略下发至全员的本地网关，行为精确可审计。</p>
+            </div>
+        </div>
+
+        <div class="mt-12 text-center">
+            <a href="#" class="inline-flex items-center gap-2 text-sm font-semibold text-white underline underline-offset-4 decoration-zhumeng-border hover:decoration-white transition-colors">
+                预约团队版演示 &rarr;
+            </a>
+        </div>
+    </section>
+
+    <!-- 5. 极简定价 Pricing -->
+    <section class="py-24 px-6 border-t border-zhumeng-border bg-[#05060A]">
+        <div class="max-w-6xl mx-auto">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl md:text-4xl font-bold mb-4 text-white">不为工具设限。</h2>
+                <p class="text-zhumeng-muted">遵循极客习惯的极简定价哲学。</p>
+            </div>
+
+            <div class="grid md:grid-cols-3 gap-8">
+                <!-- Free -->
+                <div class="glass-card p-8 rounded-2xl flex flex-col">
+                    <div class="mb-2 text-lg font-bold text-white">个人极客版</div>
+                    <div class="text-4xl font-black text-white mb-2">¥0<span class="text-base font-normal text-zhumeng-muted"> / 永久</span></div>
+                    <p class="text-sm text-zhumeng-muted mb-8 pb-6 border-b border-zhumeng-border">自带 Key，数据物理级隔离不出域。</p>
+                    <ul class="space-y-4 text-sm text-zhumeng-muted flex-1 mb-8">
+                        <li class="flex gap-2 text-white">✓ 完美接管 Codex / Claude Code</li>
+                        <li class="flex gap-2">✓ 支持任意兼容的自带 API Key</li>
+                        <li class="flex gap-2">✓ 本地网关直连，极速响应</li>
+                    </ul>
+                    <button class="w-full py-3 rounded-lg border border-zhumeng-border hover:bg-white/5 transition-colors font-semibold text-sm text-white">
+                        免费下载
+                    </button>
+                </div>
+
+                <!-- Token -->
+                <div class="glass-card p-8 rounded-2xl border-zhumeng-primary/30 relative flex flex-col bg-[#0D1117]">
+                    <div class="absolute -top-3 left-1/2 -translate-x-1/2 bg-zhumeng-primary text-black px-3 py-1 rounded-full text-xs font-bold">最省心 / 推荐</div>
+                    <div class="mb-2 text-lg font-bold text-white">Token 托管池</div>
+                    <div class="text-4xl font-black text-white mb-2">按量计费</div>
+                    <p class="text-sm text-zhumeng-muted mb-8 pb-6 border-b border-zhumeng-border">免去海外充值门槛，极简配置即充即用。</p>
+                    <ul class="space-y-4 text-sm text-zhumeng-muted flex-1 mb-8">
+                        <li class="flex gap-2">✓ 包含 Free 版所有基础能力</li>
+                        <li class="flex gap-2 text-white font-medium">✓ 零门槛接入顶级合规备案模型</li>
+                        <li class="flex gap-2">✓ 统一对账单，告别繁琐绑定</li>
+                    </ul>
+                    <button class="w-full py-3 rounded-lg bg-zhumeng-primary text-black hover:bg-zhumeng-primaryHover transition-colors font-semibold text-sm">
+                        注册充值
+                    </button>
+                </div>
+
+                <!-- Team -->
+                <div class="glass-card p-8 rounded-2xl flex flex-col">
+                    <div class="mb-2 text-lg font-bold text-white">企业 / 团队版</div>
+                    <div class="text-4xl font-black text-white mb-2">定制</div>
+                    <p class="text-sm text-zhumeng-muted mb-8 pb-6 border-b border-zhumeng-border">为组织级规模提供控制权与确定性。</p>
+                    <ul class="space-y-4 text-sm text-zhumeng-muted flex-1 mb-8">
+                        <li class="flex gap-2">✓ 包含所有个人版能力</li>
+                        <li class="flex gap-2 text-white font-medium">✓ 集中化 Key 金库与成本配额</li>
+                        <li class="flex gap-2 text-white font-medium">✓ 支持纯私有化部署 (不出域)</li>
+                    </ul>
+                    <button class="w-full py-3 rounded-lg border border-zhumeng-border hover:bg-white/5 transition-colors font-semibold text-sm text-white">
+                        联系商务
+                    </button>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="border-t border-zhumeng-border bg-[#05060A] pt-16 pb-8 px-6 text-sm text-zhumeng-muted">
+        <div class="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-6 text-xs">
+            <div class="flex items-center gap-2">
+                <div class="w-5 h-5 rounded bg-gradient-to-br from-zhumeng-primary to-zhumeng-secondary flex items-center justify-center font-bold text-black text-[10px]">Z</div>
+                <span class="font-semibold text-white">逐梦 Agent</span>
+                <span class="ml-2 text-zhumeng-border">|</span>
+                <span class="ml-2">让顶级开发工具跑任意模型。</span>
+            </div>
+            <div class="flex gap-6">
+                <a href="#" class="hover:text-white">文档</a>
+                <a href="#" class="hover:text-white">GitHub</a>
+                <a href="#" class="hover:text-white">隐私政策</a>
+                <span>© 2026 逐梦科技</span>
+            </div>
+        </div>
+    </footer>
+
+    <!-- 终端打字机效果 JS (保留 V3 精髓) -->
+    <script>
+        const terminalOutput = document.getElementById('term-output');
+        const commands = [
+            { text: "$ zhumeng start --gateway", color: "text-white" },
+            { text: "[INFO] Local gateway running on 127.0.0.1:18080...", color: "text-blue-400" },
+            { text: "[OK] Core adapter loaded: Codex Desktop", color: "text-green-400" },
+            { text: "[OK] Core adapter loaded: Claude Code CLI", color: "text-green-400" },
+            { text: "[INFO] Route policy: Strict Local (BYOK)", color: "text-blue-400" },
+            { text: "[OK] Upstream mapped: DeepSeek-Coder-V2", color: "text-green-400" },
+            { text: "[READY] Zhumeng Agent is listening. All requests sandboxed.", color: "text-zhumeng-primary font-bold" }
+        ];
+
+        let lineIndex = 0;
+        let charIndex = 0;
+
+        function typeWriter() {
+            if (lineIndex < commands.length) {
+                const currentLine = commands[lineIndex];
+                if (charIndex === 0) {
+                    const lineDiv = document.createElement('div');
+                    lineDiv.className = currentLine.color + ' mb-1.5';
+                    lineDiv.id = 'line-' + lineIndex;
+                    terminalOutput.appendChild(lineDiv);
+                }
+
+                const lineElement = document.getElementById('line-' + lineIndex);
+                lineElement.innerHTML += currentLine.text.charAt(charIndex);
+                charIndex++;
+
+                let typingSpeed = 30;
+                if (charIndex >= currentLine.text.length) {
+                    lineIndex++;
+                    charIndex = 0;
+                    typingSpeed = Math.random() * 400 + 300;
+                }
+                setTimeout(typeWriter, typingSpeed);
+            }
+        }
+
+        setTimeout(typeWriter, 1000);
+    </script>
+</body>
+</html>

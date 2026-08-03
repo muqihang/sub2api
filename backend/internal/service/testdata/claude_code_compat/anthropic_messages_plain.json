@@ -1,0 +1,10 @@
+{
+  "model": "claude-sonnet-4-6",
+  "max_tokens": 32000,
+  "stream": true,
+  "thinking": {"type": "enabled", "budget_tokens": 1024},
+  "context_management": {"edits": []},
+  "output_config": {"effort": "max"},
+  "messages": [{"role": "user", "content": [{"type": "text", "text": "fixture-content-marker"}]}],
+  "tools": [{"name": "lookup", "description": "plain tool", "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}}}]
+}

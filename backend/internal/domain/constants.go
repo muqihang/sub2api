@@ -27,12 +27,13 @@ const (
 
 // Account type constants
 const (
-	AccountTypeOAuth          = "oauth"           // OAuth类型账号（full scope: profile + inference）
-	AccountTypeSetupToken     = "setup-token"     // Setup Token类型账号（inference only scope）
-	AccountTypeAPIKey         = "apikey"          // API Key类型账号
-	AccountTypeUpstream       = "upstream"        // 上游透传类型账号（通过 Base URL + API Key 连接上游）
-	AccountTypeBedrock        = "bedrock"         // AWS Bedrock 类型账号（通过 SigV4 签名或 API Key 连接 Bedrock，由 credentials.auth_mode 区分）
-	AccountTypeServiceAccount = "service_account" // Google Service Account 类型账号（用于 Vertex AI）
+	AccountTypeOAuth             = "oauth"               // OAuth类型账号（full scope: profile + inference）
+	AccountTypeSetupToken        = "setup-token"         // Setup Token类型账号（inference only scope）
+	AccountTypeAPIKey            = "apikey"              // API Key类型账号
+	AccountTypeUpstream          = "upstream"            // 上游透传类型账号（通过 Base URL + API Key 连接上游）
+	AccountTypeBedrock           = "bedrock"             // AWS Bedrock 类型账号（通过 SigV4 签名或 API Key 连接 Bedrock，由 credentials.auth_mode 区分）
+	AccountTypeServiceAccount    = "service_account"     // Google Service Account 类型账号（用于 Vertex AI）
+	AccountTypeClaudePlatformAWS = "claude-platform-aws" // Claude Platform on AWS 类型账号（独立 formal-pool 路径）
 )
 
 // Redeem type constants
@@ -83,11 +84,11 @@ var DefaultAntigravityModelMapping = map[string]string{
 	"claude-opus-4-6":            "claude-opus-4-6-thinking", // 简称映射
 	"claude-opus-4-5-thinking":   "claude-opus-4-6-thinking", // 迁移旧模型
 	"claude-sonnet-4-6":          "claude-sonnet-4-6",
-	"claude-sonnet-4-5":          "claude-sonnet-4-5",
-	"claude-sonnet-4-5-thinking": "claude-sonnet-4-5-thinking",
+	"claude-sonnet-4-5":          "claude-sonnet-4-6", // 迁移旧模型
+	"claude-sonnet-4-5-thinking": "claude-sonnet-4-6", // 上游 4.5-thinking 已失效，回退到 4.6
 	// Claude 详细版本 ID 映射
 	"claude-opus-4-5-20251101":   "claude-opus-4-6-thinking", // 迁移旧模型
-	"claude-sonnet-4-5-20250929": "claude-sonnet-4-5",
+	"claude-sonnet-4-5-20250929": "claude-sonnet-4-6",        // 迁移旧模型
 	// Claude Haiku → Sonnet（无 Haiku 支持）
 	"claude-haiku-4-5":          "claude-sonnet-4-6",
 	"claude-haiku-4-5-20251001": "claude-sonnet-4-6",
@@ -104,7 +105,7 @@ var DefaultAntigravityModelMapping = map[string]string{
 	"gemini-3-pro-low":  "gemini-3-pro-low",
 	// Gemini 3 preview 映射
 	"gemini-3-flash-preview": "gemini-3-flash",
-	"gemini-3-pro-preview":   "gemini-3-pro-high",
+	"gemini-3-pro-preview":   AntigravityGemini31ProAgentModel,
 	// Gemini 3.1 白名单
 	AntigravityGemini31ProAgentModel: AntigravityGemini31ProAgentModel,
 	"gemini-3.1-pro":                 AntigravityGemini31ProAgentModel,

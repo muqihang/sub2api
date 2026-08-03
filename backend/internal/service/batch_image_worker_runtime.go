@@ -109,6 +109,7 @@ func (r *BatchImageWorkerRuntime) runBillingRecovery(ctx context.Context) {
 		if err := ctx.Err(); err != nil {
 			return
 		}
+		_, _ = r.billingRecovery.RequeueSubmittedFailuresOnce(ctx)
 		_, _ = r.billingRecovery.ReleaseStaleUnsubmittedOnce(ctx)
 		sleepOrDone(ctx, interval)
 	}
