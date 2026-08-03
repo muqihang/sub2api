@@ -9117,6 +9117,17 @@ func (s *OpenAIGatewayService) applyOpenAIFastPolicyToBody(ctx context.Context, 
 	}
 }
 
+// writeOpenAIResponsesFallbackError preserves the plain error envelope used by
+// the /v1/responses to Chat Completions fallback path.
+func writeOpenAIResponsesFallbackError(c *gin.Context, statusCode int, errType, message string) {
+	c.JSON(statusCode, gin.H{
+		"error": gin.H{
+			"type":    errType,
+			"message": message,
+		},
+	})
+}
+
 // writeOpenAIFastPolicyBlockedResponse writes a 403 JSON response for a
 // request blocked by the OpenAI fast policy.
 func writeOpenAIFastPolicyBlockedResponse(c *gin.Context, err *OpenAIFastBlockedError) {
