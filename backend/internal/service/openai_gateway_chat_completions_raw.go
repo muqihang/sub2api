@@ -141,7 +141,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		}
 	}
 	if account.Platform == PlatformGrok {
-		upstreamBody, err = stripGrokChatPromptCacheKey(upstreamBody)
+		upstreamBody, err := stripGrokChatPromptCacheKey(upstreamBody)
 		if err != nil {
 			return nil, fmt.Errorf("remove Responses-only Grok prompt cache key: %w", err)
 		}
@@ -210,7 +210,8 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	SetActualOpenAIUpstreamEndpoint(c, grokChatRawEndpoint)
 	customUA := account.GetOpenAIUserAgent()
 	if account.Platform == PlatformGrok {
-		upstreamReq.Header.Set("user-agent", "sub2api-grok/1.0")
+		applyGrokCLIHeaders(upstreamReq.Header)
+		applyGrokCacheHeaders(upstreamReq.Header, grokCacheIdentity)
 	} else if customUA != "" {
 		upstreamReq.Header.Set("user-agent", customUA)
 	}
@@ -242,8 +243,8 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 
 		if account.Platform == PlatformGrok {
-			s.updateGrokUsageSnapshot(ctx, account.ID, xai.ParseQuotaHeaders(resp.Header, resp.StatusCode))
-			s.handleGrokAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header)
+			s.updateGrokUsageSnapshot(ctx, account, xai.ParseQuotaHeaders(resp.Header, resp.StatusCode))
+			s.handleGrokAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 		}
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)

@@ -346,8 +346,8 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 		if account.Platform == PlatformGrok {
-			s.updateGrokUsageSnapshot(ctx, account.ID, xai.ParseQuotaHeaders(resp.Header, resp.StatusCode))
-			s.handleGrokAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header)
+			s.updateGrokUsageSnapshot(ctx, account, xai.ParseQuotaHeaders(resp.Header, resp.StatusCode))
+			s.handleGrokAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 		}
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
@@ -446,7 +446,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	// Spark shadows are updated via QueryUsage(/wham/usage bengalfox), not response headers.
 	if handleErr == nil && account.Type == AccountTypeOAuth && !account.IsShadow() {
 		if account.Platform == PlatformGrok {
-			s.updateGrokUsageSnapshot(ctx, account.ID, xai.ParseQuotaHeaders(resp.Header, resp.StatusCode))
+			s.updateGrokUsageSnapshot(ctx, account, xai.ParseQuotaHeaders(resp.Header, resp.StatusCode))
 		} else if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
 			s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
 		}
