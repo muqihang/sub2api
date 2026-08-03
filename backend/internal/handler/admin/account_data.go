@@ -618,6 +618,7 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 		if created.Platform == service.PlatformAntigravity && created.Type == service.AccountTypeOAuth {
 			privacyAccounts = append(privacyAccounts, created)
 		}
+		h.scheduleGrokImportProbe(created)
 		result.AccountCreated++
 		accountResult.Action = "created"
 		result.AccountResults = append(result.AccountResults, accountResult)

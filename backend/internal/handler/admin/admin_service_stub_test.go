@@ -10,19 +10,23 @@ import (
 )
 
 type stubAdminService struct {
-	users                []service.User
-	apiKeys              []service.APIKey
-	groups               []service.Group
-	accounts             []service.Account
-	proxies              []service.Proxy
-	proxyCounts          []service.ProxyWithAccountCount
-	redeems              []service.RedeemCode
-	boundAuthIdentity    *service.AdminBindAuthIdentityInput
-	boundAuthIdentityFor int64
-	createdAccounts      []*service.CreateAccountInput
-	createdGroups        []*service.CreateGroupInput
-	createdProxies       []*service.CreateProxyInput
-	updatedAccounts      []struct {
+	users                               []service.User
+	apiKeys                             []service.APIKey
+	groups                              []service.Group
+	accounts                            []service.Account
+	accountSchedulerScoreFilterAccounts []service.Account
+	openAISchedulerScorePoolAccounts    []service.Account
+	schedulerScoreFilterCalls           int
+	openAISchedulerScorePoolCalls       int
+	proxies                             []service.Proxy
+	proxyCounts                         []service.ProxyWithAccountCount
+	redeems                             []service.RedeemCode
+	boundAuthIdentity                   *service.AdminBindAuthIdentityInput
+	boundAuthIdentityFor                int64
+	createdAccounts                     []*service.CreateAccountInput
+	createdGroups                       []*service.CreateGroupInput
+	createdProxies                      []*service.CreateProxyInput
+	updatedAccounts                     []struct {
 		id    int64
 		input *service.UpdateAccountInput
 	}
@@ -30,16 +34,19 @@ type stubAdminService struct {
 		id    int64
 		input *service.UpdateGroupInput
 	}
-	updatedProxyIDs      []int64
-	updatedProxies       []*service.UpdateProxyInput
-	testedProxyIDs       []int64
-	getUserErr           error
-	createAccountErr     error
-	createSparkShadowErr error
-	updateAccountErr     error
-	bulkUpdateAccountErr error
-	checkMixedErr        error
-	lastMixedCheck       struct {
+	updatedProxyIDs         []int64
+	updatedProxies          []*service.UpdateProxyInput
+	testedProxyIDs          []int64
+	getUserErr              error
+	createAccountErr        error
+	createSparkShadowErr    error
+	updateAccountErr        error
+	bulkUpdateAccountErr    error
+	getAccountResult        *service.Account
+	updateAccountCalls      int
+	updateAccountExtraCalls int
+	checkMixedErr           error
+	lastMixedCheck          struct {
 		accountID int64
 		platform  string
 		groupIDs  []int64
@@ -343,10 +350,64 @@ func (s *stubAdminService) ListAccounts(ctx context.Context, page, pageSize int,
 	s.lastListAccounts.sortBy = sortBy
 	s.lastListAccounts.sortOrder = sortOrder
 	s.lastListAccounts.calls++
-	return s.accounts, int64(len(s.accounts)), nil
+	accounts := s.accounts
+	total := len(accounts)
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = total
+	}
+	start := (page - 1) * pageSize
+	if start >= total {
+		return []service.Account{}, int64(total), nil
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	return accounts[start:end], int64(total), nil
+}
+
+func (s *stubAdminService) ListAccountsForSchedulerScoreFilter(_ context.Context, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, error) {
+	s.schedulerScoreFilterCalls++
+	if s.accountSchedulerScoreFilterAccounts != nil {
+		return s.accountSchedulerScoreFilterAccounts, nil
+	}
+	return s.accounts, nil
+}
+
+func (s *stubAdminService) ListOpenAISchedulableAccountsForSchedulerScore(_ context.Context, groupID *int64) ([]service.Account, error) {
+	s.openAISchedulerScorePoolCalls++
+	accounts := s.openAISchedulerScorePoolAccounts
+	if accounts == nil {
+		accounts = s.accounts
+	}
+	out := make([]service.Account, 0, len(accounts))
+	for _, account := range accounts {
+		if account.Platform != service.PlatformOpenAI || !account.IsSchedulable() {
+			continue
+		}
+		if groupID == nil {
+			if len(account.AccountGroups) == 0 && len(account.GroupIDs) == 0 {
+				out = append(out, account)
+			}
+			continue
+		}
+		for _, accountGroup := range account.AccountGroups {
+			if accountGroup.GroupID == *groupID {
+				out = append(out, account)
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 func (s *stubAdminService) GetAccount(ctx context.Context, id int64) (*service.Account, error) {
+	if s.getAccountResult != nil {
+		return s.getAccountResult, nil
+	}
 	for i := range s.accounts {
 		if s.accounts[i].ID == id {
 			return &s.accounts[i], nil
@@ -381,6 +442,7 @@ func (s *stubAdminService) UpdateAccount(ctx context.Context, id int64, input *s
 		id    int64
 		input *service.UpdateAccountInput
 	}{id: id, input: input})
+	s.updateAccountCalls++
 	if s.updateAccountErr != nil {
 		return nil, s.updateAccountErr
 	}
@@ -393,6 +455,7 @@ func (s *stubAdminService) UpdateAccount(ctx context.Context, id int64, input *s
 }
 
 func (s *stubAdminService) UpdateAccountExtra(ctx context.Context, id int64, updates map[string]any) error {
+	s.updateAccountExtraCalls++
 	return nil
 }
 

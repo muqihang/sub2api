@@ -453,7 +453,6 @@ func ProvideClaudeTokenProvider(
 	return p
 }
 
-// ProvideOpenAITokenProvider creates OpenAITokenProvider with OAuthRefreshAPI injection
 // ProvideOpenAIQuotaService wires the OpenAI quota query/reset service.
 func ProvideOpenAIQuotaService(accountRepo AccountRepository, proxyRepo ProxyRepository, tokenProvider *OpenAITokenProvider, privacyClientFactory PrivacyClientFactory) *OpenAIQuotaService {
 	return NewOpenAIQuotaService(accountRepo, proxyRepo, tokenProvider, privacyClientFactory)
@@ -480,13 +479,14 @@ func ProvideAccountUsageService(
 	geminiQuotaService *GeminiQuotaService,
 	antigravityQuotaFetcher *AntigravityQuotaFetcher,
 	grokQuotaFetcher *GrokQuotaFetcher,
+	grokQuotaService *GrokQuotaService,
 	openAIQuotaService *OpenAIQuotaService,
 	cache *UsageCache,
 	identityCache IdentityCache,
 	tlsFPProfileService *TLSFingerprintProfileService,
 	cfg *config.Config,
 ) *AccountUsageService {
-	return NewAccountUsageService(accountRepo, usageLogRepo, usageFetcher, geminiQuotaService, antigravityQuotaFetcher, grokQuotaFetcher, openAIQuotaService, cache, identityCache, tlsFPProfileService, cfg)
+	return NewAccountUsageService(accountRepo, usageLogRepo, usageFetcher, geminiQuotaService, antigravityQuotaFetcher, grokQuotaFetcher, grokQuotaService, openAIQuotaService, cache, identityCache, tlsFPProfileService, cfg)
 }
 
 // ProvideGeminiTokenProvider creates GeminiTokenProvider with OAuthRefreshAPI injection
@@ -541,8 +541,9 @@ func ProvideGrokQuotaService(
 	proxyRepo ProxyRepository,
 	tokenProvider *GrokTokenProvider,
 	httpUpstream HTTPUpstream,
+	usageLogRepo UsageLogRepository,
 ) *GrokQuotaService {
-	return NewGrokQuotaService(accountRepo, proxyRepo, tokenProvider, httpUpstream)
+	return NewGrokQuotaService(accountRepo, proxyRepo, tokenProvider, httpUpstream, usageLogRepo)
 }
 
 // ProvideDashboardAggregationService 创建并启动仪表盘聚合服务

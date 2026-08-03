@@ -286,7 +286,7 @@ func createReqClient(proxyURL string) (*req.Client, error) {
 		client.SetProxyURL(trimmed)
 	}
 
-	return client, nil
+	return instrumentReqClient(client), nil
 }
 
 func redactedOAuthResponseBody(resp *req.Response) string {

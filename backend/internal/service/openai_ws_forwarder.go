@@ -2912,6 +2912,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			codexImageGenerationExplicitToolPolicy = account.CodexImageGenerationExplicitToolPolicy()
 		}
 		codexBridgeEnabled := isCodexCLI &&
+			!isOpenAIResponsesLiteWebSocketPayload(normalized) &&
 			imageGenerationAllowed &&
 			codexImageGenerationExplicitToolPolicy != codexImageGenerationExplicitToolPolicyStrip &&
 			s.isCodexImageGenerationBridgeEnabled(ctx, account, apiKey)

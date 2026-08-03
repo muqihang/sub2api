@@ -1,12 +1,11 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -136,10 +135,51 @@ func (s *OpenAIQuotaService) QueryUsage(ctx context.Context, accountID int64) (*
 	}
 
 	payload.FetchedAt = time.Now().Unix()
-	if payload.RateLimitResetCredits != nil && payload.RateLimitResetCredits.AvailableCount > 0 {
-		payload.RateLimitResetCredits.Credits = s.queryResetCreditDetails(callCtx, client, accessToken, chatGPTAccountID)
+	details := s.queryResetCreditDetails(callCtx, client, accessToken, chatGPTAccountID, accountID)
+	if details != nil {
+		hasDetailCount := details.AvailableCount != nil
+		if payload.RateLimitResetCredits == nil {
+			payload.RateLimitResetCredits = &OpenAIRateLimitResetCredits{}
+		}
+		if details.CreditListPresent {
+			payload.RateLimitResetCredits.Credits = details.Credits
+		}
+		switch {
+		case hasDetailCount:
+			payload.RateLimitResetCredits.AvailableCount = *details.AvailableCount
+		case details.CreditListPresent:
+			payload.RateLimitResetCredits.AvailableCount = details.AvailableCreditCount
+		}
 	}
 	return &payload, nil
+}
+
+func (s *OpenAIQuotaService) queryResetCreditDetails(ctx context.Context, client *req.Client, accessToken, chatGPTAccountID string, accountID int64) *openAIRateLimitResetCreditDetails {
+	if client == nil {
+		return nil
+	}
+	resp, err := client.R().
+		SetContext(ctx).
+		SetHeaders(buildOpenAIQuotaCodexHeaders(accessToken, chatGPTAccountID)).
+		Get(chatGPTRateLimitCreditsURL)
+	if err != nil {
+		slog.Warn("openai_quota_reset_credit_details_failed", "account_id", accountID, "error", err)
+		return nil
+	}
+	if !resp.IsSuccessState() {
+		slog.Warn("openai_quota_reset_credit_details_failed", "account_id", accountID, "status", resp.StatusCode)
+		return nil
+	}
+
+	details, err := parseOpenAIRateLimitResetCreditDetails(resp.Bytes())
+	if err != nil {
+		slog.Warn("openai_quota_reset_credit_details_parse_failed", "account_id", accountID, "error", err)
+		return nil
+	}
+	if details.AvailableCount == nil && !details.CreditListPresent {
+		return nil
+	}
+	return &details
 }
 
 func (s *OpenAIQuotaService) ResetCredit(ctx context.Context, accountID int64) (*OpenAIQuotaResetResult, error) {
@@ -246,24 +286,6 @@ func (s *OpenAIQuotaService) prepareUpstreamCall(ctx context.Context, accountID 
 		}
 	}
 	return accessToken, chatGPTAccountID, proxyURL, nil
-}
-
-func (s *OpenAIQuotaService) queryResetCreditDetails(ctx context.Context, client *req.Client, accessToken, chatGPTAccountID string) []OpenAIRateLimitResetCreditDetail {
-	if client == nil {
-		return nil
-	}
-	resp, err := client.R().
-		SetContext(ctx).
-		SetHeaders(buildOpenAIQuotaCodexHeaders(accessToken, chatGPTAccountID)).
-		Get(chatGPTRateLimitCreditsURL)
-	if err != nil || !resp.IsSuccessState() {
-		return nil
-	}
-	credits, err := parseOpenAIRateLimitResetCreditDetails(resp.Bytes())
-	if err != nil {
-		return nil
-	}
-	return credits
 }
 
 func buildOpenAIQuotaCodexHeaders(accessToken, chatGPTAccountID string) map[string]string {
@@ -376,63 +398,4 @@ func mapOpenAIQuotaUpstreamStatus(status int) int {
 	default:
 		return http.StatusBadGateway
 	}
-}
-
-type openAIRateLimitResetCreditDetailPayload struct {
-	ExpiresAt      string `json:"expires_at,omitempty"`
-	ExpiresAtCamel string `json:"expiresAt,omitempty"`
-}
-
-type openAIRateLimitResetCreditDetailsPayload struct {
-	Credits               []openAIRateLimitResetCreditDetailPayload `json:"credits,omitempty"`
-	RateLimitResetCredits []openAIRateLimitResetCreditDetailPayload `json:"rate_limit_reset_credits,omitempty"`
-	Items                 []openAIRateLimitResetCreditDetailPayload `json:"items,omitempty"`
-	Data                  []openAIRateLimitResetCreditDetailPayload `json:"data,omitempty"`
-}
-
-func parseOpenAIRateLimitResetCreditDetails(body []byte) ([]OpenAIRateLimitResetCreditDetail, error) {
-	trimmed := bytes.TrimSpace(body)
-	if len(trimmed) == 0 {
-		return nil, nil
-	}
-
-	var rawCredits []openAIRateLimitResetCreditDetailPayload
-	if trimmed[0] == '[' {
-		if err := json.Unmarshal(trimmed, &rawCredits); err != nil {
-			return nil, err
-		}
-	} else {
-		var payload openAIRateLimitResetCreditDetailsPayload
-		if err := json.Unmarshal(trimmed, &payload); err != nil {
-			return nil, err
-		}
-		rawCredits = firstNonEmptyOpenAIQuotaResetCreditPayload(
-			payload.Credits,
-			payload.RateLimitResetCredits,
-			payload.Items,
-			payload.Data,
-		)
-	}
-
-	credits := make([]OpenAIRateLimitResetCreditDetail, 0, len(rawCredits))
-	for _, raw := range rawCredits {
-		expiresAt := strings.TrimSpace(raw.ExpiresAt)
-		if expiresAt == "" {
-			expiresAt = strings.TrimSpace(raw.ExpiresAtCamel)
-		}
-		if expiresAt == "" {
-			continue
-		}
-		credits = append(credits, OpenAIRateLimitResetCreditDetail{ExpiresAt: expiresAt})
-	}
-	return credits, nil
-}
-
-func firstNonEmptyOpenAIQuotaResetCreditPayload(lists ...[]openAIRateLimitResetCreditDetailPayload) []openAIRateLimitResetCreditDetailPayload {
-	for _, list := range lists {
-		if len(list) > 0 {
-			return list
-		}
-	}
-	return nil
 }

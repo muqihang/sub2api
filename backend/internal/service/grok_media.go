@@ -337,15 +337,20 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(ctx context.Context, c *gin.Cont
 	if err != nil {
 		return nil, err
 	}
-	targetURL, err := endpoint.upstreamURL(grokMediaBaseURL(account), requestID)
+	targetURL, err := endpoint.upstreamURL(account.GetGrokMediaBaseURL(), requestID)
 	if err != nil {
 		return nil, err
 	}
-	requestInfo := ParseGrokMediaRequest(contentType, body)
+
 	body, contentType, err = prepareGrokMediaForwardBody(endpoint, body, contentType)
 	if err != nil {
 		return nil, err
 	}
+	body, contentType, err = normalizeGrokMediaForwardBody(endpoint, body, contentType)
+	if err != nil {
+		return nil, err
+	}
+	requestInfo := ParseGrokMediaRequest(contentType, body)
 	body, contentType, err = sanitizeGrokMediaForwardBody(endpoint, body, contentType)
 	if err != nil {
 		return nil, err
