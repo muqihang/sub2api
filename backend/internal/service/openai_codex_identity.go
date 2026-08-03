@@ -9,6 +9,24 @@ import (
 
 const codexUpstreamMinVersion = "0.144.0"
 
+// ensureCodexIdentityHeaders restores OAuth identity headers that compatibility
+// transforms may have removed before enforceCodexIdentityHeaders pairs them.
+func ensureCodexIdentityHeaders(headers http.Header) {
+	if headers == nil {
+		return
+	}
+	if strings.TrimSpace(headers.Get("user-agent")) == "" {
+		headers.Set("user-agent", codexCLIUserAgent)
+	}
+	if strings.TrimSpace(headers.Get("originator")) == "" {
+		headers.Set("originator", "codex_cli_rs")
+	}
+	if strings.TrimSpace(headers.Get("version")) == "" {
+		headers.Set("version", codexCLIVersion)
+	}
+	headers.Set("OpenAI-Beta", "responses=experimental")
+}
+
 // enforceCodexIdentityHeaders runs after all profile and account overrides.
 // Messages compatibility intentionally omits originator, which remains a no-op.
 func enforceCodexIdentityHeaders(headers http.Header) {

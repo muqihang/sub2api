@@ -823,6 +823,7 @@ func (p *openAIWSConnPool) acquire(ctx context.Context, req openAIWSAcquireReque
 retryAcquire:
 	accountID := req.Account.ID
 	requestCacheIdentity := buildOpenAIWSPoolCacheIdentity(req)
+	betaFeatures := normalizeOpenAIWSBetaFeatures(req.Headers)
 	effectiveMaxConns := p.effectiveMaxConnsByAccount(req.Account)
 	if effectiveMaxConns <= 0 {
 		return nil, errOpenAIWSConnQueueFull
@@ -851,7 +852,7 @@ retryAcquire:
 				return nil, errOpenAIWSPreferredConnUnavailable
 			}
 			preferredConn, ok := ap.conns[preferredConnID]
-			if !ok || preferredConn == nil || !openAIWSConnMatchesCacheIdentity(preferredConn, requestCacheIdentity) {
+			if !ok || preferredConn == nil || !openAIWSConnMatchesCacheIdentity(preferredConn, requestCacheIdentity) || !preferredConn.matchesBetaFeatures(betaFeatures) {
 				p.recordConnPickDuration(time.Since(pickStartedAt))
 				ap.mu.Unlock()
 				closeOpenAIWSConns(evicted)
@@ -932,7 +933,7 @@ retryAcquire:
 		}
 
 		if preferredConnID != "" {
-			if conn, ok := ap.conns[preferredConnID]; ok && openAIWSConnMatchesCacheIdentity(conn, requestCacheIdentity) && conn.tryAcquire() {
+			if conn, ok := ap.conns[preferredConnID]; ok && openAIWSConnMatchesCacheIdentity(conn, requestCacheIdentity) && conn.matchesBetaFeatures(betaFeatures) && conn.tryAcquire() {
 				connPick := time.Since(pickStartedAt)
 				p.recordConnPickDuration(connPick)
 				ap.mu.Unlock()
@@ -954,7 +955,7 @@ retryAcquire:
 			}
 		}
 
-		best := p.pickLeastBusyConnLocked(ap, "", requestCacheIdentity)
+		best := p.pickLeastBusyConnLocked(ap, "", requestCacheIdentity, betaFeatures)
 		if best != nil && best.tryAcquire() {
 			connPick := time.Since(pickStartedAt)
 			p.recordConnPickDuration(connPick)
@@ -976,7 +977,7 @@ retryAcquire:
 			return lease, nil
 		}
 		for _, conn := range ap.conns {
-			if conn == nil || conn == best || !openAIWSConnMatchesCacheIdentity(conn, requestCacheIdentity) {
+			if conn == nil || conn == best || !openAIWSConnMatchesCacheIdentity(conn, requestCacheIdentity) || !conn.matchesBetaFeatures(betaFeatures) {
 				continue
 			}
 			if conn.tryAcquire() {
@@ -1003,7 +1004,7 @@ retryAcquire:
 	}
 
 	if !req.ForceNewConn && len(ap.conns)+ap.creating >= effectiveMaxConns {
-		compatible := p.pickLeastBusyConnLocked(ap, "", betaFeatures)
+		compatible := p.pickLeastBusyConnLocked(ap, "", requestCacheIdentity, betaFeatures)
 		if idle := p.pickOldestIdleConnWithDifferentBetaFeaturesLocked(ap, betaFeatures); idle != nil {
 			delete(ap.conns, idle.id)
 			evicted = append(evicted, idle)
@@ -1085,7 +1086,7 @@ retryAcquire:
 		return nil, errOpenAIWSConnQueueFull
 	}
 
-	target := p.pickLeastBusyConnLocked(ap, req.PreferredConnID, requestCacheIdentity)
+	target := p.pickLeastBusyConnLocked(ap, req.PreferredConnID, requestCacheIdentity, betaFeatures)
 	connPick := time.Since(pickStartedAt)
 	p.recordConnPickDuration(connPick)
 	if target == nil {
@@ -1149,6 +1150,22 @@ func (p *openAIWSConnPool) pickOldestIdleConnLocked(ap *openAIWSAccountPool) *op
 	var oldest *openAIWSConn
 	for _, conn := range ap.conns {
 		if conn == nil || conn.isLeased() || conn.waiters.Load() > 0 || p.isConnPinnedLocked(ap, conn.id) {
+			continue
+		}
+		if oldest == nil || conn.lastUsedAt().Before(oldest.lastUsedAt()) {
+			oldest = conn
+		}
+	}
+	return oldest
+}
+
+func (p *openAIWSConnPool) pickOldestIdleConnWithDifferentBetaFeaturesLocked(ap *openAIWSAccountPool, betaFeatures string) *openAIWSConn {
+	if ap == nil || len(ap.conns) == 0 {
+		return nil
+	}
+	var oldest *openAIWSConn
+	for _, conn := range ap.conns {
+		if conn == nil || conn.matchesBetaFeatures(betaFeatures) || conn.isLeased() || conn.waiters.Load() > 0 || p.isConnPinnedLocked(ap, conn.id) {
 			continue
 		}
 		if oldest == nil || conn.lastUsedAt().Before(oldest.lastUsedAt()) {
@@ -1330,15 +1347,15 @@ func (p *openAIWSConnPool) cleanupAccountLocked(ap *openAIWSAccountPool, now tim
 	return evicted
 }
 
-func (p *openAIWSConnPool) pickLeastBusyConnLocked(ap *openAIWSAccountPool, preferredConnID string, cacheIdentity ...string) *openAIWSConn {
+func (p *openAIWSConnPool) pickLeastBusyConnLocked(ap *openAIWSAccountPool, preferredConnID, cacheIdentity, betaFeatures string) *openAIWSConn {
 	if ap == nil || len(ap.conns) == 0 {
 		return nil
 	}
 	preferredConnID = stringsTrim(preferredConnID)
-	requestCacheIdentity := firstOpenAIWSCacheIdentity(cacheIdentity...)
+	requestCacheIdentity := stringsTrim(cacheIdentity)
 	if preferredConnID != "" {
 		if conn, ok := ap.conns[preferredConnID]; ok {
-			if openAIWSConnMatchesCacheIdentity(conn, requestCacheIdentity) {
+			if openAIWSConnMatchesCacheIdentity(conn, requestCacheIdentity) && conn.matchesBetaFeatures(betaFeatures) {
 				return conn
 			}
 			return nil
@@ -1628,7 +1645,9 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 		}
 	}
 	id := p.nextConnID(req.Account.ID)
-	return newOpenAIWSConn(id, req.Account.ID, conn, handshakeHeaders, buildOpenAIWSPoolCacheIdentity(req)), nil
+	pooledConn := newOpenAIWSConn(id, req.Account.ID, conn, handshakeHeaders, buildOpenAIWSPoolCacheIdentity(req))
+	pooledConn.betaFeatures = normalizeOpenAIWSBetaFeatures(req.Headers)
+	return pooledConn, nil
 }
 
 func (p *openAIWSConnPool) nextConnID(accountID int64) string {
